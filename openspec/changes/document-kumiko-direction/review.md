@@ -2,6 +2,49 @@
 
 ## Metadata
 
+- **Round:** 1 (retained below); no new review round.
+- **Prior round:** Round 1 by internal SLOW reviewer, `APPROVE_WITH_CHANGES`, Required Change 1 (M1) resolved and accepted by the reviewer. Retained in full under "Retained round-1 review".
+- **Reviewer:** none (DEFERRED by the user)
+- **Reviewed:** n/a for this decision; see the retained review for the round-1 inputs.
+- **Deferred to:** M1 - Local development loop, M2 - Daily-driver workbench, M3 - Local planning and documents, M4 - Team server and collaboration, M5 - Integrations and attention, M6 - Distribution and operations (`openspec/roadmap.md`)
+- **User decision:** "do it all, including commit and merge and push" (2026-10-29), confirming the recommendation to park this change.
+
+This is a parking change: the reviewed product direction and backlog that the roadmap's milestones carve up. It is never applied or archived. Each milestone moves its part into its own change, which gets its own full review. Its capability specs are product intent, not built behaviour, so they are not synced into `openspec/specs/`.
+
+## Findings
+
+### Critical (blocking)
+
+None for this decision. See the retained review.
+
+### Moderate
+
+None for this decision. See the retained review.
+
+### Suggestions
+
+None.
+
+## Verdict
+
+VERDICT: DEFERRED
+
+## Required Changes
+
+None.
+
+CHANGES_APPLIED: n/a
+
+## Rebuttals
+
+None.
+
+## Retained round-1 review
+
+Provenance only. Its verdict lines are reworded so that the DEFERRED verdict above is the only machine-readable one.
+
+### Metadata
+
 - **Round:** 1 — original full-review provenance retained.
 - **Review action:** Focused Required Change 1 / M1 re-check only; **not a new full-review round**.
 - **Prior round:** none.
@@ -13,13 +56,13 @@
 - **Verification limits:** Independent textual inspection only. No implementation, file edits, runtime verification, or external reviewer CLI use was performed.
 - **Context:** Applicable project domain skills: none. Round-1 context reported no referenced stores or unresolved reference entries, and absent configured architecture/ADR paths with no available in-force constraints. No ADR/reference changes are involved in this correction.
 
-## Findings
+### Findings
 
-### Critical (blocking)
+#### Critical (blocking)
 
 None in the retained round-1 review.
 
-### Moderate
+#### Moderate
 
 **M1 — Desktop focus is also specified to change agent SCM targets.**
 
@@ -39,22 +82,22 @@ The original finding concerned conflicting contracts: desktop navigation directe
 
 These are verified planning-contract corrections, not executed scenario tests. No unresolved portion of M1 remains.
 
-### Suggestions
+#### Suggestions
 
 None in the retained round-1 review. No additional review scope was introduced.
 
-## Verdict
+### Verdict
 
-VERDICT: APPROVE_WITH_CHANGES
+Retained round-1 verdict: APPROVE_WITH_CHANGES
 
 The original verdict is retained. Required Change 1 is now satisfied and accepted on the supplied current text. Other round-1 conclusions and planning-only limitations are retained, not re-reviewed. This acceptance does not establish implementation readiness or runtime qualification.
 
-## Required Changes
+### Required Changes
 
 1. **Required Change 1 / M1 — Resolved; fix accepted by reviewer.** The SCM panel follows focus, while existing agent operations retain their explicitly selected, authorized workspace and backend. The A/B scenario, same-workspace backend sharing, workbench no-silent-retargeting rules, and initial Git/deferred jj/GitButler boundaries are verified in the exact current evidence cited above. No further correction is required for M1.
 
-CHANGES_APPLIED: yes
+Retained round-1 changes applied: yes
 
-## Rebuttals
+### Rebuttals
 
 None supplied. Resolution was determined independently from the current cited artifacts, not from an author assertion that the fix was complete.
