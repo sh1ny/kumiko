@@ -15,6 +15,7 @@ context: |
   MANDATORY: Before archiving a change (/opsx:archive, /opsx:bulk-archive, openspec-archive-change, 'openspec archive'), read its review.md. If it has a whole line `VERDICT: DEFERRED`, do not archive that change: move nothing, sync no spec, and name its `Deferred to:` targets. In a bulk archive, skip that change and archive the rest.
   MANDATORY: Invoke the 'specwright-finish' skill immediately after the OpenSpec archive workflow completes (/opsx:archive, openspec-archive-change, 'openspec archive').
   Project-level planning (strategy, architecture baseline, milestone roadmap) is handled by the 'specwright-roadmap' skill; paths are under project: in openspec/specwright.yaml.
+  Product backlog: openspec/changes/document-kumiko-direction/ is a parked change (VERDICT: DEFERRED) holding the reviewed product direction. Its specs are intent, not built behaviour. When proposing or designing a change, read the capability specs it touches there, plus the decisions it cites (D1-D55 in its design.md). Carry the requirements the change delivers into its own specs, citing the source requirement or decision. Never contradict an agreed decision without saying so in the proposal. Never apply, archive or sync that change.
   Specwright settings (finish mode, GitHub identity, review requests, cross-model design review, pre-push validation) live in openspec/specwright.yaml.
 
 # Per-artifact rules (optional)
