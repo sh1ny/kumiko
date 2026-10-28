@@ -17,7 +17,16 @@ The milestone proves the riskiest assumptions first: the child host and its proc
 **Exit criteria:**
 - CI builds the desktop app with its bundled host for Windows, Linux and macOS from main. The dependency audit finds no analytics, crash-report or remote-logging package. (agent)
 - First launch on each OS opens Personal with no account, project, server or network prompt, and a terminal can be opened at once. (user, per OS)
-- Terminals run the user's shell from an argv profile: PowerShell and Nushell on Windows, bash on Linux, fish or zsh on macOS. vim and lazygit render and accept keyboard input correctly, including after a resize. (user, per OS)
+- Terminals run the user's shell from an argv profile: PowerShell and Nushell on Windows, bash on Linux, fish or zsh on macOS. (user, per OS)
+- The adopted terminal engine passes the daily-driver bar on each OS. Results are recorded per OS in the `host-terminals` change, and an engine that fails any item is not adopted (ADR 0006). (user for interactive items, agent for scripted ones, per OS)
+  - Fullscreen TUIs: vim, lazygit, htop or btop, and tmux running inside the terminal, all with correct rendering, keyboard input including modifiers, function and navigation keys, and mouse reporting.
+  - Colour: 256 colours and 24-bit true colour render correctly.
+  - Input: bracketed paste works, and CJK IME composition commits the right text.
+  - Unicode: wide characters and emoji take correct widths.
+  - Throughput: `cat` of a 100 MB file completes without the UI freezing, and Ctrl+C interrupts it promptly.
+  - Resize: a rapid resize storm leaves the shell and the running TUI consistent.
+  - Conformance: a vttest subset (cursor movement, screen features, character sets) passes, with the chosen subset named in the change.
+  - Selection, copy and scrollback search work.
 - With one terminal saturating output and another terminal's consumer stalled, Stop, permission replies, resize and close still complete, and other channels keep flowing (ADR 0002). (agent)
 - In an opened checkout, a Claude Code ACP session streams a reply, shows tool activity, raises a permission request the user answers, and can be stopped mid-turn. The Stop result reported is the actual one. (user, per OS)
 - An existing agent session keeps its original checkout as its target after the user focuses another workspace or project (ADR 0004). (agent: automated test; user: observed once)
@@ -29,7 +38,7 @@ The milestone proves the riskiest assumptions first: the child host and its proc
 **Changes** (in order; each about one PR):
 1. `scaffold-desktop-and-host` - Dart workspace (`domain`, `host_protocol`, `host`, `desktop`). Desktop launches the child host and runs the `hello` handshake. Framing with fair scheduling and credit (ADR 0002). Profile lock and process ledger with reconciliation (ADR 0001). CI builds on three OSes and runs the dependency audit.
 2. `local-store-and-workbench-shell` - SQLite binding probe and follow-up ADR. Host-owned store with migrations (ADR 0003). Personal working set, a minimal tab and split workbench, opening a checkout as a workspace, and layout save and restore.
-3. `host-terminals` - terminal engine spike and follow-up ADR (ADR 0006). Host PTYs (ConPTY and POSIX) from argv shell profiles. Terminal channels, close-loss warnings and layout-only reopen.
+3. `host-terminals` - terminal engine spike against the daily-driver bar and follow-up ADR (ADR 0006). The lead candidate is flutter_alacritty and the fallback is xterm.dart. If both fail the bar, the change escalates to the user with the observed results: fork the widget, or build our own widget on `alacritty_terminal`. Host PTYs (ConPTY and POSIX) from argv shell profiles. Terminal channels, close-loss warnings and layout-only reopen.
 4. `claude-acp-chat-session` - ACP adapter and normalized session model with qualified capabilities (ADR 0004). Chat, tool activity, permission requests, Stop, close confirmation, saved session records, resume or a visible *resume unavailable*, and immutable targets. Prerequisite: change 2. It can run in parallel with change 3.
 5. `kumiko-tool-delivery` - host tool service, `mcp-bridge` and per-user endpoint, per-session secret and per-call authorization, and one read-only tool. Connected status only after a successful call (ADR 0005). Prerequisite: change 4.
 6. `app-exit-and-reopen` - whole-app exit with individual and bulk decisions for working agents and terminals. Unsent drafts kept locally per conversation. Reopen and crash-recovery presentation, including *cleanup unresolved*. The full M1 exit-criteria walk on three OSes. Prerequisites: changes 3 and 5.
