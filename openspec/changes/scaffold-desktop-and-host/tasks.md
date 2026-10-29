@@ -103,7 +103,7 @@ Paths are relative to the repository root.
 
 ## 6. Store core (`host`)
 
-- [ ] 6.1 Write failing `packages/host/test/store/migrations_test.dart`: a fresh store at v1; a failing injected step that leaves `user_version` and contents unchanged; a newer `user_version` refused unchanged; a garbage file left in place. Verify: they fail for missing code.
+- [x] 6.1 Write failing `packages/host/test/store/migrations_test.dart`: a fresh store at v1; a failing injected step that leaves `user_version` and contents unchanged; a newer `user_version` refused unchanged; a garbage file left in place. Verify: they fail for missing code.
 - [ ] 6.2 Implement the store with the ADR 0008 binding: WAL, `synchronous=FULL`, a migration list with one transaction per step, schema v1 (`host_instance`, `unit` per design D4), and typed errors `store-migration-failed`, `store-newer`, `store-unreadable`. It is opened only through a function that requires a held profile lock object. Verify: `migrations_test` passes; flip its rows green.
 
 ## 7. Host executable (`host`)
