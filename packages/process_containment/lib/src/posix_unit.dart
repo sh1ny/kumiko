@@ -59,7 +59,13 @@ KillOutcome killProcessGroup(int leaderPid, int startTime, int signal) {
   if (leader.startTime != startTime) return KillOutcome.startTimeMismatch;
   final err = posixKillpg(leaderPid, signal);
   if (err == 0) return KillOutcome.signalled;
-  return err == esrch ? KillOutcome.leaderGone : KillOutcome.failed;
+  if (err != esrch) return KillOutcome.failed;
+  // The leader is alive but its group does not exist yet: the shim has not
+  // reached `setsid`, so the process is still alone in the host's group.
+  // Nothing else belongs to the unit then; signal the process itself.
+  final direct = posixKill(leaderPid, signal);
+  if (direct == 0) return KillOutcome.signalled;
+  return direct == esrch ? KillOutcome.leaderGone : KillOutcome.failed;
 }
 
 /// A unit on Linux or macOS: the leader of its own session, started through
