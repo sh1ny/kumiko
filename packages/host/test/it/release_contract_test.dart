@@ -60,6 +60,7 @@ void main() {
         ).toJson(),
         Method.testUnitEnd: TestUnitEndParams('no-such-unit').toJson(),
         Method.testChannelOpen: const TestChannelOpenParams(0).toJson(),
+        Method.testChannelStats: const TestChannelStatsParams(1).toJson(),
         Method.testFaultSet: TestFaultSetParams(
           TestFault.killFails,
           enabled: true,

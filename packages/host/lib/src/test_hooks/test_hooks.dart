@@ -75,29 +75,55 @@ class TestHostExtension implements HostExtension {
       case Method.testChannelOpen:
         final p = TestChannelOpenParams.fromJson(params);
         final channel = host.connection.openOutbound();
-        unawaited(_produce(channel, p.rateBytesPerSec));
+        final producer = _producers[channel.id] = _Producer(channel);
+        unawaited(producer.run(p.rateBytesPerSec, p.writeBytes));
         return TestChannelOpenResult(channel.id).toJson();
+      case Method.testChannelStats:
+        final p = TestChannelStatsParams.fromJson(params);
+        final producer = _producers[p.channel];
+        if (producer == null) {
+          throw RpcException(
+            ErrorCode.invalidParams,
+            'no test channel ${p.channel}',
+          );
+        }
+        return TestChannelStatsResult(
+          producedBytes: producer.produced,
+          queuedBytes: producer.channel.queuedBytes,
+        ).toJson();
     }
     throw RpcException(ErrorCode.methodNotAvailable, method);
   }
 
-  /// Writes byte `i % 251` at stream offset `i`, at about [rate] bytes per
-  /// second (unthrottled when [rate] is 0). Each write waits for credit, so a
-  /// channel without credit stops its source (design D7).
-  Future<void> _produce(ChannelWriter channel, int rate) async {
-    const chunk = 16 * 1024;
-    var offset = 0;
+  /// Test channels' producers by channel id, for `test/channel.stats`.
+  final Map<int, _Producer> _producers = {};
+}
+
+/// The source of one test channel.
+class _Producer {
+  _Producer(this.channel);
+
+  final ChannelWriter channel;
+
+  /// Bytes read from the source so far.
+  int produced = 0;
+
+  /// Writes byte `i % 251` at stream offset `i` in writes of [chunk] bytes,
+  /// at about [rate] bytes per second (unthrottled when [rate] is 0). Each
+  /// write waits for credit, so a channel without credit stops its source
+  /// (design D7).
+  Future<void> run(int rate, int chunk) async {
     final clock = Stopwatch()..start();
     try {
       while (true) {
         final bytes = Uint8List(chunk);
         for (var i = 0; i < chunk; i++) {
-          bytes[i] = (offset + i) % 251;
+          bytes[i] = (produced + i) % 251;
         }
+        produced += chunk;
         await channel.write(bytes);
-        offset += chunk;
         if (rate > 0) {
-          final due = Duration(microseconds: offset * 1000000 ~/ rate);
+          final due = Duration(microseconds: produced * 1000000 ~/ rate);
           final wait = due - clock.elapsed;
           if (wait > Duration.zero) await Future<void>.delayed(wait);
         }

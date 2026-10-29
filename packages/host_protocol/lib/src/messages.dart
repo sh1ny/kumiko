@@ -16,6 +16,7 @@ abstract final class Method {
   static const String testUnitLaunch = 'test/unit.launch';
   static const String testUnitEnd = 'test/unit.end';
   static const String testChannelOpen = 'test/channel.open';
+  static const String testChannelStats = 'test/channel.stats';
   static const String testFaultSet = 'test/fault.set';
 }
 
@@ -30,6 +31,7 @@ const Map<String, String> methodCapability = {
   Method.testUnitLaunch: Capability.testUnits,
   Method.testUnitEnd: Capability.testUnits,
   Method.testChannelOpen: Capability.testChannels,
+  Method.testChannelStats: Capability.testChannels,
   Method.testFaultSet: Capability.testFaults,
 };
 
@@ -661,11 +663,64 @@ class TestUnitEndResult {
 }
 
 class TestChannelOpenParams {
-  const TestChannelOpenParams(this.rateBytesPerSec);
-  factory TestChannelOpenParams.fromJson(Json json) =>
-      TestChannelOpenParams(_req<int>(json, 'rateBytesPerSec'));
+  const TestChannelOpenParams(
+    this.rateBytesPerSec, {
+    this.writeBytes = defaultWriteBytes,
+  });
+
+  factory TestChannelOpenParams.fromJson(Json json) {
+    final write = _opt<int>(json, 'writeBytes') ?? defaultWriteBytes;
+    if (write < 1 || write > maxWriteBytes) {
+      throw RpcException(
+        ErrorCode.invalidParams,
+        'writeBytes must be 1..$maxWriteBytes',
+      );
+    }
+    return TestChannelOpenParams(
+      _req<int>(json, 'rateBytesPerSec'),
+      writeBytes: write,
+    );
+  }
+
+  static const int defaultWriteBytes = 16 * 1024;
+  static const int maxWriteBytes = 4 * 1024 * 1024;
+
   final int rateBytesPerSec;
-  Json toJson() => {'rateBytesPerSec': rateBytesPerSec};
+
+  /// The size of each of the producer's writes.
+  final int writeBytes;
+
+  Json toJson() => {
+    'rateBytesPerSec': rateBytesPerSec,
+    'writeBytes': writeBytes,
+  };
+}
+
+class TestChannelStatsParams {
+  const TestChannelStatsParams(this.channel);
+  factory TestChannelStatsParams.fromJson(Json json) =>
+      TestChannelStatsParams(_req<int>(json, 'channel'));
+  final int channel;
+  Json toJson() => {'channel': channel};
+}
+
+/// What a test channel's producer has read from its source and what the
+/// host's writer holds unsent for it.
+class TestChannelStatsResult {
+  const TestChannelStatsResult({
+    required this.producedBytes,
+    required this.queuedBytes,
+  });
+
+  factory TestChannelStatsResult.fromJson(Json json) => TestChannelStatsResult(
+    producedBytes: _req<int>(json, 'producedBytes'),
+    queuedBytes: _req<int>(json, 'queuedBytes'),
+  );
+
+  final int producedBytes;
+  final int queuedBytes;
+
+  Json toJson() => {'producedBytes': producedBytes, 'queuedBytes': queuedBytes};
 }
 
 class TestChannelOpenResult {

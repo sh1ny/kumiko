@@ -83,10 +83,14 @@ class Rig {
 
   /// Asks the host for a channel streaming at [rate] (0: as fast as credit
   /// allows) and attaches a consumer. A [paused] consumer takes nothing.
-  Future<Consumer> open({int rate = 0, bool paused = false}) async {
+  Future<Consumer> open({
+    int rate = 0,
+    bool paused = false,
+    int writeBytes = TestChannelOpenParams.defaultWriteBytes,
+  }) async {
     final reply = await connection.request(
       Method.testChannelOpen,
-      TestChannelOpenParams(rate).toJson(),
+      TestChannelOpenParams(rate, writeBytes: writeBytes).toJson(),
     );
     final id = TestChannelOpenResult.fromJson(reply as Json).channel;
     late final Consumer consumer;
@@ -312,6 +316,42 @@ void main() {
     // The stalled channel held exactly its window and no more.
     expect(r.wire.peak[stalled.id], _window);
     expect(stalled.received, 0);
+  });
+
+  test('host queues at most a window per channel for a source that '
+      'over-produces', () async {
+    final r = rig = await Rig.start(profile);
+    // Each of the producer's writes is 1 MiB, four windows at once.
+    const write = 4 * _window;
+    final stalled = await r.open(paused: true, writeBytes: write);
+    await expectStallAt(r, [stalled], _window);
+
+    Future<TestChannelStatsResult> stats() async =>
+        TestChannelStatsResult.fromJson(
+          await r.connection.request(
+            Method.testChannelStats,
+            TestChannelStatsParams(stalled.id).toJson(),
+          ) as Json,
+        );
+    final first = await stats();
+    await Future<void>.delayed(const Duration(milliseconds: 500));
+    final second = await stats();
+
+    // A window on the wire, at most a window queued in the host's writer,
+    // and the source stopped: it read one write and is waiting on it.
+    expect(first.queuedBytes, lessThanOrEqualTo(_window));
+    expect(second.queuedBytes, lessThanOrEqualTo(_window));
+    expect(second.producedBytes, first.producedBytes);
+    expect(second.producedBytes, write);
+
+    // Resumed, every byte still arrives once, in order.
+    stalled.subscription.resume();
+    await eventually(
+      () => stalled.received >= 2 * write,
+      reason: 'resume delivered only ${stalled.received} bytes',
+    );
+    expect(stalled.firstMismatch, isNull);
+    expect((await stats()).queuedBytes, lessThanOrEqualTo(_window));
   });
 
   test('33rd open refused with channel-cap; total buffering ≤ 8 MiB', () async {

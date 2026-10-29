@@ -31,7 +31,9 @@ class _Chunk {
 
 /// The sending half of a data channel. Writes wait for credit and for the
 /// wire, so a producer that awaits them stops reading its source when the
-/// receiver grants nothing.
+/// receiver grants nothing. At most [channelWindow] bytes are held here
+/// unsent: a write waits until there is room, larger writes are taken a
+/// window at a time, and writes are queued in call order.
 class ChannelWriter {
   ChannelWriter._(this.id, this._writer);
 
@@ -40,19 +42,79 @@ class ChannelWriter {
   final Queue<_Chunk> _chunks = Queue();
   int _credit = 0;
   bool _closed = false;
+  int _queued = 0;
+
+  /// Writes waiting for room, and the end of their FIFO chain.
+  int _waiting = 0;
+  Future<void> _admission = Future.value();
+  Completer<void>? _space;
 
   /// Bytes the receiver has granted and this side has not yet sent.
   int get credit => _credit;
+
+  /// Bytes accepted by [write] and not yet on the wire, at most
+  /// [channelWindow].
+  int get queuedBytes => _queued;
 
   /// Completes once every byte of [data] has been handed to the sink and
   /// flushed.
   Future<void> write(List<int> data) {
     if (_closed) return Future.error(ChannelClosedException(id));
     if (data.isEmpty) return Future.value();
-    final chunk = _Chunk(Uint8List.fromList(data));
+    // With nobody waiting, what fits is queued at once.
+    var start = 0;
+    Future<void>? last;
+    while (_waiting == 0 && start < data.length) {
+      final end = math.min(start + channelWindow, data.length);
+      if (_queued + end - start > channelWindow) break;
+      last = _enqueue(data, start, end);
+      start = end;
+    }
+    if (start == data.length) return last!;
+    last?.ignore();
+    _waiting++;
+    final flushed = Completer<void>();
+    _admission = _admission.then((_) => _admit(data, start, flushed));
+    return flushed.future;
+  }
+
+  /// Queues [data] from [from] a window at a time, each part once there is
+  /// room for it. Completes when all of it is queued; [flushed] follows the
+  /// last part.
+  Future<void> _admit(List<int> data, int from, Completer<void> flushed) async {
+    try {
+      Future<void>? last;
+      for (var start = from; start < data.length; start += channelWindow) {
+        final end = math.min(start + channelWindow, data.length);
+        while (!_closed && _queued + end - start > channelWindow) {
+          await (_space ??= Completer<void>()).future;
+        }
+        if (_closed) throw ChannelClosedException(id);
+        last = _enqueue(data, start, end)..ignore();
+      }
+      flushed.complete(last);
+    } on Object catch (e, s) {
+      flushed.completeError(e, s);
+    } finally {
+      _waiting--;
+    }
+  }
+
+  Future<void> _enqueue(List<int> data, int start, int end) {
+    final bytes = Uint8List(end - start)..setRange(0, end - start, data, start);
+    final chunk = _Chunk(bytes);
     _chunks.add(chunk);
+    _queued += bytes.length;
     _writer._kick();
     return chunk.done.future;
+  }
+
+  /// [bytes] of the queue went on the wire.
+  void _sent(int bytes) {
+    _queued -= bytes;
+    final space = _space;
+    _space = null;
+    space?.complete();
   }
 
   /// Adds receiver credit.
@@ -63,6 +125,9 @@ class ChannelWriter {
 
   void _close() {
     _closed = true;
+    _queued = 0;
+    _space?.complete();
+    _space = null;
     for (final chunk in _chunks) {
       chunk.done.completeError(ChannelClosedException(id));
     }
@@ -241,6 +306,7 @@ class FairWriter {
       );
       chunk.offset += size;
       channel._credit -= size;
+      channel._sent(size);
       _cursor = index + 1;
       if (chunk.remaining > 0) return (frame, null);
       channel._chunks.removeFirst();

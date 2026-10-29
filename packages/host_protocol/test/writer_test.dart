@@ -88,6 +88,26 @@ void main() {
     expect(sink.frames.last.payload.length, 100);
   });
 
+  test('a channel holds at most its window of unsent bytes', () async {
+    sink.blocking = false;
+    final channel = writer.openChannel(1); // no credit yet
+    final big = Uint8List.fromList([
+      for (var i = 0; i < 4 * channelWindow; i++) i % 251,
+    ]);
+    final done = [
+      channel.write(big),
+      channel.write(Uint8List.fromList([7, 8, 9])),
+    ];
+    await settle();
+    expect(channel.queuedBytes, channelWindow);
+
+    channel.grant(5 * channelWindow);
+    await Future.wait(done);
+
+    expect(channel.queuedBytes, 0);
+    expect([for (final f in sink.frames) ...f.payload], [...big, 7, 8, 9]);
+  });
+
   test('control past 4 MiB marks the peer lost', () {
     for (var i = 0; i < 8 && fatal.isEmpty; i++) {
       writer.sendControl(Uint8List(maxControlMessage));
