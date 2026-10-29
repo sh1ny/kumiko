@@ -27,6 +27,9 @@ class HostFaults {
   /// deadline.
   bool get terminateHangs => _active.contains(TestFault.terminateHangs);
 
+  /// Writing a profile or the default profile fails.
+  bool get profileWriteFails => _active.contains(TestFault.profileWriteFails);
+
   /// Saving the Personal layout fails.
   bool get layoutSaveFails => _active.contains(TestFault.layoutSaveFails);
 

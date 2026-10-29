@@ -33,7 +33,7 @@ void main() {
     addTearDown(store.close);
 
     expect(store.userVersion, currentSchemaVersion);
-    expect(currentSchemaVersion, 2);
+    expect(currentSchemaVersion, 3);
     expect(store.pragma('journal_mode'), 'wal');
     expect(store.pragma('synchronous'), 2); // FULL
     final tables = store
@@ -42,7 +42,14 @@ void main() {
         .toSet();
     expect(
       tables,
-      containsAll(<String>['host_instance', 'unit', 'workspace', 'working_set']),
+      containsAll(<String>[
+        'host_instance',
+        'unit',
+        'workspace',
+        'working_set',
+        'shell_profile',
+        'setting',
+      ]),
     );
     expect(dbFile().existsSync(), isTrue);
   });
@@ -124,13 +131,13 @@ void main() {
       () => Store.open(profile, lock, migrations: steps),
       throwsA(
         isA<StoreMigrationFailed>()
-            .having((e) => e.fromVersion, 'from', 3)
-            .having((e) => e.toVersion, 'to', 4),
+            .having((e) => e.fromVersion, 'from', 4)
+            .having((e) => e.toVersion, 'to', 5),
       ),
     );
     final db = sqlite3.open(dbFile().path);
     addTearDown(db.close);
-    expect(db.select('PRAGMA user_version').single.values.first, 3);
+    expect(db.select('PRAGMA user_version').single.values.first, 4);
   });
 
   test('newer user_version is refused unchanged', () {
@@ -147,7 +154,7 @@ void main() {
         isA<StoreNewer>()
             .having((e) => e.code, 'code', 'store-newer')
             .having((e) => e.storeVersion, 'store', 5)
-            .having((e) => e.supportedVersion, 'supported', 2),
+            .having((e) => e.supportedVersion, 'supported', 3),
       ),
     );
 
@@ -173,7 +180,7 @@ void main() {
     expect(names(), namesBefore);
   });
 
-  test('v1 store with ledger rows migrates to v2 keeping every row', () {
+  test('v1 store with ledger rows migrates forward keeping every row', () {
     Store.open(
         profile,
         lock,
@@ -193,7 +200,7 @@ void main() {
 
     final store = Store.open(profile, lock);
     addTearDown(store.close);
-    expect(store.userVersion, 2);
+    expect(store.userVersion, currentSchemaVersion);
     expect(
       store
           .select('SELECT containment_id FROM unit ORDER BY 1')
@@ -213,6 +220,70 @@ void main() {
       store.select('PRAGMA table_info(workspace)').map((r) => r['name']),
       ['id', 'path', 'identity', 'label', 'added_at'],
     );
+  });
+
+  test('v2 store migrates to v3 keeping the ledger and the layout', () {
+    final v2 = schemaMigrations.take(2).toList();
+    Store.open(profile, lock, migrations: v2)
+      ..execute(
+        "INSERT INTO host_instance(id, host_pid, host_started_at, os,"
+        " opened_at, closed_cleanly) VALUES (3, 1, 'a', 'x', 'a', 0)",
+      )
+      ..execute("INSERT INTO workspace VALUES ('w1', '/p', 'i', 'l', 'a')")
+      ..execute("UPDATE working_set SET layout = '{}', revision = 4")
+      ..close();
+
+    final store = Store.open(profile, lock);
+    addTearDown(store.close);
+
+    expect(store.userVersion, 3);
+    expect(store.select('SELECT id FROM host_instance').single['id'], 3);
+    expect(store.select('SELECT id FROM workspace').single['id'], 'w1');
+    final ws = store.select('SELECT layout, revision FROM working_set').single;
+    expect(ws['layout'], '{}');
+    expect(ws['revision'], 4);
+    expect(
+      store.select('PRAGMA table_info(shell_profile)').map((r) => r['name']),
+      [
+        'id',
+        'name',
+        'executable',
+        'args_json',
+        'cwd',
+        'env_json',
+        'created_at',
+        'updated_at',
+      ],
+    );
+    final pk = store
+        .select('PRAGMA table_info(shell_profile)')
+        .where((r) => r['pk'] == 1)
+        .map((r) => r['name']);
+    expect(pk, ['id']);
+    expect(
+      store.select('PRAGMA table_info(setting)').map((r) => r['name']),
+      ['key', 'value'],
+    );
+    expect(store.select('SELECT * FROM shell_profile'), isEmpty);
+    expect(store.select('SELECT * FROM setting'), isEmpty);
+  });
+
+  test('a store newer than v3 is refused unchanged', () {
+    Store.open(profile, lock).close();
+    final db = sqlite3.open(dbFile().path)
+      ..execute('PRAGMA user_version = 4')
+      ..close();
+    final before = dbFile().readAsBytesSync();
+    expect(
+      () => Store.open(profile, lock),
+      throwsA(
+        isA<StoreNewer>()
+            .having((e) => e.storeVersion, 'store', 4)
+            .having((e) => e.supportedVersion, 'supported', 3),
+      ),
+    );
+    expect(dbFile().readAsBytesSync(), before);
+    expect(db, isNotNull);
   });
 
   test('workspace path is unique and working_set kind is checked', () {

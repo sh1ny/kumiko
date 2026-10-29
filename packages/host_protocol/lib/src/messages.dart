@@ -1,5 +1,13 @@
 import 'dart:convert';
 
+import 'package:domain/domain.dart'
+    show maxProfileArgBytes, maxProfileArgs, maxProfileBytes, maxProfileEnv;
+
+/// The profile bounds are owned by `domain` (design D6); the wire parse and
+/// the host's validation use the same constants.
+export 'package:domain/domain.dart'
+    show maxProfileArgBytes, maxProfileArgs, maxProfileBytes, maxProfileEnv;
+
 /// Every wire message of the protocol, hand-written, used by both sides
 /// (design D5, D8, D10). Parsing failures throw [RpcException] with
 /// [ErrorCode.invalidParams].
@@ -956,12 +964,6 @@ class WorkspaceChanged {
 const int maxTerminalCols = 1000;
 const int maxTerminalRows = 500;
 
-/// Bounds of one profile (design Resource Bounds).
-const int maxProfileArgs = 256;
-const int maxProfileArgBytes = 4096;
-const int maxProfileEnv = 128;
-const int maxProfileBytes = 64 * 1024;
-
 /// `spawn-failed`: the PTY setup or exec failed at [stage] with the operating
 /// system error [osError].
 RpcException spawnFailed(String stage, int osError, [String message = '']) =>
@@ -1327,6 +1329,7 @@ enum TestFault {
   layoutSaveFails,
   layoutSaveHangs,
   pendingWriteFails,
+  profileWriteFails,
   runningWriteFails,
   terminateHangs,
 }

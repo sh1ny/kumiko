@@ -9,7 +9,7 @@ import 'store_error.dart';
 /// with the `user_version` bump.
 typedef MigrationStep = void Function(Database db);
 
-/// Schema v1 (design D4) and v2 (design D3).
+/// Schema v1 (design D4), v2 (design D3) and v3 (host-terminals design D6).
 final List<MigrationStep> schemaMigrations = <MigrationStep>[
   (db) {
     db.execute('''
@@ -63,6 +63,27 @@ CREATE TABLE working_set(
       " updated_at) VALUES ('personal', 'personal', NULL, NULL, 0,"
       " strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))",
     );
+  },
+  // v3 (host-terminals D6): user shell profiles and the settings table that
+  // holds `default_profile`. Detected built-ins are never stored. The ledger
+  // and layout tables are untouched.
+  (db) {
+    db.execute('''
+CREATE TABLE shell_profile(
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  executable TEXT NOT NULL,
+  args_json TEXT NOT NULL,
+  cwd TEXT,
+  env_json TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+)''');
+    db.execute('''
+CREATE TABLE setting(
+  key TEXT PRIMARY KEY,
+  value TEXT NOT NULL
+)''');
   },
 ];
 

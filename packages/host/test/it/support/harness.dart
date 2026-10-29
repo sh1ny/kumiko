@@ -22,6 +22,7 @@ const String fixtureReportSuffix = '.out';
 
 const Set<String> testCapabilities = {
   Capability.workbench,
+  Capability.terminal,
   Capability.testUnits,
   Capability.testChannels,
   Capability.testFaults,
@@ -150,6 +151,14 @@ class LedgerView {
 
   List<Map<String, Object?>> workspaces() =>
       _select('SELECT * FROM workspace ORDER BY rowid');
+
+  List<Map<String, Object?>> profiles() =>
+      _select('SELECT * FROM shell_profile ORDER BY rowid');
+
+  Map<String, String> settings() => {
+    for (final r in _select('SELECT key, value FROM setting'))
+      r['key']! as String: r['value']! as String,
+  };
 
   List<Map<String, Object?>> instances() =>
       _select('SELECT * FROM host_instance ORDER BY id');
@@ -283,6 +292,22 @@ class Desktop {
           WorkbenchSaveParams(layout: layout, revision: revision).toJson(),
         ),
       );
+
+  // --- profiles ----------------------------------------------------------
+
+  Future<ProfileListResult> listProfiles() async =>
+      ProfileListResult.fromJson(await _call(Method.profileList, {}));
+
+  Future<ShellProfile> saveProfile(ShellProfile profile) async =>
+      ProfileSaveResult.fromJson(
+        await _call(Method.profileSave, ProfileSaveParams(profile).toJson()),
+      ).profile;
+
+  Future<void> removeProfile(String id) =>
+      _call(Method.profileRemove, ProfileRemoveParams(id).toJson());
+
+  Future<void> setDefaultProfile(String id) =>
+      _call(Method.profileSetDefault, ProfileSetDefaultParams(id).toJson());
 
   Future<void> resolveFault(String path, {int? delayMs, bool hang = false}) =>
       _call(

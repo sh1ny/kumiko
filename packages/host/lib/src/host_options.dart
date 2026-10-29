@@ -8,6 +8,8 @@ class HostOptions {
     this.retryDelay = Duration.zero,
     this.workspaceCap = defaultWorkspaceCap,
     this.resolveTimeout = defaultResolveTimeout,
+    this.shellSearchPath,
+    this.shellWellKnownDirs,
   });
 
   /// Concurrent units per host (design D4, Resource Bounds).
@@ -29,6 +31,13 @@ class HostOptions {
   final int workspaceCap;
   final Duration resolveTimeout;
   final Duration shutdownDeadline;
+
+  /// The directories shell detection searches instead of `PATH` (tests only).
+  final List<String>? shellSearchPath;
+
+  /// The install locations shell detection searches after the path; empty
+  /// disables them (tests only).
+  final List<String>? shellWellKnownDirs;
 
   /// Extra wait at the start of reconciliation (tests only).
   final Duration reconcileDelay;

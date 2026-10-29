@@ -7,3 +7,4 @@ export 'src/layout/bounds.dart';
 export 'src/layout/codec.dart';
 export 'src/layout/model.dart';
 export 'src/layout/operations.dart';
+export 'src/profile/profile.dart';

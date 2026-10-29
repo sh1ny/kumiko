@@ -8,6 +8,7 @@ import 'package:host_protocol/host_protocol.dart';
 import '../host_extension.dart';
 import '../host_faults.dart';
 import '../host_options.dart';
+import '../profiles/shell_detector.dart' show splitSearchPath;
 import 'fixtures.dart';
 
 /// The test build's registrations (design D10): the `test.*` capabilities,
@@ -20,6 +21,9 @@ class TestHostExtension implements HostExtension {
   /// Options from `KUMIKO_TEST_*` variables, which make timing deterministic:
   /// `UNIT_CAP`, `RECONCILE_DELAY_MS`, `RETRY_DELAY_MS`,
   /// `SHUTDOWN_DEADLINE_MS`, `WORKSPACE_CAP`, `RESOLVE_TIMEOUT_MS`.
+  /// `KUMIKO_TEST_SHELL_PATH` replaces `PATH` for shell detection (entries
+  /// split by the platform's path separator) and switches the well-known
+  /// install locations off; `KUMIKO_TEST_SHELL_DIRS` lists them instead.
   factory TestHostExtension.fromEnvironment(Map<String, String> env) {
     int? number(String name) => int.tryParse(env['KUMIKO_TEST_$name'] ?? '');
     Duration? millis(String name) {
@@ -27,8 +31,16 @@ class TestHostExtension implements HostExtension {
       return n == null ? null : Duration(milliseconds: n);
     }
 
+    final separator = Platform.isWindows ? ';' : ':';
+    final shellPath = env['KUMIKO_TEST_SHELL_PATH'];
     return TestHostExtension(
       options: HostOptions(
+        shellSearchPath: shellPath == null
+            ? null
+            : splitSearchPath(shellPath, separator),
+        shellWellKnownDirs: shellPath == null
+            ? null
+            : splitSearchPath(env['KUMIKO_TEST_SHELL_DIRS'] ?? '', separator),
         unitCap: number('UNIT_CAP') ?? HostOptions.defaultUnitCap,
         shutdownDeadline:
             millis('SHUTDOWN_DEADLINE_MS') ??

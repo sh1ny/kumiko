@@ -10,6 +10,7 @@ import 'host_faults.dart';
 import 'host_log.dart';
 import 'host_options.dart';
 import 'ledger.dart';
+import 'profiles/profile_service.dart';
 import 'profile_lock.dart';
 import 'settler.dart';
 import 'store/store.dart';
@@ -74,6 +75,7 @@ class Host {
   CleanupService? _cleanup;
   WorkspaceService? _workspaces;
   WorkbenchService? _workbench;
+  ProfileService? _profiles;
   bool _stopping = false;
 
   /// Runs until the desktop goes away; returns the exit code.
@@ -84,7 +86,11 @@ class Host {
       // Non-blocking: a desktop that stops reading must not block the isolate
       // in a write, or the host could neither notice nor shut down.
       output: IOSinkAdapter(stdout.nonBlocking),
-      capabilities: {Capability.workbench, ...?extension?.capabilities},
+      capabilities: {
+        Capability.workbench,
+        Capability.terminal,
+        ...?extension?.capabilities,
+      },
       onHello: _onHello,
       onRequest: _onRequest,
     );
@@ -214,6 +220,12 @@ class Host {
       ),
       notify: _connection.notify,
     );
+    _profiles = ProfileService(
+      store: store,
+      log: log,
+      faults: faults,
+      options: options,
+    );
     _workbench = WorkbenchService(
       store: store,
       ledger: ledger,
@@ -272,6 +284,19 @@ class Host {
       case Method.workspaceRemove:
         final p = WorkspaceRemoveParams.fromJson(params);
         return _workbench!.removeWorkspace(p.id).toJson();
+    }
+    switch (method) {
+      case Method.profileList:
+        return (await _profiles!.list()).toJson();
+      case Method.profileSave:
+        final p = ProfileSaveParams.fromJson(params);
+        return (await _profiles!.save(p)).toJson();
+      case Method.profileRemove:
+        await _profiles!.remove(ProfileRemoveParams.fromJson(params));
+        return <String, Object?>{};
+      case Method.profileSetDefault:
+        await _profiles!.setDefault(ProfileSetDefaultParams.fromJson(params));
+        return <String, Object?>{};
     }
     if (method.startsWith('test/') && extension != null) {
       return extension!.handle(
