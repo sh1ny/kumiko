@@ -58,7 +58,7 @@ Mechanical checks (no scenario row): `dart analyze --fatal-infos` / `flutter ana
 
 ## 1. ADR and architecture
 
-- [ ] 1.1 Write `docs/adr/0009-workbench-layout-document.md` (Status: accepted, today's date) recording design D1, D7 and D10: a desktop-authored snapshot validated by the host, the `format` version converted only by store migrations, the tab shape (`kind`, immutable `workspace`, `item`, `state` ≤ 4 KiB), unknown-kind passthrough, and revision-guarded saves. Add its row to the in-force index in `openspec/architecture.md`, the new resource-bound rows (layout document, groups and tabs, workspaces, resolver slots and timeout, save debounce, dirty age and deadline), and the layout detail in the state-ownership row. Verify: the files render and the index lists 0009.
+- [x] 1.1 Write `docs/adr/0009-workbench-layout-document.md` (Status: accepted, today's date) recording design D1, D7 and D10: a desktop-authored snapshot validated by the host, the `format` version converted only by store migrations, the tab shape (`kind`, immutable `workspace`, `item`, `state` ≤ 4 KiB), unknown-kind passthrough, and revision-guarded saves. Add its row to the in-force index in `openspec/architecture.md`, the new resource-bound rows (layout document, groups and tabs, workspaces, resolver slots and timeout, save debounce, dirty age and deadline), and the layout detail in the state-ownership row. Verify: the files render and the index lists 0009.
 
 ## 2. Layout model in `domain`
 
