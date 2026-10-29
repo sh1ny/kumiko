@@ -35,6 +35,38 @@ void main() {
     await input.close();
   });
 
+  test('credit returns only for bytes the consumer took', () async {
+    final input = StreamController<List<int>>();
+    final output = RecordingSink();
+    final connection = Connection(input: input.stream, output: output);
+    final received = <int>[];
+    late StreamSubscription<Uint8List> subscription;
+    subscription = connection.attachInbound(1).listen((bytes) {
+      received.add(bytes.length);
+      subscription.pause(); // the consumer stops at its first callback
+    });
+
+    // The whole window arrives in one read.
+    input.add([
+      for (var i = 0; i < channelWindow ~/ maxFramePayload; i++)
+        ...encodeFrame(1, FrameKind.data, _bytes(maxFramePayload, i)),
+    ]);
+    await settle();
+
+    expect(received, [maxFramePayload]);
+    expect(
+      output.frames.where((f) => f.kind == FrameKind.credit),
+      hasLength(1),
+      reason: 'only the opening grant: the consumer took one frame',
+    );
+
+    subscription.resume();
+    await settle();
+    expect(received, hasLength(2));
+    await connection.close();
+    await input.close();
+  });
+
   test('data on a never-opened channel is a violation', () async {
     final input = StreamController<List<int>>();
     final connection = Connection(input: input.stream, output: RecordingSink());

@@ -51,7 +51,11 @@ class _Pending {
 
 class _Inbound {
   _Inbound(this.id, this._connection) {
+    // Synchronous, so each add reaches the consumer at once: a consumer that
+    // pauses in its callback stops the loop in [pump] before more bytes are
+    // handed over or credit is returned for bytes it has not taken.
     controller = StreamController<Uint8List>(
+      sync: true,
       onListen: pump,
       onResume: pump,
       onCancel: () => _connection._dropInbound(id),
@@ -82,7 +86,8 @@ class _Inbound {
   }
 
   /// Hands queued data to the consumer while it is listening and not paused,
-  /// and tops the credit up once it has taken half the window.
+  /// and tops the credit up once it has taken half the window. Bytes not yet
+  /// taken stay in [_queue], within the window granted.
   void pump() {
     while (_queue.isNotEmpty && !controller.isClosed && !controller.isPaused) {
       final bytes = _queue.removeFirst();
