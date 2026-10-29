@@ -74,7 +74,11 @@ class WorkbenchController extends ChangeNotifier {
 
   List<WorkspaceRecord> _workspaces = const [];
   final Map<String, int> _seq = {};
-  int _cleanupApplied = 0;
+  /// Per workspace: the `cleanupRevision` its cleanup fields were applied at.
+  final Map<String, int> _cleanupOf = {};
+
+  /// The `cleanupRevision` of the newest whole list applied (load or list).
+  int _listApplied = 0;
   int _latestStateRevision = 0;
   int _listRequested = 0;
   bool _listing = false;
@@ -147,7 +151,12 @@ class WorkbenchController extends ChangeNotifier {
     _seq
       ..clear()
       ..addEntries(result.workspaces.map((w) => MapEntry(w.id, w.seq)));
-    _cleanupApplied = result.cleanupRevision;
+    _cleanupOf
+      ..clear()
+      ..addEntries(
+        result.workspaces.map((w) => MapEntry(w.id, result.cleanupRevision)),
+      );
+    _listApplied = result.cleanupRevision;
     // A `cleanup/state` that arrived while the load was out may be newer.
     _latestStateRevision = max(_latestStateRevision, result.cleanupRevision);
     _listLoaded = true;
@@ -185,7 +194,7 @@ class WorkbenchController extends ChangeNotifier {
       }
     }
     notifyListeners();
-    if (_latestStateRevision > _cleanupApplied) unawaited(_refreshList());
+    if (_latestStateRevision > _listApplied) unawaited(_refreshList());
   }
 
   /// The host is gone: keep the layout, forget the link.
@@ -302,6 +311,7 @@ class WorkbenchController extends ChangeNotifier {
     if (d == null || kind == null) return;
     final group = d.group(groupId);
     if (group == null) return;
+    if (kind.needsWorkspace && _beingRemoved(group.context)) return;
     _commit(
       d.openOrFocus(
         groupId,
@@ -317,8 +327,17 @@ class WorkbenchController extends ChangeNotifier {
   /// set the focused group's context.
   void selectWorkspace(String id) {
     final d = _layout;
-    if (d == null) return;
+    if (d == null || _beingRemoved(id)) return;
     _setLayout(d.selectWorkspace(id));
+  }
+
+  /// A remove of [id] is out: nothing new may bind to it until it answers,
+  /// since the host decides from the layout it already stored.
+  bool _beingRemoved(String? id) {
+    if (id == null || !_removing.contains(id)) return false;
+    _message = 'The workspace is being removed.';
+    notifyListeners();
+    return true;
   }
 
   void dismissMessage() {
@@ -360,7 +379,6 @@ class WorkbenchController extends ChangeNotifier {
       final result = await link.workspaceOpen(path);
       if (_stale(generation)) return;
       _applyRecord(result.workspace, result.cleanupRevision, add: true);
-      _noteCleanupRevision(result.cleanupRevision);
       if (groupId != null) focusGroup(groupId);
       selectWorkspace(result.workspace.id);
     } on RpcException catch (e) {
@@ -384,7 +402,6 @@ class WorkbenchController extends ChangeNotifier {
       final result = await link.workspaceCheck(id);
       if (_stale(generation)) return;
       _applyRecord(result.workspace, result.cleanupRevision);
-      _noteCleanupRevision(result.cleanupRevision);
       notifyListeners();
     } on RpcException catch (e) {
       if (_stale(generation)) return;
@@ -418,6 +435,7 @@ class WorkbenchController extends ChangeNotifier {
           if (w.id != id) w,
       ];
       _seq.remove(id);
+      _cleanupOf.remove(id);
       _removed.add(id);
       _saver.raiseCounter(result.revision);
       _setLayout(_layout!.clearContext(id));
@@ -449,7 +467,8 @@ class WorkbenchController extends ChangeNotifier {
   /// Identity and availability apply only when [record]'s `seq` is above the
   /// last applied for its id and the id is listed ([add] lists a new one);
   /// the cleanup fields apply when [cleanupRevision] is not older than the
-  /// last applied.
+  /// last applied for that id. A one-workspace notification therefore never
+  /// makes a whole list taken just before it stale for the others.
   void _applyRecord(
     WorkspaceRecord record,
     int cleanupRevision, {
@@ -460,11 +479,12 @@ class WorkbenchController extends ChangeNotifier {
       if (!add || _removed.contains(record.id)) return;
       _workspaces = [..._workspaces, record];
       _seq[record.id] = record.seq;
+      _cleanupOf[record.id] = cleanupRevision;
       return;
     }
     final current = _workspaces[i];
     final newer = record.seq > (_seq[record.id] ?? -1);
-    final cleanupFresh = cleanupRevision >= _cleanupApplied;
+    final cleanupFresh = cleanupRevision >= (_cleanupOf[record.id] ?? -1);
     if (!newer && !cleanupFresh) return;
     final identity = newer ? record : current;
     final merged = WorkspaceRecord(
@@ -478,17 +498,13 @@ class WorkbenchController extends ChangeNotifier {
       cleanup: cleanupFresh ? record.cleanup : current.cleanup,
     );
     if (newer) _seq[record.id] = record.seq;
+    if (cleanupFresh) _cleanupOf[record.id] = cleanupRevision;
     _workspaces = [..._workspaces]..[i] = merged;
-  }
-
-  void _noteCleanupRevision(int revision) {
-    if (revision > _cleanupApplied) _cleanupApplied = revision;
   }
 
   void _onWorkspaceChanged(WorkspaceChanged e) {
     if (_disposed) return;
     _applyRecord(e.workspace, e.cleanupRevision);
-    _noteCleanupRevision(e.cleanupRevision);
     notifyListeners();
   }
 
@@ -497,7 +513,7 @@ class WorkbenchController extends ChangeNotifier {
     _reconciling = s.reconciling;
     if (s.revision > _latestStateRevision) _latestStateRevision = s.revision;
     notifyListeners();
-    if (_listLoaded && s.revision > _cleanupApplied) {
+    if (_listLoaded && s.revision > _listApplied) {
       unawaited(_refreshList());
     }
   }
@@ -509,7 +525,7 @@ class WorkbenchController extends ChangeNotifier {
     _listing = true;
     final generation = _generation;
     try {
-      while (_latestStateRevision > _cleanupApplied &&
+      while (_latestStateRevision > _listApplied &&
           _latestStateRevision > _listRequested) {
         _listRequested = _latestStateRevision;
         final link = _link;
@@ -520,7 +536,7 @@ class WorkbenchController extends ChangeNotifier {
           for (final w in result.workspaces) {
             _applyRecord(w, result.cleanupRevision, add: true);
           }
-          _noteCleanupRevision(result.cleanupRevision);
+          _listApplied = max(_listApplied, result.cleanupRevision);
           notifyListeners();
         } on RpcException {
           // The next revision asks again.

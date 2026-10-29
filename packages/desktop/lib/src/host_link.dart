@@ -11,7 +11,8 @@ abstract interface class HostLink {
   /// protocol. Never completes after [quit].
   Future<HostLoss> get lost;
 
-  /// The `cleanup/state` notifications (design D5).
+  /// The `cleanup/state` notifications (design D5). Each listener first
+  /// receives the newest state already seen, if any.
   Stream<CleanupState> get cleanupStates;
 
   /// `cleanup/list`. [revision] is the one the caller last saw; [workspace]

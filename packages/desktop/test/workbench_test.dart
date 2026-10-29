@@ -871,6 +871,74 @@ void main() {
       expect(c.workspace('A'), isNotNull);
     });
 
+    uiTest('one workspace notification does not reject a list for others', (
+      tester,
+    ) async {
+      final link = linkWith(
+        null,
+        records: [
+          workspaceRecord('A', cleanupGroups: 2),
+          workspaceRecord('B', cleanupGroups: 2),
+        ],
+      );
+      final c = await pumpWorkbench(tester, link);
+
+      // A list taken at cleanup revision 2, held.
+      link.listAnswers.add(
+        WorkspaceListResult(
+          workspaces: [workspaceRecord('A'), workspaceRecord('B')],
+          cleanupRevision: 2,
+        ),
+      );
+      link.listGate = Completer<void>();
+      link.revision = 2;
+      link.emitState();
+      await tester.pump();
+      expect(link.calls.last, 'workspace/list');
+
+      // A's own record at revision 3 arrives first.
+      link.emitWorkspaceChanged(workspaceRecord('A'), cleanupRevision: 3);
+      await tester.pump();
+      link.listGate!.complete();
+      await tester.pump();
+      await tester.pump();
+
+      expect(c.workspace('A')!.cleanup.groups, 0);
+      expect(c.workspace('B')!.cleanup.groups, 0, reason: 'B is not stale');
+      expect(key('badge-B'), findsNothing);
+    });
+
+    uiTest('no new binding to a workspace while its remove is out', (
+      tester,
+    ) async {
+      final layout = twoGroups(
+        groupOf('g1', ctx: 'C'),
+        groupOf('g2'),
+      );
+      final link = linkWith(layout, records: [workspaceRecord('C')]);
+      link.removeGate = Completer<void>();
+      final c = await pumpWorkbench(tester, link);
+
+      await tester.tap(key('remove-C'));
+      await tester.pump();
+      expect(link.calls.last, 'workspace/remove C');
+
+      c.openView('g1', workspaceOverviewKind);
+      c.focusGroup('g2');
+      c.selectWorkspace('C');
+      await tester.pump();
+      expect(c.layout!.tabCount, 0);
+      expect(c.layout!.group('g2')!.context, isNull);
+      expect(find.textContaining('being removed'), findsOneWidget);
+
+      link.removeGate!.complete();
+      await tester.pump();
+      await tester.pump();
+      expect(c.workspace('C'), isNull);
+      expect(c.layout!.boundWorkspaces, isEmpty);
+      await tester.pump(const Duration(seconds: 3));
+    });
+
     uiTest('a cleanup revision received during the load is kept', (
       tester,
     ) async {

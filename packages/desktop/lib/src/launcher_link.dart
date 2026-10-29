@@ -1,14 +1,48 @@
+import 'dart:async';
+
 import 'package:host_protocol/host_protocol.dart';
 
 import 'host_link.dart';
+
+/// `cleanup/state` for several consumers: each listener first receives the
+/// newest state seen so far, then the live ones. The cleanup list and the
+/// workbench attach one after the other; without this, a state that ended
+/// reconciliation before the second listened would never reach it.
+class LatestCleanupState {
+  LatestCleanupState(Stream<CleanupState> source) {
+    source.listen((s) {
+      _latest = s;
+      _live.add(s);
+    }, onDone: () => unawaited(_live.close()));
+  }
+
+  final StreamController<CleanupState> _live =
+      StreamController<CleanupState>.broadcast(sync: true);
+  CleanupState? _latest;
+
+  Stream<CleanupState> get stream => Stream.multi((controller) {
+    if (_latest case final latest?) controller.add(latest);
+    final subscription = _live.stream.listen(
+      controller.add,
+      onDone: controller.close,
+    );
+    controller.onCancel = subscription.cancel;
+  }, isBroadcast: true);
+}
 
 /// The real [HostLink] over a started [HostSession].
 ///
 /// The cleanup wire shapes are the ones in `host_protocol`'s `messages.dart`.
 class SessionLink implements HostLink {
-  SessionLink(this.session);
+  SessionLink(this.session)
+    : _cleanupStates = LatestCleanupState(session.cleanupStates);
 
   final HostSession session;
+
+  /// Listens first, so it also receives the notifications the host sent
+  /// before anyone listened (the session replays those to its first
+  /// listener only).
+  final LatestCleanupState _cleanupStates;
 
   @override
   HelloResult get hello => session.hello;
@@ -17,7 +51,7 @@ class SessionLink implements HostLink {
   Future<HostLoss> get lost => session.lost;
 
   @override
-  Stream<CleanupState> get cleanupStates => session.cleanupStates;
+  Stream<CleanupState> get cleanupStates => _cleanupStates.stream;
 
   @override
   Stream<WorkspaceChanged> get workspaceChanges => session.notifications
