@@ -149,6 +149,16 @@ void main() {
     await settle();
     expect(fatal.single.kind, CloseReason.writeFailed);
   });
+
+  test('a failing flush fails the write it was sending', () async {
+    final w = FairWriter(_FailingSink(), onFatal: fatal.add);
+    final channel = w.openChannel(1)..grant(100);
+    await expectLater(
+      channel.write(Uint8List(100)).timeout(const Duration(seconds: 5)),
+      throwsA(isA<ChannelClosedException>()),
+    );
+    expect(fatal.single.kind, CloseReason.writeFailed);
+  });
 }
 
 class _FailingSink implements ByteSink {

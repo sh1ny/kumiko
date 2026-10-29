@@ -27,17 +27,19 @@ class HostLog {
     int maxBytes = defaultMaxBytes,
   }) {
     final sep = Platform.pathSeparator;
-    final dir = Directory('${profile.path}${sep}logs')
-      ..createSync(recursive: true);
+    final dir = Directory('${profile.path}${sep}logs');
     final file = File('${dir.path}${sep}host.log');
     final rotated = File('${dir.path}${sep}host.log.1');
-    return HostLog._(
-      file,
-      rotated,
-      version,
-      maxBytes,
-      file.existsSync() ? file.lengthSync() : 0,
-    );
+    // Like every write, opening is best-effort: a log that cannot be created
+    // leaves the host running without diagnostics.
+    var size = 0;
+    try {
+      dir.createSync(recursive: true);
+      if (file.existsSync()) size = file.lengthSync();
+    } on FileSystemException {
+      // Diagnostics never take the host down.
+    }
+    return HostLog._(file, rotated, version, maxBytes, size);
   }
 
   /// Appends one event. [ids] holds ids only (`unit`, `instance`, ...).

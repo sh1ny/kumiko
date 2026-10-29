@@ -31,6 +31,17 @@ void main() {
     await desktop.connection.closeChannel(channel.channel);
   });
 
+  test('an unusable log directory does not stop the host', () async {
+    // `logs` is a file, so the diagnostic log cannot be created.
+    File('${profile.path}${Platform.pathSeparator}logs').writeAsStringSync('');
+    final desktop = await Desktop.start(profile);
+    addTearDown(desktop.dispose);
+
+    final state = await desktop.waitState();
+    expect(state.unresolvedWorkspaces, 0);
+    expect(desktop.session.hello.capabilities, testCapabilities);
+  });
+
   test(
     'test methods are refused when the desktop requests no test caps',
     () async {

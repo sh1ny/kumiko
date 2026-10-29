@@ -22,7 +22,8 @@ class ChannelClosedException implements Exception {
 }
 
 class _Chunk {
-  _Chunk(this.bytes);
+  _Chunk(this.channel, this.bytes);
+  final int channel;
   final Uint8List bytes;
   final Completer<void> done = Completer();
   int offset = 0;
@@ -122,7 +123,7 @@ class ChannelWriter {
 
   Future<void> _enqueue(List<int> data, int start, int end) {
     final bytes = Uint8List(end - start)..setRange(0, end - start, data, start);
-    final chunk = _Chunk(bytes);
+    final chunk = _Chunk(id, bytes);
     _chunks.add(chunk);
     _queued += bytes.length;
     _writer._kick();
@@ -285,9 +286,12 @@ class FairWriter {
 
   Future<void> _pump() async {
     _pumping = true;
+    // The chunk whose last frame is being written. It has already left its
+    // channel's queue, so a failed write must fail it here.
+    _Chunk? finished;
     try {
       while (!_dead) {
-        _Chunk? finished;
+        finished = null;
         final Uint8List frame;
         if (_control.isNotEmpty) {
           frame = _control.removeFirst();
@@ -305,6 +309,9 @@ class FairWriter {
         }
       }
     } on Object catch (error) {
+      if (finished != null && !finished.done.isCompleted) {
+        finished.done.completeError(ChannelClosedException(finished.channel));
+      }
       _fatal(CloseReason(CloseReason.writeFailed, '$error'));
     } finally {
       _pumping = false;
