@@ -605,6 +605,7 @@ enum TestFixture { tree, escaper, sleeper, stubborn }
 enum TestFault {
   crashAfterPendingWrite,
   crashAfterSpawnBeforePid,
+  identityReadFails,
   killFails,
   pendingWriteFails,
   runningWriteFails,

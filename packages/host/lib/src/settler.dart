@@ -89,6 +89,20 @@ class Settler {
     };
   }
 
+  /// POSIX: the marker scan for a unit whose spawn failed after its leader
+  /// may have started; null when nothing carrying its marker remains. On
+  /// Windows there is nothing to scan (null).
+  Future<String?> scanFailedSpawn(UnitRow row) async {
+    final table = _table;
+    if (table == null) return null;
+    final scan = await runMarkerScan(
+      table: faults.killFails ? _NoKillTable(table) : table,
+      markers: {row.containmentId},
+      oldestCreatedAt: row.createdAt,
+    );
+    return _scanFailure(scan, row);
+  }
+
   UnitOutcome _outcome(String? reason) => reason == null
       ? const UnitOutcome.cleaned()
       : UnitOutcome.unresolved(reason);

@@ -14,6 +14,10 @@ class HostFaults {
   bool get crashAfterSpawnBeforePid =>
       _active.contains(TestFault.crashAfterSpawnBeforePid);
 
+  /// The spawn fails after the unit started, as when its start time cannot
+  /// be read: after 1 s the leader is killed and the spawn throws.
+  bool get identityReadFails => _active.contains(TestFault.identityReadFails);
+
   /// Every kill the host would send fails.
   bool get killFails => _active.contains(TestFault.killFails);
 

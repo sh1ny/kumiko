@@ -66,6 +66,17 @@ void main() {
     expect(readReports(target), hasLength(reports), reason: 'nothing started');
   });
 
+  test('ending a unit unresolved sends the new cleanup state', () async {
+    final before = await desktop.waitState();
+    expect(before.unresolvedUnits, 0);
+
+    await makeUnresolved(target);
+
+    final after = await desktop.waitState(where: (s) => s.unresolvedUnits == 1);
+    expect(after.unresolvedWorkspaces, 1);
+    expect(after.revision, isNot(before.revision));
+  });
+
   test('other workspace launches normally', () async {
     await makeUnresolved(target);
     final other = Directory(joinPath(root.path, 'Other'))..createSync();

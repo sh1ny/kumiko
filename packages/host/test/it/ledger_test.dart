@@ -105,6 +105,26 @@ void main() {
     await desktop.launch(target, TestFixture.sleeper); // not gated
   });
 
+  test('spawn failing after the leader started settles its marker', () async {
+    final desktop = await Desktop.start(profile);
+    addTearDown(desktop.dispose);
+    await desktop.waitState();
+    // As when the leader's start time cannot be read: the leader is killed
+    // and the spawn fails, after the tree has started its descendants.
+    await desktop.setFault(TestFault.identityReadFails);
+
+    expect(
+      await desktop.launchRefusal(target, TestFixture.tree),
+      ErrorCode.internalError,
+    );
+
+    final reports = await waitReports(target, 3);
+    await expectAllGone(reports);
+    expect(LedgerView(profile).units(), isEmpty);
+    await desktop.setFault(TestFault.identityReadFails, enabled: false);
+    await desktop.launch(target, TestFixture.sleeper); // not gated
+  });
+
   test(
     'crash between spawn and pid write leaves a pending row and a process',
     () async {

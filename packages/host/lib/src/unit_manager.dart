@@ -47,6 +47,10 @@ class UnitManager {
 
   DesktopInfo desktop = const DesktopInfo();
 
+  /// Called when ending units marks one unresolved, so the desktop learns
+  /// the new cleanup state (`cleanup/state`).
+  void Function() onUnresolved = () {};
+
   int _launching = 0;
   final Set<String> _ending = {};
   final Map<String, Future<UnitOutcome>> _endings = {};
@@ -129,8 +133,9 @@ class UnitManager {
       final ContainedUnit unit;
       try {
         unit = await _spawn(id, argv, identity.realPath);
+        if (faults.identityReadFails) await _failIdentity(unit);
       } on Object catch (e) {
-        ledger.delete(id);
+        await _settleFailedSpawn(id, e);
         throw RpcException(ErrorCode.internalError, 'spawn failed: $e');
       }
       if (faults.crashAfterSpawnBeforePid) _crash();
@@ -211,6 +216,39 @@ class UnitManager {
     }
   }
 
+  /// Drops the pending row of a spawn that failed. A failed `Process.start`
+  /// ran nothing. On POSIX any later failure may follow a started leader
+  /// whose descendants outlive it, so the marker scan ends whatever carries
+  /// the unit's marker first; a survivor marks the row unresolved. On
+  /// Windows a failed spawn's job ends with it.
+  Future<void> _settleFailedSpawn(String id, Object error) async {
+    final row = ledger.unit(id);
+    final reason = error is ProcessException || row == null
+        ? null
+        : await settler.scanFailedSpawn(row);
+    if (reason == null) {
+      ledger.delete(id);
+    } else {
+      ledger.markUnresolved(id, reason);
+      onUnresolved();
+    }
+  }
+
+  /// Fails a spawn after the unit started, as `spawnPosixUnit` does when the
+  /// leader's start time cannot be read: the leader is killed, descendants
+  /// it started are not (test faults only). On Windows the unit's job ends
+  /// with the spawn, as it does when `spawnWindowsUnit` fails.
+  Future<Never> _failIdentity(ContainedUnit unit) async {
+    await Future<void>.delayed(const Duration(seconds: 1));
+    if (unit is WindowsUnit) {
+      await unit.terminate();
+      unit.close();
+    } else {
+      Process.killPid(unit.pid, ProcessSignal.sigkill);
+    }
+    throw StateError('injected: start time could not be read');
+  }
+
   /// An abrupt end, as a crash would be (test faults only).
   Never _crash() => exit(86);
 
@@ -246,6 +284,9 @@ class UnitManager {
       final rows = <UnitRow>[for (final id in mine) ?ledger.unit(id)];
       final outcomes = await settler.settle(rows, live: live);
       settler.apply(rows, outcomes, shuttingDown: shuttingDown);
+      if (!shuttingDown && outcomes.values.any((o) => !o.cleaned)) {
+        onUnresolved();
+      }
       for (final row in rows) {
         if (outcomes[row.containmentId]!.cleaned) _release(row.containmentId);
       }

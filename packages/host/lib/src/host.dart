@@ -198,7 +198,7 @@ class Host {
             startTime: params.desktopStartTime,
             outerJobHeld: params.outerJobHeld ?? false,
           );
-    _cleanup = CleanupService(
+    final cleanup = _cleanup = CleanupService(
       ledger: ledger,
       log: log,
       settler: settler,
@@ -206,6 +206,7 @@ class Host {
       options: options,
       notify: _connection.notify,
     )..startReconciliation(params.priorHost);
+    units.onUnresolved = cleanup.sendState;
     log.event(
       'hello',
       ids: {'instance': instance, 'version': negotiated.version},
