@@ -19,7 +19,7 @@ The repository holds planning only: no `pubspec.yaml`, no Dart source and no CI 
 
 Constraints come from the accepted ADRs, not restated here: ADR 0001 (one child host per profile, the lock, containment units, the two-step ledger, the marker scan, the workspace gate, the four packages), ADR 0002 (stdio transport, frames, JSON-RPC on channel 0, `hello`, fair writer, credit, receivers that never block) and ADR 0003 (SQLite, host sole writer under the lock, transactional migrations, the M1 binding probe). Scope and the two user decisions of 2026-10-29 (store core pulled forward; second launch shows a message and exits) are in [proposal.md](proposal.md). Architecture rows this change fills with numbers: "Desktop-host pipe", "Concurrent sessions and terminals", "Host process (whole)", "Local store write or migration", "Host diagnostics" ([architecture.md](../../architecture.md), Resource bounds).
 
-Library facts checked against current docs: `package:sqlite3` bundles a prebuilt SQLite through Dart build hooks by default and can be switched to the OS library with `hooks.user_defines.sqlite3.source: system` (sqlite3.dart `doc/hook.md`). Whether a hook-bundled native library survives `dart compile exe`, or needs `dart build cli` and its `bundle/lib/` layout, is unverified and is the first question of the probe (D11).
+Library facts checked against current docs: `package:sqlite3` bundles a prebuilt SQLite through Dart build hooks by default and can be switched to the OS library with `hooks.user_defines.sqlite3.source: system` (sqlite3.dart `doc/hook.md`). The probe (D11, `tool/probes/sqlite/RESULTS.md`) found that `dart compile exe` refuses any package with build hooks, so the host is built with `dart build cli` (`bundle/bin/` + `bundle/lib/`), and that `dart build cli` does not pass `-D` defines through (amended 2026-10-29, D10).
 
 ## Decisions
 
@@ -116,14 +116,14 @@ Library facts checked against current docs: `package:sqlite3` bundles a prebuilt
 
 ### D10: Test capabilities exist only in test builds
 
-- **Choice:** `const bool.fromEnvironment('kumiko.testHooks')` guards registration of `test.units`, `test.channels` and `test.faults`. Test builds are compiled with `-Dkumiko.testHooks=true`; release builds are compiled without it and tree-shake the code. The methods:
+- **Choice:** The host has two entry points over the same `lib/`. The release entry point `packages/host/bin/kumiko_host.dart` never imports the test-hooks library. The test entry point `packages/host/tool/kumiko_host_test.dart` imports `lib/src/test_hooks/` and passes its registrations (`test.units`, `test.channels`, `test.faults`, and the `--test-fixture` mode) to the shared host `main`. The test host is built with `dart build cli -t tool/kumiko_host_test.dart`, the release host with `dart build cli` on `bin/kumiko_host.dart`. The release executable contains no test code because nothing it compiles imports it. (Amended 2026-10-29: the probe showed `dart build cli` drops `-D` defines, so a `const bool.fromEnvironment` flag cannot select a test build; user decision.) The methods:
   - `test/unit.launch {target, fixture}`, where the fixture is `tree`, `escaper`, `sleeper` or `stubborn` (plus `lock-holder`, started directly by tests, which only holds the profile lock); fixtures are the host executable in `--test-fixture` mode, also test-build only;
   - `test/unit.end`;
   - `test/channel.open {rateBytesPerSec}`;
   - `test/fault.set {crashAfterPendingWrite | crashAfterSpawnBeforePid | killFails | pendingWriteFails}`.
 
   CI runs a contract test against the release executable: `hello` advertises no `test.*` capability and `test/unit.launch` returns method-not-available.
-- **Rejected:** A runtime flag or environment variable. It would ship an arbitrary-spawn method in every build.
+- **Rejected:** A runtime flag or environment variable. It would ship an arbitrary-spawn method in every build. Also rejected: `const bool.fromEnvironment('kumiko.testHooks')` set with `-D` (the probe showed `dart build cli` rejects or drops `-D`, and `dart compile exe` cannot build hook packages), and a generated const file rewritten before each build (fragile when test and release builds run side by side).
 - **Reversal cost:** low.
 
 ### D11: SQLite binding chosen by a probe, recorded as ADR 0008
@@ -134,7 +134,7 @@ Library facts checked against current docs: `package:sqlite3` bundles a prebuilt
   - WAL and `synchronous=FULL` behaviour, including a kill during a write;
   - the licence.
 
-  The result is written as `docs/adr/0008-sqlite-binding-for-the-local-store.md` with its index row. Expected outcome: the bundled mode built with `dart build cli`, shipped as `host/bin/kumiko_host[.exe]` with `host/lib/`. The app bundle always carries the host as a `host/` directory, so either outcome fits one packaging layout.
+  The result is written as `docs/adr/0008-sqlite-binding-for-the-local-store.md` with its index row. Expected outcome: the bundled mode built with `dart build cli`, shipped as `host/bin/kumiko_host[.exe]` with `host/lib/`. The app bundle always carries the host as a `host/` directory, so either outcome fits one packaging layout. The probe confirmed this layout on all three OSes.
 - **Rejected:** Picking the binding without the probe. ADR 0003 item 5 requires the probe.
 - **Reversal cost:** medium before more tables exist (ADR 0003).
 
@@ -337,7 +337,7 @@ flowchart LR
 
 - [macOS denies `KERN_PROCARGS2` for some same-user processes started after a unit, making cleanup always *unresolved*] → The D9 time window shrinks the population. The qualification on CI and on the author's Mac counts unreadable processes. If a normal session still trips it, apply stops and escalates to the user with the observed list before the rule changes.
 - [`execve` from a multithreaded Dart process misbehaves (signal masks, inherited fds)] → An early spike task tests the shim on Linux and macOS. The shim resets the signal mask and closes fds above 2 before `execve`. If it fails, fall back to `posix_spawn` and re-plan with the user.
-- [A hook-bundled SQLite needs `dart build cli`, and a `-D` define may not pass through it] → The probe checks both; the `host/` bundle layout absorbs either. If test hooks cannot be compiled in, the test build uses `dart compile exe` with the system SQLite on CI only, and that is recorded in ADR 0008.
+- [A hook-bundled SQLite needs `dart build cli`, and a `-D` define may not pass through it] → Both held in the probe. The `host/` bundle layout absorbs `dart build cli`, and test hooks come from a separate test entry point instead of a define (D10). The release contract test guards against test code reaching the release host.
 - [fcntl locks fail on network home directories] → Out of scope; the host reports `profile-unavailable` if locking errors.
 - [CI cannot prove "from main" until the user pushes] → The workflow runs on pushes to `main` and on pull requests; the exit criterion is checked at milestone close.
 - [The 250 ms control latency bound is flaky on shared CI runners] → Measured worst case is logged; the bound applies to CI. A flaky run is investigated, never retried green.
@@ -349,4 +349,4 @@ flowchart LR
 
 ## Open Questions
 
-- Exact `dart build cli` versus `dart compile exe` invocation and bundle paths: answered by the probe (D11), with no change to specs or tasks.
+- Exact `dart build cli` versus `dart compile exe` invocation and bundle paths: answered by the probe (D11): `dart build cli`, `bundle/bin/` + `bundle/lib/`. It changed D10 (test entry point instead of `-D`) and the matching task wording, not the specs.

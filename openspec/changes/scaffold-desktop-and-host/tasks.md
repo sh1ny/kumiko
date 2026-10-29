@@ -3,7 +3,7 @@
 ## Test map
 
 Paths are relative to the repository root.
-- `host/it/` = `packages/host/test/integration/`. These tests run the real host executable, built with `-Dkumiko.testHooks=true` unless the row says *release*.
+- `host/it/` = `packages/host/test/integration/`. These tests run the real host executable, built from the test entry point (`dart build cli -t tool/kumiko_host_test.dart`, design D10) unless the row says *release*.
 - `proto/` = `packages/host_protocol/test/`.
 - `pc/` = `packages/process_containment/test/`.
 - `desk/` = `packages/desktop/test/`, widget tests over a scripted connection.
@@ -110,7 +110,7 @@ Paths are relative to the repository root.
 
 - [ ] 7.1 Write failing integration tests `host/it/lock_test.dart`, `handshake_test.dart`, `store_test.dart`, `ledger_test.dart`, `reconcile_test.dart`, `gate_test.dart`, `cleanup_api_test.dart` and `lifecycle_test.dart` for their test-map rows. Add a test helper that builds the test host once per run and a Dart desktop stand-in that uses the 4.4 launcher. Use the test fixtures (`tree`, `escaper`, `sleeper`, `stubborn`, `lock-holder`) and `test/fault.set`. Verify: they fail for missing code.
 - [ ] 7.2 Implement startup: the non-blocking lock on `<profile>/kumiko.lock` (opened once), `profile-locked` and `profile-unavailable` replies, opening the store only after the lock, the `host_instance` row, the `hello` server with version and capability negotiation, and the host log (2 × 4 MiB rotation, minimal fields, written only after the lock). Verify: `lock_test`, `handshake_test` (non-load rows) and `store_test` pass; flip their rows green.
-- [ ] 7.3 Implement the unit lifecycle: the 64-unit cap, identity resolution before the ledger, the gate (identity or exact resolved path), the pending row before spawn and pid and start time after, ending a unit (containment kill, shared marker scan, delete row on cleaned, unresolved with reason otherwise), and the test-only `test/unit.*` methods and fixtures behind `kumiko.testHooks`. Verify: `ledger_test` and `gate_test` pass; flip their rows green.
+- [ ] 7.3 Implement the unit lifecycle: the 64-unit cap, identity resolution before the ledger, the gate (identity or exact resolved path), the pending row before spawn and pid and start time after, ending a unit (containment kill, shared marker scan, delete row on cleaned, unresolved with reason otherwise), and the test-only `test/unit.*` methods and fixtures in `lib/src/test_hooks/`, registered only by the test entry point (D10). Verify: `ledger_test` and `gate_test` pass; flip their rows green.
 - [ ] 7.4 Implement reconciliation after `hello` (D5): refuse with `reconciling` meanwhile; terminate units of earlier instances guarded by pid and start time; the marker scan; the Windows D8 rules (attestation, or recorded desktop gone); the constant-size `cleanup/state`; paged `cleanup/list` and `cleanup/units` with revision and stale flags; `cleanup/retry` and `cleanup/confirm` serialized per workspace, with confirm logging unit ids; cleanup of unreferenced `host_instance` rows. Verify: `reconcile_test` and `cleanup_api_test` pass; flip their rows green.
 - [ ] 7.5 Implement lifetime: stdin EOF or pending control over 4 MiB starts shutdown with the 30 s deadline (parallel termination, shared scans, `shutdown-deadline` reasons, rows kept), then exit; refuse launches unless the Windows outer job is held. Verify: `lifecycle_test` passes on the local OS and in CI on all three; flip its rows green.
 
