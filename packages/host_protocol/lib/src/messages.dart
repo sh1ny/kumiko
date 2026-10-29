@@ -611,6 +611,7 @@ enum TestFault {
   killFails,
   pendingWriteFails,
   runningWriteFails,
+  terminateHangs,
 }
 
 class TestUnitLaunchParams {

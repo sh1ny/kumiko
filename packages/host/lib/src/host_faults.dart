@@ -21,6 +21,10 @@ class HostFaults {
   /// Every kill the host would send fails.
   bool get killFails => _active.contains(TestFault.killFails);
 
+  /// Terminating a running unit never finishes, so ending it outlives any
+  /// deadline.
+  bool get terminateHangs => _active.contains(TestFault.terminateHangs);
+
   void set(TestFault fault, {required bool enabled}) {
     if (enabled) {
       _active.add(fault);

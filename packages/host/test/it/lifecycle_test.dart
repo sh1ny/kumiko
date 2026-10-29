@@ -141,6 +141,36 @@ void main() {
     },
   );
 
+  test(
+    'termination past the deadline keeps the row; the host exits on time',
+    () async {
+      const deadline = Duration(milliseconds: 1500);
+      final desktop = await Desktop.start(
+        profile,
+        environment: {
+          'KUMIKO_TEST_SHUTDOWN_DEADLINE_MS': '${deadline.inMilliseconds}',
+        },
+      );
+      addTearDown(desktop.dispose);
+      await desktop.waitState();
+      final id = await desktop.launch(target, TestFixture.sleeper);
+      await waitReports(target, 1);
+      await desktop.setFault(TestFault.terminateHangs);
+
+      final clock = Stopwatch()..start();
+      final quit = await desktop.session.quit();
+      final took = clock.elapsed;
+
+      expect(quit.timedOut, isFalse, reason: 'the host stops at its deadline');
+      expect(quit.exitCode, 0);
+      expect(took, greaterThanOrEqualTo(deadline), reason: 'it waited');
+      expect(took, lessThan(deadline + const Duration(seconds: 3)));
+      final row = LedgerView(profile).unit(id);
+      expect(row, isNotNull, reason: 'an unconfirmed unit keeps its row');
+      expect(row!['state'], 'running');
+    },
+  );
+
   test('pending control over 4 MiB ends units and exits host', () async {
     // Large cleanup pages for the host to answer.
     await seedUnresolved(

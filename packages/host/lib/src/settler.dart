@@ -127,6 +127,7 @@ class Settler {
     WindowsEvidence evidence,
   ) async {
     if (live != null) {
+      if (faults.terminateHangs) await Completer<void>().future;
       if (faults.killFails) return _faultedTerminate(live);
       final result = await live.unit.terminate();
       return result.terminated ? null : result.reason;
