@@ -27,6 +27,17 @@ abstract final class Method {
   static const String testFaultSet = 'test/fault.set';
   static const String testResolveFault = 'test/resolve.fault';
   static const String testResolveRelease = 'test/resolve.release';
+  static const String profileList = 'profile/list';
+  static const String profileSave = 'profile/save';
+  static const String profileRemove = 'profile/remove';
+  static const String profileSetDefault = 'profile/setDefault';
+  static const String terminalOpen = 'terminal/open';
+  static const String terminalAttach = 'terminal/attach';
+  static const String terminalResize = 'terminal/resize';
+  static const String terminalClose = 'terminal/close';
+  static const String terminalRelease = 'terminal/release';
+  static const String terminalExited = 'terminal/exited';
+  static const String terminalCloseFailed = 'terminal/closeFailed';
 }
 
 abstract final class Capability {
@@ -34,6 +45,7 @@ abstract final class Capability {
   static const String testUnits = 'test.units';
   static const String testChannels = 'test.channels';
   static const String testFaults = 'test.faults';
+  static const String terminal = 'terminal';
 }
 
 /// The capability a method needs; methods not listed need none.
@@ -51,6 +63,15 @@ const Map<String, String> methodCapability = {
   Method.testFaultSet: Capability.testFaults,
   Method.testResolveFault: Capability.testFaults,
   Method.testResolveRelease: Capability.testFaults,
+  Method.profileList: Capability.terminal,
+  Method.profileSave: Capability.terminal,
+  Method.profileRemove: Capability.terminal,
+  Method.profileSetDefault: Capability.terminal,
+  Method.terminalOpen: Capability.terminal,
+  Method.terminalAttach: Capability.terminal,
+  Method.terminalResize: Capability.terminal,
+  Method.terminalClose: Capability.terminal,
+  Method.terminalRelease: Capability.terminal,
 };
 
 /// Error reasons, carried as `error.data.reason`.
@@ -81,6 +102,13 @@ abstract final class ErrorCode {
   static const String workspaceCap = 'workspace-cap';
   static const String workspaceInUse = 'workspace-in-use';
   static const String unknownWorkspace = 'unknown-workspace';
+  static const String channelLimit = 'channel-limit';
+  static const String unknownTerminal = 'unknown-terminal';
+  static const String invalidSize = 'invalid-size';
+  static const String executableNotFound = 'executable-not-found';
+  static const String spawnFailed = 'spawn-failed';
+  static const String notAttached = 'not-attached';
+  static const String consoleCleanupPending = 'console-cleanup-pending';
 
   /// The JSON-RPC numeric code for [reason].
   static int numeric(String reason) => switch (reason) {
@@ -920,6 +948,370 @@ class WorkspaceChanged {
   Json toJson() => {
     'workspace': workspace.toJson(),
     'cleanupRevision': cleanupRevision,
+  };
+}
+
+// --- profile/* and terminal/* --------------------------------------------
+
+const int maxTerminalCols = 1000;
+const int maxTerminalRows = 500;
+
+/// Bounds of one profile (design Resource Bounds).
+const int maxProfileArgs = 256;
+const int maxProfileArgBytes = 4096;
+const int maxProfileEnv = 128;
+const int maxProfileBytes = 64 * 1024;
+
+/// `spawn-failed`: the PTY setup or exec failed at [stage] with the operating
+/// system error [osError].
+RpcException spawnFailed(String stage, int osError, [String message = '']) =>
+    RpcException(ErrorCode.spawnFailed, message, {
+      'stage': stage,
+      'osError': osError,
+    });
+
+/// `executable-not-found`: [executable] does not exist ([osError] is the OS
+/// code when known).
+RpcException executableNotFound(
+  String executable, {
+  int? osError,
+  String message = '',
+}) => RpcException(ErrorCode.executableNotFound, message, {
+  'executable': executable,
+  'osError': ?osError,
+});
+
+/// A launch description: separate arguments, never a command string. Built-in
+/// profiles have an id starting `builtin:` (design D6).
+class ShellProfile {
+  const ShellProfile({
+    required this.id,
+    required this.name,
+    required this.executable,
+    this.args = const [],
+    this.cwd,
+    this.env = const {},
+  });
+
+  factory ShellProfile.fromJson(Json json) {
+    final args = _opt<List<Object?>>(json, 'args') == null
+        ? const <String>[]
+        : _list<String>(json, 'args');
+    if (args.length > maxProfileArgs) {
+      throw RpcException(
+        ErrorCode.invalidParams,
+        'at most $maxProfileArgs arguments',
+      );
+    }
+    for (final a in args) {
+      if (utf8.encode(a).length > maxProfileArgBytes) {
+        throw RpcException(
+          ErrorCode.invalidParams,
+          'an argument exceeds $maxProfileArgBytes bytes',
+        );
+      }
+    }
+    final rawEnv = _opt<Json>(json, 'env') ?? const <String, Object?>{};
+    if (rawEnv.length > maxProfileEnv) {
+      throw RpcException(
+        ErrorCode.invalidParams,
+        'at most $maxProfileEnv environment entries',
+      );
+    }
+    final env = <String, String>{
+      for (final e in rawEnv.entries)
+        e.key: e.value is String
+            ? e.value! as String
+            : throw RpcException(
+                ErrorCode.invalidParams,
+                'environment value of "${e.key}" is not a string',
+              ),
+    };
+    final profile = ShellProfile(
+      id: _req<String>(json, 'id'),
+      name: _req<String>(json, 'name'),
+      executable: _req<String>(json, 'executable'),
+      args: args,
+      cwd: _opt<String>(json, 'cwd'),
+      env: env,
+    );
+    if (utf8.encode(jsonEncode(profile.toJson())).length > maxProfileBytes) {
+      throw RpcException(
+        ErrorCode.invalidParams,
+        'profile exceeds $maxProfileBytes bytes',
+      );
+    }
+    return profile;
+  }
+
+  final String id;
+  final String name;
+  final String executable;
+  final List<String> args;
+  final String? cwd;
+  final Map<String, String> env;
+
+  bool get isBuiltin => id.startsWith('builtin:');
+
+  Json toJson() => {
+    'id': id,
+    'name': name,
+    'executable': executable,
+    'args': args,
+    if (cwd != null) 'cwd': cwd,
+    'env': env,
+  };
+}
+
+/// `profile/list` result: every available profile, the default's id, and
+/// whether that default is available. A default naming a missing profile is
+/// reported with [defaultAvailable] false, never replaced.
+class ProfileListResult {
+  const ProfileListResult({
+    required this.profiles,
+    required this.defaultAvailable,
+    this.defaultId,
+  });
+
+  factory ProfileListResult.fromJson(Json json) => ProfileListResult(
+    profiles: [
+      for (final p in _list<Json>(json, 'profiles')) ShellProfile.fromJson(p),
+    ],
+    defaultId: _opt<String>(json, 'defaultId'),
+    defaultAvailable: _req<bool>(json, 'defaultAvailable'),
+  );
+
+  final List<ShellProfile> profiles;
+  final String? defaultId;
+  final bool defaultAvailable;
+
+  Json toJson() => {
+    'profiles': [for (final p in profiles) p.toJson()],
+    if (defaultId != null) 'defaultId': defaultId,
+    'defaultAvailable': defaultAvailable,
+  };
+}
+
+class ProfileSaveParams {
+  const ProfileSaveParams(this.profile);
+  factory ProfileSaveParams.fromJson(Json json) =>
+      ProfileSaveParams(ShellProfile.fromJson(_req<Json>(json, 'profile')));
+  final ShellProfile profile;
+  Json toJson() => {'profile': profile.toJson()};
+}
+
+class ProfileSaveResult {
+  const ProfileSaveResult(this.profile);
+  factory ProfileSaveResult.fromJson(Json json) =>
+      ProfileSaveResult(ShellProfile.fromJson(_req<Json>(json, 'profile')));
+  final ShellProfile profile;
+  Json toJson() => {'profile': profile.toJson()};
+}
+
+class ProfileRemoveParams {
+  const ProfileRemoveParams(this.id);
+  factory ProfileRemoveParams.fromJson(Json json) =>
+      ProfileRemoveParams(_req<String>(json, 'id'));
+  final String id;
+  Json toJson() => {'id': id};
+}
+
+class ProfileSetDefaultParams {
+  const ProfileSetDefaultParams(this.id);
+  factory ProfileSetDefaultParams.fromJson(Json json) =>
+      ProfileSetDefaultParams(_req<String>(json, 'id'));
+  final String id;
+  Json toJson() => {'id': id};
+}
+
+/// Reads `cols` and `rows`: a missing or non-integer value is `invalid-params`,
+/// a value outside 1..[maxTerminalCols] x 1..[maxTerminalRows] `invalid-size`.
+(int, int) _size(Json json) {
+  final cols = _req<int>(json, 'cols');
+  final rows = _req<int>(json, 'rows');
+  if (cols < 1 ||
+      cols > maxTerminalCols ||
+      rows < 1 ||
+      rows > maxTerminalRows) {
+    throw RpcException(
+      ErrorCode.invalidSize,
+      'size must be 1..$maxTerminalCols columns by 1..$maxTerminalRows rows',
+    );
+  }
+  return (cols, rows);
+}
+
+class TerminalOpenParams {
+  const TerminalOpenParams({
+    required this.profileId,
+    required this.cols,
+    required this.rows,
+    this.workspaceId,
+  });
+
+  factory TerminalOpenParams.fromJson(Json json) {
+    final (cols, rows) = _size(json);
+    return TerminalOpenParams(
+      profileId: _req<String>(json, 'profileId'),
+      workspaceId: _opt<String>(json, 'workspaceId'),
+      cols: cols,
+      rows: rows,
+    );
+  }
+
+  final String profileId;
+  final String? workspaceId;
+  final int cols;
+  final int rows;
+
+  Json toJson() => {
+    'profileId': profileId,
+    if (workspaceId != null) 'workspaceId': workspaceId,
+    'cols': cols,
+    'rows': rows,
+  };
+}
+
+/// The host-allocated ids of a new terminal (design D4). No frame has been
+/// sent on either channel yet.
+class TerminalOpenResult {
+  const TerminalOpenResult({
+    required this.terminalId,
+    required this.outputChannel,
+    required this.inputChannel,
+  });
+
+  factory TerminalOpenResult.fromJson(Json json) => TerminalOpenResult(
+    terminalId: _req<String>(json, 'terminalId'),
+    outputChannel: _req<int>(json, 'outputChannel'),
+    inputChannel: _req<int>(json, 'inputChannel'),
+  );
+
+  final String terminalId;
+
+  /// Host to desktop.
+  final int outputChannel;
+
+  /// Desktop to host.
+  final int inputChannel;
+
+  Json toJson() => {
+    'terminalId': terminalId,
+    'outputChannel': outputChannel,
+    'inputChannel': inputChannel,
+  };
+}
+
+class TerminalAttachParams {
+  const TerminalAttachParams(this.terminalId);
+  factory TerminalAttachParams.fromJson(Json json) =>
+      TerminalAttachParams(_req<String>(json, 'terminalId'));
+  final String terminalId;
+  Json toJson() => {'terminalId': terminalId};
+}
+
+class TerminalResizeParams {
+  const TerminalResizeParams({
+    required this.terminalId,
+    required this.cols,
+    required this.rows,
+  });
+
+  factory TerminalResizeParams.fromJson(Json json) {
+    final (cols, rows) = _size(json);
+    return TerminalResizeParams(
+      terminalId: _req<String>(json, 'terminalId'),
+      cols: cols,
+      rows: rows,
+    );
+  }
+
+  final String terminalId;
+  final int cols;
+  final int rows;
+
+  Json toJson() => {'terminalId': terminalId, 'cols': cols, 'rows': rows};
+}
+
+class TerminalCloseParams {
+  const TerminalCloseParams(this.terminalId);
+  factory TerminalCloseParams.fromJson(Json json) =>
+      TerminalCloseParams(_req<String>(json, 'terminalId'));
+  final String terminalId;
+  Json toJson() => {'terminalId': terminalId};
+}
+
+class TerminalReleaseParams {
+  const TerminalReleaseParams(this.terminalId);
+  factory TerminalReleaseParams.fromJson(Json json) =>
+      TerminalReleaseParams(_req<String>(json, 'terminalId'));
+  final String terminalId;
+  Json toJson() => {'terminalId': terminalId};
+}
+
+enum TerminalExitReason {
+  exited('exited'),
+  closed('closed'),
+  ioError('io-error');
+
+  const TerminalExitReason(this.wire);
+  final String wire;
+}
+
+/// `terminal/exited`: sent after the last output byte and after cleanup is
+/// confirmed. [status] is the exit status when the shell reported one.
+class TerminalExited {
+  const TerminalExited({
+    required this.terminalId,
+    required this.reason,
+    required this.outputComplete,
+    this.status,
+  });
+
+  factory TerminalExited.fromJson(Json json) {
+    final wire = _req<String>(json, 'reason');
+    return TerminalExited(
+      terminalId: _req<String>(json, 'terminalId'),
+      status: _opt<int>(json, 'status'),
+      reason: TerminalExitReason.values.firstWhere(
+        (r) => r.wire == wire,
+        orElse: () => throw RpcException(
+          ErrorCode.invalidParams,
+          'unknown reason "$wire"',
+        ),
+      ),
+      outputComplete: _req<bool>(json, 'outputComplete'),
+    );
+  }
+
+  final String terminalId;
+  final int? status;
+  final TerminalExitReason reason;
+  final bool outputComplete;
+
+  Json toJson() => {
+    'terminalId': terminalId,
+    'status': ?status,
+    'reason': reason.wire,
+    'outputComplete': outputComplete,
+  };
+}
+
+/// `terminal/closeFailed`: cleanup could not be confirmed in time.
+class TerminalCloseFailed {
+  const TerminalCloseFailed({required this.terminalId, required this.reason});
+
+  factory TerminalCloseFailed.fromJson(Json json) => TerminalCloseFailed(
+    terminalId: _req<String>(json, 'terminalId'),
+    reason: _req<String>(json, 'reason'),
+  );
+
+  final String terminalId;
+  final String reason;
+
+  Json toJson() => {
+    'terminalId': terminalId,
+    'reason': clampUtf8(reason, maxReasonBytes),
   };
 }
 

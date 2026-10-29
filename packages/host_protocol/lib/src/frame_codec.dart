@@ -12,8 +12,9 @@ const int maxControlMessage = 1024 * 1024;
 /// Per-channel credit window, granted in full at open.
 const int channelWindow = 256 * 1024;
 
-/// Open data channels per connection.
-const int maxChannels = 32;
+/// Open data channels per connection: two per terminal for the unit cap of
+/// 64, plus room for session channels (design D4).
+const int maxChannels = 160;
 
 /// Pending outbound control bytes per side before the peer counts as lost.
 const int maxPendingControl = 4 * 1024 * 1024;

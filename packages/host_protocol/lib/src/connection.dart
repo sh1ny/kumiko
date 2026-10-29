@@ -43,6 +43,23 @@ typedef HelloHandler = FutureOr<HelloInfo> Function(
   Negotiated negotiated,
 );
 
+/// Channel ids the host allocated ahead of any traffic (design D4). The slots
+/// count against [maxChannels] until an attach consumes an id or [release]
+/// returns the unattached ones.
+class ChannelReservation {
+  ChannelReservation._(this._connection, this.ids);
+
+  final Connection _connection;
+
+  /// The allocated ids, in allocation order. No frame refers to them until the
+  /// peer has attached.
+  final List<int> ids;
+
+  /// Returns every id not yet attached. Safe to repeat; attached channels are
+  /// closed with [Connection.closeChannel], not here.
+  void release() => _connection._releaseReserved(ids);
+}
+
 class _Pending {
   _Pending(this.method);
   final String method;
@@ -151,6 +168,9 @@ class Connection {
   int _inFlight = 0;
   int _highestChannel = 0;
 
+  /// Ids reserved by [reserveChannels] and not yet attached or released.
+  final Set<int> _reserved = {};
+
   /// Every channel id opened or attached on this connection, open or closed
   /// since, so a frame for any other id is a violation (design D6).
   final Set<int> _everOpened = {};
@@ -210,8 +230,15 @@ class Connection {
 
   // --- data channels -----------------------------------------------------
 
+  /// Takes the slot of a reserved [id] when there is one; otherwise checks
+  /// the cap for a new channel.
+  void _claimSlot(int id) {
+    if (!_reserved.remove(id)) _checkCap();
+  }
+
   void _checkCap() {
-    if (_writer.channelCount + _inbound.length >= maxChannels) {
+    if (_writer.channelCount + _inbound.length + _reserved.length >=
+        maxChannels) {
       throw RpcException(
         ErrorCode.channelCap,
         'at most $maxChannels data channels may be open',
@@ -228,15 +255,53 @@ class Connection {
     return _writer.openChannel(_highestChannel);
   }
 
-  /// Starts receiving channel [id] and grants the full window. Data is queued
-  /// (at most the window) until the stream's listener takes it.
-  Stream<Uint8List> attachInbound(int id) {
-    _checkCap();
+  /// Reserves [count] channel slots at once and allocates their ids from this
+  /// side's counter, sending nothing. All or none: when they do not all fit
+  /// under [maxChannels] it throws [RpcException] (`channel-limit`) and takes
+  /// no slot (design D4).
+  ChannelReservation reserveChannels(int count) {
+    if (count < 1) throw ArgumentError.value(count, 'count', 'must be >= 1');
+    if (_writer.channelCount + _inbound.length + _reserved.length + count >
+        maxChannels) {
+      throw RpcException(
+        ErrorCode.channelLimit,
+        'at most $maxChannels data channels may be open',
+      );
+    }
+    final ids = [for (var i = 0; i < count; i++) ++_highestChannel];
+    _reserved.addAll(ids);
+    return ChannelReservation._(this, ids);
+  }
+
+  void _releaseReserved(List<int> ids) => _reserved.removeAll(ids);
+
+  /// Registers channel [id], chosen by the peer or by [reserveChannels], as
+  /// one this side sends on. Nothing is sent until the receiver grants credit.
+  ChannelWriter attachOutbound(int id) {
+    _claimSlot(id);
+    _highestChannel = math.max(_highestChannel, id);
+    _everOpened.add(id);
+    return _writer.openChannel(id);
+  }
+
+  /// Starts receiving channel [id]. By default it grants the full window at
+  /// once; with [grantInitial] false nothing is sent until [grantInitial] is
+  /// called, so a peer can register first. Data is queued (at most the window)
+  /// until the stream's listener takes it.
+  Stream<Uint8List> attachInbound(int id, {bool grantInitial = true}) {
+    _claimSlot(id);
     _highestChannel = math.max(_highestChannel, id);
     _everOpened.add(id);
     final inbound = _inbound[id] = _Inbound(id, this);
-    _writer.sendCredit(id, channelWindow);
+    if (grantInitial) _writer.sendCredit(id, channelWindow);
     return inbound.controller.stream;
+  }
+
+  /// Grants the full window on an inbound channel attached with
+  /// `grantInitial: false`.
+  void grantInitial(int id) {
+    if (!_inbound.containsKey(id)) return;
+    _writer.sendCredit(id, channelWindow);
   }
 
   /// Closes channel [id] here and asks the peer to close it too.
