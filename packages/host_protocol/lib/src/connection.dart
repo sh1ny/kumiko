@@ -145,6 +145,10 @@ class Connection {
   int _nextRequestId = 1;
   int _inFlight = 0;
   int _highestChannel = 0;
+
+  /// Every channel id opened or attached on this connection, open or closed
+  /// since, so a frame for any other id is a violation (design D6).
+  final Set<int> _everOpened = {};
   CloseReason? _reason;
 
   /// Completes (never with an error) when the connection ends, with why.
@@ -215,7 +219,8 @@ class Connection {
   /// [RpcException] (`channel-cap`) beyond the cap.
   ChannelWriter openOutbound() {
     _checkCap();
-    return _writer.openChannel(++_highestChannel);
+    _everOpened.add(++_highestChannel);
+    return _writer.openChannel(_highestChannel);
   }
 
   /// Starts receiving channel [id] and grants the full window. Data is queued
@@ -223,6 +228,7 @@ class Connection {
   Stream<Uint8List> attachInbound(int id) {
     _checkCap();
     _highestChannel = math.max(_highestChannel, id);
+    _everOpened.add(id);
     final inbound = _inbound[id] = _Inbound(id, this);
     _writer.sendCredit(id, channelWindow);
     return inbound.controller.stream;
@@ -291,7 +297,7 @@ class Connection {
   /// A frame for a channel that is not open is discarded if it was open
   /// before, and a violation if it never was.
   void _expectClosed(int id) {
-    if (id > _highestChannel ||
+    if (!_everOpened.contains(id) ||
         _writer.hasChannel(id) ||
         _inbound.containsKey(id)) {
       throw ProtocolViolation('frame for channel $id, which was never opened');
@@ -421,7 +427,7 @@ class Connection {
 
   Object? _serveChannelClose(Json params) {
     final close = ChannelCloseParams.fromJson(params);
-    if (close.channel > _highestChannel) {
+    if (!_everOpened.contains(close.channel)) {
       throw RpcException(ErrorCode.invalidParams, 'channel was never opened');
     }
     _closeLocalChannel(close.channel);

@@ -32,6 +32,12 @@ class CleanupController extends ChangeNotifier {
   String? _loadMessage;
   final Set<String> _busy = {};
 
+  /// Units paged in through `cleanup/units`, by workspace. Once a workspace
+  /// has an entry it replaces the (at most ten) units `cleanup/list` carried.
+  final Map<String, List<CleanupUnit>> _units = {};
+  final Map<String, String?> _unitsCursor = {};
+  final Set<String> _loadingUnits = {};
+
   /// Reconciliation has not finished: the host refuses launches.
   bool get reconciling => _reconciling;
   CleanupState? get state => _state;
@@ -49,6 +55,58 @@ class CleanupController extends ChangeNotifier {
       _state?.unresolvedUnits ?? _workspaces.fold(0, (n, w) => n + w.unitCount);
 
   bool isBusy(String workspace) => _busy.contains(workspace);
+
+  /// The units of [w] shown so far, with their reasons.
+  List<CleanupUnit> unitsOf(CleanupWorkspace w) =>
+      _units[w.targetIdentity] ?? w.units;
+
+  /// Whether `cleanup/units` has more of [w]'s units to show.
+  bool hasMoreUnits(CleanupWorkspace w) {
+    final id = w.targetIdentity;
+    return _units.containsKey(id)
+        ? _unitsCursor[id] != null
+        : w.unitCount > w.units.length;
+  }
+
+  bool isLoadingUnits(String workspace) => _loadingUnits.contains(workspace);
+
+  /// Loads the next page of [workspace]'s units, appending it.
+  Future<void> loadMoreUnits(String workspace) async {
+    if (!_loadingUnits.add(workspace)) return;
+    final known = _units.containsKey(workspace);
+    final cursor = known ? _unitsCursor[workspace] : null;
+    if (known && cursor == null) {
+      _loadingUnits.remove(workspace);
+      return;
+    }
+    _actionMessage = null;
+    notifyListeners();
+    var stale = false;
+    try {
+      final result = await _link.cleanupUnits(
+        workspace,
+        cursor: cursor,
+        revision: known ? _loadedRevision : null,
+      );
+      if (_disposed) return;
+      if (result.stale) {
+        stale = true;
+      } else {
+        _units[workspace] = [...?_units[workspace], ...result.units];
+        _unitsCursor[workspace] = result.nextCursor;
+        _loadMessage = null;
+      }
+    } on RpcException catch (e) {
+      if (_disposed) return;
+      _loadMessage = 'Could not load the units: ${e.message}';
+    } on ConnectionClosedException {
+      if (_disposed) return;
+      _loadMessage = 'Could not load the units: the host is gone.';
+    }
+    _loadingUnits.remove(workspace);
+    notifyListeners();
+    if (stale) await reload();
+  }
 
   void _onState(CleanupState s) {
     if (_disposed) return;
@@ -70,6 +128,10 @@ class CleanupController extends ChangeNotifier {
     final cursor = first ? null : _nextCursor;
     if (!first && cursor == null) return;
     final token = ++_loadToken;
+    if (first) {
+      _units.clear();
+      _unitsCursor.clear();
+    }
     _loading = true;
     notifyListeners();
     try {

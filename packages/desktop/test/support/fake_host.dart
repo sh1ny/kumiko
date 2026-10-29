@@ -45,6 +45,11 @@ class FakeHostLink implements HostLink {
   final List<CleanupWorkspace> workspaces;
   int revision = 1;
   int pageSize = 25;
+  int unitsPageSize = 10;
+
+  /// Every unit of a workspace, by `target_identity`; defaults to
+  /// `unitCount` generated units (the list carries only the first ten).
+  final Map<String, List<CleanupUnit>> allUnits = {};
 
   /// What [cleanupRetry] does: true clears the workspace.
   bool retryResolves = true;
@@ -87,6 +92,28 @@ class FakeHostLink implements HostLink {
       stale: revision != null && revision != this.revision,
       workspaces: workspaces.sublist(start, end),
       nextCursor: end < workspaces.length ? '$end' : null,
+    );
+  }
+
+  @override
+  Future<CleanupUnitsResult> cleanupUnits(
+    String workspace, {
+    String? cursor,
+    int? revision,
+  }) async {
+    calls.add('units $workspace ${cursor ?? '-'}');
+    final w = workspaces.firstWhere((w) => w.targetIdentity == workspace);
+    final n = int.parse(workspace.substring(3));
+    final all =
+        allUnits[workspace] ??
+        [for (var i = 0; i < w.unitCount; i++) unit(n * 1000 + i)];
+    final start = cursor == null ? 0 : int.parse(cursor);
+    final end = (start + unitsPageSize).clamp(0, all.length);
+    return CleanupUnitsResult(
+      revision: this.revision,
+      stale: revision != null && revision != this.revision,
+      units: all.sublist(start, end),
+      nextCursor: end < all.length ? '$end' : null,
     );
   }
 

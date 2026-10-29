@@ -607,6 +607,7 @@ enum TestFault {
   crashAfterSpawnBeforePid,
   killFails,
   pendingWriteFails,
+  runningWriteFails,
 }
 
 class TestUnitLaunchParams {

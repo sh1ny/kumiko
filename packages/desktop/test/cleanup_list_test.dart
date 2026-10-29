@@ -88,7 +88,7 @@ void main() {
     await pumpConnected(tester, link);
 
     expect(find.text('120 units'), findsOneWidget);
-    expect(find.text('110 more units'), findsOneWidget);
+    expect(find.text('Show more units'), findsOneWidget);
   });
 
   testWidgets('retry cleanup acts on the workspace and removes it', (
@@ -168,5 +168,31 @@ void main() {
     expect(find.byType(WorkspaceTile), findsNWidgets(20));
     expect(find.text('/work/project-0'), findsNothing);
     expect(find.text('20 workspaces, 40 units need cleanup'), findsOneWidget);
+  });
+
+  testWidgets('pages through every unit of a workspace', (tester) async {
+    final link = FakeHostLink(workspaces: [workspace(1, unitCount: 25)])
+      ..unitsPageSize = 15;
+    await pumpConnected(tester, link);
+
+    expect(find.textContaining('scan-unreadable'), findsNWidgets(10));
+    expect(find.text('25 units'), findsOneWidget);
+
+    await tester.tap(find.text('Show more units'));
+    await tester.pumpAndSettle();
+    expect(find.textContaining('scan-unreadable'), findsNWidgets(15));
+    expect(find.text('Show more units'), findsOneWidget);
+
+    await tester.tap(find.text('Show more units'));
+    await tester.pumpAndSettle();
+    expect(find.textContaining('scan-unreadable'), findsNWidgets(25));
+    expect(find.textContaining('(pid 1024)'), findsOneWidget);
+    expect(find.text('Show more units'), findsNothing);
+    expect(link.calls.where((c) => c.startsWith('units ws-1')).length, 2);
+
+    await tester.tap(find.text('Retry cleanup'));
+    await tester.pumpAndSettle();
+    expect(link.calls, contains('retry ws-1'));
+    expect(find.byType(WorkspaceTile), findsNothing);
   });
 }

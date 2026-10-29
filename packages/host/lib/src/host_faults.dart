@@ -6,6 +6,9 @@ class HostFaults {
   final Set<TestFault> _active = {};
 
   bool get pendingWriteFails => _active.contains(TestFault.pendingWriteFails);
+
+  /// The write of a spawned unit's pid and start time fails, after 1 s.
+  bool get runningWriteFails => _active.contains(TestFault.runningWriteFails);
   bool get crashAfterPendingWrite =>
       _active.contains(TestFault.crashAfterPendingWrite);
   bool get crashAfterSpawnBeforePid =>

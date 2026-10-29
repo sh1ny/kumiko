@@ -34,6 +34,22 @@ class SessionLink implements HostLink {
   }
 
   @override
+  Future<CleanupUnitsResult> cleanupUnits(
+    String workspace, {
+    String? cursor,
+    int? revision,
+  }) async {
+    final params = CleanupUnitsParams(
+      workspace: workspace,
+      cursor: cursor,
+      revision: revision,
+    );
+    return CleanupUnitsResult.fromJson(
+      await _request(Method.cleanupUnits, params.toJson()),
+    );
+  }
+
+  @override
   Future<CleanupActionResult> cleanupRetry(String workspace) async =>
       CleanupActionResult.fromJson(
         await _request(

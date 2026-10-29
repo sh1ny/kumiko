@@ -59,6 +59,10 @@ class CleanupListView extends StatelessWidget {
                   key: ValueKey(w.targetIdentity),
                   workspace: w,
                   busy: controller.isBusy(w.targetIdentity),
+                  units: controller.unitsOf(w),
+                  hasMoreUnits: controller.hasMoreUnits(w),
+                  loadingUnits: controller.isLoadingUnits(w.targetIdentity),
+                  onMoreUnits: () => controller.loadMoreUnits(w.targetIdentity),
                   onRetry: () => controller.retry(w.targetIdentity),
                   onConfirm: () => controller.confirm(w.targetIdentity),
                 ),
@@ -78,26 +82,35 @@ class CleanupListView extends StatelessWidget {
   }
 }
 
-/// One *cleanup unresolved* workspace: its path, unit count, the units the
-/// first page carried with their reasons, and the two actions. Both actions
-/// act on every unit of the workspace, whatever was shown.
+/// One *cleanup unresolved* workspace: its path, unit count, its units with
+/// their reasons (the first ten, then pages on request), and the two actions.
+/// Both actions act on every unit of the workspace, whatever was shown.
 class WorkspaceTile extends StatelessWidget {
   const WorkspaceTile({
     super.key,
     required this.workspace,
     required this.busy,
+    required this.units,
+    required this.hasMoreUnits,
+    required this.loadingUnits,
+    required this.onMoreUnits,
     required this.onRetry,
     required this.onConfirm,
   });
 
   final CleanupWorkspace workspace;
   final bool busy;
+
+  /// The units shown so far.
+  final List<CleanupUnit> units;
+  final bool hasMoreUnits;
+  final bool loadingUnits;
+  final VoidCallback onMoreUnits;
   final VoidCallback onRetry;
   final VoidCallback onConfirm;
 
   @override
   Widget build(BuildContext context) {
-    final hidden = workspace.unitCount - workspace.units.length;
     return Card(
       margin: const EdgeInsets.all(8),
       child: Padding(
@@ -110,12 +123,16 @@ class WorkspaceTile extends StatelessWidget {
               style: Theme.of(context).textTheme.titleSmall,
             ),
             Text(_plural(workspace.unitCount, 'unit', 'units')),
-            for (final u in workspace.units)
+            for (final u in units)
               Text(
                 '${u.kind}${u.pid == null ? '' : ' (pid ${u.pid})'}: '
                 '${u.reason ?? 'unresolved'}',
               ),
-            if (hidden > 0) Text('$hidden more units'),
+            if (hasMoreUnits)
+              TextButton(
+                onPressed: loadingUnits ? null : onMoreUnits,
+                child: const Text('Show more units'),
+              ),
             const SizedBox(height: 8),
             Wrap(
               spacing: 8,

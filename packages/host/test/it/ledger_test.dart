@@ -85,6 +85,26 @@ void main() {
     await desktop.launch(target, TestFixture.sleeper); // the host recovered
   });
 
+  test('running write fault ends the whole unit before its row goes', () async {
+    final desktop = await Desktop.start(profile);
+    addTearDown(desktop.dispose);
+    await desktop.waitState();
+    // The pid write fails after 1 s, once the tree has started its
+    // descendants, including one outside the unit's POSIX session.
+    await desktop.setFault(TestFault.runningWriteFails);
+
+    expect(
+      await desktop.launchRefusal(target, TestFixture.tree),
+      ErrorCode.storeError,
+    );
+
+    final reports = await waitReports(target, 3);
+    await expectAllGone(reports);
+    expect(LedgerView(profile).units(), isEmpty);
+    await desktop.setFault(TestFault.runningWriteFails, enabled: false);
+    await desktop.launch(target, TestFixture.sleeper); // not gated
+  });
+
   test(
     'crash between spawn and pid write leaves a pending row and a process',
     () async {

@@ -17,6 +17,14 @@ abstract interface class HostLink {
   /// `cleanup/list`. [revision] is the one the caller last saw.
   Future<CleanupListResult> cleanupList({String? cursor, int? revision});
 
+  /// `cleanup/units`: one page of every unit of [workspace] (a
+  /// `target_identity`), from the start or after [cursor].
+  Future<CleanupUnitsResult> cleanupUnits(
+    String workspace, {
+    String? cursor,
+    int? revision,
+  });
+
   /// `cleanup/retry`, for every unit of [workspace] (a `target_identity`).
   Future<CleanupActionResult> cleanupRetry(String workspace);
 

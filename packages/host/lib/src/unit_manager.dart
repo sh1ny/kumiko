@@ -136,11 +136,26 @@ class UnitManager {
       if (faults.crashAfterSpawnBeforePid) _crash();
 
       try {
+        if (faults.runningWriteFails) {
+          // Late enough that the unit has started its descendants.
+          await Future<void>.delayed(const Duration(seconds: 1));
+          throw RpcException(
+            ErrorCode.storeError,
+            'injected running write failure',
+          );
+        }
         ledger.markRunning(id, unit.pid, unit.startTime);
       } on Object {
-        // Nothing records the process: end it and drop the pending row.
-        unawaited(unit.terminate());
-        ledger.delete(id);
+        // The pending row stays until the unit is settled like any other:
+        // termination, the marker scan, then the row is deleted or marked
+        // unresolved, which gates the workspace.
+        live[id] = LiveUnit(unit);
+        try {
+          await end(id);
+        } on Object {
+          // The row stays pending; the next host reconciles it.
+          log.event('unit-end-failed', ids: {'unit': id});
+        }
         rethrow;
       }
       final entry = live[id] = LiveUnit(unit);

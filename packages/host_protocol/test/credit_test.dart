@@ -43,6 +43,28 @@ void main() {
     await input.close();
   });
 
+  test('a never-opened channel below an open one is a violation', () async {
+    for (final kind in [FrameKind.data, FrameKind.credit]) {
+      final input = StreamController<List<int>>();
+      final connection = Connection(
+        input: input.stream,
+        output: RecordingSink(),
+      );
+      connection.attachInbound(9).listen((_) {});
+      final frame = kind == FrameKind.data
+          ? encodeFrame(8, FrameKind.data, Uint8List(1))
+          : encodeCredit(8, 1024);
+      input.add(frame);
+      final reason = await connection.closed.timeout(
+        const Duration(seconds: 2),
+        onTimeout: () => const CloseReason('none', 'still open'),
+      );
+      expect(reason.kind, CloseReason.protocolViolation, reason: '$kind');
+      await connection.close();
+      await input.close();
+    }
+  });
+
   test('frames for a closed channel are discarded', () async {
     final input = StreamController<List<int>>();
     final connection = Connection(input: input.stream, output: RecordingSink());
