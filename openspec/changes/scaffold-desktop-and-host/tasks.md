@@ -47,7 +47,7 @@ Paths are relative to the repository root.
 | desktop-host-protocol → Sessions start with a versioned hello | Compatible versions | `proto/hello_test.dart` | `highest common version and capability intersection` | red |
 | desktop-host-protocol → Sessions start with a versioned hello | No common version | `proto/hello_test.dart` + `desk/host_status_test.dart` | `disjoint ranges fail with both ranges` / `incompatible shows both ranges` | red |
 | desktop-host-protocol → Sessions start with a versioned hello | Request before hello | `proto/hello_test.dart` | `request before hello gets protocol error` | red |
-| desktop-host-protocol → Capabilities gate methods | Release host and a test method | `host/it/release_contract_test.dart` (*release*) | `release host advertises no test caps; test method not available` | red |
+| desktop-host-protocol → Capabilities gate methods | Release host and a test method | `host/it/release_contract_test.dart` (*release*) | `release host advertises no test caps; every test method and fixture refused` | red |
 | desktop-host-protocol → Capabilities gate methods | Test host advertises test capabilities | `host/it/handshake_test.dart` | `test host negotiates test caps` | red |
 | desktop-host-protocol → Frames are bounded and channel-tagged | Large output is split | `proto/frame_codec_test.dart` | `payload over 64 KiB split and reassembled in order` | red |
 | desktop-host-protocol → Frames are bounded and channel-tagged | Oversized frame received | `proto/frame_codec_test.dart` + `host/it/handshake_test.dart` | `oversize length is a violation` / `oversize frame closes connection with protocol-violation` | red |
@@ -83,7 +83,7 @@ Paths are relative to the repository root.
 
 ## 3. Dependency audit (product-telemetry)
 
-- [ ] 3.1 Write `tool/test/audit_dependencies_test.dart` covering the three product-telemetry scenarios: a clean graph, a denylisted transitive package with its path, a missing lock, and a failing `pub deps`. Use fixture `pub deps --json` outputs and an injectable runner. Also test the D1 dependency rules: `desktop` must not depend on `host`, and `domain` must not import `dart:io` or `dart:ffi`. Verify: the tests fail because the tool is missing.
+- [ ] 3.1 Write `tool/test/audit_dependencies_test.dart` covering the three product-telemetry scenarios: a clean graph, a denylisted transitive package with its path, a missing lock, and a failing `pub deps`. Use fixture `pub deps --json` outputs and an injectable runner. Also test the D1 dependency rules: `desktop` must not depend on `host`, `domain` must not import `dart:io` or `dart:ffi`, and nothing reachable from `packages/host/bin/kumiko_host.dart` may import `lib/src/test_hooks/` (D10). Verify: the tests fail because the tool is missing.
 - [ ] 3.2 Implement `tool/audit_dependencies.dart` (denylist, patterns and allowlist file from design D13; exit non-zero with the package and its path) and `tool/audit_allowlist.yaml` (empty, with a header explaining the reason format). Add the audit to CI on every OS. Verify: the 3.1 tests pass and their rows are green; `dart run tool/audit_dependencies.dart` passes on the real workspace.
 
 ## 4. Protocol library (`host_protocol`)
@@ -123,7 +123,7 @@ Paths are relative to the repository root.
 ## 9. Packaging, release contract and CI
 
 - [ ] 9.1 Add `tool/bundle_host.dart`, which builds the release host per ADR 0008's command and copies it into `host/` inside the Flutter release bundle (Windows `build/windows/x64/runner/Release/`, Linux `build/linux/x64/release/bundle/`, macOS `Kumiko.app/Contents/MacOS/`). Verify: after `flutter build windows --release` and the tool, `host/bin/kumiko_host.exe` exists in the bundle and the app launches connected.
-- [ ] 9.2 Write and pass `host/it/release_contract_test.dart` against the release host: `hello` advertises no `test.*` capability and `test/unit.launch` is method-not-available. Verify: it passes locally; flip its row green.
+- [ ] 9.2 Write and pass `host/it/release_contract_test.dart` against the release host, per design D10: with test capabilities requested, `hello` advertises no `test.*` capability and `test/unit.launch`, `test/unit.end`, `test/channel.open` and `test/fault.set` are method-not-available; every `--test-fixture` variant exits promptly with a usage error, no descendant and a byte-identical profile; on Linux and macOS `--unit-exec` runs a benign helper with pid preserved, session id = pid, exit code propagated and `KUMIKO_UNIT` set. Verify: it passes locally (POSIX cases in CI); flip its row green.
 - [ ] 9.3 Write and pass `host/it/protocol_qualification_test.dart`: a saturating channel with a control round-trip under 250 ms (worst of 100, logged), a stalled and a flowing channel, resume with an exact byte check, per-channel host buffering ≤ 256 KiB, and the channel cap with ≤ 8 MiB total. Verify: it passes locally; flip its rows green.
 - [ ] 9.4 Complete CI on all three OSes: test host build, all package tests and integration tests, the audit, the release host build, the release contract test, the desktop release build with the host bundled, and artifact upload; remove the temporary probe job. Verify: the workflow passes on a pushed branch or PR (ask the user to push; local `finish: local` merges do not run CI). Record the run URL in the PR or merge notes.
 

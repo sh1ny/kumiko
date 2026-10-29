@@ -122,7 +122,14 @@ Library facts checked against current docs: `package:sqlite3` bundles a prebuilt
   - `test/channel.open {rateBytesPerSec}`;
   - `test/fault.set {crashAfterPendingWrite | crashAfterSpawnBeforePid | killFails | pendingWriteFails}`.
 
-  CI runs a contract test against the release executable: `hello` advertises no `test.*` capability and `test/unit.launch` returns method-not-available.
+  Dispatch: `--test-fixture` modes are dispatched only by the test entry point; `--unit-exec` (D2) is dispatched by the shared host `main`, so both executables have it.
+
+  CI qualifies the boundary against the release executable (release contract test):
+  - with test capabilities requested in `hello`, it advertises no `test.*` capability, and `test/unit.launch`, `test/unit.end`, `test/channel.open` and `test/fault.set` each return method-not-available and start nothing;
+  - every `--test-fixture` variant (`tree`, `escaper`, `sleeper`, `stubborn`, `lock-holder`) exits promptly with a usage error, starts no descendant, takes no lock and leaves the profile directory byte-identical;
+  - on Linux and macOS, `--unit-exec` runs a benign helper: the pid is preserved, the session id equals the pid, the exit code propagates, and `KUMIKO_UNIT` is set.
+
+  The dependency audit (D13) also checks the import graph: no library transitively imported from `bin/kumiko_host.dart` lies under `lib/src/test_hooks/`.
 - **Rejected:** A runtime flag or environment variable. It would ship an arbitrary-spawn method in every build. Also rejected: `const bool.fromEnvironment('kumiko.testHooks')` set with `-D` (the probe showed `dart build cli` rejects or drops `-D`, and `dart compile exe` cannot build hook packages), and a generated const file rewritten before each build (fragile when test and release builds run side by side).
 - **Reversal cost:** low.
 
@@ -146,7 +153,7 @@ Library facts checked against current docs: `package:sqlite3` bundles a prebuilt
 
 ### D13: Dependency audit from the resolved graph
 
-- **Choice:** `tool/audit_dependencies.dart` runs `dart pub deps --json` at the workspace root and fails on any resolved package (dev dependencies included) that matches a denylist. The denylist has exact names (`firebase_analytics`, `firebase_crashlytics`, `firebase_performance`, `sentry`, `sentry_flutter`, `datadog_flutter_plugin`, `bugsnag_flutter`, `amplitude_flutter`, `mixpanel_flutter`, `posthog_flutter`, `segment_analytics`, `newrelic_mobile`, `instabug_flutter`, `appcenter`, `aptabase_flutter`, `countly_flutter`, `rollbar_flutter`, `embrace`) and substring patterns (`analytics`, `crashlytics`, `telemetry`, `crash_report`, `sentry`, `bugsnag`, `datadog`). Overrides live in `tool/audit_allowlist.yaml`, one line per package with a reason. The failure names the package and the dependency path from a shipped package. The same tool checks the D1 dependency rule. A missing lock or a failing `pub deps` fails the audit.
+- **Choice:** `tool/audit_dependencies.dart` runs `dart pub deps --json` at the workspace root and fails on any resolved package (dev dependencies included) that matches a denylist. The denylist has exact names (`firebase_analytics`, `firebase_crashlytics`, `firebase_performance`, `sentry`, `sentry_flutter`, `datadog_flutter_plugin`, `bugsnag_flutter`, `amplitude_flutter`, `mixpanel_flutter`, `posthog_flutter`, `segment_analytics`, `newrelic_mobile`, `instabug_flutter`, `appcenter`, `aptabase_flutter`, `countly_flutter`, `rollbar_flutter`, `embrace`) and substring patterns (`analytics`, `crashlytics`, `telemetry`, `crash_report`, `sentry`, `bugsnag`, `datadog`). Overrides live in `tool/audit_allowlist.yaml`, one line per package with a reason. The failure names the package and the dependency path from a shipped package. The same tool checks the D1 dependency rule and the D10 import rule (the release entry point never reaches `lib/src/test_hooks/`). A missing lock or a failing `pub deps` fails the audit.
 - **Rejected:** Grepping `pubspec.yaml` files. It misses transitive dependencies.
 - **Reversal cost:** low.
 
