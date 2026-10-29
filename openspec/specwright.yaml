@@ -3,7 +3,7 @@
 # How a change finishes after archive:
 #   local - merge the feature branch into main with --no-ff, no push
 #   pr    - archive on the branch, push to the PR; GitHub merges
-finish: local
+finish: pr
 
 # Main branch. Omit to detect (main, else master).
 # main_branch: main
