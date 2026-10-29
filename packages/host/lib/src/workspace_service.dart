@@ -261,18 +261,27 @@ class WorkspaceService {
             _rowWhere('identity', directory.id) ??
             _rowWhere('path', directory.realPath);
         if (known != null) {
-          // An open that lost the ordering writes and publishes nothing.
-          _apply(
-            known.id,
-            seq,
-            result,
-            relocate: await _moved(known, directory),
-          );
-          return WorkspaceOpenResult(
-            workspace: record(row(known.id) ?? known),
-            existing: true,
-            cleanupRevision: ledger.revision,
-          );
+          final relocate = await _moved(known, directory);
+          // Removed while its old path was checked: the folder is opened
+          // again below, unless another open stored it meanwhile.
+          final current =
+              row(known.id) ??
+              _rowWhere('identity', directory.id) ??
+              _rowWhere('path', directory.realPath);
+          if (current != null) {
+            // An open that lost the ordering writes and publishes nothing.
+            _apply(
+              current.id,
+              seq,
+              result,
+              relocate: current.id == known.id && relocate,
+            );
+            return WorkspaceOpenResult(
+              workspace: record(row(current.id) ?? current),
+              existing: true,
+              cleanupRevision: ledger.revision,
+            );
+          }
         }
         final created = _create(directory);
         _applied[created.id] = seq;

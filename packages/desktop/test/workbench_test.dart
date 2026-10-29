@@ -535,6 +535,32 @@ void main() {
       expect(inside('group-g1', key('tab-t0')), findsOneWidget);
     });
 
+    uiTest('drag updates before a rebuild all move the divider', (
+      tester,
+    ) async {
+      final layout = twoGroups(groupOf('g1'), groupOf('g2'));
+      final c = await pumpWorkbench(tester, linkWith(layout));
+      double ratio() => (c.layout!.root as SplitNode).ratio;
+      final available =
+          tester.getSize(key('split-view-s1')).width - 6; // minus the handle
+
+      final drag = await tester.startGesture(
+        tester.getCenter(key('split-handle-s1')),
+      );
+      await drag.moveBy(const Offset(40, 0));
+      await tester.pump();
+      final before = ratio();
+      // Three updates arrive before the next frame.
+      await drag.moveBy(const Offset(10, 0));
+      await drag.moveBy(const Offset(10, 0));
+      await drag.moveBy(const Offset(10, 0));
+      await tester.pump();
+      await drag.up();
+      await tester.pump();
+
+      expect(ratio(), closeTo(before + 30 / available, 1e-9));
+    });
+
     uiTest('split action reports the group limit', (tester) async {
       var d = LayoutDocument.initial('g1');
       var n = 1;

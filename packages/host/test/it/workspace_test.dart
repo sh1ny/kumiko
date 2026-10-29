@@ -149,6 +149,32 @@ void main() {
     expect(checked.workspace.path, expected.realPath);
   });
 
+  test('a workspace removed while its old path is checked is opened '
+      'as a new one', () async {
+    final dir = folder('before');
+    final desktop = await start(environment: longTimeout);
+    final first = (await desktop.openWorkspace(dir.path)).workspace;
+    final moved = Directory(joinPath(root.path, 'after'));
+    dir.renameSync(moved.path);
+    // The open checks the old path to see whether the directory moved.
+    await desktop.resolveFault(dir.path, hang: true);
+
+    final open = desktop.openWorkspace(moved.path);
+    await Future<void>.delayed(const Duration(milliseconds: 300));
+    await desktop.removeWorkspace(first.id);
+    await desktop.releaseResolve(dir.path);
+    final again = await open;
+
+    expect(again.existing, isFalse);
+    expect(again.workspace.id, isNot(first.id));
+    expect(again.workspace.path, resolved(moved).realPath);
+    final listed = (await desktop.listWorkspaces()).workspaces;
+    expect(listed.map((w) => w.id), [again.workspace.id]);
+    final rows = LedgerView(profile).workspaces();
+    expect(rows, hasLength(1));
+    expect(rows.single['id'], again.workspace.id);
+  });
+
   test('replaced directory at the same path keeps the id and updates '
       'identity', () async {
     final dir = folder('project');

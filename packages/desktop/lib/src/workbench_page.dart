@@ -474,6 +474,13 @@ class _SplitView extends StatelessWidget {
 
   static const double _handle = 6;
 
+  /// Moves the divider by [share] from the current ratio: several updates
+  /// can arrive before the rebuild that would refresh [node].
+  void _drag(double share) {
+    final current = controller.layout?.splitNode(node.id)?.ratio ?? node.ratio;
+    controller.setRatio(node.id, current + share);
+  }
+
   @override
   Widget build(BuildContext context) {
     final horizontal = node.direction == SplitDirection.horizontal;
@@ -495,17 +502,11 @@ class _SplitView extends StatelessWidget {
             key: Key('split-handle-${node.id}'),
             behavior: HitTestBehavior.opaque,
             onHorizontalDragUpdate: horizontal
-                ? (d) => controller.setRatio(
-                    node.id,
-                    node.ratio + d.delta.dx / available,
-                  )
+                ? (d) => _drag(d.delta.dx / available)
                 : null,
             onVerticalDragUpdate: horizontal
                 ? null
-                : (d) => controller.setRatio(
-                    node.id,
-                    node.ratio + d.delta.dy / available,
-                  ),
+                : (d) => _drag(d.delta.dy / available),
             child: Container(
               width: horizontal ? _handle : null,
               height: horizontal ? null : _handle,
