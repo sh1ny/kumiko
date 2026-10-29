@@ -113,7 +113,7 @@ The proposal is in [proposal.md](proposal.md). Current state the approach builds
   - sends the latest snapshot with a revision one higher than the **highest revision it has ever sent** (not the last acknowledged);
   - keeps at most one save in flight;
   - when changes arrive during a save, sends only the newest snapshot after the save returns;
-  - gives each save a **10 s deadline** (review M5; `Connection.request` has no timer of its own). When the deadline passes, the save counts as failed: the saver enters *Failed*, shows *Layout not saved: the host did not answer*, and frees its slot so Retry or the next change can send.
+  - gives each save a **10 s deadline** (review M5; `Connection.request` has no timer of its own). When the deadline passes, the save counts as failed: the saver enters *Failed*, shows *Layout not saved: the host did not answer*, and frees its slot so Retry or the next change can send. The timed-out request stays open on the connection until the host answers it, so at most **2 saves are unanswered** at a time (`LayoutSaver.maxUnanswered`): beyond that, changes and Retry wait, the notice stays, and the newest snapshot is sent as soon as one is answered or the connection closes (which fails them all).
 
   The host stores a save only if its revision is greater than the stored one, and answers `stale-revision` otherwise, so a reordered or replayed save can never overwrite a newer layout.
 
@@ -288,7 +288,7 @@ sequenceDiagram
 |---|---|---|---|---|
 | `workbench/save` store write | Transaction rolls back; stored layout stays at the previous revision | Next change or Retry resends the latest snapshot | Yes: whole snapshot, revision-guarded | User: *Layout not saved* with reason |
 | Desktop killed between debounce and save | At most the last 2 s of changes (maximum dirty age) plus one round-trip lost | Next launch restores the last stored layout | n/a | Nobody: accepted bound (D6) |
-| Host alive but not answering a save | Save deadline (10 s) passes; the slot is freed; a late commit may still land | Retry or the next change sends a higher revision, which replaces any late commit | Yes: whole snapshot, revision-guarded | User: *Layout not saved: the host did not answer* |
+| Host alive but not answering a save | Save deadline (10 s) passes; the slot is freed; a late commit may still land; at most 2 saves stay unanswered | Retry or the next change sends a higher revision, which replaces any late commit; with 2 unanswered it waits for an answer or Restart host | Yes: whole snapshot, revision-guarded | User: *Layout not saved: the host did not answer* |
 | Host lost with a save in flight | Save result unknown; the store holds either the old or the new revision, never a partial one | After Restart host, the desktop saves its in-memory layout if newer | Yes | User: host lost (existing) plus *Layout not saved* until it saves |
 | Flush on quit does not finish in 2 s | Quit continues; the last changes may be lost | Next launch restores the last stored revision | n/a | Host log records no save; accepted (quit must not hang) |
 | Resolver isolate hangs (network path) | Request answered `resolve-timeout` after 5 s; isolate abandoned, slot held | Slot frees when the call returns | Yes, as Check again | User: open refused or workspace *unavailable: not answering* |
