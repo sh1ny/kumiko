@@ -80,6 +80,8 @@ jobs:
       - name: Desktop integration test
         working-directory: packages/desktop
         run: |
+          # Runs every file in integration_test/: launch_test.dart and
+          # workbench_reopen_test.dart.
           # The debug app finds the release host through KUMIKO_HOST: rebuilding
           # the Linux bundle wipes it, and adding files to a macOS debug .app
           # breaks its signature for the next build.
