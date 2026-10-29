@@ -79,8 +79,9 @@ class FakeHostLink implements HostLink {
 
   void emitState([CleanupState? s]) => _states.add(s ?? state);
 
-  void lose() =>
-      _lost.complete(const HostLoss(HostLossKind.exited, 1, null, ''));
+  void lose([
+    HostLoss loss = const HostLoss(HostLossKind.exited, 1, null, ''),
+  ]) => _lost.complete(loss);
 
   @override
   Future<CleanupListResult> cleanupList({String? cursor, int? revision}) async {

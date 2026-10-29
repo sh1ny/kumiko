@@ -92,6 +92,26 @@ void main() {
     await expectAllGone(reports);
   });
 
+  test('shutdown waits for an end already in progress', () async {
+    final desktop = await Desktop.start(profile);
+    addTearDown(desktop.dispose);
+    await desktop.waitState();
+    final id = await desktop.launch(target, TestFixture.stubborn);
+    final reports = await waitReports(target, 1);
+
+    // On POSIX the unit ignores SIGTERM, so this end is still in its grace
+    // period when the desktop quits.
+    final ending = desktop.end(id).then<void>((_) {}, onError: (Object _) {});
+    await Future<void>.delayed(const Duration(milliseconds: 300));
+    final quit = await desktop.session.quit();
+
+    expect(quit.timedOut, isFalse);
+    expect(quit.exitCode, 0);
+    expect(reports.single.alive, isFalse, reason: 'ended before host exit');
+    expect(LedgerView(profile).unit(id), isNull);
+    await ending;
+  });
+
   test(
     'kill failure past deadline keeps row; next host reconciles conditionally',
     () async {

@@ -209,4 +209,32 @@ void main() {
     expect(starts, 2);
     expect(find.text('Host connected'), findsOneWidget);
   });
+
+  testWidgets('host lost by a protocol violation shows the reason', (
+    tester,
+  ) async {
+    final link = FakeHostLink();
+    await pumpStatus(tester, () async => link);
+    await tester.pumpAndSettle();
+
+    link.lose(
+      const HostLoss(
+        HostLossKind.connectionClosed,
+        null,
+        CloseReason(
+          CloseReason.protocolViolation,
+          'frame length 70000 exceeds 65536',
+        ),
+        '',
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.text('Host lost'), findsOneWidget);
+    expect(find.textContaining(CloseReason.protocolViolation), findsOneWidget);
+    expect(
+      find.textContaining('frame length 70000 exceeds 65536'),
+      findsOneWidget,
+    );
+  });
 }

@@ -283,7 +283,13 @@ class UnitManager {
       await Future<void>.delayed(const Duration(milliseconds: 10));
     }
     final ids = live.keys.toList();
-    final all = endUnits(ids, shuttingDown: true);
+    // Units already being ended are left out of the new batch; their
+    // running end is joined within the same deadline.
+    final inProgress = [for (final id in ids) ?_endings[id]];
+    final all = Future.wait([
+      endUnits(ids, shuttingDown: true),
+      for (final f in inProgress) f.then<void>((_) {}, onError: (Object _) {}),
+    ]);
     try {
       await all.timeout(deadline - clock.elapsed);
     } on TimeoutException {

@@ -110,6 +110,9 @@ class HostStatusPage extends StatelessWidget {
             'The host stopped or the connection to it was lost.',
             'Nothing is running: units the host ran are stopped or unknown.',
             if (loss?.exitCode != null) 'Host exit code: ${loss!.exitCode}',
+            if (loss?.closeReason case final reason?)
+              'Connection closed: ${reason.kind}'
+                  '${reason.detail.isEmpty ? '' : ' (${reason.detail})'}',
           ],
           stderr: loss?.stderr ?? '',
           onRestart: controller.start,
