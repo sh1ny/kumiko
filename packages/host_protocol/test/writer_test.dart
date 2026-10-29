@@ -41,6 +41,20 @@ void main() {
     expect(sink.maxUnflushed, 1);
   });
 
+  test('drain completes once queued control is flushed', () async {
+    var drained = false;
+    writer.sendControl(utf8.encode('{"jsonrpc":"2.0","method":"x"}'));
+    final done = writer.drain().then((_) => drained = true);
+
+    await settle();
+    expect(drained, isFalse, reason: 'the flush is still blocked');
+    sink.releaseAll();
+    await done;
+    expect(drained, isTrue);
+    expect(sink.writes, hasLength(1));
+    await writer.drain(); // idle: completes at once
+  });
+
   test('round-robin between busy channels', () async {
     final a = writer.openChannel(1)..grant(8 * maxFramePayload);
     final b = writer.openChannel(2)..grant(8 * maxFramePayload);

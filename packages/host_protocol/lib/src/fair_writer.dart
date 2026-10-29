@@ -94,6 +94,7 @@ class FairWriter {
   int _cursor = 0;
   bool _pumping = false;
   bool _dead = false;
+  final List<Completer<void>> _drainWaiters = [];
 
   int get channelCount => _channels.length;
 
@@ -156,6 +157,7 @@ class FairWriter {
   void close() {
     _dead = true;
     _control.clear();
+    _releaseDrainWaiters();
     for (final c in _channels) {
       c._close();
     }
@@ -166,6 +168,25 @@ class FairWriter {
     if (_dead) return;
     close();
     onFatal(reason);
+  }
+
+  /// Completes when every control frame queued so far has been written and
+  /// flushed (or the writer died). A host uses it to send a last reply before
+  /// it exits.
+  Future<void> drain() {
+    if (_dead || (_control.isEmpty && !_pumping)) return Future.value();
+    final waiter = Completer<void>();
+    _drainWaiters.add(waiter);
+    return waiter.future;
+  }
+
+  void _releaseDrainWaiters() {
+    if (_pumping && !_dead) return;
+    if (!_dead && _control.isNotEmpty) return;
+    for (final w in _drainWaiters) {
+      w.complete();
+    }
+    _drainWaiters.clear();
   }
 
   void _kick() {
@@ -197,6 +218,7 @@ class FairWriter {
       _fatal(CloseReason(CloseReason.writeFailed, '$error'));
     } finally {
       _pumping = false;
+      _releaseDrainWaiters();
     }
   }
 
