@@ -133,8 +133,7 @@ class Store {
       _db.select('PRAGMA user_version').single.values.first! as int;
 
   /// Value of a PRAGMA, for diagnostics and tests.
-  Object? pragma(String name) =>
-      _db.select('PRAGMA $name').single.values.first;
+  Object? pragma(String name) => _db.select('PRAGMA $name').single.values.first;
 
   ResultSet select(String sql, [List<Object?> parameters = const []]) =>
       _db.select(sql, parameters);

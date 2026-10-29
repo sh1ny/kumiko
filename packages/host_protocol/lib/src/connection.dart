@@ -157,11 +157,19 @@ class Connection {
   // --- control -----------------------------------------------------------
 
   /// Sends the `hello` request with this connection's ranges.
-  Future<HelloResult> hello({PriorHost? priorHost}) async {
+  Future<HelloResult> hello({
+    PriorHost? priorHost,
+    int? desktopPid,
+    int? desktopStartTime,
+    bool? outerJobHeld,
+  }) async {
     final params = HelloParams(
       versions: versions,
       capabilities: capabilities,
       priorHost: priorHost,
+      desktopPid: desktopPid,
+      desktopStartTime: desktopStartTime,
+      outerJobHeld: outerJobHeld,
     );
     final result = await request(Method.hello, params.toJson());
     return HelloResult.fromJson(_asJson(result));
@@ -178,6 +186,10 @@ class Connection {
     _send({'jsonrpc': '2.0', 'id': id, 'method': method, 'params': ?params});
     return pending.completer.future;
   }
+
+  /// Completes once everything queued on the control channel has been
+  /// written.
+  Future<void> drain() => _writer.drain();
 
   void notify(String method, [Object? params]) {
     if (isClosed) return;

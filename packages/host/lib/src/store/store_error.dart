@@ -27,7 +27,10 @@ final class StoreMigrationFailed extends StoreError {
 
 /// The store's schema version is newer than this host supports.
 final class StoreNewer extends StoreError {
-  const StoreNewer({required this.storeVersion, required this.supportedVersion});
+  const StoreNewer({
+    required this.storeVersion,
+    required this.supportedVersion,
+  });
 
   final int storeVersion;
   final int supportedVersion;

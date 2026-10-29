@@ -81,8 +81,10 @@ void main() {
       ...schemaMigrations,
       (db) {
         db.execute('CREATE TABLE half_done(x)');
-        db.execute("INSERT INTO host_instance(id, host_pid, host_started_at,"
-            " os, opened_at, closed_cleanly) VALUES (9, 1, 'a', 'x', 'a', 0)");
+        db.execute(
+          "INSERT INTO host_instance(id, host_pid, host_started_at,"
+          " os, opened_at, closed_cleanly) VALUES (9, 1, 'a', 'x', 'a', 0)",
+        );
         throw StateError('boom');
       },
     ];
@@ -116,9 +118,11 @@ void main() {
     ];
     expect(
       () => Store.open(profile, lock, migrations: steps),
-      throwsA(isA<StoreMigrationFailed>()
-          .having((e) => e.fromVersion, 'from', 2)
-          .having((e) => e.toVersion, 'to', 3)),
+      throwsA(
+        isA<StoreMigrationFailed>()
+            .having((e) => e.fromVersion, 'from', 2)
+            .having((e) => e.toVersion, 'to', 3),
+      ),
     );
     final db = sqlite3.open(dbFile().path);
     addTearDown(db.close);

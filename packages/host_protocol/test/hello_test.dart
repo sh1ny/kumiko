@@ -121,6 +121,20 @@ void main() {
     expect(back.versions.max, 2);
     expect(back.priorHost?.instanceId, 'old');
     expect(back.priorHost?.jobTerminated, isTrue);
+    expect(back.desktopPid, isNull, reason: 'optional on the wire');
+    expect(back.outerJobHeld, isNull);
+    final identified = HelloParams.fromJson(
+      HelloParams(
+        versions: const VersionRange(1, 1),
+        capabilities: const {},
+        desktopPid: 42,
+        desktopStartTime: 123456789,
+        outerJobHeld: true,
+      ).toJson(),
+    );
+    expect(identified.desktopPid, 42);
+    expect(identified.desktopStartTime, 123456789);
+    expect(identified.outerJobHeld, isTrue);
 
     final cursor = CleanupCursor('dev:1', 'unit-7');
     final decoded = CleanupCursor.decode(cursor.encode());
