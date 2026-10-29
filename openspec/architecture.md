@@ -42,6 +42,7 @@ flowchart LR
 | Tool service and `mcp-bridge` | Expose authorized Kumiko operations to agent sessions | Session-secret map | MCP stdio to the runtime; per-user local endpoint to the host (ADR 0005) |
 | Local store | Durable local state | SQLite files | Host only (ADR 0003) |
 | `domain` package | Pure rules shared by local and team paths | None | Library |
+| `process_containment` package | `dart:ffi` bindings to OS process APIs: Windows job objects and process creation, POSIX `setsid`/`execve`/`killpg`, process start times, the marker scan, file identity. No native library of its own | None | Library used by the host, and by the desktop for the Windows outer job only |
 | Team server (M4+) | Shared records, membership, identity, integrations | Shared database | Desktop and host over a negotiated API (ADR 0007) |
 
 ## State ownership
@@ -69,19 +70,19 @@ flowchart LR
 
 ## Resource bounds and failure visibility
 
-Numeric limits are not agreed (design record, Resource Bounds). Each change that introduces a flow sets its number, tests it and records it here. The mechanism and who finds out are fixed now.
+Each change that introduces a flow sets its number, tests it and records it here. The mechanism and who finds out are fixed now. Numbers below marked *(scaffold)* were set by `scaffold-desktop-and-host` (design D6 and Resource Bounds).
 
 | Flow / store | Bound | At the bound | On failure | Who finds out |
 |---|---|---|---|---|
-| Desktop-host pipe (all channels) | Maximum frame size; control frames sent before the next data frame; per-channel credit (ADR 0002) | A channel without credit pauses alone; control and other channels continue | Pipe loss is handled as host lost (row below) | User, immediately |
+| Desktop-host pipe (all channels) | *(scaffold)* Frame payload ≤ 64 KiB (10-byte header); control message ≤ 1 MiB; data credit window 256 KiB per channel, topped up at half consumed; ≤ 32 channels (open data channels) per connection (≤ 8 MiB channel buffering per side), excess refused `channel-cap`; pending outbound control ≤ 4 MiB per side, past it the peer is lost; ≤ 256 inbound control requests in flight, excess answered `busy`; one frame per writer flush, control first (ADR 0002); `hello` timeout 30 s; host-loss detection ≤ 2 s; control round-trip ≤ 250 ms worst of 100 under a saturating channel | A channel without credit pauses alone; control and other channels continue | Pipe loss is handled as host lost (row below) | User, immediately |
 | Terminal byte channel (host to desktop) | Per-channel credit and in-flight buffer in the host | Backpressure: the host stops reading that PTY until credit returns | Channel error closes the terminal with exit status shown | Terminal user |
 | Terminal scrollback (desktop) | Configurable line cap per terminal | Oldest lines are evicted | n/a | Visible scrollback limit |
 | Agent session events (host to desktop) | Bounded queue per session | Backpressure to the adapter. Events are never silently dropped; overflow ends the stream with an error | Session marked *stopped or unknown* with reason | Session owner |
-| Concurrent sessions and terminals | Configurable host cap | New launch refused with a visible reason | n/a | Launching user |
+| Concurrent sessions and terminals | Configurable host cap: *(scaffold)* 64 units per host, excess refused `unit-cap` | New launch refused with a visible reason | n/a | Launching user |
 | Tool calls per session | Bounded concurrency and argument/result size | Call rejected with error to the agent | Error result; never a fake success | Agent and session activity |
-| Host process (whole) | One host per user profile (exclusive lock, ADR 0001) | Second launch starts no host; it focuses the running instance or reports it and exits | Desktop shows host lost. On Windows the desktop terminates the host's job. On restart, the new host reconciles the process ledger before launching anything. Unresolved units, including pending entries without a pid and surviving marked descendants, put their workspace in *cleanup unresolved*, which refuses every new execution against it until a retry cleans it or the user confirms | User, immediately; cleanup results per session |
-| Local store write or migration | Transactional | n/a | Write error surfaced on the triggering action; migration failure blocks startup with error | User |
-| Host diagnostics (stderr log) | Size-rotated local file (D46) | Rotation; never deletes store data | n/a | Local diagnostics only |
+| Host process (whole) | One host per user profile (exclusive lock, ADR 0001). *(scaffold)* Shutdown on desktop loss ≤ 30 s: unit termination in parallel (POSIX SIGTERM, 2 s grace, SIGKILL, 3 s wait; Windows TerminateJobObject, 5 s wait), then at most two shared marker-scan passes of ≤ 10 s each; the desktop waits 35 s for host exit on quit | Second launch starts no execution; it shows "Kumiko is already running" and exits (window focus is later work) | Desktop shows host lost. On Windows the desktop terminates the host's job. On restart, the new host reconciles the process ledger before launching anything. Unresolved units, including pending entries without a pid and surviving marked descendants, put their workspace in *cleanup unresolved*, which refuses every new execution against it until a retry cleans it or the user confirms | User, immediately; cleanup results per session |
+| Local store write or migration | Transactional; *(scaffold)* WAL with `synchronous=FULL`, one transaction per migration step, version in `PRAGMA user_version` (ADR 0008) | n/a | Write error surfaced on the triggering action; migration failure blocks startup with error | User |
+| Host diagnostics (stderr log) | Size-rotated local file (D46): *(scaffold)* `<profile>/logs/host.log`, 2 × 4 MiB, written only after the lock; the desktop keeps host stderr in a 64 KiB memory ring | Rotation; never deletes store data | n/a | Local diagnostics only |
 
 ## In-force ADRs
 
@@ -96,3 +97,4 @@ Lists accepted ADRs only.
 | [0005](../docs/adr/0005-host-tool-service-and-authorization.md) | One host tool service; ACP stdio `mcp-bridge` over a per-user pipe/socket; per-session secret; per-call authorization; connected only after a successful call | - |
 | [0006](../docs/adr/0006-host-owned-ptys-and-terminal-rendering.md) | PTYs and shells in the host from argv profiles; emulation in the desktop; engine picked by M1 spike | - |
 | [0007](../docs/adr/0007-optional-team-server-boundary.md) | Optional team server is sole writer of shared records; no offline replica; private data never crosses; technology decided at the team milestone | - |
+| [0008](../docs/adr/0008-sqlite-binding-for-the-local-store.md) | `package:sqlite3` with its bundled SQLite; host built with `dart build cli` and shipped as `host/bin` + `host/lib`; WAL with `synchronous=FULL`; test host from a separate entry point | - |
