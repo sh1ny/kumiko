@@ -21,6 +21,7 @@ const String fixtureReportPrefix = 'kumiko-fixture-';
 const String fixtureReportSuffix = '.out';
 
 const Set<String> testCapabilities = {
+  Capability.workbench,
   Capability.testUnits,
   Capability.testChannels,
   Capability.testFaults,
@@ -147,6 +148,9 @@ class LedgerView {
   List<Map<String, Object?>> units() =>
       _select('SELECT * FROM unit ORDER BY created_at, containment_id');
 
+  List<Map<String, Object?>> workspaces() =>
+      _select('SELECT * FROM workspace ORDER BY rowid');
+
   List<Map<String, Object?>> instances() =>
       _select('SELECT * FROM host_instance ORDER BY id');
 
@@ -177,7 +181,8 @@ class Desktop {
   HostSession session;
   final Directory profile;
   final List<CleanupState> states = [];
-  StreamSubscription<CleanupState>? _states;
+  final List<WorkspaceChanged> changes = [];
+  StreamSubscription<HostNotification>? _states;
 
   static HostLauncher newLauncher(
     Directory profile, {
@@ -206,7 +211,15 @@ class Desktop {
   }
 
   void _listen() {
-    _states = session.cleanupStates.listen(states.add);
+    // One subscription: the first listener also gets what came before it.
+    _states = session.notifications.listen((n) {
+      switch (n.method) {
+        case Method.cleanupState:
+          states.add(CleanupState.fromJson(n.params));
+        case Method.workspaceChanged:
+          changes.add(WorkspaceChanged.fromJson(n.params));
+      }
+    });
   }
 
   /// Starts a new host after the previous one ended, with the same launcher
@@ -214,6 +227,7 @@ class Desktop {
   Future<void> restart() async {
     await _states?.cancel();
     states.clear();
+    changes.clear();
     session = await launcher.start();
     _listen();
   }
@@ -237,6 +251,59 @@ class Desktop {
   Future<Json> _call(String method, [Object? params]) async {
     final result = await connection.request(method, params);
     return result is Json ? result : <String, Object?>{};
+  }
+
+  // --- workspaces --------------------------------------------------------
+
+  Future<WorkspaceOpenResult> openWorkspace(String path) async =>
+      WorkspaceOpenResult.fromJson(
+        await _call(Method.workspaceOpen, WorkspaceOpenParams(path).toJson()),
+      );
+
+  Future<WorkspaceCheckResult> checkWorkspace(String id) async =>
+      WorkspaceCheckResult.fromJson(
+        await _call(Method.workspaceCheck, WorkspaceCheckParams(id).toJson()),
+      );
+
+  Future<WorkspaceListResult> listWorkspaces() async =>
+      WorkspaceListResult.fromJson(await _call(Method.workspaceList, {}));
+
+  Future<WorkspaceRemoveResult> removeWorkspace(String id) async =>
+      WorkspaceRemoveResult.fromJson(
+        await _call(Method.workspaceRemove, WorkspaceRemoveParams(id).toJson()),
+      );
+
+  Future<WorkbenchLoadResult> loadWorkbench() async =>
+      WorkbenchLoadResult.fromJson(await _call(Method.workbenchLoad, {}));
+
+  Future<void> resolveFault(String path, {int? delayMs, bool hang = false}) =>
+      _call(
+        Method.testResolveFault,
+        TestResolveFaultParams(path, delayMs: delayMs, hang: hang).toJson(),
+      );
+
+  Future<void> releaseResolve(String path) =>
+      _call(Method.testResolveRelease, TestResolveReleaseParams(path).toJson());
+
+  /// The `workspace/changed` notifications received for workspace [id].
+  List<WorkspaceChanged> changesOf(String id) => [
+    for (final c in changes)
+      if (c.workspace.id == id) c,
+  ];
+
+  Future<WorkspaceChanged> waitChange(
+    String id, {
+    bool Function(WorkspaceRecord)? where,
+  }) async {
+    bool match(WorkspaceChanged c) =>
+        c.workspace.id == id && (where?.call(c.workspace) ?? true);
+    await eventually(
+      () => changes.any(match),
+      reason:
+          'no workspace/changed for $id; got '
+          '${[for (final c in changes) c.workspace.toJson()]}',
+    );
+    return changes.lastWhere(match);
   }
 
   Future<String> launch(Directory target, TestFixture fixture) async {
@@ -264,6 +331,7 @@ class Desktop {
     String? cursor,
     int limit = maxListWorkspaces,
     int? revision,
+    String? workspace,
   }) async => CleanupListResult.fromJson(
     await _call(
       Method.cleanupList,
@@ -271,6 +339,7 @@ class Desktop {
         cursor: cursor,
         limit: limit,
         revision: revision,
+        workspace: workspace,
       ).toJson(),
     ),
   );

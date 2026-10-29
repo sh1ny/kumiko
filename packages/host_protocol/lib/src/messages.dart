@@ -25,6 +25,8 @@ abstract final class Method {
   static const String testChannelOpen = 'test/channel.open';
   static const String testChannelStats = 'test/channel.stats';
   static const String testFaultSet = 'test/fault.set';
+  static const String testResolveFault = 'test/resolve.fault';
+  static const String testResolveRelease = 'test/resolve.release';
 }
 
 abstract final class Capability {
@@ -47,6 +49,8 @@ const Map<String, String> methodCapability = {
   Method.testChannelOpen: Capability.testChannels,
   Method.testChannelStats: Capability.testChannels,
   Method.testFaultSet: Capability.testFaults,
+  Method.testResolveFault: Capability.testFaults,
+  Method.testResolveRelease: Capability.testFaults,
 };
 
 /// Error reasons, carried as `error.data.reason`.
@@ -928,6 +932,8 @@ enum TestFault {
   crashAfterSpawnBeforePid,
   identityReadFails,
   killFails,
+  layoutSaveFails,
+  layoutSaveHangs,
   pendingWriteFails,
   runningWriteFails,
   terminateHangs,
@@ -1072,4 +1078,35 @@ class TestFaultSetParams {
   final bool enabled;
 
   Json toJson() => {'fault': fault.name, 'enabled': enabled};
+}
+
+/// `test/resolve.fault`: the next resolution of [path] is delayed by
+/// [delayMs] or hangs until released. Neither set clears the fault.
+class TestResolveFaultParams {
+  const TestResolveFaultParams(this.path, {this.delayMs, this.hang = false});
+
+  factory TestResolveFaultParams.fromJson(Json json) => TestResolveFaultParams(
+    _req<String>(json, 'path'),
+    delayMs: _opt<int>(json, 'delayMs'),
+    hang: _opt<bool>(json, 'hang') ?? false,
+  );
+
+  final String path;
+  final int? delayMs;
+  final bool hang;
+
+  Json toJson() => {
+    'path': path,
+    if (delayMs != null) 'delayMs': delayMs,
+    'hang': hang,
+  };
+}
+
+/// `test/resolve.release`: lets every hung resolution of [path] return.
+class TestResolveReleaseParams {
+  const TestResolveReleaseParams(this.path);
+  factory TestResolveReleaseParams.fromJson(Json json) =>
+      TestResolveReleaseParams(_req<String>(json, 'path'));
+  final String path;
+  Json toJson() => {'path': path};
 }
