@@ -2,10 +2,11 @@
 
 ## Metadata
 
-- **Round:** 2
-- **Prior round:** APPROVE_WITH_CHANGES; all seven required changes were applied and re-checked before the D10 amendment voided the verdict.
-- **Reviewer:** cross-model CLI (codex)
-- **Reviewed:** Change `proposal.md`, `design.md`, `tasks.md`, all five `specs/*/spec.md`, and prior `review.md`; commit `237b2c1`; `tool/probes/sqlite/RESULTS.md`; ADRs 0001, 0002 and 0003; `openspec/architecture.md`.
+- **Round:** 2 — re-check of the sole Required Change.
+- **Prior round:** APPROVE_WITH_CHANGES; all seven prior required changes remain addressed.
+- **Reviewer:** codex
+- **Reviewed:** Current `design.md` D2, D10 and D13; `tasks.md` tasks 3.1, 9.2 and the release-contract test-map row; current `review.md`; commit `0bfd8a8`.
+- **Scope:** Design amendment verification only; implementation and test execution were not reviewed.
 
 ## Findings
 
@@ -15,9 +16,9 @@ None.
 
 ### Moderate
 
-1. **The release contract test does not verify the command-line test boundary.** D10 introduces independently dispatched `--test-fixture` registrations alongside protocol registrations. Task 9.2 checks only capability advertisement and rejection of `test/unit.launch`. Both assertions can pass while fixture dispatch remains reachable from shared startup code: capability gating does not protect command-line modes. Consequently, the stated release guard can pass while the release executable still runs a fixture or holds a profile lock through `--test-fixture lock-holder`.
+1. **The release contract test does not verify the command-line test boundary — addressed.** D10 now requires release rejection of all five fixture variants promptly, with a usage error, no descendants, no lock acquisition and a byte-identical profile. It also requires rejection of all four test protocol methods, including fault injection, with test capabilities explicitly requested during negotiation.
 
-   D10’s import separation is a sound design constraint, but task 9.2 does not establish that constraint or test every exposed test-only route. It also leaves the release `--unit-exec` path unqualified: the integration suite primarily runs the test entry point, so accidentally registering the shim only there could pass qualification and break future POSIX execution in the shipped host.
+   D10 and D13 require a transitive import-graph check excluding `lib/src/test_hooks/` from the release entry point; task 3.1 provides corresponding audit coverage. D10 and task 9.2 qualify the release `--unit-exec` path on Linux and macOS using a benign helper, checking preserved pid, session creation, exit propagation and the unit marker. Fixture dispatch remains exclusive to the test entry point, while shared shim dispatch serves both entry points consistently with D2. The test-map row reflects the expanded release boundary checks.
 
 ### Suggestions
 
@@ -27,11 +28,13 @@ None.
 
 VERDICT: APPROVE_WITH_CHANGES
 
+The sole Required Change is fully applied to the planning artifacts. The amendment introduces no new Critical problem.
+
 ## Required Changes
 
-CHANGES_APPLIED: no
+CHANGES_APPLIED: yes
 
-1. **Extend D10 and task 9.2 to qualify both entry points and the command-line boundary.** Specify and test that the release executable rejects every supported `--test-fixture` variant promptly, without fixture execution, descendants, or profile changes. Check rejection of every test protocol method, including fault injection, while explicitly requesting test capabilities during negotiation. Add an import-dependency check establishing that the release entry point cannot transitively reach `lib/src/test_hooks/`. On Linux and macOS, run the release executable’s `--unit-exec` against a benign helper and verify session creation, preserved pid, exit propagation, and the unit marker. Keep fixture dispatch exclusive to the test entry point and shim dispatch available through both.
+1. **Applied — Extend D10 and task 9.2 to qualify both entry points and the command-line boundary.** All requested checks and dispatch constraints are specified, with the import audit carried through D13 and task 3.1 and the release-contract test map updated.
 
 ## Rebuttals
 
@@ -39,4 +42,4 @@ The probe supports replacing the compile-time define with separate entry points.
 
 The fixtures fit this layout: the test host launches its own executable in fixture mode, including through the POSIX shim. The release shim remains a deliberate execution feature under D2; its ability to execute argv is not itself test-code leakage.
 
-The seven prior findings remain addressed. The required change concerns evidence for the amended boundary, rather than a demonstrated implementation defect or a need to reverse D10.
+The seven prior findings remain addressed. This re-check confirms that the amended plan supplies the requested boundary qualification; it does not claim those tests have already been implemented or passed.
