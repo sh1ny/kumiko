@@ -74,6 +74,10 @@ class LayoutSaver extends ChangeNotifier {
   /// The highest revision the host acknowledged.
   int get acknowledged => _acked;
 
+  /// Saves sent whose answer has not arrived, including timed-out ones.
+  @visibleForTesting
+  int get unansweredSaves => _seqOf.length;
+
   /// There are changes the host has not acknowledged.
   bool get dirty => _changeSeq > _storedSeq;
 
@@ -179,6 +183,10 @@ class LayoutSaver extends ChangeNotifier {
     } on Object catch (e) {
       if (_disposed) return;
       _onError(revision, e);
+    } finally {
+      // Each save is answered once; a timed-out one keeps its entry until
+      // its late answer is handled above.
+      _seqOf.remove(revision);
     }
   }
 

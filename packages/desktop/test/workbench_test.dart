@@ -225,6 +225,31 @@ void main() {
       expect(saver.acknowledged, 4);
     });
 
+    uiTest('answered saves release their bookkeeping', (tester) async {
+      final probe = SaveProbe();
+      final saver = LayoutSaver(save: probe.call);
+      track(saver);
+      for (var i = 0; i < 5; i++) {
+        saver.change(snap(i));
+        await tester.pump(ms500);
+        probe.ok(i);
+        await tester.pump();
+      }
+      expect(saver.state, SaveState.clean);
+      expect(saver.unansweredSaves, 0);
+
+      // A save that timed out keeps its entry until its late answer.
+      saver.change(snap(9));
+      await tester.pump(ms500);
+      await tester.pump(const Duration(seconds: 10));
+      expect(saver.state, SaveState.failed);
+      expect(saver.unansweredSaves, 1);
+      probe.ok(5);
+      await tester.pump();
+      expect(saver.state, SaveState.clean, reason: 'the late ok still counts');
+      expect(saver.unansweredSaves, 0);
+    });
+
     uiTest('changes during a save send only the newest after it returns', (
       tester,
     ) async {
@@ -625,6 +650,35 @@ void main() {
       expect(jsonEncode(layoutToJson(c.layout!)['root']), before);
       expect(c.layout!.focusedGroup, 'g2');
       await tester.pump(const Duration(seconds: 3)); // let the saves go
+    });
+
+    uiTest('a change survives killing the desktop after the save period', (
+      tester,
+    ) async {
+      final layout = docOf(groupOf('g1'), focused: 'g1');
+      final link = linkWith(layout);
+      final c = await pumpWorkbench(tester, link);
+
+      await tester.tap(find.byTooltip('Collapse sidebar'));
+      await tester.pump(ms500);
+      await tester.pump();
+
+      // Killed: no flush, no quit, nothing more runs in this desktop.
+      final sent = jsonOf(c.layout!);
+      await tester.pumpWidget(const SizedBox());
+      expect(link.calls.where((x) => x.startsWith('workbench/save')), hasLength(1));
+      expect(link.quitCalled, isFalse);
+
+      // The next launch: a new desktop and host on the same profile.
+      final next = linkWith(null)
+        ..storedLayout = link.storedLayout
+        ..layoutRevision = link.layoutRevision;
+      final reopened = await pumpWorkbench(tester, next);
+      await tester.pump();
+
+      expect(jsonOf(reopened.layout!), sent);
+      expect(reopened.layout!.sidebarCollapsed, isTrue);
+      expect(find.byTooltip('Expand sidebar'), findsOneWidget);
     });
 
     uiTest('collapsed sidebar is restored from load', (tester) async {
