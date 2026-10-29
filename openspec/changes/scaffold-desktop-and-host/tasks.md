@@ -11,7 +11,7 @@ Paths are relative to the repository root.
 
 | Requirement | Scenario | Test file | Test name | State |
 |---|---|---|---|---|
-| execution-host → Desktop launches its bundled host | Normal launch | `desk-it/launch_test.dart` | `normal launch connects one child host` | red |
+| execution-host → Desktop launches its bundled host | Normal launch | `desk-it/launch_test.dart` | `normal launch connects one child host` | green |
 | execution-host → Desktop launches its bundled host | Bundled host missing or not executable | `desk/host_status_test.dart` | `missing host shows start error with path` | green |
 | execution-host → Desktop launches its bundled host | Host does not answer the handshake | `proto/client/launcher_test.dart` | `hello timeout kills host and reports timeout` | green |
 | execution-host → One host owns a user profile | Two simultaneous launches | `host/it/lock_test.dart` | `two simultaneous launches yield one host` | green |
@@ -118,7 +118,7 @@ Paths are relative to the repository root.
 
 - [x] 8.1 Write failing widget tests `desk/host_status_test.dart` and `desk/cleanup_list_test.dart` over a scripted connection: the states starting, connected (version shown), startError (path or timeout, Restart host), incompatible (both ranges), alreadyRunning (message, exit on dismiss), storeError (path and versions), and hostLost (Restart host, nothing shown running); the paged cleanup list with counts and Retry and Confirm actions, including the *cleaned* wording from the spec. Verify: they fail for missing code.
 - [x] 8.2 Implement the status window and cleanup list on the 4.4 launcher. Resolve the bundled host at `<app>/host/bin/kumiko_host[.exe]`, with a compile-time `--dart-define=KUMIKO_HOST=<path>` for development only, and the per-OS default profile directory (`%LOCALAPPDATA%\Kumiko`, `${XDG_DATA_HOME:-~/.local/share}/kumiko`, `~/Library/Application Support/Kumiko`). The second desktop writes nothing to the profile. Verify: the 8.1 tests pass; flip their rows green.
-- [ ] 8.3 Write `desk-it/launch_test.dart` (normal launch connects one child host, shows the version) against the bundled host. Verify: it passes locally on Windows with `flutter test integration_test -d windows`; flip its row green.
+- [x] 8.3 Write `desk-it/launch_test.dart` (normal launch connects one child host, shows the version) against the bundled host. Verify: it passes locally on Windows with `flutter test integration_test -d windows`; flip its row green.
 
 ## 9. Packaging, release contract and CI
 
