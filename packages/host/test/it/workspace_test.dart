@@ -156,13 +156,15 @@ void main() {
     final first = (await desktop.openWorkspace(dir.path)).workspace;
     final moved = Directory(joinPath(root.path, 'after'));
     dir.renameSync(moved.path);
-    // The open checks the old path to see whether the directory moved.
-    await desktop.resolveFault(dir.path, hang: true);
+    // The open checks the stored (canonical) old path to see whether the
+    // directory moved; temp paths are not canonical on every runner.
+    final old = first.path;
+    await desktop.resolveFault(old, hang: true);
 
     final open = desktop.openWorkspace(moved.path);
     await Future<void>.delayed(const Duration(milliseconds: 300));
     await desktop.removeWorkspace(first.id);
-    await desktop.releaseResolve(dir.path);
+    await desktop.releaseResolve(old);
     final again = await open;
 
     expect(again.existing, isFalse);
