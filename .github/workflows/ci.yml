@@ -1,0 +1,61 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install Linux desktop build dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang cmake ninja-build pkg-config libgtk-3-dev liblzma-dev libstdc++-12-dev
+
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: 3.47.7
+          cache: true
+
+      - name: Resolve workspace
+        run: flutter pub get
+
+      - name: Analyze Dart packages
+        run: dart analyze --fatal-infos
+
+      - name: Analyze desktop
+        working-directory: packages/desktop
+        run: flutter analyze --fatal-infos
+
+      - name: Test
+        run: |
+          for dir in packages/*/; do
+            [ -d "${dir}test" ] || continue
+            echo "::group::test ${dir}"
+            if [ "${dir}" = "packages/desktop/" ]; then
+              (cd "${dir}" && flutter test)
+            else
+              (cd "${dir}" && dart test)
+            fi
+            echo "::endgroup::"
+          done
