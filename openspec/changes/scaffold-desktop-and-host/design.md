@@ -119,13 +119,14 @@ Library facts checked against current docs: `package:sqlite3` bundles a prebuilt
 - **Choice:** The host has two entry points over the same `lib/`. The release entry point `packages/host/bin/kumiko_host.dart` never imports the test-hooks library. The test entry point `packages/host/tool/kumiko_host_test.dart` imports `lib/src/test_hooks/` and passes its registrations (`test.units`, `test.channels`, `test.faults`, and the `--test-fixture` mode) to the shared host `main`. The test host is built with `dart build cli -t tool/kumiko_host_test.dart`, the release host with `dart build cli` on `bin/kumiko_host.dart`. The release executable contains no test code because nothing it compiles imports it. (Amended 2026-10-29: the probe showed `dart build cli` drops `-D` defines, so a `const bool.fromEnvironment` flag cannot select a test build; user decision.) The methods:
   - `test/unit.launch {target, fixture}`, where the fixture is `tree`, `escaper`, `sleeper` or `stubborn` (plus `lock-holder`, started directly by tests, which only holds the profile lock); fixtures are the host executable in `--test-fixture` mode, also test-build only;
   - `test/unit.end`;
-  - `test/channel.open {rateBytesPerSec}`;
-  - `test/fault.set {crashAfterPendingWrite | crashAfterSpawnBeforePid | killFails | pendingWriteFails}`.
+  - `test/channel.open {rateBytesPerSec, writeBytes}`, where `writeBytes` (default 16 KiB, at most 4 MiB) is the size of each write the producer makes;
+  - `test/channel.stats {channel}`, which returns the bytes produced and the bytes the host holds unsent for that channel (Amended 2026-10-29: pre-ship review round 4 needed an observable bound on the host's per-channel queue);
+  - `test/fault.set {crashAfterPendingWrite | crashAfterSpawnBeforePid | killFails | pendingWriteFails | runningWriteFails | identityReadFails}`.
 
   Dispatch: `--test-fixture` modes are dispatched only by the test entry point; `--unit-exec` (D2) is dispatched by the shared host `main`, so both executables have it.
 
   CI qualifies the boundary against the release executable (release contract test):
-  - with test capabilities requested in `hello`, it advertises no `test.*` capability, and `test/unit.launch`, `test/unit.end`, `test/channel.open` and `test/fault.set` each return method-not-available and start nothing;
+  - with test capabilities requested in `hello`, it advertises no `test.*` capability, and `test/unit.launch`, `test/unit.end`, `test/channel.open`, `test/channel.stats` and `test/fault.set` each return method-not-available and start nothing;
   - every `--test-fixture` variant (`tree`, `escaper`, `sleeper`, `stubborn`, `lock-holder`) exits promptly with a usage error, starts no descendant, takes no lock and leaves the profile directory byte-identical;
   - on Linux and macOS, `--unit-exec` runs a benign helper: the pid is preserved, the session id equals the pid, the exit code propagates, and `KUMIKO_UNIT` is set.
 
