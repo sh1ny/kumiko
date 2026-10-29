@@ -13,6 +13,13 @@ abstract final class Method {
   static const String cleanupUnits = 'cleanup/units';
   static const String cleanupRetry = 'cleanup/retry';
   static const String cleanupConfirm = 'cleanup/confirm';
+  static const String workspaceChanged = 'workspace/changed';
+  static const String workbenchLoad = 'workbench/load';
+  static const String workbenchSave = 'workbench/save';
+  static const String workspaceOpen = 'workspace/open';
+  static const String workspaceCheck = 'workspace/check';
+  static const String workspaceList = 'workspace/list';
+  static const String workspaceRemove = 'workspace/remove';
   static const String testUnitLaunch = 'test/unit.launch';
   static const String testUnitEnd = 'test/unit.end';
   static const String testChannelOpen = 'test/channel.open';
@@ -21,6 +28,7 @@ abstract final class Method {
 }
 
 abstract final class Capability {
+  static const String workbench = 'workbench';
   static const String testUnits = 'test.units';
   static const String testChannels = 'test.channels';
   static const String testFaults = 'test.faults';
@@ -28,6 +36,12 @@ abstract final class Capability {
 
 /// The capability a method needs; methods not listed need none.
 const Map<String, String> methodCapability = {
+  Method.workbenchLoad: Capability.workbench,
+  Method.workbenchSave: Capability.workbench,
+  Method.workspaceOpen: Capability.workbench,
+  Method.workspaceCheck: Capability.workbench,
+  Method.workspaceList: Capability.workbench,
+  Method.workspaceRemove: Capability.workbench,
   Method.testUnitLaunch: Capability.testUnits,
   Method.testUnitEnd: Capability.testUnits,
   Method.testChannelOpen: Capability.testChannels,
@@ -57,6 +71,12 @@ abstract final class ErrorCode {
   static const String storeMigrationFailed = 'store-migration-failed';
   static const String storeNewer = 'store-newer';
   static const String storeUnreadable = 'store-unreadable';
+  static const String layoutInvalid = 'layout-invalid';
+  static const String staleRevision = 'stale-revision';
+  static const String resolveTimeout = 'resolve-timeout';
+  static const String workspaceCap = 'workspace-cap';
+  static const String workspaceInUse = 'workspace-in-use';
+  static const String unknownWorkspace = 'unknown-workspace';
 
   /// The JSON-RPC numeric code for [reason].
   static int numeric(String reason) => switch (reason) {
@@ -460,12 +480,14 @@ class CleanupListParams {
     this.cursor,
     this.limit = maxListWorkspaces,
     this.revision,
+    this.workspace,
   });
 
   factory CleanupListParams.fromJson(Json json) => CleanupListParams(
     cursor: _opt<String>(json, 'cursor'),
     limit: _limit(json, maxListWorkspaces),
     revision: _opt<int>(json, 'revision'),
+    workspace: _opt<String>(json, 'workspace'),
   );
 
   final String? cursor;
@@ -475,10 +497,15 @@ class CleanupListParams {
   /// stale.
   final int? revision;
 
+  /// A workspace id (not a `target_identity`): list only that workspace's
+  /// cleanup group. Absent lists every group.
+  final String? workspace;
+
   Json toJson() => {
     if (cursor != null) 'cursor': cursor,
     'limit': limit,
     if (revision != null) 'revision': revision,
+    if (workspace != null) 'workspace': workspace,
   };
 }
 
@@ -599,6 +626,296 @@ class CleanupActionResult {
   Json toJson() => {
     'resolvedUnits': resolvedUnits,
     'unresolvedUnits': unresolvedUnits,
+  };
+}
+
+// --- workbench/* and workspace/* -----------------------------------------
+
+/// A `stale-revision` error carrying the stored layout revision.
+RpcException staleRevision(int storedRevision, [String message = '']) =>
+    RpcException(ErrorCode.staleRevision, message, {
+      'storedRevision': storedRevision,
+    });
+
+/// The `storedRevision` of a `stale-revision` error, or null when absent.
+int? storedRevisionOf(RpcException e) {
+  final v = e.data['storedRevision'];
+  return v is int ? v : null;
+}
+
+enum Availability {
+  checking,
+  available,
+  unavailable;
+
+  static Availability fromJson(Json json, String key) =>
+      _enum(values, json, key);
+}
+
+class WorkspaceCleanup {
+  const WorkspaceCleanup({required this.groups});
+
+  factory WorkspaceCleanup.fromJson(Json json) =>
+      WorkspaceCleanup(groups: _req<int>(json, 'groups'));
+
+  /// Unresolved cleanup groups attributed to the workspace.
+  final int groups;
+
+  Json toJson() => {'groups': groups};
+}
+
+class WorkspaceRecord {
+  const WorkspaceRecord({
+    required this.id,
+    required this.path,
+    required this.label,
+    required this.identity,
+    required this.availability,
+    required this.seq,
+    required this.cleanup,
+    this.reason,
+  });
+
+  factory WorkspaceRecord.fromJson(Json json) => WorkspaceRecord(
+    id: _req<String>(json, 'id'),
+    path: _req<String>(json, 'path'),
+    label: _req<String>(json, 'label'),
+    identity: _req<String>(json, 'identity'),
+    availability: Availability.fromJson(json, 'availability'),
+    reason: _opt<String>(json, 'reason'),
+    seq: _req<int>(json, 'seq'),
+    cleanup: WorkspaceCleanup.fromJson(_req<Json>(json, 'cleanup')),
+  );
+
+  final String id;
+  final String path;
+  final String label;
+  final String identity;
+  final Availability availability;
+
+  /// Why the workspace is unavailable (a reason code or short text).
+  final String? reason;
+
+  /// Per-workspace sequence: a later `seq` supersedes an earlier one.
+  final int seq;
+  final WorkspaceCleanup cleanup;
+
+  Json toJson() => {
+    'id': id,
+    'path': clampUtf8(path, maxPathBytes),
+    'label': label,
+    'identity': identity,
+    'availability': availability.name,
+    if (reason != null) 'reason': clampUtf8(reason!, maxReasonBytes),
+    'seq': seq,
+    'cleanup': cleanup.toJson(),
+  };
+}
+
+class WorkbenchLoadResult {
+  WorkbenchLoadResult({
+    required this.revision,
+    required this.workspaces,
+    required this.cleanupRevision,
+    this.layout,
+    this.restoreError,
+  }) : assert(layout == null || restoreError == null);
+
+  factory WorkbenchLoadResult.fromJson(Json json) {
+    final layout = _opt<Json>(json, 'layout');
+    final restoreError = _opt<String>(json, 'restoreError');
+    if (layout != null && restoreError != null) {
+      throw RpcException(
+        ErrorCode.invalidParams,
+        'layout and restoreError are exclusive',
+      );
+    }
+    return WorkbenchLoadResult(
+      layout: layout,
+      restoreError: restoreError,
+      revision: _req<int>(json, 'revision'),
+      workspaces: [
+        for (final w in _list<Json>(json, 'workspaces'))
+          WorkspaceRecord.fromJson(w),
+      ],
+      cleanupRevision: _req<int>(json, 'cleanupRevision'),
+    );
+  }
+
+  /// The stored layout document, opaque to the protocol; null when none is
+  /// stored or it could not be restored.
+  final Json? layout;
+  final String? restoreError;
+  final int revision;
+  final List<WorkspaceRecord> workspaces;
+  final int cleanupRevision;
+
+  Json toJson() => {
+    if (layout != null) 'layout': layout,
+    if (restoreError != null)
+      'restoreError': clampUtf8(restoreError!, maxReasonBytes),
+    'revision': revision,
+    'workspaces': [for (final w in workspaces) w.toJson()],
+    'cleanupRevision': cleanupRevision,
+  };
+}
+
+class WorkbenchSaveParams {
+  const WorkbenchSaveParams({required this.layout, required this.revision});
+
+  factory WorkbenchSaveParams.fromJson(Json json) => WorkbenchSaveParams(
+    layout: _req<Json>(json, 'layout'),
+    revision: _req<int>(json, 'revision'),
+  );
+
+  final Json layout;
+
+  /// The revision the caller last saw; a different stored one is rejected as
+  /// `stale-revision`.
+  final int revision;
+
+  Json toJson() => {'layout': layout, 'revision': revision};
+}
+
+class WorkbenchSaveResult {
+  const WorkbenchSaveResult(this.revision);
+  factory WorkbenchSaveResult.fromJson(Json json) =>
+      WorkbenchSaveResult(_req<int>(json, 'revision'));
+  final int revision;
+  Json toJson() => {'revision': revision};
+}
+
+class WorkspaceOpenParams {
+  const WorkspaceOpenParams(this.path);
+
+  factory WorkspaceOpenParams.fromJson(Json json) {
+    final path = _req<String>(json, 'path');
+    if (utf8.encode(path).length > maxPathBytes) {
+      throw RpcException(
+        ErrorCode.invalidParams,
+        'path exceeds $maxPathBytes bytes',
+      );
+    }
+    return WorkspaceOpenParams(path);
+  }
+
+  final String path;
+  Json toJson() => {'path': path};
+}
+
+class WorkspaceOpenResult {
+  const WorkspaceOpenResult({
+    required this.workspace,
+    required this.existing,
+    required this.cleanupRevision,
+  });
+
+  factory WorkspaceOpenResult.fromJson(Json json) => WorkspaceOpenResult(
+    workspace: WorkspaceRecord.fromJson(_req<Json>(json, 'workspace')),
+    existing: _req<bool>(json, 'existing'),
+    cleanupRevision: _req<int>(json, 'cleanupRevision'),
+  );
+
+  final WorkspaceRecord workspace;
+
+  /// True when the path was already a known workspace.
+  final bool existing;
+  final int cleanupRevision;
+
+  Json toJson() => {
+    'workspace': workspace.toJson(),
+    'existing': existing,
+    'cleanupRevision': cleanupRevision,
+  };
+}
+
+class WorkspaceCheckParams {
+  const WorkspaceCheckParams(this.id);
+  factory WorkspaceCheckParams.fromJson(Json json) =>
+      WorkspaceCheckParams(_req<String>(json, 'id'));
+  final String id;
+  Json toJson() => {'id': id};
+}
+
+class WorkspaceCheckResult {
+  const WorkspaceCheckResult({
+    required this.workspace,
+    required this.cleanupRevision,
+  });
+
+  factory WorkspaceCheckResult.fromJson(Json json) => WorkspaceCheckResult(
+    workspace: WorkspaceRecord.fromJson(_req<Json>(json, 'workspace')),
+    cleanupRevision: _req<int>(json, 'cleanupRevision'),
+  );
+
+  final WorkspaceRecord workspace;
+  final int cleanupRevision;
+
+  Json toJson() => {
+    'workspace': workspace.toJson(),
+    'cleanupRevision': cleanupRevision,
+  };
+}
+
+class WorkspaceListResult {
+  const WorkspaceListResult({
+    required this.workspaces,
+    required this.cleanupRevision,
+  });
+
+  factory WorkspaceListResult.fromJson(Json json) => WorkspaceListResult(
+    workspaces: [
+      for (final w in _list<Json>(json, 'workspaces'))
+        WorkspaceRecord.fromJson(w),
+    ],
+    cleanupRevision: _req<int>(json, 'cleanupRevision'),
+  );
+
+  final List<WorkspaceRecord> workspaces;
+  final int cleanupRevision;
+
+  Json toJson() => {
+    'workspaces': [for (final w in workspaces) w.toJson()],
+    'cleanupRevision': cleanupRevision,
+  };
+}
+
+class WorkspaceRemoveParams {
+  const WorkspaceRemoveParams(this.id);
+  factory WorkspaceRemoveParams.fromJson(Json json) =>
+      WorkspaceRemoveParams(_req<String>(json, 'id'));
+  final String id;
+  Json toJson() => {'id': id};
+}
+
+class WorkspaceRemoveResult {
+  const WorkspaceRemoveResult(this.revision);
+  factory WorkspaceRemoveResult.fromJson(Json json) =>
+      WorkspaceRemoveResult(_req<int>(json, 'revision'));
+
+  /// The new stored layout revision.
+  final int revision;
+  Json toJson() => {'revision': revision};
+}
+
+/// Params of the `workspace/changed` notification.
+class WorkspaceChanged {
+  const WorkspaceChanged({
+    required this.workspace,
+    required this.cleanupRevision,
+  });
+
+  factory WorkspaceChanged.fromJson(Json json) => WorkspaceChanged(
+    workspace: WorkspaceRecord.fromJson(_req<Json>(json, 'workspace')),
+    cleanupRevision: _req<int>(json, 'cleanupRevision'),
+  );
+
+  final WorkspaceRecord workspace;
+  final int cleanupRevision;
+
+  Json toJson() => {
+    'workspace': workspace.toJson(),
+    'cleanupRevision': cleanupRevision,
   };
 }
 

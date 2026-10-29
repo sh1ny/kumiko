@@ -68,7 +68,7 @@ Mechanical checks (no scenario row): `dart analyze --fatal-infos` / `flutter ana
 ## 3. Store schema v2 and protocol messages
 
 - [x] 3.1 Write failing tests: a migration test in `packages/host/test/store/migrations_test.dart` (v1 store with ledger rows migrates to v2, keeps every `unit` and `host_instance` row, and creates `workspace`, `working_set` and the `personal` row with a NULL layout; a failed v2 step leaves v1), and message round-trip tests in `packages/host_protocol/test/workbench_messages_test.dart` for every new message and error reason. Verify: they fail.
-- [ ] 3.2 Add the v2 migration step to `schemaMigrations` (design D3). Add the `workbench` capability, the six methods with their `methodCapability` entries, the `workspace/changed` notification, the message classes (records carry `seq` and `cleanup: {groups}`, responses carry `cleanupRevision`), the `workspace` filter on `CleanupListParams`, and the new error codes to `host_protocol`. Verify: both tests pass, and `dart analyze --fatal-infos` is clean.
+- [x] 3.2 Add the v2 migration step to `schemaMigrations` (design D3). Add the `workbench` capability, the six methods with their `methodCapability` entries, the `workspace/changed` notification, the message classes (records carry `seq` and `cleanup: {groups}`, responses carry `cleanupRevision`), the `workspace` filter on `CleanupListParams`, and the new error codes to `host_protocol`. Verify: both tests pass, and `dart analyze --fatal-infos` is clean.
 
 ## 4. Host workspace service
 
