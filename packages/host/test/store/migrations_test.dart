@@ -33,14 +33,17 @@ void main() {
     addTearDown(store.close);
 
     expect(store.userVersion, currentSchemaVersion);
-    expect(currentSchemaVersion, 1);
+    expect(currentSchemaVersion, 2);
     expect(store.pragma('journal_mode'), 'wal');
     expect(store.pragma('synchronous'), 2); // FULL
     final tables = store
         .select("SELECT name FROM sqlite_master WHERE type='table'")
         .map((r) => r['name'] as String)
         .toSet();
-    expect(tables, containsAll(<String>['host_instance', 'unit']));
+    expect(
+      tables,
+      containsAll(<String>['host_instance', 'unit', 'workspace', 'working_set']),
+    );
     expect(dbFile().existsSync(), isTrue);
   });
 
@@ -74,11 +77,12 @@ void main() {
   });
 
   test('failing step rolls back version and contents', () {
-    Store.open(profile, lock).close();
+    final v1 = <MigrationStep>[schemaMigrations.first];
+    Store.open(profile, lock, migrations: v1).close();
     final before = _snapshot(dbFile());
 
     final steps = <MigrationStep>[
-      ...schemaMigrations,
+      ...v1,
       (db) {
         db.execute('CREATE TABLE half_done(x)');
         db.execute(
@@ -100,7 +104,7 @@ void main() {
       ),
     );
 
-    final store = Store.open(profile, lock);
+    final store = Store.open(profile, lock, migrations: v1);
     addTearDown(store.close);
     expect(store.userVersion, 1);
     expect(_snapshot(dbFile()), before);
@@ -120,13 +124,13 @@ void main() {
       () => Store.open(profile, lock, migrations: steps),
       throwsA(
         isA<StoreMigrationFailed>()
-            .having((e) => e.fromVersion, 'from', 2)
-            .having((e) => e.toVersion, 'to', 3),
+            .having((e) => e.fromVersion, 'from', 3)
+            .having((e) => e.toVersion, 'to', 4),
       ),
     );
     final db = sqlite3.open(dbFile().path);
     addTearDown(db.close);
-    expect(db.select('PRAGMA user_version').single.values.first, 2);
+    expect(db.select('PRAGMA user_version').single.values.first, 3);
   });
 
   test('newer user_version is refused unchanged', () {
@@ -143,7 +147,7 @@ void main() {
         isA<StoreNewer>()
             .having((e) => e.code, 'code', 'store-newer')
             .having((e) => e.storeVersion, 'store', 5)
-            .having((e) => e.supportedVersion, 'supported', 1),
+            .having((e) => e.supportedVersion, 'supported', 2),
       ),
     );
 
@@ -167,6 +171,67 @@ void main() {
 
     expect(dbFile().readAsBytesSync(), garbage);
     expect(names(), namesBefore);
+  });
+
+  test('v1 store with ledger rows migrates to v2 keeping every row', () {
+    Store.open(
+        profile,
+        lock,
+        migrations: <MigrationStep>[schemaMigrations.first],
+      )
+      ..execute(
+        "INSERT INTO host_instance(id, host_pid, host_started_at, os,"
+        " opened_at, closed_cleanly) VALUES (3, 1, 'a', 'x', 'a', 0)",
+      )
+      ..execute(
+        'INSERT INTO unit(containment_id, host_instance_id, kind, target_path,'
+        ' target_identity, state, created_at, updated_at)'
+        " VALUES ('c1', 3, 'k', 'p', 'i', 'unresolved', 'a', 'a'),"
+        " ('c2', 3, 'k', 'p', 'i', 'running', 'a', 'a')",
+      )
+      ..close();
+
+    final store = Store.open(profile, lock);
+    addTearDown(store.close);
+    expect(store.userVersion, 2);
+    expect(
+      store
+          .select('SELECT containment_id FROM unit ORDER BY 1')
+          .map((r) => r['containment_id']),
+      ['c1', 'c2'],
+    );
+    expect(store.select('SELECT id FROM host_instance').single['id'], 3);
+
+    final ws = store.select('SELECT * FROM working_set').single;
+    expect(ws['id'], 'personal');
+    expect(ws['kind'], 'personal');
+    expect(ws['layout'], isNull);
+    expect(ws['layout_format'], isNull);
+    expect(ws['revision'], 0);
+    expect(store.select('SELECT * FROM workspace'), isEmpty);
+    expect(
+      store.select('PRAGMA table_info(workspace)').map((r) => r['name']),
+      ['id', 'path', 'identity', 'label', 'added_at'],
+    );
+  });
+
+  test('workspace path is unique and working_set kind is checked', () {
+    final store = Store.open(profile, lock);
+    addTearDown(store.close);
+    store.execute("INSERT INTO workspace VALUES ('w1', '/p', 'i', 'l', 'a')");
+    expect(
+      () => store.execute(
+        "INSERT INTO workspace VALUES ('w2', '/p', 'i2', 'l', 'a')",
+      ),
+      throwsA(isA<SqliteException>()),
+    );
+    expect(
+      () => store.execute(
+        'INSERT INTO working_set(id, kind, updated_at)'
+        " VALUES ('x', 'bogus', 'a')",
+      ),
+      throwsA(isA<SqliteException>()),
+    );
   });
 }
 
