@@ -78,3 +78,12 @@ macos / system / build-cli:
    `dart build cli -t <file>` builds and runs on all three OSes, so test
    hooks can be compiled in through a test-only entry point instead of a
    define.
+
+## Decision (task 1.3)
+
+Layout confirmed: `dart build cli` gives `bin/` + `lib/` on Windows, Linux
+and macOS, which matches design D11's `host/bin` + `host/lib`. Test hooks
+cannot be compiled in through `-D` (finding 5). That was reported to the
+user before group 2, and they chose a separate test entry point
+(2026-10-29). Design D10 was amended and passed the round-2 design review.
+The binding is recorded in `docs/adr/0008-sqlite-binding-for-the-local-store.md`.
