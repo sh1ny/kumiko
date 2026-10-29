@@ -12,16 +12,16 @@ Paths are relative to the repository root.
 | Requirement | Scenario | Test file | Test name | State |
 |---|---|---|---|---|
 | execution-host → Desktop launches its bundled host | Normal launch | `desk-it/launch_test.dart` | `normal launch connects one child host` | red |
-| execution-host → Desktop launches its bundled host | Bundled host missing or not executable | `desk/host_status_test.dart` | `missing host shows start error with path` | red |
+| execution-host → Desktop launches its bundled host | Bundled host missing or not executable | `desk/host_status_test.dart` | `missing host shows start error with path` | green |
 | execution-host → Desktop launches its bundled host | Host does not answer the handshake | `proto/client/launcher_test.dart` | `hello timeout kills host and reports timeout` | green |
 | execution-host → One host owns a user profile | Two simultaneous launches | `host/it/lock_test.dart` | `two simultaneous launches yield one host` | green |
 | execution-host → One host owns a user profile | Lock released by a crashed owner | `host/it/lock_test.dart` | `killed owner releases lock to next launch` | green |
-| execution-host → A second launch reports the running instance and exits | Launch while Kumiko runs | `desk/host_status_test.dart` + `host/it/lock_test.dart` | `profile-locked shows already running and exits on dismiss` / `locked host replies profile-locked and exits` | red |
+| execution-host → A second launch reports the running instance and exits | Launch while Kumiko runs | `desk/host_status_test.dart` + `host/it/lock_test.dart` | `profile-locked shows already running and exits on dismiss` / `locked host replies profile-locked and exits` | green |
 | execution-host → A second launch reports the running instance and exits | Second launch leaves the profile untouched | `host/it/lock_test.dart` | `refused launch leaves profile byte-identical (lock-holder fixture)` | green |
 | execution-host → Host lifetime is tied to the desktop | Desktop quits normally | `host/it/lifecycle_test.dart` | `stdin close ends units, cleans ledger, exits` | green |
 | execution-host → Host lifetime is tied to the desktop | Desktop is killed | `host/it/lifecycle_test.dart` | `killed desktop stand-in leaves no host or marked process` | green |
 | execution-host → Host lifetime is tied to the desktop | A unit survives past the shutdown deadline | `host/it/lifecycle_test.dart` | `kill failure past deadline keeps row; next host reconciles conditionally` | green |
-| execution-host → Losing the host is visible | Host killed while the desktop runs | `proto/client/launcher_test.dart` + `desk/host_status_test.dart` | `host kill detected within 2 s` / `host lost shows restart and no running unit` | red |
+| execution-host → Losing the host is visible | Host killed while the desktop runs | `proto/client/launcher_test.dart` + `desk/host_status_test.dart` | `host kill detected within 2 s` / `host lost shows restart and no running unit` | green |
 | execution-host → Losing the host is visible | Restart after host loss | `host/it/reconcile_test.dart` | `restarted host refuses launches until reconciled` | green |
 | host-process-cleanup → Every launch is recorded before it starts | Unit launch records the ledger | `host/it/ledger_test.dart` | `pending row committed before spawn, pid and start time after` | green |
 | host-process-cleanup → Every launch is recorded before it starts | Pending write fails | `host/it/ledger_test.dart` | `pending write fault refuses launch with store-error` | green |
@@ -39,13 +39,13 @@ Paths are relative to the repository root.
 | host-process-cleanup → Cleanup unresolved refuses execution against the workspace | Another path to the same checkout | `host/it/gate_test.dart` + `pc/fs_identity_test.dart` | `symlink, junction and case alias are gated` / `alias paths share identity` | green |
 | host-process-cleanup → Cleanup unresolved refuses execution against the workspace | Distinct directories differing only in case | `host/it/gate_test.dart` | `case-distinct directory on case-sensitive volume not gated` (skipped with reason where no case-sensitive volume is available; CI Linux always runs it) | green |
 | host-process-cleanup → Cleanup unresolved refuses execution against the workspace | Target cannot be resolved | `host/it/gate_test.dart` | `missing target refused with target-unavailable, no ledger row` | green |
-| host-process-cleanup → Unresolved cleanup is shown and can be retried or confirmed | Many unresolved units | `host/it/cleanup_api_test.dart` + `desk/cleanup_list_test.dart` | `pages over 1 MiB of unresolved results; actions cover all units` / `list pages and shows counts` | red |
+| host-process-cleanup → Unresolved cleanup is shown and can be retried or confirmed | Many unresolved units | `host/it/cleanup_api_test.dart` + `desk/cleanup_list_test.dart` | `pages over 1 MiB of unresolved results; actions cover all units` / `list pages and shows counts` | green |
 | host-process-cleanup → Unresolved cleanup is shown and can be retried or confirmed | Retry succeeds | `host/it/cleanup_api_test.dart` | `retry after exit cleans and unblocks workspace` | green |
 | host-process-cleanup → Unresolved cleanup is shown and can be retried or confirmed | Retry still fails | `host/it/cleanup_api_test.dart` | `retry with survivor keeps workspace with updated reason` | green |
 | host-process-cleanup → Unresolved cleanup is shown and can be retried or confirmed | User confirms the processes are gone | `host/it/cleanup_api_test.dart` | `confirm deletes rows, logs unit ids, unblocks` | green |
 | host-process-cleanup → Unresolved cleanup is shown and can be retried or confirmed | Confirmation races a new failure | `host/it/cleanup_api_test.dart` | `confirm during retry refused with retry-in-progress` | green |
 | desktop-host-protocol → Sessions start with a versioned hello | Compatible versions | `proto/hello_test.dart` | `highest common version and capability intersection` | green |
-| desktop-host-protocol → Sessions start with a versioned hello | No common version | `proto/hello_test.dart` + `desk/host_status_test.dart` | `disjoint ranges fail with both ranges` / `incompatible shows both ranges` | red |
+| desktop-host-protocol → Sessions start with a versioned hello | No common version | `proto/hello_test.dart` + `desk/host_status_test.dart` | `disjoint ranges fail with both ranges` / `incompatible shows both ranges` | green |
 | desktop-host-protocol → Sessions start with a versioned hello | Request before hello | `proto/hello_test.dart` | `request before hello gets protocol error` | green |
 | desktop-host-protocol → Capabilities gate methods | Release host and a test method | `host/it/release_contract_test.dart` (*release*) | `release host advertises no test caps; every test method and fixture refused` | red |
 | desktop-host-protocol → Capabilities gate methods | Test host advertises test capabilities | `host/it/handshake_test.dart` | `test host negotiates test caps` | green |
@@ -117,7 +117,7 @@ Paths are relative to the repository root.
 ## 8. Desktop app (`desktop`)
 
 - [x] 8.1 Write failing widget tests `desk/host_status_test.dart` and `desk/cleanup_list_test.dart` over a scripted connection: the states starting, connected (version shown), startError (path or timeout, Restart host), incompatible (both ranges), alreadyRunning (message, exit on dismiss), storeError (path and versions), and hostLost (Restart host, nothing shown running); the paged cleanup list with counts and Retry and Confirm actions, including the *cleaned* wording from the spec. Verify: they fail for missing code.
-- [ ] 8.2 Implement the status window and cleanup list on the 4.4 launcher. Resolve the bundled host at `<app>/host/bin/kumiko_host[.exe]`, with a compile-time `--dart-define=KUMIKO_HOST=<path>` for development only, and the per-OS default profile directory (`%LOCALAPPDATA%\Kumiko`, `${XDG_DATA_HOME:-~/.local/share}/kumiko`, `~/Library/Application Support/Kumiko`). The second desktop writes nothing to the profile. Verify: the 8.1 tests pass; flip their rows green.
+- [x] 8.2 Implement the status window and cleanup list on the 4.4 launcher. Resolve the bundled host at `<app>/host/bin/kumiko_host[.exe]`, with a compile-time `--dart-define=KUMIKO_HOST=<path>` for development only, and the per-OS default profile directory (`%LOCALAPPDATA%\Kumiko`, `${XDG_DATA_HOME:-~/.local/share}/kumiko`, `~/Library/Application Support/Kumiko`). The second desktop writes nothing to the profile. Verify: the 8.1 tests pass; flip their rows green.
 - [ ] 8.3 Write `desk-it/launch_test.dart` (normal launch connects one child host, shows the version) against the bundled host. Verify: it passes locally on Windows with `flutter test integration_test -d windows`; flip its row green.
 
 ## 9. Packaging, release contract and CI
