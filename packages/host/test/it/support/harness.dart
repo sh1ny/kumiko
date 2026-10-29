@@ -375,6 +375,7 @@ class RawHost {
     Map<String, String>? environment,
     Set<String> capabilities = testCapabilities,
     bool holdInJob = true,
+    void Function(List<int> chunk)? tap,
   }) async {
     final process = await Process.start(testHostExecutable(), [
       '--profile',
@@ -387,7 +388,10 @@ class RawHost {
       assignPidToJob(job, process.pid);
     }
     final input = StreamController<List<int>>();
-    final reading = process.stdout.listen(input.add, onDone: input.close);
+    final reading = process.stdout.listen((chunk) {
+      tap?.call(chunk);
+      input.add(chunk);
+    }, onDone: input.close);
     final stderrText = StringBuffer();
     process.stderr.transform(utf8.decoder).listen(stderrText.write);
     process.stdin.done.then<void>((_) {}, onError: (Object _) {});
