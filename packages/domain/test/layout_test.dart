@@ -149,6 +149,48 @@ void main() {
       expect(d.group('g1')!.active, isNull);
     });
 
+    /// g1 holds t1 bound to w1 and t2 bound to w2; t2 is active, context w2.
+    LayoutDocument mixedBindings() {
+      var d = ok(LayoutDocument.initial('g1').setGroupContext('g1', 'w1'));
+      d = open(d, 'g1', 't1', needs: true);
+      d = ok(d.setGroupContext('g1', 'w2'));
+      d = open(d, 'g1', 't2', needs: true);
+      expect(d.tab('t1')!.workspace, 'w1');
+      expect(d.tab('t2')!.workspace, 'w2');
+      expect(d.group('g1')!.active, 't2');
+      expect(d.group('g1')!.context, 'w2');
+      return d;
+    }
+
+    test('closing the active tab takes the context of the next active', () {
+      final d = ok(mixedBindings().closeTab('t2'));
+      expect(d.group('g1')!.active, 't1');
+      expect(d.group('g1')!.context, 'w1');
+    });
+
+    test('moving the active tab away gives the source the context of its '
+        'next active', () {
+      var d = ok(mixedBindings().split(
+        'g1',
+        SplitDirection.horizontal,
+        'g2',
+        's1',
+      ));
+      d = ok(d.moveTab('t2', 'g2'));
+      expect(d.group('g1')!.active, 't1');
+      expect(d.group('g1')!.context, 'w1');
+      expect(d.group('g2')!.context, 'w2');
+    });
+
+    test('an unbound next active tab keeps the context', () {
+      var d = open(LayoutDocument.initial('g1'), 'g1', 't1');
+      d = ok(d.setGroupContext('g1', 'w1'));
+      d = open(d, 'g1', 't2', needs: true);
+      d = ok(d.closeTab('t2'));
+      expect(d.tab('t1')!.workspace, isNull);
+      expect(d.group('g1')!.context, 'w1');
+    });
+
     test('closing the active tab activates the most recent remaining', () {
       var d = open(LayoutDocument.initial('g1'), 'g1', 't1');
       d = open(d, 'g1', 't2');

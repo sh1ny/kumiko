@@ -97,7 +97,13 @@ LayoutNode _detach(LayoutDocument d, String tabId) {
       );
     }
   }
-  return _replaceGroup(d.root, g.id, g.withTabs(remaining, active));
+  var updated = g.withTabs(remaining, active);
+  // The next active tab sets the context, as activating it would (D8).
+  if (active != null && active != g.active) {
+    final ws = remaining.firstWhere((t) => t.id == active).workspace;
+    if (ws != null) updated = updated.withContext(ws);
+  }
+  return _replaceGroup(d.root, g.id, updated);
 }
 
 List<String> _toFront(List<String> recent, String tabId) => [

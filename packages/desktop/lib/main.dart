@@ -119,7 +119,10 @@ class _KumikoAppState extends State<KumikoApp> {
       home: ListenableBuilder(
         listenable: _controller,
         builder: (context, _) => _controller.phase == HostPhase.connected
-            ? WorkbenchPage(controller: _workbench)
+            ? WorkbenchPage(
+                controller: _workbench,
+                cleanup: _controller.cleanup,
+              )
             : HostStatusPage(
                 controller: _controller,
                 hostPath: widget.hostPath,

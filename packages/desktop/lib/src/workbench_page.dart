@@ -11,9 +11,13 @@ const String _openFolderValue = '#open-folder';
 
 /// The workbench: workspaces sidebar, split tab groups, notices.
 class WorkbenchPage extends StatelessWidget {
-  const WorkbenchPage({super.key, required this.controller});
+  const WorkbenchPage({super.key, required this.controller, this.cleanup});
 
   final WorkbenchController controller;
+
+  /// The host's whole *cleanup unresolved* list, including entries for
+  /// directories that are not (or no longer) workspaces.
+  final CleanupController? cleanup;
 
   @override
   Widget build(BuildContext context) {
@@ -54,7 +58,7 @@ class WorkbenchPage extends StatelessWidget {
                   ],
                 ),
               ),
-              _StatusBar(controller: controller),
+              _StatusBar(controller: controller, cleanup: cleanup),
             ],
           );
         },
@@ -137,14 +141,16 @@ class _Banner extends StatelessWidget {
 }
 
 class _StatusBar extends StatelessWidget {
-  const _StatusBar({required this.controller});
+  const _StatusBar({required this.controller, required this.cleanup});
 
   final WorkbenchController controller;
+  final CleanupController? cleanup;
 
   @override
   Widget build(BuildContext context) {
     final hello = controller.hello;
     if (hello == null) return const SizedBox.shrink();
+    final cleanup = this.cleanup;
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 2),
       child: Row(
@@ -152,6 +158,31 @@ class _StatusBar extends StatelessWidget {
           const Text('Host connected'),
           const SizedBox(width: 12),
           Text('Protocol version ${hello.version}, host ${hello.hostVersion}'),
+          const Spacer(),
+          // Always reachable, also with the sidebar collapsed and for
+          // entries no workspace badge leads to.
+          if (cleanup != null)
+            ListenableBuilder(
+              listenable: cleanup,
+              builder: (context, _) {
+                final workspaces = cleanup.unresolvedWorkspaces;
+                if (workspaces == 0) return const SizedBox.shrink();
+                final units = cleanup.unresolvedUnits;
+                return TextButton(
+                  key: const Key('cleanup-all'),
+                  onPressed: () => showDialog<void>(
+                    context: context,
+                    builder: (_) => _CleanupDialog.shared(cleanup),
+                  ),
+                  child: Text(
+                    'Cleanup unresolved: $workspaces '
+                    '${workspaces == 1 ? 'workspace' : 'workspaces'}, '
+                    '$units ${units == 1 ? 'unit' : 'units'}',
+                    style: TextStyle(color: Theme.of(context).colorScheme.error),
+                  ),
+                );
+              },
+            ),
         ],
       ),
     );
@@ -354,26 +385,31 @@ Future<void> showCleanupList(
   String workspaceId,
 ) => showDialog<void>(
   context: context,
-  builder: (_) => _CleanupDialog(controller: controller, workspaceId: workspaceId),
+  builder: (_) => _CleanupDialog(
+    create: () => controller.createCleanupController(workspaceId),
+  ),
 );
 
+/// The cleanup list in a dialog: a list of its own (filtered to one
+/// workspace, disposed with the dialog) or the host's shared whole list.
 class _CleanupDialog extends StatefulWidget {
-  const _CleanupDialog({required this.controller, required this.workspaceId});
+  const _CleanupDialog({required this.create}) : shared = null;
 
-  final WorkbenchController controller;
-  final String workspaceId;
+  const _CleanupDialog.shared(this.shared) : create = null;
+
+  final CleanupController Function()? create;
+  final CleanupController? shared;
 
   @override
   State<_CleanupDialog> createState() => _CleanupDialogState();
 }
 
 class _CleanupDialogState extends State<_CleanupDialog> {
-  late final CleanupController _cleanup = widget.controller
-      .createCleanupController(widget.workspaceId);
+  late final CleanupController _cleanup = widget.shared ?? widget.create!();
 
   @override
   void dispose() {
-    _cleanup.dispose();
+    if (widget.shared == null) _cleanup.dispose();
     super.dispose();
   }
 

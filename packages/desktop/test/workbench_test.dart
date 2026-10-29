@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 
+import 'package:desktop/src/cleanup_controller.dart';
 import 'package:desktop/src/folder_picker.dart';
 import 'package:desktop/src/layout_saver.dart';
 import 'package:desktop/src/workbench_controller.dart';
@@ -115,6 +116,7 @@ Future<WorkbenchController> pumpWorkbench(
   WidgetTester tester,
   FakeHostLink link, {
   FolderPicker? picker,
+  CleanupController? cleanup,
 }) async {
   tester.view.physicalSize = const Size(1400, 900);
   tester.view.devicePixelRatio = 1;
@@ -122,7 +124,9 @@ Future<WorkbenchController> pumpWorkbench(
   final controller = WorkbenchController(picker: picker ?? FakePicker());
   track(controller);
   await tester.pumpWidget(
-    MaterialApp(home: WorkbenchPage(controller: controller)),
+    MaterialApp(
+      home: WorkbenchPage(controller: controller, cleanup: cleanup),
+    ),
   );
   unawaited(controller.attach(link));
   await tester.pump();
@@ -1005,6 +1009,43 @@ void main() {
 
       expect(link.calls, contains('list - ws=A'));
       expect(find.text('/work/project-1'), findsOneWidget);
+    });
+
+    uiTest('the whole cleanup list is reachable from the workbench', (
+      tester,
+    ) async {
+      // Unresolved cleanup for a directory with no workspace row: no badge
+      // can lead to it.
+      final link = linkWith(null);
+      link.workspaces.add(workspace(1));
+      final cleanup = track(CleanupController(link));
+      await pumpWorkbench(tester, link, cleanup: cleanup);
+      await tester.pump();
+
+      expect(key('cleanup-all'), findsOneWidget);
+      expect(
+        find.textContaining('Cleanup unresolved: 1 workspace, 2 units'),
+        findsOneWidget,
+      );
+
+      // Still reachable with the sidebar collapsed.
+      await tester.tap(find.byTooltip('Collapse sidebar'));
+      await tester.pump();
+      await tester.tap(key('cleanup-all'));
+      await tester.pumpAndSettle();
+
+      expect(link.calls, contains('list -'));
+      expect(find.text('/work/project-1'), findsOneWidget);
+      await tester.tap(find.text('Close'));
+      await tester.pumpAndSettle();
+    });
+
+    uiTest('no cleanup action while nothing is unresolved', (tester) async {
+      final link = linkWith(null);
+      final cleanup = track(CleanupController(link));
+      await pumpWorkbench(tester, link, cleanup: cleanup);
+      await tester.pump();
+      expect(key('cleanup-all'), findsNothing);
     });
 
     uiTest('cleanup-only list update clears the badge with an unchanged seq', (
