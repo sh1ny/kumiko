@@ -13,7 +13,7 @@ void main() {
       ),
     );
     await tester.pumpAndSettle();
-    expect(find.text('Kumiko'), findsOneWidget);
+    expect(find.text('Personal'), findsOneWidget);
     expect(find.text('Host connected'), findsOneWidget);
   });
 }

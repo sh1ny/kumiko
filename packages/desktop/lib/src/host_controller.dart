@@ -38,6 +38,9 @@ class HostController extends ChangeNotifier {
 
   HostPhase get phase => _phase;
   HelloResult? get hello => _link?.hello;
+
+  /// The connected host, or null.
+  HostLink? get link => _link;
   CleanupController? get cleanup => _cleanup;
 
   /// The start failure behind a start-error, incompatible, already-running

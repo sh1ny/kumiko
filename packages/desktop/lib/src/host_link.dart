@@ -43,8 +43,9 @@ abstract interface class HostLink {
   /// revision.
   Future<WorkbenchLoadResult> workbenchLoad();
 
-  /// `workbench/save`. [revision] is the stored one the caller last saw; a
-  /// different one fails with `stale-revision` ([storedRevisionOf]).
+  /// `workbench/save`. The host stores the layout only when [revision] is
+  /// above its stored one; otherwise it fails with `stale-revision`
+  /// ([storedRevisionOf]).
   Future<WorkbenchSaveResult> workbenchSave(Json layout, int revision);
 
   /// `workspace/open`: registers the folder at [path] (or finds it).

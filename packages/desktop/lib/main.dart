@@ -4,11 +4,14 @@ import 'dart:ui';
 import 'package:flutter/material.dart';
 import 'package:host_protocol/host_protocol.dart';
 
+import 'src/folder_picker.dart';
 import 'src/host_controller.dart';
 import 'src/host_link.dart';
 import 'src/host_location.dart';
 import 'src/host_status_page.dart';
 import 'src/launcher_link.dart';
+import 'src/workbench_controller.dart';
+import 'src/workbench_page.dart';
 
 /// Development only: `--dart-define=KUMIKO_HOST=<path>` replaces the bundled
 /// host path.
@@ -48,11 +51,13 @@ class KumikoApp extends StatefulWidget {
     required this.connector,
     required this.hostPath,
     required this.onExit,
+    this.folderPicker = const FileSelectorFolderPicker(),
   });
 
   final HostConnector connector;
   final String hostPath;
   final VoidCallback onExit;
+  final FolderPicker folderPicker;
 
   @override
   State<KumikoApp> createState() => _KumikoAppState();
@@ -63,23 +68,46 @@ class _KumikoAppState extends State<KumikoApp> {
     connector: widget.connector,
     onExit: widget.onExit,
   );
+  late final WorkbenchController _workbench = WorkbenchController(
+    picker: widget.folderPicker,
+  );
   late final AppLifecycleListener _lifecycle;
+  HostLink? _attached;
 
   @override
   void initState() {
     super.initState();
     _lifecycle = AppLifecycleListener(
       onExitRequested: () async {
+        // Pending layout changes go out first (bounded); a failure only sets
+        // the notice.
+        await _workbench.flush();
         await _controller.shutdown();
         return AppExitResponse.exit;
       },
     );
+    _controller.addListener(_syncWorkbench);
     _controller.start();
+  }
+
+  /// Follows the host: the workbench attaches to each connected link and
+  /// keeps its in-memory layout across a lost host.
+  void _syncWorkbench() {
+    final link = _controller.link;
+    if (link == _attached) return;
+    _attached = link;
+    if (link == null) {
+      _workbench.detach();
+    } else {
+      _workbench.attach(link);
+    }
   }
 
   @override
   void dispose() {
     _lifecycle.dispose();
+    _controller.removeListener(_syncWorkbench);
+    _workbench.dispose();
     _controller.dispose();
     super.dispose();
   }
@@ -88,7 +116,15 @@ class _KumikoAppState extends State<KumikoApp> {
   Widget build(BuildContext context) {
     return MaterialApp(
       title: 'Kumiko',
-      home: HostStatusPage(controller: _controller, hostPath: widget.hostPath),
+      home: ListenableBuilder(
+        listenable: _controller,
+        builder: (context, _) => _controller.phase == HostPhase.connected
+            ? WorkbenchPage(controller: _workbench)
+            : HostStatusPage(
+                controller: _controller,
+                hostPath: widget.hostPath,
+              ),
+      ),
     );
   }
 }
