@@ -113,6 +113,60 @@ void main() {
     expect(failure?.reason, ErrorCode.profileLocked);
   });
 
+  test('hello rejection carries the error data', () async {
+    final failure = await _startFailure(_launcher('locked-data'));
+
+    expect(failure?.reason, ErrorCode.storeNewer);
+    expect(failure?.data, {
+      'path': '/p/kumiko.db',
+      'storeVersion': 3,
+      'supportedVersion': 1,
+    });
+  });
+
+  test(
+    'hello carries the desktop pid, start time and job attestation',
+    () async {
+      final session = await _launcher('echo-desktop').start();
+      addTearDown(session.quit);
+
+      final sent = jsonDecode(session.hello.hostVersion) as List<Object?>;
+      expect(sent[0], pid);
+      expect(sent[1], processStartTime(pid));
+      expect(sent[1], isNotNull);
+      expect(sent[2], Platform.isWindows);
+    },
+  );
+
+  test('cleanup/state notifications reach the session', () async {
+    final session = await _launcher('notify').start();
+    addTearDown(session.quit);
+
+    final all = session.notifications.first;
+    final state = await session.cleanupStates.first.timeout(
+      const Duration(seconds: 10),
+    );
+    final raw = await all;
+
+    expect(raw.method, Method.cleanupState);
+    expect(state.reconciling, isFalse);
+    expect(state.revision, 7);
+    expect(state.unresolvedWorkspaces, 2);
+    expect(state.unresolvedUnits, 5);
+  });
+
+  test('a notification sent before anyone listens is not lost', () async {
+    final session = await _launcher('notify').start();
+    addTearDown(session.quit);
+    await Future<void>.delayed(const Duration(milliseconds: 500));
+
+    final state = await session.cleanupStates.first.timeout(
+      const Duration(seconds: 10),
+    );
+
+    expect(state.revision, 7);
+  });
+
   test('host kill detected within 2 s', () async {
     final session = await _launcher('serve').start();
     addTearDown(session.quit);
@@ -208,10 +262,13 @@ void main() {
       final second = await launcher.start();
       await second.quit();
 
+      // A clean quit attests the closed job as well, once.
       final third = await launcher.start();
+      expect(jsonDecode(third.hello.hostVersion), {
+        'instanceId': 'stub-1',
+        'jobTerminated': true,
+      });
       addTearDown(third.quit);
-
-      expect(third.hello.hostVersion, 'null');
     }, skip: !windows);
 
     test('quit closes the job so nothing survives', () async {

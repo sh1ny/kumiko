@@ -48,6 +48,8 @@ abstract final class ErrorCode {
   static const String targetUnavailable = 'target-unavailable';
   static const String storeError = 'store-error';
   static const String retryInProgress = 'retry-in-progress';
+  static const String outerJobMissing = 'outer-job-missing';
+  static const String shuttingDown = 'shutting-down';
   static const String profileLocked = 'profile-locked';
   static const String profileUnavailable = 'profile-unavailable';
   static const String storeMigrationFailed = 'store-migration-failed';
@@ -182,6 +184,9 @@ class HelloParams {
     required this.versions,
     required this.capabilities,
     this.priorHost,
+    this.desktopPid,
+    this.desktopStartTime,
+    this.outerJobHeld,
   });
 
   factory HelloParams.fromJson(Json json) {
@@ -190,6 +195,9 @@ class HelloParams {
       versions: VersionRange.fromJson(_req<Json>(json, 'versions')),
       capabilities: _list<String>(json, 'capabilities').toSet(),
       priorHost: prior == null ? null : PriorHost.fromJson(prior),
+      desktopPid: _opt<int>(json, 'desktopPid'),
+      desktopStartTime: _opt<int>(json, 'desktopStartTime'),
+      outerJobHeld: _opt<bool>(json, 'outerJobHeld'),
     );
   }
 
@@ -197,10 +205,23 @@ class HelloParams {
   final Set<String> capabilities;
   final PriorHost? priorHost;
 
+  /// The desktop's pid and OS start time (`processStartTime`), recorded with
+  /// every ledger entry so a later host can tell whether the desktop that
+  /// held the Windows job still runs (design D8 b). Optional on the wire.
+  final int? desktopPid;
+  final int? desktopStartTime;
+
+  /// Windows: the desktop attests it holds the host in its kill-on-close
+  /// outer job. Absent or false makes the host refuse launches.
+  final bool? outerJobHeld;
+
   Json toJson() => {
     'versions': versions.toJson(),
     'capabilities': capabilities.toList()..sort(),
     if (priorHost != null) 'priorHost': priorHost!.toJson(),
+    if (desktopPid != null) 'desktopPid': desktopPid,
+    if (desktopStartTime != null) 'desktopStartTime': desktopStartTime,
+    if (outerJobHeld != null) 'outerJobHeld': outerJobHeld,
   };
 }
 
@@ -616,6 +637,25 @@ class TestUnitEndParams {
       TestUnitEndParams(_req<String>(json, 'containmentId'));
   final String containmentId;
   Json toJson() => {'containmentId': containmentId};
+}
+
+/// The outcome of ending a test unit: cleaned (its row is gone), or
+/// unresolved with [reason].
+class TestUnitEndResult {
+  const TestUnitEndResult({required this.cleaned, this.reason});
+
+  factory TestUnitEndResult.fromJson(Json json) => TestUnitEndResult(
+    cleaned: _req<bool>(json, 'cleaned'),
+    reason: _opt<String>(json, 'reason'),
+  );
+
+  final bool cleaned;
+  final String? reason;
+
+  Json toJson() => {
+    'cleaned': cleaned,
+    if (reason != null) 'reason': clampUtf8(reason!, maxReasonBytes),
+  };
 }
 
 class TestChannelOpenParams {

@@ -45,6 +45,7 @@ class HostStartException implements Exception {
     this.kind,
     this.message, {
     this.reason,
+    this.data = const {},
     this.hostExitCode,
     this.stderr = '',
   });
@@ -54,6 +55,10 @@ class HostStartException implements Exception {
 
   /// The `error.data.reason` of a rejected `hello`.
   final String? reason;
+
+  /// The structured `error.data` of a rejected `hello` (without `reason`):
+  /// store paths and versions, both version ranges, and so on.
+  final Json data;
 
   /// Exit code of the host when it had ended (or was killed) by the time this
   /// was thrown.
@@ -89,6 +94,13 @@ class HostLoss {
   String toString() => 'HostLoss(${kind.name}, exit $exitCode)';
 }
 
+/// A notification from the host.
+class HostNotification {
+  const HostNotification(this.method, this.params);
+  final String method;
+  final Json params;
+}
+
 class QuitResult {
   const QuitResult({required this.exitCode, required this.timedOut});
 
@@ -107,6 +119,7 @@ class HostLauncher {
     required this.executable,
     required this.profileDir,
     this.executableArguments = const [],
+    this.environment,
     this.versions = const VersionRange(1, 1),
     this.capabilities = const {},
     this.helloTimeout = defaultHelloTimeout,
@@ -120,6 +133,9 @@ class HostLauncher {
   /// [executable] is the Dart VM.
   final List<String> executableArguments;
   final String profileDir;
+
+  /// Extra environment for the host process, on top of the desktop's own.
+  final Map<String, String>? environment;
   final VersionRange versions;
   final Set<String> capabilities;
   final Duration helloTimeout;
@@ -158,14 +174,14 @@ class HostLauncher {
         ...executableArguments,
         '--profile',
         profileDir,
-      ]);
+      ], environment: environment);
     } on ProcessException catch (e) {
       if (job != null) closeHandle(job);
       _prior = prior;
       throw HostStartException(HostStartFailure.spawnFailed, e.toString());
     }
 
-    final session = HostSession._(this, process, job);
+    final session = HostSession._(this, process, job, _Notifications());
     _settling = session._settled;
     try {
       // The host spawns nothing before hello, so assigning it now puts every
@@ -184,7 +200,12 @@ class HostLauncher {
 
     try {
       session._hello = await session.connection
-          .hello(priorHost: prior)
+          .hello(
+            priorHost: prior,
+            desktopPid: pid,
+            desktopStartTime: processStartTime(pid),
+            outerJobHeld: job != null,
+          )
           .timeout(helloTimeout);
     } on TimeoutException {
       await session._abandon();
@@ -202,6 +223,7 @@ class HostLauncher {
         HostStartFailure.helloRejected,
         e.message,
         reason: e.reason,
+        data: e.data,
         hostExitCode: session._exitCode,
         stderr: session.stderrTail,
       );
@@ -219,14 +241,53 @@ class HostLauncher {
   }
 }
 
+/// The notifications of one session. The host may send one as soon as its
+/// `hello` answer is out, before the caller can listen, so the first
+/// listener also receives those that came earlier (at most [_maxEarly]).
+/// Later listeners see what arrives after they listen.
+class _Notifications {
+  static const int _maxEarly = 64;
+
+  final StreamController<HostNotification> _live =
+      StreamController<HostNotification>.broadcast(sync: true);
+  final List<HostNotification> _early = [];
+  bool _listened = false;
+
+  void add(String method, Json params) {
+    final notification = HostNotification(method, params);
+    if (!_listened) {
+      if (_early.length < _maxEarly) _early.add(notification);
+      return;
+    }
+    _live.add(notification);
+  }
+
+  void close() => unawaited(_live.close());
+
+  Stream<HostNotification> get stream => Stream.multi((controller) {
+    if (!_listened) {
+      _listened = true;
+      _early
+        ..forEach(controller.addSync)
+        ..clear();
+    }
+    final subscription = _live.stream.listen(
+      controller.addSync,
+      onDone: controller.closeSync,
+    );
+    controller.onCancel = subscription.cancel;
+  }, isBroadcast: true);
+}
+
 /// A started host with a completed `hello`.
 class HostSession {
-  HostSession._(this._launcher, this._process, this._job)
+  HostSession._(this._launcher, this._process, this._job, this._notifications)
     : connection = Connection(
         input: _process.stdout,
         output: IOSinkAdapter(_process.stdin),
         versions: _launcher.versions,
         capabilities: _launcher.capabilities,
+        onNotification: _notifications.add,
       ) {
     // A dead host breaks the pipe; the connection reports that.
     _process.stdin.done.then<void>((_) {}, onError: (Object _) {});
@@ -238,9 +299,10 @@ class HostSession {
       }),
     );
     unawaited(
-      connection.closed.then(
-        (reason) => _ended(HostLossKind.connectionClosed, reason),
-      ),
+      connection.closed.then((reason) {
+        _notifications.close();
+        _ended(HostLossKind.connectionClosed, reason);
+      }),
     );
   }
 
@@ -249,6 +311,7 @@ class HostSession {
   final StderrRing _ring = StderrRing();
   final Completer<HostLoss> _lost = Completer();
   final Completer<void> _settledDone = Completer();
+  final _Notifications _notifications;
 
   /// The JSON-RPC connection to the host.
   final Connection connection;
@@ -264,6 +327,18 @@ class HostSession {
   Future<QuitResult>? _quit;
 
   Future<void> get _settled => _settledDone.future;
+
+  /// Every notification the host sends. The host may send one as soon as its
+  /// `hello` answer is out, before the caller can listen, so the first
+  /// listener also receives those that came earlier (at most 64). Later
+  /// listeners see what arrives after they listen.
+  Stream<HostNotification> get notifications => _notifications.stream;
+
+  /// The `cleanup/state` notifications, parsed. The host sends one when
+  /// reconciliation ends and after every retry or confirm.
+  Stream<CleanupState> get cleanupStates => notifications
+      .where((n) => n.method == Method.cleanupState)
+      .map((n) => CleanupState.fromJson(n.params));
 
   /// The host's answer to `hello`.
   HelloResult get hello => _hello!;
@@ -347,6 +422,21 @@ class HostSession {
     _settledDone.complete();
   }
 
+  /// Closes the host's stdin. A flush still in flight makes `close` throw, so
+  /// it is retried until that flush is over.
+  Future<void> _closeStdin() async {
+    for (var attempt = 0; attempt < 100; attempt++) {
+      try {
+        await _process.stdin.close();
+        return;
+      } on StateError {
+        await Future<void>.delayed(const Duration(milliseconds: 10));
+      } on Object {
+        return; // the pipe is already broken
+      }
+    }
+  }
+
   /// Ends the host as the desktop quits: closes stdin, which the host reads
   /// as the desktop going away, and waits up to the quit deadline for it to
   /// exit. A host that does not is killed. On Windows closing the outer job
@@ -361,9 +451,7 @@ class HostSession {
     }
     _expected = true;
     await connection.close();
-    unawaited(
-      _process.stdin.close().then<void>((_) {}, onError: (Object _) {}),
-    );
+    unawaited(_closeStdin());
 
     var timedOut = false;
     int? code;
@@ -374,18 +462,15 @@ class HostSession {
       _process.kill();
       code = await _reap(const Duration(seconds: 5));
     }
-    if (timedOut && _job != null) {
-      // The host did not finish in time: the same attestation as a loss.
+    if (_job != null) {
+      // Whether the host finished in time or not, the units it left in the
+      // ledger are covered by the outer job: terminate it and attest the
+      // result, the same as for a loss (design D8).
       final jobTerminated = await _terminateJob();
       _launcher._prior = PriorHost(
         hello.instanceId,
         jobTerminated: jobTerminated,
       );
-    } else {
-      // Closing the handle kills a straggler (kill-on-close).
-      final job = _job;
-      _job = null;
-      if (job != null) closeHandle(job);
     }
     _settledDone.complete();
     return QuitResult(exitCode: code, timedOut: timedOut);

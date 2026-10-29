@@ -8,6 +8,9 @@
 //   no-exit     like serve, but ignores stdin EOF
 //   flood       writes 10000 numbered stderr lines, then serves
 //   echo-prior  like serve, hostVersion = the priorHost it was sent as JSON
+//   echo-desktop like serve, hostVersion = the desktop identity it was sent
+//   locked-data answers hello with an error carrying structured data
+//   notify      like serve, then sends a cleanup/state notification
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
@@ -32,17 +35,44 @@ Future<void> main(List<String> args) async {
     await stderr.flush();
   }
 
-  final connection = Connection(
+  late final Connection connection;
+  connection = Connection(
     input: stdin,
     output: IOSinkAdapter(stdout),
     onHello: (params, negotiated) {
       if (mode == 'locked') {
         throw RpcException(ErrorCode.profileLocked, 'locked');
       }
+      if (mode == 'locked-data') {
+        throw RpcException(ErrorCode.storeNewer, 'newer', {
+          'path': '/p/kumiko.db',
+          'storeVersion': 3,
+          'supportedVersion': 1,
+        });
+      }
+      if (mode == 'notify') {
+        Timer(const Duration(milliseconds: 50), () {
+          connection.notify(
+            Method.cleanupState,
+            const CleanupState(
+              reconciling: false,
+              revision: 7,
+              unresolvedWorkspaces: 2,
+              unresolvedUnits: 5,
+            ).toJson(),
+          );
+        });
+      }
       return HelloInfo(
         instanceId: 'stub-1',
         hostVersion: mode == 'echo-prior'
             ? jsonEncode(params.priorHost?.toJson())
+            : mode == 'echo-desktop'
+            ? jsonEncode([
+                params.desktopPid,
+                params.desktopStartTime,
+                params.outerJobHeld,
+              ])
             : jsonEncode(args),
       );
     },
