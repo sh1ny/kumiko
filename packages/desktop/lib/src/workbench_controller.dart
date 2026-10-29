@@ -4,6 +4,7 @@ import 'dart:math';
 
 import 'package:domain/domain.dart';
 import 'package:flutter/foundation.dart';
+import 'package:flutter/services.dart';
 import 'package:host_protocol/host_protocol.dart';
 
 import 'cleanup_controller.dart';
@@ -80,6 +81,10 @@ class WorkbenchController extends ChangeNotifier {
   bool _listLoaded = false;
   final Set<String> _removing = {};
 
+  /// Removed ids: the host never reuses one, so a list answer taken before
+  /// the remove must not add it back.
+  final Set<String> _removed = {};
+
   /// The layout, or null until the first load.
   LayoutDocument? get layout => _layout;
   List<WorkspaceRecord> get workspaces => _workspaces;
@@ -117,6 +122,7 @@ class WorkbenchController extends ChangeNotifier {
     _loading = _layout == null;
     _listLoaded = false;
     _listRequested = 0;
+    _latestStateRevision = 0;
     _reconciling = link.hello.state == HostState.reconciling;
     _subscriptions
       ..add(link.cleanupStates.listen(_onCleanupState))
@@ -142,7 +148,8 @@ class WorkbenchController extends ChangeNotifier {
       ..clear()
       ..addEntries(result.workspaces.map((w) => MapEntry(w.id, w.seq)));
     _cleanupApplied = result.cleanupRevision;
-    _latestStateRevision = result.cleanupRevision;
+    // A `cleanup/state` that arrived while the load was out may be newer.
+    _latestStateRevision = max(_latestStateRevision, result.cleanupRevision);
     _listLoaded = true;
     _saver.raiseCounter(result.revision);
 
@@ -338,7 +345,16 @@ class WorkbenchController extends ChangeNotifier {
     final link = _link;
     if (link == null || _layout == null) return;
     final generation = _generation;
-    final path = await _picker.pickFolder();
+    final String? path;
+    try {
+      path = await _picker.pickFolder();
+    } on Exception catch (e) {
+      if (_stale(generation)) return;
+      final reason = e is PlatformException ? e.message ?? e.code : '$e';
+      _message = 'Could not open the folder picker: $reason';
+      notifyListeners();
+      return;
+    }
     if (path == null || _stale(generation)) return;
     try {
       final result = await link.workspaceOpen(path);
@@ -402,6 +418,7 @@ class WorkbenchController extends ChangeNotifier {
           if (w.id != id) w,
       ];
       _seq.remove(id);
+      _removed.add(id);
       _saver.raiseCounter(result.revision);
       _setLayout(_layout!.clearContext(id));
     } on RpcException catch (e) {
@@ -440,7 +457,7 @@ class WorkbenchController extends ChangeNotifier {
   }) {
     final i = _workspaces.indexWhere((w) => w.id == record.id);
     if (i < 0) {
-      if (!add) return;
+      if (!add || _removed.contains(record.id)) return;
       _workspaces = [..._workspaces, record];
       _seq[record.id] = record.seq;
       return;

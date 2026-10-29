@@ -7,6 +7,7 @@ import 'package:desktop/src/workbench_controller.dart';
 import 'package:desktop/src/workbench_page.dart';
 import 'package:domain/domain.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:host_protocol/host_protocol.dart';
 
@@ -101,6 +102,13 @@ class FakePicker implements FolderPicker {
     calls++;
     return next;
   }
+}
+
+/// A picker whose plugin call fails.
+class _ThrowingPicker implements FolderPicker {
+  @override
+  Future<String?> pickFolder() async =>
+      throw PlatformException(code: 'error', message: 'no portal');
 }
 
 Future<WorkbenchController> pumpWorkbench(
@@ -674,6 +682,35 @@ void main() {
       expect(link.storedLayout, jsonOf(c.layout!));
     });
 
+    uiTest('the save notice stays until a save succeeds', (tester) async {
+      final link = linkWith(null);
+      link.saveAnswers.add(RpcException(ErrorCode.storeError, 'disk full'));
+      final c = await pumpWorkbench(tester, link);
+      await tester.tap(find.byTooltip('Collapse sidebar'));
+      await tester.pump(ms500);
+      await tester.pump();
+      expect(find.textContaining('Layout not saved'), findsOneWidget);
+
+      // A later change: pending, not stored yet.
+      await tester.tap(find.byTooltip('Expand sidebar'));
+      await tester.pump();
+      expect(c.saver.state, SaveState.pending);
+      expect(find.textContaining('Layout not saved'), findsOneWidget);
+
+      // Retry: in flight, not stored yet.
+      link.saveGate = Completer<void>();
+      await tester.tap(find.text('Retry'));
+      await tester.pump();
+      expect(c.saver.state, SaveState.inFlight);
+      expect(find.textContaining('Layout not saved'), findsOneWidget);
+
+      link.saveGate!.complete();
+      await tester.pump();
+      await tester.pump();
+      expect(find.textContaining('Layout not saved'), findsNothing);
+      expect(link.storedLayout, jsonOf(c.layout!));
+    });
+
     uiTest('empty layout with restore notice', (tester) async {
       final link = linkWith(null, records: [workspaceRecord('A')]);
       link.restoreError = 'unsupported layout format 9';
@@ -782,6 +819,93 @@ void main() {
       expect(c.workspaces, isEmpty);
       expect(link.saves, isEmpty);
       expect(jsonOf(c.layout!), before);
+    });
+
+    uiTest('a failing picker reports why and adds nothing', (tester) async {
+      final link = linkWith(null);
+      final c = await pumpWorkbench(tester, link, picker: _ThrowingPicker());
+
+      await tester.tap(find.text('Open folder'));
+      await tester.pump();
+      await tester.pump();
+
+      expect(c.workspaces, isEmpty);
+      expect(link.calls.where((x) => x.startsWith('workspace/open')), isEmpty);
+      expect(find.textContaining('no portal'), findsOneWidget);
+    });
+
+    uiTest('a list answer held across a remove does not restore it', (
+      tester,
+    ) async {
+      final link = linkWith(
+        null,
+        records: [workspaceRecord('A'), workspaceRecord('C')],
+      );
+      final c = await pumpWorkbench(tester, link);
+
+      // A cleanup-triggered list taken while C still exists, held.
+      link.listAnswers.add(
+        WorkspaceListResult(
+          workspaces: [workspaceRecord('A'), workspaceRecord('C')],
+          cleanupRevision: 2,
+        ),
+      );
+      link.listGate = Completer<void>();
+      link.cleanupRevision = 2;
+      link.revision = 2;
+      link.emitState();
+      await tester.pump();
+      expect(link.calls.last, 'workspace/list');
+
+      await tester.tap(key('remove-C'));
+      await tester.pump();
+      await tester.pump();
+      expect(c.workspace('C'), isNull);
+
+      link.listGate!.complete();
+      await tester.pump();
+      await tester.pump();
+
+      expect(c.workspace('C'), isNull);
+      expect(key('ws-C'), findsNothing);
+      expect(c.workspace('A'), isNotNull);
+    });
+
+    uiTest('a cleanup revision received during the load is kept', (
+      tester,
+    ) async {
+      final link = linkWith(
+        null,
+        records: [workspaceRecord('A', cleanupGroups: 2, seq: 4)],
+      );
+      // The load snapshot is taken at cleanup revision 1, then held.
+      link.loadAnswers.add(
+        WorkbenchLoadResult(
+          layout: null,
+          restoreError: null,
+          revision: 0,
+          workspaces: [workspaceRecord('A', cleanupGroups: 2, seq: 4)],
+          cleanupRevision: 1,
+        ),
+      );
+      link.loadGate = Completer<void>();
+      final c = await pumpWorkbench(tester, link);
+
+      // Reconciliation advances before the load answers.
+      link.records[0] = workspaceRecord('A', cleanupGroups: 0, seq: 4);
+      link.cleanupRevision = 2;
+      link.revision = 2;
+      link.emitState();
+      await tester.pump();
+
+      link.loadGate!.complete();
+      await tester.pump();
+      await tester.pump();
+      await tester.pump();
+
+      expect(link.calls, contains('workspace/list'));
+      expect(c.workspace('A')!.cleanup.groups, 0);
+      expect(key('badge-A'), findsNothing);
     });
 
     uiTest('sidebar badge opens filtered cleanup list', (tester) async {

@@ -5,7 +5,6 @@ import 'package:host_protocol/host_protocol.dart';
 
 import 'cleanup_controller.dart';
 import 'cleanup_list_view.dart';
-import 'layout_saver.dart';
 import 'workbench_controller.dart';
 
 const String _openFolderValue = '#open-folder';
@@ -84,10 +83,11 @@ class WorkbenchPage extends StatelessWidget {
             ),
           ],
         ),
-      if (saver.state == SaveState.failed && saver.notice != null)
+      // Shown until a save succeeds, through later changes and Retry.
+      if (saver.notice case final notice?)
         _Banner(
           color: scheme.errorContainer,
-          text: saver.notice!,
+          text: notice,
           actions: [
             TextButton(
               key: const Key('retry-save'),
