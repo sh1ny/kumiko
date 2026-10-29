@@ -66,7 +66,7 @@ The proposal is in [proposal.md](proposal.md). Current state the approach builds
 ### D4: Workspace identity: de-duplicate by directory identity, then by path, and refresh identity from the path
 
 - **Choice:** `workspace/open` resolves the path:
-  - a resolved identity that equals a stored workspace's identity → that workspace (focus, no new row);
+  - a resolved identity that equals a stored workspace's identity → that workspace (focus, no new row). When the stored path no longer resolves to that identity (it is missing or holds another directory), the directory was moved: the workspace keeps its id and takes the opened canonical path and its folder name as label. A link to it, a stored path that cannot be resolved now, or a path another workspace holds leaves the stored path unchanged;
   - otherwise a canonical path equal to a stored workspace's path → that workspace, with its stored `identity` updated (directory replaced at the same path);
   - otherwise a new row.
 
