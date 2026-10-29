@@ -62,7 +62,7 @@ Mechanical checks (no scenario row): `dart analyze --fatal-infos` / `flutter ana
 
 ## 2. Layout model in `domain`
 
-- [ ] 2.1 Write failing `packages/domain/test/layout_test.dart` for the domain rows of the test map: split and group limit, move, close-last-tab, open-or-focus, select workspace (with and without tabs), tab limit, binding immutability across every operation, `clearContext`, sidebar state, codec round-trip including unknown kinds, and validation bounds (document 256 KiB, `state` 4 KiB, string lengths, ratio 0.1-0.9, dangling context repair). Verify: `dart test` in `packages/domain` fails on missing symbols.
+- [x] 2.1 Write failing `packages/domain/test/layout_test.dart` for the domain rows of the test map: split and group limit, move, close-last-tab, open-or-focus, select workspace (with and without tabs), tab limit, binding immutability across every operation, `clearContext`, sidebar state, codec round-trip including unknown kinds, and validation bounds (document 256 KiB, `state` 4 KiB, string lengths, ratio 0.1-0.9, dangling context repair). Verify: `dart test` in `packages/domain` fails on missing symbols.
 - [ ] 2.2 Implement the layout model, operations, bounds constants, validation and JSON codec in `packages/domain/lib/src/layout/` and export them from `domain.dart` (no `dart:io`). Verify: `layout_test.dart` passes; flip the domain rows green.
 
 ## 3. Store schema v2 and protocol messages
