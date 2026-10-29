@@ -11,6 +11,7 @@ dependencies:
   flutter:
     sdk: flutter
   domain: any
+  file_selector: ^1.0.3
   host_protocol: any
   process_containment: any
 

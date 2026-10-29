@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:collection';
 
 import 'package:desktop/src/host_link.dart';
 import 'package:host_protocol/host_protocol.dart';
@@ -7,9 +8,10 @@ HelloResult helloResult({
   HostState state = HostState.ready,
   String hostVersion = '0.1.0',
   int version = 1,
+  Set<String> capabilities = const {Capability.workbench},
 }) => HelloResult(
   version: version,
-  capabilities: const {},
+  capabilities: capabilities,
   instanceId: 'instance-1',
   hostVersion: hostVersion,
   state: state,
@@ -32,7 +34,29 @@ CleanupWorkspace workspace(
       [for (var i = 0; i < unitCount && i < 10; i++) unit(n * 1000 + i)],
 );
 
+WorkspaceRecord workspaceRecord(
+  String id, {
+  String? path,
+  Availability availability = Availability.available,
+  String? reason,
+  int seq = 1,
+  int cleanupGroups = 0,
+}) => WorkspaceRecord(
+  id: id,
+  path: path ?? '/work/$id',
+  label: id,
+  identity: 'identity-$id',
+  availability: availability,
+  reason: reason,
+  seq: seq,
+  cleanup: WorkspaceCleanup(groups: cleanupGroups),
+);
+
 /// A scripted [HostLink]: no process, no wire.
+///
+/// The workbench methods answer from queued answers or a default; set a
+/// `...Gate` to hold an answer until it completes, for example a save that
+/// never answers.
 class FakeHostLink implements HostLink {
   FakeHostLink({HelloResult? hello, List<CleanupWorkspace>? workspaces})
     : hello = hello ?? helloResult(),
@@ -58,6 +82,143 @@ class FakeHostLink implements HostLink {
 
   final List<String> calls = [];
   bool quitCalled = false;
+
+  // --- workbench / workspace scripting ------------------------------------
+
+  /// The stored layout and its revision, as `workbench/load` answers them.
+  Json? storedLayout;
+  String? restoreError;
+  int layoutRevision = 0;
+  int cleanupRevision = 1;
+
+  /// The known workspaces, in order.
+  final List<WorkspaceRecord> records = [];
+
+  /// Each save's layout and revision, in call order.
+  final List<({Json layout, int revision})> saves = [];
+
+  /// Per-call answers, consumed first-in first-out before the defaults: an
+  /// `Exception` or `Error` is thrown, anything else is the result.
+  final Queue<Object> loadAnswers = Queue();
+  final Queue<Object> saveAnswers = Queue();
+  final Queue<Object> openAnswers = Queue();
+  final Queue<Object> checkAnswers = Queue();
+  final Queue<Object> listAnswers = Queue();
+  final Queue<Object> removeAnswers = Queue();
+
+  /// Held answers: the call is recorded at once but does not answer until
+  /// the gate completes.
+  Completer<void>? loadGate;
+  Completer<void>? saveGate;
+  Completer<void>? openGate;
+  Completer<void>? checkGate;
+  Completer<void>? listGate;
+  Completer<void>? removeGate;
+
+  final StreamController<WorkspaceChanged> _changes =
+      StreamController.broadcast();
+
+  @override
+  Stream<WorkspaceChanged> get workspaceChanges => _changes.stream;
+
+  void emitWorkspaceChanged(WorkspaceRecord record, {int? cleanupRevision}) =>
+      _changes.add(
+        WorkspaceChanged(
+          workspace: record,
+          cleanupRevision: cleanupRevision ?? this.cleanupRevision,
+        ),
+      );
+
+  Future<T> _answer<T extends Object>(
+    Queue<Object> queue,
+    Completer<void>? gate,
+    T Function() fallback,
+  ) async {
+    final scripted = queue.isEmpty ? null : queue.removeFirst();
+    await gate?.future;
+    if (scripted is Exception || scripted is Error) throw scripted!;
+    return scripted == null ? fallback() : scripted as T;
+  }
+
+  @override
+  Future<WorkbenchLoadResult> workbenchLoad() {
+    calls.add('workbench/load');
+    return _answer(
+      loadAnswers,
+      loadGate,
+      () => WorkbenchLoadResult(
+        layout: storedLayout,
+        restoreError: storedLayout == null ? restoreError : null,
+        revision: layoutRevision,
+        workspaces: [...records],
+        cleanupRevision: cleanupRevision,
+      ),
+    );
+  }
+
+  @override
+  Future<WorkbenchSaveResult> workbenchSave(Json layout, int revision) {
+    calls.add('workbench/save $revision');
+    saves.add((layout: layout, revision: revision));
+    return _answer(saveAnswers, saveGate, () {
+      if (revision != layoutRevision) throw staleRevision(layoutRevision);
+      storedLayout = layout;
+      return WorkbenchSaveResult(++layoutRevision);
+    });
+  }
+
+  @override
+  Future<WorkspaceOpenResult> workspaceOpen(String path) {
+    calls.add('workspace/open $path');
+    return _answer(openAnswers, openGate, () {
+      final i = records.indexWhere((r) => r.path == path);
+      final existing = i >= 0;
+      final record = existing
+          ? records[i]
+          : workspaceRecord('ws-open-${records.length + 1}', path: path);
+      if (!existing) records.add(record);
+      return WorkspaceOpenResult(
+        workspace: record,
+        existing: existing,
+        cleanupRevision: cleanupRevision,
+      );
+    });
+  }
+
+  @override
+  Future<WorkspaceCheckResult> workspaceCheck(String id) {
+    calls.add('workspace/check $id');
+    return _answer(
+      checkAnswers,
+      checkGate,
+      () => WorkspaceCheckResult(
+        workspace: records.firstWhere((r) => r.id == id),
+        cleanupRevision: cleanupRevision,
+      ),
+    );
+  }
+
+  @override
+  Future<WorkspaceListResult> workspaceList() {
+    calls.add('workspace/list');
+    return _answer(
+      listAnswers,
+      listGate,
+      () => WorkspaceListResult(
+        workspaces: [...records],
+        cleanupRevision: cleanupRevision,
+      ),
+    );
+  }
+
+  @override
+  Future<WorkspaceRemoveResult> workspaceRemove(String id) {
+    calls.add('workspace/remove $id');
+    return _answer(removeAnswers, removeGate, () {
+      records.removeWhere((r) => r.id == id);
+      return WorkspaceRemoveResult(++layoutRevision);
+    });
+  }
 
   /// When set, a `cleanup/units` answer, computed when it was asked, is
   /// held until this completes.
@@ -88,7 +249,11 @@ class FakeHostLink implements HostLink {
   ]) => _lost.complete(loss);
 
   @override
-  Future<CleanupListResult> cleanupList({String? cursor, int? revision}) async {
+  Future<CleanupListResult> cleanupList({
+    String? cursor,
+    int? revision,
+    String? workspace,
+  }) async {
     calls.add('list ${cursor ?? '-'}');
     final start = cursor == null ? 0 : int.parse(cursor);
     final end = (start + pageSize).clamp(0, workspaces.length);

@@ -70,6 +70,19 @@ class HostController extends ChangeNotifier {
       unawaited(link.quit());
       return;
     }
+    if (!link.hello.capabilities.contains(Capability.workbench)) {
+      // A host that cannot serve the workbench is as unusable as one with no
+      // common protocol version.
+      unawaited(link.quit());
+      _error = HostStartException(
+        HostStartFailure.helloRejected,
+        'the host does not offer the ${Capability.workbench} capability',
+        reason: ErrorCode.incompatibleVersion,
+      );
+      _phase = HostPhase.incompatible;
+      notifyListeners();
+      return;
+    }
     _link = link;
     _cleanup = CleanupController(link);
     _phase = HostPhase.connected;

@@ -30,6 +30,7 @@ void main() {
       env: Platform.environment,
       home: home,
     ),
+    capabilities: const {Capability.workbench},
   );
   runApp(
     KumikoApp(

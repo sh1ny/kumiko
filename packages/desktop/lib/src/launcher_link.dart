@@ -19,6 +19,11 @@ class SessionLink implements HostLink {
   @override
   Stream<CleanupState> get cleanupStates => session.cleanupStates;
 
+  @override
+  Stream<WorkspaceChanged> get workspaceChanges => session.notifications
+      .where((n) => n.method == Method.workspaceChanged)
+      .map((n) => WorkspaceChanged.fromJson(n.params));
+
   Json _json(Object? result) =>
       (result! as Map<Object?, Object?>).cast<String, Object?>();
 
@@ -26,8 +31,16 @@ class SessionLink implements HostLink {
       _json(await session.connection.request(method, params));
 
   @override
-  Future<CleanupListResult> cleanupList({String? cursor, int? revision}) async {
-    final params = CleanupListParams(cursor: cursor, revision: revision);
+  Future<CleanupListResult> cleanupList({
+    String? cursor,
+    int? revision,
+    String? workspace,
+  }) async {
+    final params = CleanupListParams(
+      cursor: cursor,
+      revision: revision,
+      workspace: workspace,
+    );
     return CleanupListResult.fromJson(
       await _request(Method.cleanupList, params.toJson()),
     );
@@ -64,6 +77,50 @@ class SessionLink implements HostLink {
         await _request(
           Method.cleanupConfirm,
           CleanupActionParams(workspace).toJson(),
+        ),
+      );
+
+  @override
+  Future<WorkbenchLoadResult> workbenchLoad() async =>
+      WorkbenchLoadResult.fromJson(await _request(Method.workbenchLoad, {}));
+
+  @override
+  Future<WorkbenchSaveResult> workbenchSave(Json layout, int revision) async =>
+      WorkbenchSaveResult.fromJson(
+        await _request(
+          Method.workbenchSave,
+          WorkbenchSaveParams(layout: layout, revision: revision).toJson(),
+        ),
+      );
+
+  @override
+  Future<WorkspaceOpenResult> workspaceOpen(String path) async =>
+      WorkspaceOpenResult.fromJson(
+        await _request(
+          Method.workspaceOpen,
+          WorkspaceOpenParams(path).toJson(),
+        ),
+      );
+
+  @override
+  Future<WorkspaceCheckResult> workspaceCheck(String id) async =>
+      WorkspaceCheckResult.fromJson(
+        await _request(
+          Method.workspaceCheck,
+          WorkspaceCheckParams(id).toJson(),
+        ),
+      );
+
+  @override
+  Future<WorkspaceListResult> workspaceList() async =>
+      WorkspaceListResult.fromJson(await _request(Method.workspaceList, {}));
+
+  @override
+  Future<WorkspaceRemoveResult> workspaceRemove(String id) async =>
+      WorkspaceRemoveResult.fromJson(
+        await _request(
+          Method.workspaceRemove,
+          WorkspaceRemoveParams(id).toJson(),
         ),
       );
 
