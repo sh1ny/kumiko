@@ -83,7 +83,7 @@ Mechanical checks (no scenario row): `dart analyze --fatal-infos` / `flutter ana
 ## 6. Desktop workbench
 
 - [x] 6.1 Add `file_selector` to `packages/desktop/pubspec.yaml` behind a `FolderPicker` interface, and extend `HostLink`, `launcher_link.dart` and `test/support/fake_host.dart` with the new methods, the `workspace/changed` stream and `cleanupRevision`. Request the `workbench` capability, and map a host without it to the incompatible phase. Verify: `dart run tool/audit_dependencies.dart` passes, `flutter analyze` is clean, and the existing desktop tests still pass.
-- [ ] 6.2 Write failing `packages/desktop/test/workbench_test.dart` for every desktop row of the test map, using a fake clock for the debounce (500 ms), dirty age (2 s) and deadline (10 s). Verify: they fail.
+- [x] 6.2 Write failing `packages/desktop/test/workbench_test.dart` for every desktop row of the test map, using a fake clock for the debounce (500 ms), dirty age (2 s) and deadline (10 s). Verify: they fail.
 - [ ] 6.3 Implement `WorkbenchController` (domain operations, applying records by `seq` and cleanup by `cleanupRevision`, and the remove flow with flush and `clearContext`), `LayoutSaver` (the D6 state machine, revisions, late responses), and the UI: left sidebar with Personal, workspaces, availability, cleanup badge, Check again, Remove and collapse; split tab groups with drag to move and resizable ratios; the per-group + launcher; Workspace overview and unsupported-view tabs; and the save and restore notices. `KumikoApp` shows the workbench once connected and keeps the host-status page for the other phases. Hook the flush into `onExitRequested` before `shutdown()`. Verify: `workbench_test.dart` passes; flip its rows green.
 
 ## 7. Integration

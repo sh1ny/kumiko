@@ -37,6 +37,7 @@ CleanupWorkspace workspace(
 WorkspaceRecord workspaceRecord(
   String id, {
   String? path,
+  String? label,
   Availability availability = Availability.available,
   String? reason,
   int seq = 1,
@@ -44,7 +45,7 @@ WorkspaceRecord workspaceRecord(
 }) => WorkspaceRecord(
   id: id,
   path: path ?? '/work/$id',
-  label: id,
+  label: label ?? id,
   identity: 'identity-$id',
   availability: availability,
   reason: reason,
@@ -161,9 +162,11 @@ class FakeHostLink implements HostLink {
     calls.add('workbench/save $revision');
     saves.add((layout: layout, revision: revision));
     return _answer(saveAnswers, saveGate, () {
-      if (revision != layoutRevision) throw staleRevision(layoutRevision);
+      // The host stores a save only above its stored revision (design D6).
+      if (revision <= layoutRevision) throw staleRevision(layoutRevision);
       storedLayout = layout;
-      return WorkbenchSaveResult(++layoutRevision);
+      layoutRevision = revision;
+      return WorkbenchSaveResult(revision);
     });
   }
 
@@ -175,7 +178,11 @@ class FakeHostLink implements HostLink {
       final existing = i >= 0;
       final record = existing
           ? records[i]
-          : workspaceRecord('ws-open-${records.length + 1}', path: path);
+          : workspaceRecord(
+              'ws-open-${records.length + 1}',
+              path: path,
+              label: path.split('/').last,
+            );
       if (!existing) records.add(record);
       return WorkspaceOpenResult(
         workspace: record,
@@ -254,7 +261,7 @@ class FakeHostLink implements HostLink {
     int? revision,
     String? workspace,
   }) async {
-    calls.add('list ${cursor ?? '-'}');
+    calls.add('list ${cursor ?? '-'}${workspace == null ? '' : ' ws=$workspace'}');
     final start = cursor == null ? 0 : int.parse(cursor);
     final end = (start + pageSize).clamp(0, workspaces.length);
     return CleanupListResult(
