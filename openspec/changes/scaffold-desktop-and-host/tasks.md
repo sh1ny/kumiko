@@ -62,7 +62,7 @@ Paths are relative to the repository root.
 | desktop-host-protocol → The host bounds memory for a slow desktop | Desktop stops reading the pipe entirely | `host/it/lifecycle_test.dart` | `pending control over 4 MiB ends units and exits host` | red |
 | local-store → Only the lock holder opens the store | Store opened after the lock | `host/it/store_test.dart` | `lock holder opens store and completes hello` | red |
 | local-store → Only the lock holder opens the store | Host without the lock | `host/it/lock_test.dart` | `locked host creates no store or journal files` | red |
-| local-store → Migrations are versioned and transactional | Fresh profile | `packages/host/test/store/migrations_test.dart` | `fresh store created at current version` | red |
+| local-store → Migrations are versioned and transactional | Fresh profile | `packages/host/test/store/migrations_test.dart` | `fresh store created at current version` | green |
 | local-store → Migrations are versioned and transactional | Migration fails | `packages/host/test/store/migrations_test.dart` + `host/it/store_test.dart` | `failing step rolls back version and contents` / `hello reports store-migration-failed` | red |
 | local-store → A store is never reset or downgraded | Store from a newer Kumiko | `host/it/store_test.dart` | `newer store refused unchanged with both versions` | red |
 | local-store → A store is never reset or downgraded | Store file cannot be opened | `host/it/store_test.dart` | `garbage store file left in place, store-unreadable with path` | red |
@@ -104,7 +104,7 @@ Paths are relative to the repository root.
 ## 6. Store core (`host`)
 
 - [x] 6.1 Write failing `packages/host/test/store/migrations_test.dart`: a fresh store at v1; a failing injected step that leaves `user_version` and contents unchanged; a newer `user_version` refused unchanged; a garbage file left in place. Verify: they fail for missing code.
-- [ ] 6.2 Implement the store with the ADR 0008 binding: WAL, `synchronous=FULL`, a migration list with one transaction per step, schema v1 (`host_instance`, `unit` per design D4), and typed errors `store-migration-failed`, `store-newer`, `store-unreadable`. It is opened only through a function that requires a held profile lock object. Verify: `migrations_test` passes; flip its rows green.
+- [x] 6.2 Implement the store with the ADR 0008 binding: WAL, `synchronous=FULL`, a migration list with one transaction per step, schema v1 (`host_instance`, `unit` per design D4), and typed errors `store-migration-failed`, `store-newer`, `store-unreadable`. It is opened only through a function that requires a held profile lock object. Verify: `migrations_test` passes; flip its rows green.
 
 ## 7. Host executable (`host`)
 
