@@ -38,6 +38,9 @@ class HostController extends ChangeNotifier {
 
   HostPhase get phase => _phase;
   HelloResult? get hello => _link?.hello;
+
+  /// The connected host, or null.
+  HostLink? get link => _link;
   CleanupController? get cleanup => _cleanup;
 
   /// The start failure behind a start-error, incompatible, already-running
@@ -68,6 +71,19 @@ class HostController extends ChangeNotifier {
     }
     if (_disposed || generation != _generation) {
       unawaited(link.quit());
+      return;
+    }
+    if (!link.hello.capabilities.contains(Capability.workbench)) {
+      // A host that cannot serve the workbench is as unusable as one with no
+      // common protocol version.
+      unawaited(link.quit());
+      _error = HostStartException(
+        HostStartFailure.helloRejected,
+        'the host does not offer the ${Capability.workbench} capability',
+        reason: ErrorCode.incompatibleVersion,
+      );
+      _phase = HostPhase.incompatible;
+      notifyListeners();
       return;
     }
     _link = link;

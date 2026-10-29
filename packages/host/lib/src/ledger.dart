@@ -297,4 +297,45 @@ class Ledger {
         UnitRow.fromRow(r),
     ],
   );
+
+  /// Up to [limit] + 1 distinct `target_identity` values of unresolved units
+  /// that match a workspace, after [after], ordered by identity: units under
+  /// its current [identity] or at its [path], which includes the identities a
+  /// replaced directory had at that path (design D9).
+  List<({String identity, String path, int count})> unresolvedGroupsFor({
+    required String identity,
+    required String path,
+    required String? after,
+    required int limit,
+  }) => _guard(
+    () => [
+      for (final r in _store.select(
+        'SELECT target_identity, MIN(target_path) AS path, COUNT(*) AS n '
+        "FROM unit WHERE state = 'unresolved' AND "
+        '(target_identity = ? OR target_path = ?) AND target_identity > ? '
+        'GROUP BY target_identity ORDER BY target_identity LIMIT ?',
+        [identity, path, after ?? '', limit + 1],
+      ))
+        (
+          identity: r['target_identity'] as String,
+          path: r['path'] as String,
+          count: r['n'] as int,
+        ),
+    ],
+  );
+
+  /// How many groups [unresolvedGroupsFor] pages over.
+  int unresolvedGroupCountFor({
+    required String identity,
+    required String path,
+  }) => _guard(
+    () =>
+        _store.select(
+              'SELECT COUNT(DISTINCT target_identity) AS n FROM unit '
+              "WHERE state = 'unresolved' AND "
+              '(target_identity = ? OR target_path = ?)',
+              [identity, path],
+            ).single['n']
+            as int,
+  );
 }

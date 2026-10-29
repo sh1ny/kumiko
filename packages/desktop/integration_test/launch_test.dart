@@ -60,6 +60,7 @@ void main() {
       final launcher = HostLauncher(
         executable: hostPath,
         profileDir: profile.path,
+        capabilities: const {Capability.workbench},
       );
       final connect = launcherConnector(launcher);
 

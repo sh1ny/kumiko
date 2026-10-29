@@ -15,6 +15,9 @@ import 'settler.dart';
 import 'store/store.dart';
 import 'store/store_error.dart';
 import 'unit_manager.dart';
+import 'workbench_service.dart';
+import 'workspace_resolver.dart';
+import 'workspace_service.dart';
 
 /// The version the host reports in `hello`.
 const String hostVersion = '0.1.0';
@@ -69,6 +72,8 @@ class Host {
   Ledger? _ledger;
   UnitManager? _units;
   CleanupService? _cleanup;
+  WorkspaceService? _workspaces;
+  WorkbenchService? _workbench;
   bool _stopping = false;
 
   /// Runs until the desktop goes away; returns the exit code.
@@ -79,7 +84,7 @@ class Host {
       // Non-blocking: a desktop that stops reading must not block the isolate
       // in a write, or the host could neither notice nor shut down.
       output: IOSinkAdapter(stdout.nonBlocking),
-      capabilities: extension?.capabilities ?? const {},
+      capabilities: {Capability.workbench, ...?extension?.capabilities},
       onHello: _onHello,
       onRequest: _onRequest,
     );
@@ -198,6 +203,23 @@ class Host {
             startTime: params.desktopStartTime,
             outerJobHeld: params.outerJobHeld ?? false,
           );
+    final workspaces = _workspaces = WorkspaceService(
+      store: store,
+      ledger: ledger,
+      log: log,
+      options: options,
+      resolver: WorkspaceResolver(
+        faults: faults,
+        timeout: options.resolveTimeout,
+      ),
+      notify: _connection.notify,
+    );
+    _workbench = WorkbenchService(
+      store: store,
+      ledger: ledger,
+      workspaces: workspaces,
+      faults: faults,
+    );
     final cleanup = _cleanup = CleanupService(
       ledger: ledger,
       log: log,
@@ -205,6 +227,7 @@ class Host {
       units: units,
       options: options,
       notify: _connection.notify,
+      workspaceTarget: workspaces.cleanupTarget,
     )..startReconciliation(params.priorHost);
     units.onUnresolved = cleanup.sendState;
     log.event(
@@ -231,6 +254,24 @@ class Host {
       case Method.cleanupConfirm:
         final p = CleanupActionParams.fromJson(params);
         return cleanup.confirm(p.workspace).toJson();
+    }
+    switch (method) {
+      case Method.workbenchSave:
+        final p = WorkbenchSaveParams.fromJson(params);
+        return (await _workbench!.save(p)).toJson();
+      case Method.workbenchLoad:
+        return _workbench!.load().toJson();
+      case Method.workspaceList:
+        return _workspaces!.list().toJson();
+      case Method.workspaceOpen:
+        final p = WorkspaceOpenParams.fromJson(params);
+        return (await _workspaces!.open(p.path)).toJson();
+      case Method.workspaceCheck:
+        final p = WorkspaceCheckParams.fromJson(params);
+        return (await _workspaces!.check(p.id)).toJson();
+      case Method.workspaceRemove:
+        final p = WorkspaceRemoveParams.fromJson(params);
+        return _workbench!.removeWorkspace(p.id).toJson();
     }
     if (method.startsWith('test/') && extension != null) {
       return extension!.handle(

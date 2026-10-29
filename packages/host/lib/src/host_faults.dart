@@ -1,3 +1,5 @@
+import 'dart:isolate';
+
 import 'package:host_protocol/host_protocol.dart';
 
 /// Faults a test build can inject (`test/fault.set`). A release host has no
@@ -25,6 +27,37 @@ class HostFaults {
   /// deadline.
   bool get terminateHangs => _active.contains(TestFault.terminateHangs);
 
+  /// Saving the Personal layout fails.
+  bool get layoutSaveFails => _active.contains(TestFault.layoutSaveFails);
+
+  /// Saving the Personal layout never finishes while this stays on.
+  bool get layoutSaveHangs => _active.contains(TestFault.layoutSaveHangs);
+
+  final Map<String, ResolveFault> _resolve = {};
+  final Map<String, List<SendPort>> _hung = {};
+
+  /// Takes the fault set for the next resolution of [path], if any.
+  ResolveFault? takeResolveFault(String path) => _resolve.remove(path);
+
+  void setResolveFault(String path, ResolveFault? fault) {
+    if (fault == null) {
+      _resolve.remove(path);
+    } else {
+      _resolve[path] = fault;
+    }
+  }
+
+  /// A hung resolution of [path] waits on [port] for its release.
+  void registerHung(String path, SendPort port) =>
+      (_hung[path] ??= []).add(port);
+
+  /// Lets every hung resolution of [path] return.
+  void releaseResolve(String path) {
+    for (final port in _hung.remove(path) ?? const <SendPort>[]) {
+      port.send(true);
+    }
+  }
+
   void set(TestFault fault, {required bool enabled}) {
     if (enabled) {
       _active.add(fault);
@@ -32,4 +65,12 @@ class HostFaults {
       _active.remove(fault);
     }
   }
+}
+
+/// A fault of the next resolution of one path: a delay, or a hang until
+/// released.
+class ResolveFault {
+  const ResolveFault({this.delay = Duration.zero, this.hang = false});
+  final Duration delay;
+  final bool hang;
 }

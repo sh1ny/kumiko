@@ -9,7 +9,7 @@ import 'store_error.dart';
 /// with the `user_version` bump.
 typedef MigrationStep = void Function(Database db);
 
-/// Schema v1 (design D4).
+/// Schema v1 (design D4) and v2 (design D3).
 final List<MigrationStep> schemaMigrations = <MigrationStep>[
   (db) {
     db.execute('''
@@ -37,6 +37,32 @@ CREATE TABLE unit(
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
 )''');
+  },
+  // v2 (design D3): workspaces and the personal working set. The v1 ledger
+  // tables are untouched.
+  (db) {
+    db.execute('''
+CREATE TABLE workspace(
+  id TEXT PRIMARY KEY,
+  path TEXT NOT NULL UNIQUE,
+  identity TEXT NOT NULL,
+  label TEXT NOT NULL,
+  added_at TEXT NOT NULL
+)''');
+    db.execute('''
+CREATE TABLE working_set(
+  id TEXT PRIMARY KEY,
+  kind TEXT NOT NULL CHECK (kind IN ('personal','project')),
+  layout TEXT,
+  layout_format INTEGER,
+  revision INTEGER NOT NULL DEFAULT 0,
+  updated_at TEXT NOT NULL
+)''');
+    db.execute(
+      "INSERT INTO working_set(id, kind, layout, layout_format, revision,"
+      " updated_at) VALUES ('personal', 'personal', NULL, NULL, 0,"
+      " strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))",
+    );
   },
 ];
 

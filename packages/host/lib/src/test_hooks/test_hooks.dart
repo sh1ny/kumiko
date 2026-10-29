@@ -6,6 +6,7 @@ import 'dart:typed_data';
 import 'package:host_protocol/host_protocol.dart';
 
 import '../host_extension.dart';
+import '../host_faults.dart';
 import '../host_options.dart';
 import 'fixtures.dart';
 
@@ -18,7 +19,7 @@ class TestHostExtension implements HostExtension {
 
   /// Options from `KUMIKO_TEST_*` variables, which make timing deterministic:
   /// `UNIT_CAP`, `RECONCILE_DELAY_MS`, `RETRY_DELAY_MS`,
-  /// `SHUTDOWN_DEADLINE_MS`.
+  /// `SHUTDOWN_DEADLINE_MS`, `WORKSPACE_CAP`, `RESOLVE_TIMEOUT_MS`.
   factory TestHostExtension.fromEnvironment(Map<String, String> env) {
     int? number(String name) => int.tryParse(env['KUMIKO_TEST_$name'] ?? '');
     Duration? millis(String name) {
@@ -34,6 +35,10 @@ class TestHostExtension implements HostExtension {
             HostOptions.defaultShutdownDeadline,
         reconcileDelay: millis('RECONCILE_DELAY_MS') ?? Duration.zero,
         retryDelay: millis('RETRY_DELAY_MS') ?? Duration.zero,
+        workspaceCap:
+            number('WORKSPACE_CAP') ?? HostOptions.defaultWorkspaceCap,
+        resolveTimeout:
+            millis('RESOLVE_TIMEOUT_MS') ?? HostOptions.defaultResolveTimeout,
       ),
     );
   }
@@ -72,6 +77,23 @@ class TestHostExtension implements HostExtension {
       case Method.testFaultSet:
         final p = TestFaultSetParams.fromJson(params);
         host.faults.set(p.fault, enabled: p.enabled);
+        return <String, Object?>{};
+      case Method.testResolveFault:
+        final p = TestResolveFaultParams.fromJson(params);
+        host.faults.setResolveFault(
+          p.path,
+          p.hang || p.delayMs != null
+              ? ResolveFault(
+                  delay: Duration(milliseconds: p.delayMs ?? 0),
+                  hang: p.hang,
+                )
+              : null,
+        );
+        return <String, Object?>{};
+      case Method.testResolveRelease:
+        host.faults.releaseResolve(
+          TestResolveReleaseParams.fromJson(params).path,
+        );
         return <String, Object?>{};
       case Method.testChannelOpen:
         final p = TestChannelOpenParams.fromJson(params);

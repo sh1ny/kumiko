@@ -142,6 +142,20 @@ void main() {
     expect(find.textContaining('2..4'), findsOneWidget);
   });
 
+  testWidgets('host without workbench capability is incompatible', (
+    tester,
+  ) async {
+    final link = FakeHostLink(hello: helloResult(capabilities: const {}));
+    await pumpStatus(tester, () async => link);
+    await tester.pumpAndSettle();
+
+    expect(find.text('Incompatible host'), findsOneWidget);
+    expect(find.textContaining('workbench'), findsOneWidget);
+    expect(find.text('Host connected'), findsNothing);
+    expect(find.text('Restart host'), findsOneWidget);
+    expect(link.quitCalled, isTrue);
+  });
+
   testWidgets('profile-locked shows already running and exits on dismiss', (
     tester,
   ) async {

@@ -19,6 +19,7 @@ class CleanupService {
     required this.units,
     required this.options,
     required this.notify,
+    required this.workspaceTarget,
   });
 
   final Ledger ledger;
@@ -26,6 +27,9 @@ class CleanupService {
   final Settler settler;
   final UnitManager units;
   final HostOptions options;
+
+  /// The identity and path of the workspace with this id, or null.
+  final ({String identity, String path})? Function(String id) workspaceTarget;
 
   /// Sends a notification to the desktop.
   final void Function(String method, Json params) notify;
@@ -95,8 +99,24 @@ class CleanupService {
     final after = params.cursor == null
         ? null
         : CleanupCursor.decode(params.cursor!).targetIdentity;
+    final target = params.workspace == null
+        ? null
+        : workspaceTarget(params.workspace!);
+    if (params.workspace != null && target == null) {
+      throw RpcException(
+        ErrorCode.unknownWorkspace,
+        'no workspace ${params.workspace}',
+      );
+    }
     final revision = ledger.revision;
-    final found = ledger.workspaces(afterIdentity: after, limit: params.limit);
+    final found = target == null
+        ? ledger.workspaces(afterIdentity: after, limit: params.limit)
+        : ledger.unresolvedGroupsFor(
+            identity: target.identity,
+            path: target.path,
+            after: after,
+            limit: params.limit,
+          );
     final page = found.take(params.limit).toList();
     final workspaces = [
       for (final w in page)

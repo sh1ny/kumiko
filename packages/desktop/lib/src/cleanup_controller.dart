@@ -10,13 +10,15 @@ import 'host_link.dart';
 /// the workspaces. A new revision, or a page flagged stale, reloads from the
 /// first page.
 class CleanupController extends ChangeNotifier {
-  CleanupController(this._link) {
+  /// [workspace] (a workspace `id`) limits the list to that workspace.
+  CleanupController(this._link, {this.workspace}) {
     _reconciling = _link.hello.state == HostState.reconciling;
     _subscription = _link.cleanupStates.listen(_onState);
     if (!_reconciling) unawaited(reload());
   }
 
   final HostLink _link;
+  final String? workspace;
   late final StreamSubscription<CleanupState> _subscription;
   bool _disposed = false;
 
@@ -143,6 +145,7 @@ class CleanupController extends ChangeNotifier {
       final result = await _link.cleanupList(
         cursor: cursor,
         revision: first ? null : _loadedRevision,
+        workspace: workspace,
       );
       if (_disposed || token != _loadToken) return;
       if (result.stale && !first) {

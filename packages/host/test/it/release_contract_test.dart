@@ -52,6 +52,11 @@ void main() {
         isEmpty,
         reason: 'hello advertised ${session.hello.capabilities}',
       );
+      expect(
+        session.hello.capabilities,
+        contains(Capability.workbench),
+        reason: 'the release host serves workspaces and the workbench',
+      );
 
       final calls = <String, Object>{
         Method.testUnitLaunch: TestUnitLaunchParams(
@@ -65,6 +70,12 @@ void main() {
           TestFault.killFails,
           enabled: true,
         ).toJson(),
+        Method.testResolveFault: const TestResolveFaultParams(
+          '/x',
+          hang: true,
+        ).toJson(),
+        Method.testResolveRelease: const TestResolveReleaseParams('/x')
+            .toJson(),
       };
       for (final entry in calls.entries) {
         expect(
