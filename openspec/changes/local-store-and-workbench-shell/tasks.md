@@ -12,15 +12,15 @@ Test locations:
 | workbench-layout → First launch opens Personal without prompts | Fresh profile | packages/desktop/integration_test/workbench_reopen_test.dart | fresh profile opens Personal with one empty group and no prompt | red |
 | workbench-layout → First launch opens Personal without prompts | Host still reconciling | packages/desktop/test/workbench_test.dart | workbench and layout show while the host reconciles | red |
 | workbench-layout → Tab groups split and tabs move without changing their binding | Move a tab to another group | packages/domain/test/layout_test.dart; packages/desktop/test/workbench_test.dart | move keeps tab id and workspace binding; dragging a tab to another group keeps its binding | red |
-| workbench-layout → Tab groups split and tabs move without changing their binding | Close the last tab of a split group | packages/domain/test/layout_test.dart | closing the last tab of a split group removes the group and its split | red |
+| workbench-layout → Tab groups split and tabs move without changing their binding | Close the last tab of a split group | packages/domain/test/layout_test.dart | closing the last tab of a split group removes the group and its split | green |
 | workbench-layout → Tab groups split and tabs move without changing their binding | Split at the group limit | packages/domain/test/layout_test.dart; packages/desktop/test/workbench_test.dart | split refused at 16 groups; split action reports the group limit | red |
 | workbench-layout → Each tab group has a labeled click launcher | Open a view from an unfocused group | packages/desktop/test/workbench_test.dart | + in an unfocused group opens the view there bound to that group's context | red |
 | workbench-layout → Each tab group has a labeled click launcher | Launcher in a group with no workspace context | packages/desktop/test/workbench_test.dart | launcher without context marks workspace-needing kinds and offers Open folder | red |
 | workbench-layout → Each tab group has a labeled click launcher | Tab limit reached | packages/domain/test/layout_test.dart; packages/desktop/test/workbench_test.dart | open refused at 128 tabs; launcher reports the tab limit | red |
-| workbench-layout → Opening an open item focuses it | Overview already open in another group | packages/domain/test/layout_test.dart | open-or-focus focuses the existing item tab in another group | red |
-| workbench-layout → Opening an open item focuses it | Item's tab was closed | packages/domain/test/layout_test.dart | open-or-focus after close creates a tab in the launcher's group | red |
-| workbench-layout → Workspace selection focuses existing work without retargeting | Workspace with open tabs | packages/domain/test/layout_test.dart | select workspace focuses its most recent tab and keeps all bindings | red |
-| workbench-layout → Workspace selection focuses existing work without retargeting | Workspace with no tabs | packages/domain/test/layout_test.dart | select workspace without tabs sets the focused group context only | red |
+| workbench-layout → Opening an open item focuses it | Overview already open in another group | packages/domain/test/layout_test.dart | open-or-focus focuses the existing item tab in another group | green |
+| workbench-layout → Opening an open item focuses it | Item's tab was closed | packages/domain/test/layout_test.dart | open-or-focus after close creates a tab in the launcher's group | green |
+| workbench-layout → Workspace selection focuses existing work without retargeting | Workspace with open tabs | packages/domain/test/layout_test.dart | select workspace focuses its most recent tab and keeps all bindings | green |
+| workbench-layout → Workspace selection focuses existing work without retargeting | Workspace with no tabs | packages/domain/test/layout_test.dart | select workspace without tabs sets the focused group context only | green |
 | workbench-layout → A tab's workspace binding never changes | Binding after rearrangement and restore | packages/domain/test/layout_test.dart; packages/host/test/it/workbench_test.dart | no operation changes a tab's binding (all ops); binding survives save, host restart and load | red |
 | workbench-layout → A tab's workspace binding never changes | Bound workspace becomes unavailable | packages/desktop/test/workbench_test.dart | tab bound to an unavailable workspace keeps its binding and shows unavailable | red |
 | workbench-layout → The left sidebar collapses without changing work | Collapse and expand | packages/desktop/test/workbench_test.dart | collapsing and expanding the sidebar keeps groups, tabs and focus | red |
@@ -63,7 +63,7 @@ Mechanical checks (no scenario row): `dart analyze --fatal-infos` / `flutter ana
 ## 2. Layout model in `domain`
 
 - [x] 2.1 Write failing `packages/domain/test/layout_test.dart` for the domain rows of the test map: split and group limit, move, close-last-tab, open-or-focus, select workspace (with and without tabs), tab limit, binding immutability across every operation, `clearContext`, sidebar state, codec round-trip including unknown kinds, and validation bounds (document 256 KiB, `state` 4 KiB, string lengths, ratio 0.1-0.9, dangling context repair). Verify: `dart test` in `packages/domain` fails on missing symbols.
-- [ ] 2.2 Implement the layout model, operations, bounds constants, validation and JSON codec in `packages/domain/lib/src/layout/` and export them from `domain.dart` (no `dart:io`). Verify: `layout_test.dart` passes; flip the domain rows green.
+- [x] 2.2 Implement the layout model, operations, bounds constants, validation and JSON codec in `packages/domain/lib/src/layout/` and export them from `domain.dart` (no `dart:io`). Verify: `layout_test.dart` passes; flip the domain rows green.
 
 ## 3. Store schema v2 and protocol messages
 
