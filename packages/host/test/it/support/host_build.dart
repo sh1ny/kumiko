@@ -10,10 +10,19 @@ import 'dart:io';
 /// into place.
 const String _out = 'build/host-test';
 
+/// The release host (ADR 0008): `dart build cli -o <dir>` (a directory of its own, apart from the
+/// packaged `build/host`) from
+/// `packages/host`, which builds `bin/kumiko_host.dart`.
+const String _releaseOut = 'build/host-release';
+
 String get _exeName =>
     Platform.isWindows ? 'kumiko_host_test.exe' : 'kumiko_host_test';
 
+String get _releaseExeName =>
+    Platform.isWindows ? 'kumiko_host.exe' : 'kumiko_host';
+
 String? _built;
+String? _releaseBuilt;
 String? _standin;
 
 String get _standinName =>
@@ -28,32 +37,60 @@ String desktopStandinExecutable() =>
 String testHostExecutable() =>
     _built ?? (throw StateError('call buildTestHost() in setUpAll first'));
 
+/// The built release host executable. Call `buildReleaseHost` first.
+String releaseHostExecutable() =>
+    _releaseBuilt ??
+    (throw StateError('call buildReleaseHost() in setUpAll first'));
+
 Future<void> buildTestHost() async {
   if (_built != null) return;
   final packageDir = Directory.current;
-  final exe = File(
-    '${packageDir.path}/$_out/bundle/bin/$_exeName'.replaceAll(
-      '/',
-      Platform.pathSeparator,
-    ),
-  );
+  final exe = _bundleExe(packageDir, _out, _exeName);
   Directory('${packageDir.path}/build').createSync(recursive: true);
-  final lock = await _acquire(
-    File(
-      '${packageDir.path}/build/host-test.lock'.replaceAll(
-        '/',
-        Platform.pathSeparator,
-      ),
-    ),
-  );
+  final lock = await _acquire(_lockFile(packageDir, 'host-test'));
   try {
-    if (!_upToDate(exe, packageDir)) await _build(packageDir, exe);
+    if (!_upToDate(exe, packageDir)) {
+      await _build(packageDir, exe, _out, _exeName, [
+        '-t',
+        'tool/kumiko_host_test.dart',
+      ]);
+    }
     await _buildStandin(packageDir);
   } finally {
     lock.deleteSync();
   }
   _built = exe.path;
 }
+
+/// Builds the release host the same safe way as the test host: an exclusive
+/// lock between test files, a build into a directory of its own, and a move
+/// into place.
+Future<void> buildReleaseHost() async {
+  if (_releaseBuilt != null) return;
+  final packageDir = Directory.current;
+  final exe = _bundleExe(packageDir, _releaseOut, _releaseExeName);
+  Directory('${packageDir.path}/build').createSync(recursive: true);
+  final lock = await _acquire(_lockFile(packageDir, 'host-release'));
+  try {
+    if (!_upToDate(exe, packageDir)) {
+      await _build(packageDir, exe, _releaseOut, _releaseExeName, const []);
+    }
+  } finally {
+    lock.deleteSync();
+  }
+  _releaseBuilt = exe.path;
+}
+
+File _bundleExe(Directory packageDir, String out, String name) => File(
+  '${packageDir.path}/$out/bundle/bin/$name'.replaceAll(
+    '/',
+    Platform.pathSeparator,
+  ),
+);
+
+File _lockFile(Directory packageDir, String name) => File(
+  '${packageDir.path}/build/$name.lock'.replaceAll('/', Platform.pathSeparator),
+);
 
 Future<void> _buildStandin(Directory packageDir) async {
   final exe = File(
@@ -97,10 +134,18 @@ Future<void> _buildStandin(Directory packageDir) async {
 /// Builds into a directory of its own and moves it into place, so a build
 /// never shares its output with another one and nobody sees a half-written
 /// bundle.
-Future<void> _build(Directory packageDir, File exe) async {
+Future<void> _build(
+  Directory packageDir,
+  File exe,
+  String outPath,
+  String exeName,
+  List<String> entryArgs,
+) async {
   final sep = Platform.pathSeparator;
-  final out = Directory('${packageDir.path}$sep${_out.replaceAll('/', sep)}');
-  final temp = '$_out-$pid';
+  final out = Directory(
+    '${packageDir.path}$sep${outPath.replaceAll('/', sep)}',
+  );
+  final temp = '$outPath-$pid';
   final tempDir = Directory(
     '${packageDir.path}$sep${temp.replaceAll('/', sep)}',
   );
@@ -109,12 +154,11 @@ Future<void> _build(Directory packageDir, File exe) async {
     final result = await Process.run(Platform.resolvedExecutable, [
       'build',
       'cli',
-      '-t',
-      'tool/kumiko_host_test.dart',
+      ...entryArgs,
       '-o',
       temp,
     ], workingDirectory: packageDir.path);
-    final built = File('${tempDir.path}${sep}bundle${sep}bin$sep$_exeName');
+    final built = File('${tempDir.path}${sep}bundle${sep}bin$sep$exeName');
     if (result.exitCode != 0 || !built.existsSync()) {
       throw StateError(
         'dart build cli failed (${result.exitCode}):\n'
@@ -126,7 +170,7 @@ Future<void> _build(Directory packageDir, File exe) async {
   } finally {
     if (tempDir.existsSync()) tempDir.deleteSync(recursive: true);
   }
-  if (!exe.existsSync()) throw StateError('no test host at ${exe.path}');
+  if (!exe.existsSync()) throw StateError('no host at ${exe.path}');
 }
 
 /// A lock that works between test files, which `dart test` loads as isolates
