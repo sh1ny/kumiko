@@ -78,7 +78,7 @@ Paths are relative to the repository root.
 
 ## 2. Workspace scaffold and CI skeleton
 
-- [ ] 2.1 Pin the toolchain in `mise.toml` (Dart 3.13.7, Flutter 3.47.x as used locally). Create the root `pubspec.yaml` with `workspace:` and the packages `domain`, `host_protocol`, `process_containment`, `host` (with an executable `kumiko_host`) and `desktop` (Flutter app, Windows/Linux/macOS targets only), each with `resolution: workspace`. Add a shared `analysis_options.yaml` (strict casts, inference and raw types) and a `.gitignore` for build outputs. Verify: `dart pub get` at the root succeeds, and `dart analyze --fatal-infos` and `flutter analyze` report no issues.
+- [x] 2.1 Pin the toolchain in `mise.toml` (Dart 3.13.7, Flutter 3.47.x as used locally). Create the root `pubspec.yaml` with `workspace:` and the packages `domain`, `host_protocol`, `process_containment`, `host` (with an executable `kumiko_host`) and `desktop` (Flutter app, Windows/Linux/macOS targets only), each with `resolution: workspace`. Add a shared `analysis_options.yaml` (strict casts, inference and raw types) and a `.gitignore` for build outputs. Verify: `dart pub get` at the root succeeds, and `dart analyze --fatal-infos` and `flutter analyze` report no issues.
 - [ ] 2.2 Add `.github/workflows/ci.yml`: on push to `main` and on pull requests, a matrix over `windows-latest`, `ubuntu-latest` and `macos-latest` with the pinned Flutter, Linux desktop build dependencies, `dart pub get`, analyze and test steps. Verify: `actionlint` (or a YAML parse when it is unavailable) passes locally. The first CI run is checked in group 9.
 
 ## 3. Dependency audit (product-telemetry)

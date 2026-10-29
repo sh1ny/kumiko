@@ -1,0 +1,13 @@
+name: process_containment
+description: OS process containment for Kumiko - Windows jobs, POSIX sessions, start times, marker scan and file identity.
+publish_to: none
+resolution: workspace
+
+environment:
+  sdk: ^3.13.0
+
+dependencies:
+  ffi: ^2.1.0
+
+dev_dependencies:
+  test: ^1.26.0

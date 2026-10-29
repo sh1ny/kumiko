@@ -1,0 +1,14 @@
+# Dart and Flutter build outputs
+.dart_tool/
+build/
+**/build/
+*.iml
+.idea/
+.flutter-plugins
+.flutter-plugins-dependencies
+pubspec_overrides.yaml
+
+# Untracked reference checkouts
+/orca/
+/t3code/
+/itsaplan/

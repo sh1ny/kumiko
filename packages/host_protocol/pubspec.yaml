@@ -1,0 +1,14 @@
+name: host_protocol
+description: The Kumiko desktop-host protocol - frames, credit, JSON-RPC messages and the client launcher.
+publish_to: none
+resolution: workspace
+
+environment:
+  sdk: ^3.13.0
+
+dependencies:
+  domain: any
+  process_containment: any
+
+dev_dependencies:
+  test: ^1.26.0

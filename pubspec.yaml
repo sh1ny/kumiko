@@ -1,0 +1,16 @@
+name: kumiko_workspace
+description: Kumiko pub workspace root.
+publish_to: none
+
+environment:
+  sdk: ^3.13.0
+
+workspace:
+  - packages/domain
+  - packages/host_protocol
+  - packages/process_containment
+  - packages/host
+  - packages/desktop
+
+dev_dependencies:
+  lints: ^6.0.0
