@@ -78,7 +78,7 @@ Mechanical checks (no scenario row): `dart analyze --fatal-infos` / `flutter ana
 ## 5. Host workbench service
 
 - [x] 5.1 Write failing `packages/host/test/it/workbench_test.dart`: save then load across a host restart (bindings, closed tab absent); save survives killing the desktop stand-in; `stale-revision` for an equal or lower revision; injected save failure keeps the stored revision; an invalid stored row loads as `restoreError` with workspaces; a dangling context is repaired at load; a binding to an unknown workspace is refused `layout-invalid`; an oversized document is refused; `workspace/remove` clears stored contexts and raises the revision in one transaction, and refuses when a tab binds the id. Verify: they fail.
-- [ ] 5.2 Implement `WorkbenchService` (`workbench/load` and `workbench/save` with `domain` validation, the revision guard and the context repair) and the transactional remove (D11). Verify: `workbench_test.dart` and the remove rows of `workspace_test.dart` pass; flip their rows green after CI passes on three OSes.
+- [x] 5.2 Implement `WorkbenchService` (`workbench/load` and `workbench/save` with `domain` validation, the revision guard and the context repair) and the transactional remove (D11). Verify: `workbench_test.dart` and the remove rows of `workspace_test.dart` pass; flip their rows green after CI passes on three OSes.
 
 ## 6. Desktop workbench
 

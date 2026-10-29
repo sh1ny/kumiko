@@ -218,6 +218,7 @@ class Host {
       store: store,
       ledger: ledger,
       workspaces: workspaces,
+      faults: faults,
     );
     final cleanup = _cleanup = CleanupService(
       ledger: ledger,
@@ -255,6 +256,9 @@ class Host {
         return cleanup.confirm(p.workspace).toJson();
     }
     switch (method) {
+      case Method.workbenchSave:
+        final p = WorkbenchSaveParams.fromJson(params);
+        return (await _workbench!.save(p)).toJson();
       case Method.workbenchLoad:
         return _workbench!.load().toJson();
       case Method.workspaceList:
