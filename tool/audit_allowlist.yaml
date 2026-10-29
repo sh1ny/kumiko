@@ -1,0 +1,9 @@
+# Dependency audit allowlist (design D13).
+#
+# One line per package that the denylist in tool/audit_dependencies.dart would
+# otherwise reject:
+#
+#   <package_name>: <reason, why it carries no telemetry or reporting>
+#
+# The reason is required and must be non-empty. Keep this file empty unless a
+# package is a reviewed false positive. Reviewers should challenge every entry.

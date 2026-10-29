@@ -40,6 +40,9 @@ jobs:
       - name: Resolve workspace
         run: flutter pub get
 
+      - name: Audit dependencies
+        run: dart run tool/audit_dependencies.dart
+
       - name: Analyze Dart packages
         run: dart analyze --fatal-infos
 
@@ -49,6 +52,9 @@ jobs:
 
       - name: Test
         run: |
+          echo "::group::test tool"
+          dart test tool/test
+          echo "::endgroup::"
           for dir in packages/*/; do
             [ -d "${dir}test" ] || continue
             echo "::group::test ${dir}"

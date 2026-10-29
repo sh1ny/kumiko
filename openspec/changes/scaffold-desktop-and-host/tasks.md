@@ -66,9 +66,9 @@ Paths are relative to the repository root.
 | local-store → Migrations are versioned and transactional | Migration fails | `packages/host/test/store/migrations_test.dart` + `host/it/store_test.dart` | `failing step rolls back version and contents` / `hello reports store-migration-failed` | red |
 | local-store → A store is never reset or downgraded | Store from a newer Kumiko | `host/it/store_test.dart` | `newer store refused unchanged with both versions` | red |
 | local-store → A store is never reset or downgraded | Store file cannot be opened | `host/it/store_test.dart` | `garbage store file left in place, store-unreadable with path` | red |
-| product-telemetry → Shipped dependencies exclude telemetry and reporting packages | Clean dependency set | `tool/test/audit_dependencies_test.dart` | `clean graph passes and lists packages` | red |
-| product-telemetry → Shipped dependencies exclude telemetry and reporting packages | A reporting package is added | `tool/test/audit_dependencies_test.dart` | `denylisted transitive package fails with path` | red |
-| product-telemetry → Shipped dependencies exclude telemetry and reporting packages | Audit cannot read the resolved dependencies | `tool/test/audit_dependencies_test.dart` | `missing lock or failing pub deps fails audit` | red |
+| product-telemetry → Shipped dependencies exclude telemetry and reporting packages | Clean dependency set | `tool/test/audit_dependencies_test.dart` | `clean graph passes and lists packages` | green |
+| product-telemetry → Shipped dependencies exclude telemetry and reporting packages | A reporting package is added | `tool/test/audit_dependencies_test.dart` | `denylisted transitive package fails with path` | green |
+| product-telemetry → Shipped dependencies exclude telemetry and reporting packages | Audit cannot read the resolved dependencies | `tool/test/audit_dependencies_test.dart` | `missing lock or failing pub deps fails audit` | green |
 
 ## 1. SQLite probe and ADR 0008
 
@@ -84,7 +84,7 @@ Paths are relative to the repository root.
 ## 3. Dependency audit (product-telemetry)
 
 - [x] 3.1 Write `tool/test/audit_dependencies_test.dart` covering the three product-telemetry scenarios: a clean graph, a denylisted transitive package with its path, a missing lock, and a failing `pub deps`. Use fixture `pub deps --json` outputs and an injectable runner. Also test the D1 dependency rules: `desktop` must not depend on `host`, `domain` must not import `dart:io` or `dart:ffi`, and nothing reachable from `packages/host/bin/kumiko_host.dart` may import `lib/src/test_hooks/` (D10). Verify: the tests fail because the tool is missing.
-- [ ] 3.2 Implement `tool/audit_dependencies.dart` (denylist, patterns and allowlist file from design D13; exit non-zero with the package and its path) and `tool/audit_allowlist.yaml` (empty, with a header explaining the reason format). Add the audit to CI on every OS. Verify: the 3.1 tests pass and their rows are green; `dart run tool/audit_dependencies.dart` passes on the real workspace.
+- [x] 3.2 Implement `tool/audit_dependencies.dart` (denylist, patterns and allowlist file from design D13; exit non-zero with the package and its path) and `tool/audit_allowlist.yaml` (empty, with a header explaining the reason format). Add the audit to CI on every OS. Verify: the 3.1 tests pass and their rows are green; `dart run tool/audit_dependencies.dart` passes on the real workspace.
 
 ## 4. Protocol library (`host_protocol`)
 
