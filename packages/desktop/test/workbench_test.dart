@@ -250,6 +250,37 @@ void main() {
       expect(saver.unansweredSaves, 0);
     });
 
+    uiTest('a host that never answers holds at most 2 saves', (tester) async {
+      final probe = SaveProbe();
+      final saver = LayoutSaver(save: probe.call);
+      track(saver);
+
+      // Every save times out; changes and Retry keep coming.
+      for (var i = 0; i < 6; i++) {
+        saver.change(snap(i));
+        await tester.pump(ms500);
+        await tester.pump(const Duration(seconds: 10));
+        saver.retry();
+        await tester.pump();
+      }
+      expect(probe.calls, hasLength(2), reason: 'two unanswered at most');
+      expect(saver.unansweredSaves, 2);
+      expect(saver.notice, contains('Layout not saved'));
+
+      // An answer frees a place: the newest snapshot is sent at once.
+      probe.fail(
+        0,
+        ConnectionClosedException(const CloseReason(CloseReason.inputClosed)),
+      );
+      await tester.pump();
+      expect(probe.calls, hasLength(3));
+      expect(probe.calls[2].layout, snap(5));
+      probe.ok(2);
+      await tester.pump();
+      expect(saver.state, SaveState.clean);
+      expect(saver.notice, isNull);
+    });
+
     uiTest('changes during a save send only the newest after it returns', (
       tester,
     ) async {

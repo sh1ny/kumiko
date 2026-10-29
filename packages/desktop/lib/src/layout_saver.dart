@@ -37,6 +37,12 @@ class LayoutSaver extends ChangeNotifier {
   /// answering it cannot loop us.
   static const int _maxStaleResends = 3;
 
+  /// Saves sent and not yet answered, timed-out ones included. A host that
+  /// stops answering keeps each request open on the connection, so more
+  /// are not sent until one is answered (or the connection closes, which
+  /// fails them all).
+  static const int maxUnanswered = 2;
+
   Json? _latest;
 
   /// Counts changes; a save remembers the count its snapshot was taken at.
@@ -161,6 +167,11 @@ class LayoutSaver extends ChangeNotifier {
     _due = false;
     final layout = _latest;
     if (layout == null || !dirty) return;
+    if (_seqOf.length >= maxUnanswered) {
+      // Sent as soon as an unanswered save is answered.
+      _due = true;
+      return;
+    }
     final revision = ++_counter;
     _seqOf[revision] = _changeSeq;
     _inFlight = revision;
@@ -187,6 +198,7 @@ class LayoutSaver extends ChangeNotifier {
       // Each save is answered once; a timed-out one keeps its entry until
       // its late answer is handled above.
       _seqOf.remove(revision);
+      if (!_disposed && _due && _inFlight == null && dirty) _dispatch();
     }
   }
 

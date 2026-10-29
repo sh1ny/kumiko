@@ -109,7 +109,12 @@ void main() {
     expect(layoutFromJson(load.layout).tabs.map((t) => t.id), ['t0']);
   });
 
-  test('saved layout survives killing the desktop stand-in', () async {
+  // Kills the host after a save: the stored layout is durable. Desktop loss
+  // itself is covered by lifecycle_test ("killed desktop stand-in leaves no
+  // host or marked process"), and the desktop sending its debounced save by
+  // the desktop test "a change survives killing the desktop after the save
+  // period".
+  test('saved layout survives killing the host', () async {
     final desktop = await start();
     final id = await open(desktop, 'one');
     await desktop.saveWorkbench(json(layout(bindings: [id])), 1);
