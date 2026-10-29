@@ -10,7 +10,7 @@
 <!-- - **Deferred to:** <changes or milestones> -->
 <!-- - **User decision:** "<the user's words>" -->
 
-<!-- This verdict covers only the contents reviewed. Editing proposal, specs or design afterward (other than applying Required Changes) voids it. -->
+<!-- This verdict covers only the contents reviewed. Editing proposal, specs or design afterward (other than applying Required Changes, or an edit confined to the proposal's `## Release Notes` section) voids it. -->
 
 ## Findings
 

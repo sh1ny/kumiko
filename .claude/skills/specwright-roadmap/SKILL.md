@@ -2,7 +2,7 @@
 name: specwright-roadmap
 description: "Project-level planning above OpenSpec changes: strategy, architecture baseline (foundational ADRs) and a milestone roadmap. Modes: init (turn a big project idea or brief into strategy, architecture and roadmap), next (start the next change of the current milestone, or offer close at its end), close (verify a milestone's exit criteria and plan the next one), status. Triggers: a project idea too big for one change, 'plan this project', 'create a roadmap', 'what's next on the roadmap', 'next change/milestone', 'close the milestone', 'roadmap status', or specwright-finish offering next/close."
 metadata:
-  version: 0.7.0
+  version: 0.10.0
 ---
 
 # Specwright Roadmap
@@ -57,7 +57,9 @@ Input: the user's project idea (any size), plus the repo if code exists. Work on
 
 1. Read the roadmap's Now section. Run `openspec list --json` for active changes, and derive done changes from the main branch as above.
 2. Read each active change's `review.md`. One holding a whole line `VERDICT: DEFERRED` is parked: never offer to resume it, and continue to step 3 as if it were not active. Every other active change, including one with no `review.md`, is offered for resume instead. On a parking change's branch (the current branch is a parked change's own branch), say the parking change is on its own branch and that **next** starts from main once it has merged; start nothing: no branch, no change.
-3. Otherwise, the milestone end comes first. When every change of the Now milestone is done (a change that is planning merged, code pending, unverified or unknown is not done), the milestone is at its end: unless an exit criterion was shown failing by **close** or reported failing by the user, report `milestone end: run close`, offer **close** and stop. Start no change, create no branch and edit no file.
+3. Otherwise, check every change listed in the Now milestone first. A listed change whose active `review.md` holds a whole line `VERDICT: DEFERRED` is a parking change listed in error: report it as `parked (listed in error)`, neither started nor counted done, and say that removing it from Changes is the user's planning edit. Then stop: start nothing (no branch, no change), and never edit the roadmap for it.
+
+   Then the milestone end comes first. When every change of the Now milestone is done (a change that is planning merged, code pending, unverified or unknown is not done), the milestone is at its end: unless an exit criterion was shown failing by **close** or reported failing by the user, report `milestone end: run close`, offer **close** and stop. Start no change, create no branch and edit no file.
 
    next starts only changes of the Now milestone, never one under Next, even when Next already lists an agreed split: **close** promotes it first. Before the milestone end, pick the first planned change of Now that has no archive and whose prerequisites are all **done** (a prerequisite that is planning merged, code pending, unverified or unknown is not done). An archived change whose code is pending is never started again: report it and what it is waiting for (its code PR or merge). When no planned change is ready to start (each one left waits on a prerequisite that is not done), report what it waits for (each such prerequisite and its status) and start nothing.
 
@@ -66,7 +68,7 @@ Input: the user's project idea (any size), plus the repo if code exists. Work on
 
 ## close
 
-1. Every change of the milestone done (on main, as derived above)? If not, list what is left and stop.
+1. Every change of the milestone done (on main, as derived above)? If not, list what is left and stop. A listed change whose active `review.md` holds a whole line `VERDICT: DEFERRED` is reported as `parked (listed in error)`, neither started nor counted done, so the milestone does not close; say that removing it from Changes is the user's planning edit, then stop, and never edit the roadmap for it.
 2. Walk the exit criteria. Run agent-verifiable checks yourself. Ask the user to run user-verified ones and record their results; anything skipped is recorded as unverified, never passed.
 3. Any criterion fails → propose the change that fixes it (via **next**); do not close. Any criterion unverified → list it and stop; the milestone stays in Now until it has a passing result.
 3b. **Releases**, only with `release.enabled` true (otherwise list no versions and offer no release): list each version in main's first-parent history of the primary version file that has no tag on origin, as `[as] bash <specwright-release>/scripts/release.sh untagged --main <ref>` lists them (`specwright-release` **publish** step 2: fenced with the run login, since it reads origin's tags; a version is published when its tag is on origin, and a local tag not on origin is always listed), and offer to publish them oldest first. Publish nothing without the user's yes; a refused or failed publish is reported and never blocks the close.
@@ -83,14 +85,14 @@ Input: the user's project idea (any size), plus the repo if code exists. Work on
 
 ## status
 
-One answer, no edits: current milestone, its changes (done / planning merged, code pending / code unverified / code state unknown / active / parked / planned, derived as above, one status per change with its proof; a change whose `review.md` holds `VERDICT: DEFERRED` is listed as `parked` with its `Deferred to:` targets, never as active), the stale note when a fetch failed or was refused (`local refs only (no gh account)`), exit criteria state, and what **next** would do: the change it would start, what it waits for when no change is ready to start (as next step 3 reports it), or `milestone end: run close` when every change of the Now milestone is done, unless an exit criterion was shown failing by **close** or reported failing by the user: then the gap-closing change **next** would propose. On a parking change's branch, say the parking change is on its own branch and that **next** starts from main once it has merged.
+One answer, no edits: current milestone, its changes (done / planning merged, code pending / code unverified / code state unknown / active / parked / planned, derived as above, one status per change with its proof; a change whose `review.md` holds `VERDICT: DEFERRED` is listed as `parked` with its `Deferred to:` targets, never as active; one listed in the milestone's Changes is `parked (listed in error)` instead, neither started nor counted done, with the line that removing it from Changes is the user's planning edit), the stale note when a fetch failed or was refused (`local refs only (no gh account)`), exit criteria state, and what **next** would do: the change it would start, what it waits for when no change is ready to start (as next step 3 reports it), or `milestone end: run close` when every change of the Now milestone is done (never while one is `parked (listed in error)`: then report that change, as next step 3 does), unless an exit criterion was shown failing by **close** or reported failing by the user: then the gap-closing change **next** would propose. On a parking change's branch, say the parking change is on its own branch and that **next** starts from main once it has merged.
 
 ## Rules
 
 - Keep it small: the strategy is one page, the roadmap one or two, the architecture a few pages plus ADRs. Detail lives in OpenSpec changes, not here.
 - The roadmap is a plan, not a contract. Change it whenever a milestone teaches something; record why in the Done line.
 - Never mark a user-verified criterion passed on the user's behalf.
-- A parking change (a backlog for later milestones, never applied or archived) has its review recorded as `VERDICT: DEFERRED` only by the user's decision. The user merges its branch: `local` by hand with `--no-ff`, `pr` on GitHub (watch reports it parked). **next** moves a milestone's part into its own change, which gets its own full review. Removing an emptied parking change is the user's planning edit, never automated.
+- A parking change (a backlog for later milestones, never applied or archived) has its review recorded as `VERDICT: DEFERRED` only by the user's decision. It is never listed in a milestone's Changes, since it is never archived and so never done; **next**, **close** and **status** report one listed there as `parked (listed in error)`. The user merges its branch: `local` by hand with `--no-ff`, `pr` on GitHub (watch reports it parked). **next** moves a milestone's part into its own change, which gets its own full review. Removing an emptied parking change is the user's planning edit, never automated.
 
 ## Planning repo
 

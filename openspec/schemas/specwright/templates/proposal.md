@@ -32,3 +32,10 @@
 ## Impact
 
 <!-- Affected code, APIs, dependencies, systems -->
+
+## Release Notes
+
+<!-- For projects with `release.enabled: true`; delete this section otherwise.
+     A summary (at most 600 characters), then `### Added`, `### Changed`, `### Fixed`
+     and `### Removed` lists (leave empty ones out). Each item is at most 500 characters
+     and names its issue or PR (`#123`). -->

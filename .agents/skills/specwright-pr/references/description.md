@@ -39,7 +39,7 @@ Read the findings and waivers from the record that `review-run.sh gate` matched 
 - One keyword per issue, each on its own line: `Fixes #21`, `Fixes #24`. Never `Fixes #21, #24`: GitHub reads only the first reference after a keyword.
 - Closing lines go on the PR in the repository that holds the issue (normally the code PR). In a store-backed change the store PR uses `Related: <owner>/<repo>#N` for those issues.
 - When no PR is expected in the repository that holds the issue (a planning-only store-backed change whose issues are in the code repo), the PR that does exist carries `Fixes <owner>/<repo>#N` on its own line.
-- GitHub applies closing keywords only on a PR into the default branch. After `ensure-pr`, ship runs `pr-pair.sh closing-check` to compare these lines with what GitHub will close.
+- GitHub applies closing keywords only on a PR into the default branch. After `ensure-pr`, ship runs `pr-pair.sh closing-check` to compare these lines with what GitHub will close. It reads them from GitHub's own rendering of the description (`POST /markdown`, in the PR's repository as context): text GitHub renders as code, such as a fenced block, indented code, a code span or an HTML comment, is never read, and text it renders as prose is. When the rendering cannot be read the check exits 3, and ship reports it as not done.
 
 **Evidence:** label test output as test output. Screenshots only for visible UI changes.
 

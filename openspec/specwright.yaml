@@ -49,6 +49,11 @@ review:
   # ship and the local merge wait for a pass. false = no pre-ship review.
   preship: true
 
+# Commits during apply (specwright-commit):
+#   task  - one commit per task (the default)
+#   group - one commit per task group, with a Specwright-Task trailer per task
+commit_granularity: group
+
 project:
   # Project-level files used by specwright-roadmap. Point these at existing
   # documents instead of duplicating them.
@@ -101,6 +106,13 @@ pr:
   # Agent mode only: delete the merged PR's remote branch in cleanup, only
   # while it is still at the merged head and no open PR is based on it.
   delete_branch: true
+
+# Cheap tier. Off by default. true = apply sends every task
+# group of a TIER: LIGHT change to specwright-implementer-light, a pinned copy
+# of the implementer on the cheaper model (Claude Code: haiku, OMP: pi/smol).
+# FULL changes, reviews, watch and the orchestrator never change.
+cheap_tier:
+  enabled: false
 
 # Store-backed changes only (planning in an OpenSpec store, a separate git
 # repo): settings for the store side. Every other setting is shared with the

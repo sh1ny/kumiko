@@ -29,7 +29,23 @@
 # arguments, or a body file missing, unreadable, empty or not written in full
 # with its marker); nothing was posted, and stderr names the cause.
 # Wrap with as.sh to pin the GitHub identity.
+# Needs bash, gh and Python 3.8+; every gh call has a deadline (bounded.py), and a limit stops the script non-zero
+# (`bounded: deadline_exceeded: gh api` on stderr) after its temp file is removed.
 set -euo pipefail
+
+# Every gh call runs through bounded.py (a deadline and a byte bound on stdout and stderr; see its header), so a stuck network or a
+# huge response ends as a named limit instead of a hang. Python 3.8+ runs it. The wrapper starts gh through bash, so the
+# same call works where gh is a shell shim.
+py=
+for c in python3 python; do
+  if command -v "$c" >/dev/null 2>&1 && "$c" -c 'import sys; sys.exit(sys.version_info < (3, 8))' >/dev/null 2>&1; then py=$c; break; fi
+done
+[ -n "$py" ] || { echo 'pr-reply.sh: no_python: needs python 3.8+ for its bounded gh calls' >&2; exit 2; }
+# native Windows python cannot run an MSYS path: hand it Windows paths (-m: forward slashes bash accepts)
+SW_DIR=$(cd "$(dirname "$0")" && pwd -P)
+SW_BASH=${BASH:-bash}
+if command -v cygpath >/dev/null 2>&1; then SW_DIR=$(cygpath -m "$SW_DIR"); SW_BASH=$(cygpath -w "$SW_BASH"); fi
+gh() { "$py" -I "$SW_DIR/bounded.py" ${SW_PAGED:+--paged} ${SW_SECRET:+--secret} -- "$SW_BASH" -c 'exec gh "$@"' gh "$@"; }
 
 pr=${1:?PR}; kind=${2:?thread|comment|resolve}; shift 2
 repo= resolve=0 react= waiting=0 rev= args=()

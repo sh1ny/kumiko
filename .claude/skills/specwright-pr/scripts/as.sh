@@ -12,6 +12,8 @@
 # check gh has its token, and print the login (nothing else on stdout). A run keeps
 # that login and passes it to every later as.sh call; GH_TOKEN/GITHUB_TOKEN never
 # pick it.
+# Needs bash, gh 2.40+ and Python 3.8+ (exit 2 `no_python` without it). Each gh lookup here has a deadline: a hung one exits 3
+# naming `deadline_exceeded` (or `response_too_large`) and the command, and the fenced command is not run.
 # Exit 3: no credential for <login> (or no active account for --resolve), the token
 # resolves to someone else, gh is older than 2.40 (no per-account token lookup), or
 # the command could use a github.com URL with userinfo (below). Exit 2: usage.
@@ -64,26 +66,59 @@ fi
 # environment says (an empty GH_HOST counts as set, so unset it too).
 unset GH_TOKEN GITHUB_TOKEN GH_HOST GH_ENTERPRISE_TOKEN GITHUB_ENTERPRISE_TOKEN
 
+# Every gh call here runs through bounded.py (a deadline and a byte bound on stdout and stderr; see its header): a stuck
+# network ends as exit 3 naming the limit, never a hang. SW_SECRET=1 keeps what the lookups print (the token)
+# off disk. Python 3.8+ runs it. Only these lookups are bounded: the fenced command at the end is not.
+py=
+for c in python3 python; do
+  if command -v "$c" >/dev/null 2>&1 && "$c" -c 'import sys; sys.exit(sys.version_info < (3, 8))' >/dev/null 2>&1; then py=$c; break; fi
+done
+[ -n "$py" ] || { echo "as.sh: no_python: needs python 3.8+ for its bounded gh calls" >&2; exit 2; }
+# native Windows python cannot run an MSYS path: hand it Windows paths (-m: forward slashes bash accepts)
+SW_DIR=$(cd "$(dirname "$0")" && pwd -P)
+SW_BASH=${BASH:-bash}
+if command -v cygpath >/dev/null 2>&1; then SW_DIR=$(cygpath -m "$SW_DIR"); SW_BASH=$(cygpath -w "$SW_BASH"); fi
+SW_SECRET=1
+gh() { "$py" -I "$SW_DIR/bounded.py" ${SW_PAGED:+--paged} ${SW_SECRET:+--secret} -- "$SW_BASH" -c 'exec gh "$@"' gh "$@"; }
+# a lookup that hit a limit (bounded.py exits 124 deadline, 125 too large, 126 argument transport failed) stops here, before the message for "no credential"
+limit_stop() {  # <status> <command>
+  case $1 in
+    124) echo "as.sh: deadline_exceeded: $2" >&2; exit 3 ;;
+    125) echo "as.sh: response_too_large: $2" >&2; exit 3 ;;
+    126) echo "as.sh: argument transport failed: $2" >&2; exit 3 ;;
+  esac
+}
+
 # Without `gh auth token --user` the only per-account lookup is a shared
 # `gh auth switch`, which other agents race on - so refuse rather than fall back.
-case $(gh auth token --help 2>&1 || true) in
+rc=0; help=$(gh auth token --help 2>&1) || rc=$?
+limit_stop "$rc" "gh auth token --help"
+case $help in
   *--user*) ;;
   *) echo "as.sh: $(gh --version 2>/dev/null | head -n 1 || echo 'gh not found') cannot look up a token per account (gh auth token --user, gh 2.40+); upgrade gh" >&2; exit 3 ;;
 esac
 
 if [ -n "$resolve" ]; then
-  login=$(gh api --hostname github.com user --jq .login 2>/dev/null) || login=
+  rc=0; login=$(gh api --hostname github.com user --jq .login 2>/dev/null) || rc=$?
+  limit_stop "$rc" "gh api user"
+  [ "$rc" -eq 0 ] || login=
   [ -n "$login" ] || { echo "as.sh: no active gh account for github.com; run 'gh auth login' or set github.login in openspec/specwright.yaml (GH_TOKEN and GITHUB_TOKEN are not used to pick the login)" >&2; exit 3; }
-  gh auth token --hostname github.com --user "$login" >/dev/null 2>&1 || { echo "as.sh: no gh credential for the active account '$login'; run 'gh auth login' or set github.login in openspec/specwright.yaml (GH_TOKEN and GITHUB_TOKEN are not used to pick the login)" >&2; exit 3; }
+  rc=0; gh auth token --hostname github.com --user "$login" >/dev/null 2>&1 || rc=$?
+  limit_stop "$rc" "gh auth token --user $login"
+  [ "$rc" -eq 0 ] || { echo "as.sh: no gh credential for the active account '$login'; run 'gh auth login' or set github.login in openspec/specwright.yaml (GH_TOKEN and GITHUB_TOKEN are not used to pick the login)" >&2; exit 3; }
   printf '%s\n' "$login"
   exit 0
 fi
 
-token=$(gh auth token --hostname github.com --user "$login" 2>/dev/null) || token=
+rc=0; token=$(gh auth token --hostname github.com --user "$login" 2>/dev/null) || rc=$?
+limit_stop "$rc" "gh auth token --user $login"
+[ "$rc" -eq 0 ] || token=
 [ -n "$token" ] || { echo "as.sh: no gh credential for '$login' (gh auth login)" >&2; exit 3; }
 export GH_TOKEN=$token
 
-actual=$(gh api --hostname github.com user --jq .login 2>/dev/null) || actual=
+rc=0; actual=$(gh api --hostname github.com user --jq .login 2>/dev/null) || rc=$?
+limit_stop "$rc" "gh api user"
+[ "$rc" -eq 0 ] || actual=
 [ "$actual" = "$login" ] || { echo "as.sh: token resolves to '$actual', expected '$login'; refusing" >&2; exit 3; }
 
 # URL check: the helper below answers github.com with the verified token, so a

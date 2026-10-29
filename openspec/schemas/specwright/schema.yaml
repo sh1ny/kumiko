@@ -19,6 +19,12 @@ artifacts:
         - **New Capabilities**: List capabilities being introduced. Each becomes a new `specs/<capability-path>/spec.md`. Name each capability for a durable system behavior (for example, `user-auth`), not the work in this change (for example, `add-login-endpoint`). Choose a cohesive boundary that can own related requirements as the system evolves; avoid broad catch-all capabilities. Use kebab-case for path segments you introduce (e.g., `user-auth` or `identity/user-auth`) and follow the project's existing spec organization.
         - **Modified Capabilities**: List existing capabilities whose REQUIREMENTS are changing. Only include if spec-level behavior changes (not just implementation details). Each needs a delta spec file. Use the exact existing path under `openspec/specs/`. Leave empty if no requirement changes.
       - **Impact**: Affected code, APIs, dependencies, or systems.
+      - **Release Notes**: When `release.enabled` is true in
+        openspec/specwright.yaml, a `## Release Notes` section at the end:
+        a summary of at most 600 characters, then `### Added`, `### Changed`,
+        `### Fixed` and `### Removed` lists (leave empty ones out), each item
+        at most 500 characters and naming its issue or PR (`#123`). With
+        releases off, delete the section.
 
       IMPORTANT: The Capabilities section is critical. It creates the contract between
       proposal and specs phases. Research existing specs before filling this in:
@@ -362,7 +368,9 @@ artifacts:
       then the reviewer re-checks only those items in a new run, and only
       that run may change it to `yes` - never the author. Other verdicts use
       `CHANGES_APPLIED: n/a`. A verdict covers only the contents reviewed:
-      editing proposal, specs or design for any other reason voids it. Each
+      editing proposal, specs or design for any other reason voids it; an
+      edit confined to the proposal's `## Release Notes` section does not,
+      one that also touches a line outside that section does. Each
       full review increments the round; after 2 consecutive REVISE rounds,
       stop and escalate to the user. `VERDICT: USER_OVERRIDE` only after those
       2 REVISE rounds were escalated and the user then decides to proceed
@@ -464,8 +472,11 @@ artifacts:
       - When `release.enabled` is true in openspec/specwright.yaml, the last
         task group MUST include a task `release.sh bump --to <version>`
         (the version from the proposal, per the pre-1.0 rule in
-        CONTRIBUTING.md), verified by `release.sh check`. With releases off,
-        this rule adds no bump task.
+        CONTRIBUTING.md), verified by `release.sh check`. That task also
+        rewrites the summary of the proposal's `## Release Notes` section to
+        describe the whole release, and is verified by
+        `release.sh notes --proposal <proposal.md>` too. With releases off, this rule adds no
+        bump task.
 
       Reference specs for what needs to be built, design for how to build it.
     requires:
@@ -497,13 +508,28 @@ apply:
     change: the packet is what keeps the cheap model cheap. Run groups in
     parallel only when they touch disjoint files. You own verification:
     re-run the group's tests yourself, then tick tasks, flip test map rows
-    and commit task by task (the commit rules say how to split a group). A
+    and commit per the configured granularity (`commit_granularity`: one
+    commit per task, or per task group; the commit rules say how). A
     DRIFT or BLOCKED report stops the group (see drift rule).
-    Small groups (one or two trivial edits) you may implement directly.
+    Once per apply run, read the cheap tier: `bash <specwright-pr>/scripts/pr-pair.sh
+    tier --code <code toplevel>` (`<specwright-pr>` is the specwright-pr
+    skill's folder). It prints `{"ok": true, "cheap_tier": <bool>}` and
+    maybe a `note`; repeat a note once. A failed call, or output with no
+    `cheap_tier` field, means the tier is off: say once that the setting
+    could not be read. With the tier on and `TIER: LIGHT` in the change's
+    `design.md`, dispatch every group to `specwright-implementer-light`
+    instead, small groups included, with no inline exception; the packet,
+    your verification and the commits stay the same. If that agent is not
+    available, use `specwright-implementer` and say so once. With the tier
+    off, or for a FULL change, keep `specwright-implementer` and this rule:
+    small groups (one or two trivial edits) you may implement directly.
 
     - Write each new or changed behavior's failing test first and confirm it
       fails for the right reason; then implement; then flip its test map row
       to `green`. Rows that start `green` only need their test re-run.
+    - A task that changes what the change ships updates the proposal's
+      `## Release Notes` section in its own task commit; every commit that
+      edits the section runs `release.sh notes --proposal <proposal.md>`.
     - On an unexpected failure or regression, find the root cause before
       fixing. No symptom patches.
     - SPEC OR DESIGN DRIFT: if implementation shows a requirement, scenario or

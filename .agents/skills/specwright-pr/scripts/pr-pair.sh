@@ -8,6 +8,9 @@
 #   context --code <dir> [--store <dir>]
 #                                     per-repo login, main, validate, reviewers, merge_ready (specwright.yaml + planning_store:);
 #                                     merge (user|agent), merge_method, delete_branch (bad value = exit 2 bad_setting)
+#   tier --code <dir>                 cheap_tier.enabled: {"ok": true, "cheap_tier": bool} (true only for a parsed true; anything else
+#                                     is false, with a "note" when the value or the section is not true/false/a map). Reads no other
+#                                     setting, so a bad pr.merge_method cannot change it; exit 0 for any readable settings file
 #   merge --repo o/n --pr N --method merge|squash|rebase --head sha
 #                                     one PUT repos/o/n/pulls/N/merge (merge_method, sha), then always a read-back: merged (also when a
 #                                     person merged first), refused (reason head_changed on 409, else refused; exit 1) or, when the state
@@ -23,9 +26,9 @@
 #   ensure-pr --repo o/n --branch b --base main --title t --body-file f
 #                                     find the open PR or create it; stops on a wrong base; never edits a description
 #   closing-check --repo o/n --pr N   the issues the description's closing lines name vs what GitHub will close
-#                                     status match | mismatch | not_default_base (one GraphQL read; a failure = unknown, exit 3)
+#                                     status match | mismatch | not_default_base (one GraphQL read, then GitHub's rendering of the description read as lines; a failure = unknown, exit 3)
 #   closed-check --repo o/n --pr N --repos o/n[,o/n] [--login o/n=L ...]
-#                                     at cleanup: which issues the merged PR's closing lines name are still open
+#                                     at cleanup: which issues the merged PR's closing lines name are still open (lines read from GitHub's rendering)
 #                                     status merged | not_merged | not_default_base; open, reopened, closed, outside (a failed read = unknown, exit 3)
 #                                     --login: the login that reads o/n when it is not the one the call runs as
 #   link --repo o/n --pr N --kind store|code --peer-url URL [--login L]
@@ -91,8 +94,25 @@ import socket
 import subprocess
 import sys
 import tempfile
+import importlib.util
+from html.parser import HTMLParser
 from pathlib import Path
 from urllib.parse import quote
+
+
+class _Bounded:
+    """The bounded runner, loaded by path on first use: -I keeps this script's directory off sys.path."""
+    mod = None
+
+    def __getattr__(self, name):
+        if _Bounded.mod is None:
+            spec = importlib.util.spec_from_file_location("bounded", os.path.join(os.environ["PR_PAIR_DIR"], "bounded.py"))
+            _Bounded.mod = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(_Bounded.mod)
+        return getattr(_Bounded.mod, name)
+
+
+bounded = _Bounded()
 
 ENV = {k: v for k, v in os.environ.items() if k != "GH_REPO"}
 BASH = os.environ.get("PR_PAIR_BASH") or shutil.which("bash")
@@ -136,6 +156,19 @@ def run(cmd, cwd=None, env=None):
 
 def git(d, *args, env=None):
     return run(["git", *args], cwd=d, env=env)
+
+
+def net(cmd, name, env=None, cwd=None, paged=False, secret=False, limit_ok=False):
+    """Run one network command under the runner's deadline and byte bound. A limit stops the command and its processes and
+    raises Stop(<limit>, code 3, unknown) naming `name`; `limit_ok` returns a failed (exit 1) result instead, for a caller
+    that reads the state back before it decides (merge)."""
+    r = bounded.run_bounded(cmd, env=env or ENV, cwd=cwd, paged=paged, secret=secret)
+    if r.limit:
+        msg = f"GitHub state unknown: {r.limit}: {name}"
+        if limit_ok:
+            return subprocess.CompletedProcess(cmd, 1, "", msg)
+        raise Stop(r.limit, msg, code=3, unknown=True)
+    return subprocess.CompletedProcess(cmd, r.rc, r.stdout, r.stderr)
 
 
 FENCE_VAR = re.compile(r"GH_TOKEN|GIT_SSH_COMMAND|GIT_TERMINAL_PROMPT|GCM_INTERACTIVE|GIT_ASKPASS|SSH_ASKPASS|GIT_CONFIG_COUNT"
@@ -185,15 +218,16 @@ def git_net(d, *args):
     if d not in IDENT:  # the fetch URL alone decides: a GitHub fetch is fenced, anything else is plain git
         fetch = fetch_repo(d)
         IDENT[d] = fetch.lower() if fetch else None
+    name = f"git {args[0]}" if args else "git"
     if IDENT[d] is None:
-        return git(d, *args, env=unfenced_env())
+        return net(["git", *args], name, cwd=d, env=unfenced_env())
     login = REPO_LOGIN.get(IDENT[d])
     if not login:
         if started_in(d):
-            return git(d, *args)
+            return net(["git", *args], name, cwd=d)
         login = ambient_login()
     token_for(login)  # no credential / wrong identity stops here, before any git network command
-    r = run([BASH, f"{os.environ['PR_PAIR_DIR']}/as.sh", login, "git", *args], cwd=d)
+    r = net([BASH, f"{os.environ['PR_PAIR_DIR']}/as.sh", login, "git", *args], name, cwd=d)
     if r.returncode == 3 and r.stderr.lstrip().startswith("as.sh:"):
         raise Refused("fence_refused", f"as.sh refused the read in {d}: {r.stderr.strip()}", code=3, repo_dir=norm(d))
     return r
@@ -202,19 +236,17 @@ def git_net(d, *args):
 REPO_LOGIN, TOKENS = {}, {}  # repo slug (lower) -> login that reads it; login -> its verified token
 
 
-def gh(*args, repo=None):
+def gh(*args, repo=None, limit_ok=False):
     # through bash so a `gh` that is a shell script (or a shim) resolves like it does for the caller
     # `repo` names whose login to use when the arguments carry no repo (a GraphQL node id)
+    # a paginated read gets the longer deadline; `limit_ok`: a limit is a failed result, not a stop (merge reads back)
     cmd = [BASH, "-c", 'exec gh "$@"', "gh", *args] if BASH else ["gh", *args]
     login = REPO_LOGIN.get((repo or repo_of(args) or "").lower())
+    name, paged = f"gh {args[0]}" if args else "gh", "--paginate" in args
     if not login:
-        return run(cmd)
-    try:
-        return subprocess.run(cmd, env={**{k: v for k, v in ENV.items() if k not in HOST_VARS}, "GH_TOKEN": token_for(login)},
-                              capture_output=True, text=True,
-                              encoding="utf-8", errors="replace")
-    except OSError as e:
-        return subprocess.CompletedProcess(cmd, 127, "", str(e))
+        return net(cmd, name, paged=paged, limit_ok=limit_ok)
+    env = {**{k: v for k, v in ENV.items() if k not in HOST_VARS}, "GH_TOKEN": token_for(login)}
+    return net(cmd, name, env=env, paged=paged, limit_ok=limit_ok)
 
 
 def repo_of(args):
@@ -232,13 +264,11 @@ def token_for(login):
     if login not in TOKENS:
         bare = {k: v for k, v in ENV.items() if k not in ("GH_TOKEN", "GITHUB_TOKEN", *HOST_VARS)}
         base = [BASH, "-c", 'exec gh "$@"', "gh"] if BASH else ["gh"]
-        r = subprocess.run(base + ["auth", "token", "--hostname", "github.com", "--user", login], env=bare,
-                           capture_output=True, text=True, encoding="utf-8", errors="replace")
+        r = net(base + ["auth", "token", "--hostname", "github.com", "--user", login], "gh auth", env=bare, secret=True)
         tok = r.stdout.strip() if r.returncode == 0 else ""
         if not tok:
             raise Stop("no_credential", f"no gh credential for '{login}' (planning_store.login); run gh auth login", code=3, login=login)
-        v = subprocess.run(base + ["api", "--hostname", "github.com", "user", "--jq", ".login"], env={**bare, "GH_TOKEN": tok},
-                           capture_output=True, text=True, encoding="utf-8", errors="replace")
+        v = net(base + ["api", "--hostname", "github.com", "user", "--jq", ".login"], "gh api", env={**bare, "GH_TOKEN": tok})
         if v.stdout.strip() != login:
             raise Stop("identity_mismatch", f"the token for '{login}' resolves to '{v.stdout.strip()}'; refusing", code=3, login=login)
         TOKENS[login] = tok
@@ -700,6 +730,24 @@ def cmd_context(argv):
     return {"ok": True, **c}
 
 
+def cmd_tier(argv):
+    a, _ = parse_args(argv, {"--code": "code"})
+    need(a, "code")
+    section = load_settings(a["code"]).get("cheap_tier")
+    out = {"ok": True, "cheap_tier": False}
+    if section is None:
+        return out
+    if not isinstance(section, dict):
+        out["note"] = "cheap_tier must hold enabled: true|false; treated as false"
+        return out
+    v = section.get("enabled")
+    if v is True:
+        out["cheap_tier"] = True
+    elif v is not False and v is not None:
+        out["note"] = f"cheap_tier.enabled: {setting_text(section, 'enabled')} is not true or false; treated as false"
+    return out
+
+
 def cmd_discover(argv):
     a, _ = parse_args(argv, {"--repo": "repo", "--branch": "branch", "--base": "base", "--state": "state"})
     need(a, "repo", "branch")
@@ -797,179 +845,69 @@ ISSUE_REF = (r"https?://github\.com/([\w.-]+/[\w.-]+)/issues/(\d+)\b|(?<![\w/.-]
              r"|(?<![\w/&])#(\d+)\b")
 
 
-def backtick_span(text, i):
-    """The backtick run at text[i:] and the end of the code span it opens: (run_end, close_end), close_end None when no later run
-    of the same length closes it (the run is then literal text)."""
-    n, j = len(text), i
-    while j < n and text[j] == "`":
-        j += 1
-    k = j
-    while k < n:
-        if text[k] != "`":
-            k += 1
-            continue
-        m = k
-        while m < n and text[m] == "`":
-            m += 1
-        if m - k == j - i:
-            return j, m
-        k = m
-    return j, None
+BLOCK_TAGS = frozenset(("p", "pre", "ul", "ol", "li", "h1", "h2", "h3", "h4", "h5", "h6", "blockquote", "div", "table", "tr", "td",
+                        "th", "dl", "dt", "dd", "details", "summary", "hr", "br"))
+CODE_TAGS = frozenset(("pre", "code"))
+CODE_MARK = "\ufffc"  # not whitespace, a word character or part of any closing-list gap
 
 
-def strip_code_spans(line):
-    """CommonMark inline code: a span opens at a backtick run and closes at the next run of the same length; a run with no such
-    closer is literal text, and so are the backticks of a run that is longer or shorter than the opener. A removed span leaves a
-    space, so the text around it never joins into a new word."""
-    out, i, n = [], 0, len(line)
-    while i < n:
-        if line[i] != "`":
-            out.append(line[i])
-            i += 1
-            continue
-        j, close = backtick_span(line, i)
-        if close is None:
-            out.append(line[i:j])
-            i = j
-        else:
-            out.append(" ")
-            i = close
-    return "".join(out)
+class RenderedLines(HTMLParser):
+    """GitHub's HTML rendering of a description as lines of prose: text inside `pre` and `code` is dropped and replaced by one
+    U+FFFC (so the text around ``Fi`x`xes`` never joins into a keyword, and no gap of a closing list accepts the marker, so a
+    code span ends the list), comments are dropped, a block element ends a line at its
+    start and its end, a newline in text ends a line (a soft break never joins two source lines into one closing list), entities
+    are decoded, and link text stays as shown (`#N`, `owner/repo#N` or the URL, which ISSUE_REF reads)."""
+
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.lines, self.code = [""], 0
+
+    def newline(self):
+        if self.lines[-1]:
+            self.lines.append("")
+
+    def handle_starttag(self, tag, attrs):
+        if tag in BLOCK_TAGS:
+            self.newline()
+        if tag in CODE_TAGS:
+            if not self.code:
+                self.lines[-1] += CODE_MARK
+            self.code += 1
+
+    def handle_endtag(self, tag):
+        if tag in CODE_TAGS and self.code:
+            self.code -= 1
+        if tag in BLOCK_TAGS:
+            self.newline()
+
+    def handle_data(self, data):
+        if self.code:
+            return
+        first, *rest = data.split("\n")
+        self.lines[-1] += first
+        for part in rest:
+            self.newline()
+            self.lines[-1] += part
 
 
-def inline_comments(text):
-    """(start, end) of each HTML comment in `text`, scanning left to right where the first construct wins: a `<!--` inside a code
-    span is code, and a backtick inside a comment is comment text. An unclosed comment runs to the end of `text`."""
-    found, i, n = [], 0, len(text)
-    while i < n:
-        if text[i] == "`":
-            j, close = backtick_span(text, i)
-            i = j if close is None else close
-        elif text.startswith("<!--", i):
-            end = text.find("-->", i + 4)
-            end = n if end < 0 else end + 3
-            found.append((i, end))
-            i = end
-        else:
-            i += 1
-    return found
-
-
-def indent_columns(line):
-    """Leading white space of a line in columns, a tab advancing to the next multiple of four."""
-    col = 0
-    for ch in line:
-        if ch == " ":
-            col += 1
-        elif ch == "\t":
-            col += 4 - col % 4
-        else:
-            break
-    return col
-
-
-def container_content(line):
-    """The line after its blockquote markers (each `>` with up to three spaces before it and one optional space after it) and list
-    markers (`-`, `+`, `*`, `1.` or `1)` with up to three spaces before it and the one space or tab after it), where CommonMark
-    applies the block rules: `>     x` is indented code inside a quote, and `- ~~~` opens a fence inside a list item."""
-    return line[re.match(r"(?: {0,3}(?:>[ \t]?|(?:[-+*]|\d{1,9}[.)])(?:[ \t]|$)))*", line).end():]
-
-
-def quote_content(line):
-    """The line after its blockquote markers only. Inside an open fence a list marker is content, so the closer is matched here:
-    `- ```` inside a fence is code, not its end."""
-    return line[re.match(r"(?: {0,3}>[ \t]?)*", line).end():]
-
-
-LIST_CODE = re.compile(r" {0,3}(?:[-+*]|\d{1,9}[.)]) {5,}\S")  # a list item whose first block is indented code
-
-
-def without_code(body):
-    """The description's lines with what GitHub does not read as text removed: fenced blocks (closed only by a fence line of the
-    same character, at least as long, with nothing but white space after it), indented code (every line indented four or more
-    columns, unless the line before it is a paragraph line; a list item whose marker is followed by five spaces), HTML comments
-    (also across lines) and inline code spans, which may continue across the lines of one paragraph (a blank line ends it). Within
-    a paragraph the leftmost construct wins, so a `<!--` inside a code span is code; a line that starts with `<!--` is an HTML
-    block, not a paragraph, and takes the rest of its closing line, while the text after an inline comment's `-->` is read. The
-    block rules read each line after its blockquote and list markers."""
-    out, para = [], []
-    fence, in_comment = None, False
-    comment_block = False  # the open comment started its own line (an HTML block), so it takes the rest of its closing line
-    prev_para = False  # the previous line was a paragraph line, so an indented line continues it
-    lines = body.replace("\r\n", "\n").split("\n")
-
-    def flush():
-        if para:
-            out.extend(strip_code_spans("\n".join(para)).split("\n"))
-            del para[:]
-
-    def strip_comments(line, comment_line, rest):
-        """`line` without its HTML comments; a comment that does not end on the line leaves in_comment set."""
-        nonlocal in_comment, comment_block
-        head = "\n".join(para) + "\n" if para and not comment_line else ""
-        tail = []
-        for nxt in rest:  # the rest of the paragraph decides whether a backtick before a `<!--` closes a span
-            if not nxt.strip():
-                break
-            tail.append(nxt)
-        base, kept, at = len(head), [], 0
-        for start, end in inline_comments(head + "\n".join([line] + tail)):
-            if start < base:
-                continue
-            if start >= base + len(line):
-                break
-            kept.append(line[at:start - base])
-            if end > base + len(line):
-                in_comment, comment_block, at = True, comment_line, len(line)
-                break
-            at = end - base
-        kept.append(line[at:])
-        return "".join(kept)
-
-    for idx, raw in enumerate(lines):
-        line, comment_line = raw, in_comment and comment_block
-        if in_comment:
-            end = line.find("-->")
-            if end < 0:
-                prev_para = prev_para and not comment_block  # an inline comment's lines stay in their paragraph
-                continue
-            line, in_comment = line[end + 3:], False
-        else:
-            m = re.match(r"\s{0,3}(`{3,}|~{3,})", container_content(line))
-            if fence:
-                closer = re.match(r"\s{0,3}(`{3,}|~{3,})\s*$", quote_content(line))
-                if closer and closer.group(1)[0] == fence[0] and len(closer.group(1)) >= len(fence):
-                    fence = None
-                continue
-            if m:
-                flush()
-                fence, prev_para = m.group(1), False
-                continue
-            inner = container_content(line)
-            if indent_columns(inner) < 4 and inner.lstrip().startswith("<!--"):
-                comment_line = True
-        if "<!--" in line:
-            line = strip_comments(line, comment_line, lines[idx + 1:])
-        inner = container_content(raw)
-        if not inner.strip():
-            flush()
-            prev_para = False
-            continue
-        if (indent_columns(inner) >= 4 and not prev_para and not comment_line) or LIST_CODE.match(inner):
-            flush()
-            continue
-        stripped = inner.lstrip()
-        if (comment_line or re.match(r"#{1,6}(?:\s|$)", stripped) or re.match(r"([-*_])(?:\s*\1){2,}\s*$", stripped)
-                or not line.strip()):
-            flush()  # a heading, thematic break or comment line is no paragraph line and ends the paragraph
-            prev_para = False
-            if line.strip() and not comment_line:
-                out.append(strip_code_spans(line))
-            continue
-        prev_para = True
-        para.append(line)
-    flush()
-    return out
+def rendered_lines(body, repo):
+    """The lines of `body` as GitHub renders it (GFM, with `repo` as context), read through `repo`'s login. The request goes in a
+    temp file (a PR body can be longer than a Windows command line) that is removed on every exit. A failed or limited render is
+    unknown (exit 3)."""
+    if not body.strip():
+        return []
+    req = temp_file(json.dumps({"text": body, "mode": "gfm", "context": repo}))
+    try:
+        r = gh("api", "-X", "POST", "markdown", "--input", req, repo=repo)
+    finally:
+        with contextlib.suppress(OSError):
+            os.remove(req)
+    if r.returncode != 0:
+        unknown((r.stderr or r.stdout).strip() or f"gh exited {r.returncode} rendering the description")
+    parser = RenderedLines()
+    parser.feed(r.stdout)
+    parser.close()
+    return parser.lines
 
 
 def issue_key(m, repo):
@@ -986,13 +924,13 @@ FIRST_GAP = re.compile(r"\s*")  # the keyword's own optional colon is part of CL
 
 
 def intended_issues(body, repo):
-    """Issues a description's closing lines name: every ref directly after a closing keyword, and the closing list of a line that
-    starts with one: the ref after that keyword (only white space between; a `,`, `;`, `and` or a removed code span there means no
-    list) and each next ref separated from the one before by only `,`, `;`, `and`,
-    white space or another closing keyword. Any other text ends the list; a line whose first ref does not directly follow the
+    """Issues a description's closing lines name, read from GitHub's rendering of it (`rendered_lines`, so code is never read): every ref directly after a closing keyword, and the closing list of a line that
+    starts with one: the ref after that keyword (only white space between; a `,`, `;`, `and` or a code span there means no
+    list; a code span is the marker U+FFFC, which no gap accepts, wherever the keyword stands) and each next ref separated from
+    the one before by only `,`, `;`, `and`, white space or another closing keyword. Any other text, a code span included, ends the list; a line whose first ref does not directly follow the
     keyword has none."""
     found = []
-    for line in without_code(body):
+    for line in rendered_lines(body, repo):
         refs = [(m.start(), m.end(), issue_key(m, repo)) for m in re.finditer(ISSUE_REF, line)]
         lead = re.match(r"(?:[\s>*+-]|\d{1,9}[.)](?=\s))*" + CLOSE_KW, line, re.I)
         if lead:
@@ -1733,8 +1671,9 @@ def has_reaction(repo, kind, target, reaction, viewer):
         content = "%2B1" if reaction == "+1" else "-1"
         return any(((r.get("user") or {}).get("login") or "").lower() == who and r.get("content") == reaction
                    for r in gh_list(f"repos/{repo}/pulls/comments/{target}/reactions?content={content}&per_page=100"))
-    query, cursor = REACTION_GQL % ("THUMBS_UP" if reaction == "+1" else "THUMBS_DOWN"), None
+    query, cursor, pages = REACTION_GQL % ("THUMBS_UP" if reaction == "+1" else "THUMBS_DOWN"), None, 0
     while True:
+        pages += 1
         r = gh("api", "graphql", "-f", f"query={query}", "-f", f"id={target}", *(["-f", f"cursor={cursor}"] if cursor else []), repo=repo)
         if r.returncode != 0:
             unknown((r.stderr or r.stdout).strip() or f"gh exited {r.returncode}")
@@ -1748,6 +1687,10 @@ def has_reaction(repo, kind, target, reaction, viewer):
             unknown(f"unreadable reactions of {target}")
         if not more or not cursor:
             return False
+        if pages >= bounded.MAX_PAGES:  # never "absent" from a loop that was cut short
+            raise Stop(bounded.RESPONSE_TOO_LARGE,
+                       f"GitHub state unknown: {bounded.RESPONSE_TOO_LARGE}: gh api graphql (reactions of {target}, over {pages} pages)",
+                       code=3, unknown=True)
 
 
 def pass_plan(argv):
@@ -2082,7 +2025,8 @@ def cmd_merge(argv):
     if not re.fullmatch(r"[0-9a-fA-F]{7,40}", head):
         usage(f"--head must be a commit id of 7 to 40 hex digits, got {head!r}")
     n = int(n)
-    r = gh("api", "-X", "PUT", f"repos/{repo}/pulls/{n}/merge", "-f", f"merge_method={method}", "-f", f"sha={head}")
+    r = gh("api", "-X", "PUT", f"repos/{repo}/pulls/{n}/merge", "-f", f"merge_method={method}", "-f", f"sha={head}",
+           limit_ok=True)  # a limit leaves the merge undecided: the read-back below decides
     m = re.search(r"\(HTTP (\d{3})\)", r.stderr or "")
     status = int(m.group(1)) if m else None
     message = ""
@@ -2155,11 +2099,40 @@ def cmd_delete_remote(argv):
     raise Stop("kept", message, status="kept", http_status=status, **base)
 
 
-COMMANDS = {"identity": cmd_identity, "context": cmd_context, "discover": cmd_discover, "expected": cmd_expected,
+ITEM_JQ = '.[] | select(.pull_request == null and ((.body // "") | contains("specwright:pr-item "))) | {number, body}'
+
+
+def cmd_item_issues(argv):
+    """The existing PR-item issues of one repository in one paged read; gh's --jq keeps only marked issues. An item is matched
+    by a whole `specwright:pr-item <id>` line, the lowest issue number winning. A failed or limited read exits 3, never a guess."""
+    a, _ = parse_args(argv, {"--repo": "repo", "--item": "+items"})
+    need(a, "repo", "items")
+    repo, items = a["repo"], a["items"]
+    r = gh("api", "--paginate", f"repos/{repo}/issues?state=all&per_page=100", "--jq", ITEM_JQ, repo=repo)
+    if r.returncode != 0:
+        unknown((r.stderr or r.stdout).strip() or f"gh exited {r.returncode}")
+    lines = {}  # marker line -> lowest issue number
+    for raw in r.stdout.splitlines():
+        if not raw.strip():
+            continue
+        try:
+            issue = json.loads(raw)
+            number, body = issue["number"], issue.get("body") or ""
+        except (ValueError, KeyError, TypeError, AttributeError):
+            unknown("unreadable response")
+        for line in body.splitlines():
+            line = line.strip()
+            if line.startswith("specwright:pr-item "):
+                lines[line] = min(number, lines.get(line, number))
+    found = {i: lines[f"specwright:pr-item {i}"] for i in items if f"specwright:pr-item {i}" in lines}
+    return {"ok": True, "found": found, "missing": [i for i in items if i not in found]}
+
+
+COMMANDS = {"identity": cmd_identity, "context": cmd_context, "tier": cmd_tier, "discover": cmd_discover, "expected": cmd_expected,
             "ensure-pr": cmd_ensure_pr, "closing-check": cmd_closing_check,
             "closed-check": cmd_closed_check, "link": cmd_link, "pair-state": cmd_pair_state, "rounds": cmd_rounds,
             "pass": cmd_pass, "cleanup-plan": cmd_cleanup, "branch-check": cmd_branch_check, "merge": cmd_merge,
-            "delete-remote": cmd_delete_remote}
+            "delete-remote": cmd_delete_remote, "item-issues": cmd_item_issues}
 
 args = sys.argv[1:]
 try:

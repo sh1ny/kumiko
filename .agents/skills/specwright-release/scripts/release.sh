@@ -7,8 +7,15 @@
 #   check [--main <ref>]              read the version files in the working tree: exactly one match per file, one shared
 #                                     version -> version + the files read. With --main, then refuse (exit 1,
 #                                     version_not_ahead_of_main) a branch that bumped to a version not greater than <ref>'s. It
-#                                     bumped when its version differs from the merge base's with <ref>, or a non-merge commit in
-#                                     <ref>..HEAD changed the primary file; no readable version at <ref> passes
+#                                     bumped when its version differs from the merge base's with <ref>, or the newest non-merge
+#                                     commit in <ref>..HEAD that changed the primary file's version raised it; no readable version
+#                                     at <ref> passes. A primary file that exists but does not read exactly one version is
+#                                     unreadable, not absent: an unreadable merge base or parent counts as a bump only when the
+#                                     version is not among the versions it matched (and, for a commit, is greater than all of them);
+#                                     a commit whose parent is unreadable and on the branch changed it when it matched a version
+#                                     the parent did not; otherwise a commit whose own version is unreadable changed it only when
+#                                     the version it is judged against is not among those it matched; a change raised it only
+#                                     when it matched a version and all of them are greater than that version
 #   bump --to MAJOR.MINOR.PATCH       rewrite only the captured version in every version file (temp file + rename each);
 #                                     the target must be greater than the current version. Never commits. Rerunning an
 #                                     interrupted bump to the same target completes it
@@ -17,8 +24,13 @@
 #                                     reads V (default: the local main; the skill passes origin/<main>). It must be a merge
 #                                     commit or a commit whose subject ends in (#<n>), and its version files must all read V.
 #                                     JSON: version, tag, release_commit, main, files, previous {commit, version, basis:
-#                                     tag|history|null}, range {from, to, commits}, changes [{name, why, pr}], notes (text for
-#                                     the tag annotation and the release body), tag_local (sha the local tag points at, or
+#                                     tag|history|null}, range {from, to, commits}, changes [{name, why, pr}], warnings [{change, error}] (a change whose
+#                                     `## Release Notes` section is invalid, or whose proposal is over 64 KB, falls back to its Why
+#                                     line; the first error), notes (text for the tag annotation and the release body: with a
+#                                     valid section in the range, the release summary, then Added:/Changed:/Fixed:/Removed: groups
+#                                     of the sections' items (150 at most) and Changes: for the changes without one; else
+#                                     `Changes in <tag>:` and one line per change; the summary is the bumping change's (its
+#                                     archived tasks.md ticks `release.sh bump --to V`), else the last valid section's), tag_local (sha the local tag points at, or
 #                                     null), tag_remote (the commit the tag points at on origin, from one read-only
 #                                     `git ls-remote --tags origin`, or null; also null with no origin remote; an unreadable
 #                                     origin is exit 3, remote_tags_unreadable), previous (from tags locally or on origin:
@@ -33,6 +45,11 @@
 #                                     proof is in that range: `merge: <name>` subject (finish: local) or a merged PR from the
 #                                     code repo's own <prefix>/<name> branch (one `gh api --paginate .../pulls` call; a failure
 #                                     is exit 3, pr_discovery_failed). --store-prefix defaults to openspec.
+#   notes --proposal <file>           parse one proposal's `## Release Notes` section: no repo, no git or network call, and no
+#                                     release.enabled needed. Exit 0: summary, items {added|changed|fixed|removed: [{text, line}]}
+#                                     (line = the notes line, an unreferenced item ending in the literal ` (#<pr>)`). Exit 1:
+#                                     release_notes_invalid (errors [{line, message}]; a file over 64 KB too) or no_release_notes.
+#                                     Exit 2: the file does not exist
 #   untagged [--main <ref>] [--local] versions in main's history of the primary file after the latest tagged one (with no tag:
 #                                     only the current version) that are not published, oldest first (published = tag on origin;
 #                                     --local, or no origin remote: a local tag, with no network call):
@@ -53,11 +70,18 @@
 #                                     release: exit 3 release_create_failed (the tag stays on origin; a re-run creates only the
 #                                     release). JSON: ok, version, tag, release_commit, tag_local created|existing|fetched,
 #                                     tag_remote pushed|existing, github_release created|existing|disabled|not_github,
-#                                     release_url (when created), notes, repo, tag_repo, store (with --store).
+#                                     release_url (when created), notes, warnings (as in status, only when this run created the
+#                                     tag; [] when the tag existed), repo, tag_repo, store (with --store).
 # Settings (openspec/specwright.yaml): release.enabled (default false), release.version_files (path or glob ->
 # regex with one capture group; the first entry is the primary file), release.tag (v{version}),
 # release.github_release (true), release.auto (false), pr.merge_method (rebase is refused with releases on).
 # Exit: 0 done, 1 stop (the JSON has "ok": false, "error" and "message"), 2 usage, 3 a git or gh network call failed.
+# Every network command (git ls-remote, fetch, push, every gh) runs under bounded.py (next to this script): 120 s (300 s for the
+# paginated closed-PR read) and 32 MiB per command. A bound stops the command's whole process tree and ends the run as exit 3,
+# "error": "deadline_exceeded" or "response_too_large", naming the command; nothing is retried. After a cut-off tag push publish
+# reads origin's tag back (done only when it is the local tag object at the release commit; another commit is tag_conflict,
+# another tag object tag_mismatch); after a cut-off `gh release create` it reads the release back (found = done). A failed
+# read-back is exit 3 with "state": "unknown".
 # Needs bash, git and Python 3.8+.
 set -euo pipefail
 
@@ -67,8 +91,13 @@ for c in python3 python; do
 done
 [ -n "$py" ] || { echo '{"ok":false,"error":"no_python","message":"release.sh needs python 3.8+"}'; exit 2; }
 
+RELEASE_DIR=$(cd "$(dirname "$0")" && pwd -P)
+if command -v cygpath >/dev/null 2>&1; then RELEASE_DIR=$(cygpath -m "$RELEASE_DIR"); fi
+export RELEASE_DIR
+
 exec "$py" -I -X utf8 - "$@" <<'PYSRC'
 import bisect
+import importlib.util
 import glob as globmod
 import json
 import os
@@ -100,6 +129,30 @@ def emit(obj, code=0):
     sys.exit(code)
 
 
+class _Bounded:
+    """The bounded runner (bounded.py next to this script), loaded by path on first use: -I keeps this script's directory off
+    sys.path."""
+    mod = None
+
+    def __getattr__(self, name):
+        if _Bounded.mod is None:
+            spec = importlib.util.spec_from_file_location("bounded", os.path.join(os.environ["RELEASE_DIR"], "bounded.py"))
+            _Bounded.mod = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(_Bounded.mod)
+        return getattr(_Bounded.mod, name)
+
+
+bounded = _Bounded()
+
+
+class Cut(Exception):
+    """A network command stopped by a bound: .limit is deadline_exceeded or response_too_large, .call the command shown."""
+
+    def __init__(self, limit, call):
+        super().__init__(f"{limit}: {call}")
+        self.limit, self.call = limit, call
+
+
 def run(cmd, cwd=None, data=None, env=None):
     try:
         return subprocess.run(cmd, cwd=cwd, env=env or ENV, input=data, capture_output=True)
@@ -107,8 +160,30 @@ def run(cmd, cwd=None, data=None, env=None):
         return subprocess.CompletedProcess(cmd, 127, b"", str(e).encode())
 
 
+def net(cmd, shown, cwd=None, env=None, paged=False):
+    """A network command under the deadline and the byte bound (bounded.py). Returns a CompletedProcess with bytes; raises Cut
+    when a bound stopped it: never a partial answer. `shown` names the command in the message."""
+    try:
+        r = bounded.run_bounded(cmd, cwd=cwd, env=env or ENV, paged=paged)
+    except OSError as e:
+        return subprocess.CompletedProcess(cmd, 127, b"", str(e).encode())
+    if r.limit:
+        raise Cut(r.limit, shown)
+    return subprocess.CompletedProcess(cmd, r.rc, r.stdout.encode("utf-8"), r.stderr.encode("utf-8"))
+
+
+def cut_stop(c, what="a re-run of publish resumes", **extra):
+    """The Stop for a bound: error is the limit, exit 3, naming the command."""
+    return Stop(c.limit, f"{c.limit}: {c.call} was stopped by its bound; {what}", code=3, call=c.call, **extra)
+
+
 def git(d, *args, data=None):
     return run(["git", *args], cwd=d, data=data)
+
+
+def git_net(d, *args):
+    """A git command that reaches origin (ls-remote, fetch, push)."""
+    return net(["git", *args], "git " + " ".join(args[:2]), cwd=d)
 
 
 def text_of(r):
@@ -584,51 +659,106 @@ def sv(v):
 
 
 # ---- subcommands ------------------------------------------------------------------------------------------------
+class Unreadable:
+    """A primary file that exists but does not read exactly one version (or the files disagree). It proves nothing on its
+    own, but a version outside `versions` (what the file did match, possibly nothing) is still a change (D5)."""
+    def __init__(self, versions):
+        self.versions = versions
+
+
 def primary_at(st, entries, commit):
-    """The one version the primary file reads at `commit`, or None when a file matches other than once or the files
-    disagree."""
+    """The one version the primary file reads at `commit`; None when the file is absent there; an Unreadable carrying the
+    versions it matched when a file matches other than once or the files disagree."""
     path, _, c = entries[0]
     tree = CommitTree(st.root, commit)
     blobs = tree.read_all(tree.files(path))
-    vals = set()
+    if not blobs:
+        return None
+    vals, once = set(), True
     for b in blobs.values():  # exactly one match per file, as read_versions requires; the files must then agree
         ms = find_versions(c, decode(b))
-        if len(ms) != 1:
-            return None
-        vals.add(ms[0].group(1))
-    return next(iter(vals)) if len(vals) == 1 else None
+        once = once and len(ms) == 1
+        vals.update(m.group(1) for m in ms)
+    return next(iter(vals)) if once and len(vals) == 1 else Unreadable(vals)
 
 
-def own_bump(st, entries, commits):
-    """D3: whether the newest of `commits` (newest first) that changed the primary version raised it. An edit that keeps
-    the version (a manifest's dependencies) is skipped, and a bump reverted later on the branch is no bump."""
+def judged_parent(st, entries, commit, ref):
+    """D5: the version `commit` is judged against: its parent's, or, while that is unreadable and not on `ref`, the version
+    of the nearest first-parent ancestor that is readable or on `ref` (PR #108 review, round 5)."""
+    at = f"{commit}^"
+    parent = primary_at(st, entries, at) if ref_exists(st.root, at) else None
+    while isinstance(parent, Unreadable):
+        sha = text_of(git(st.root, "rev-parse", at))
+        if git(st.root, "merge-base", "--is-ancestor", sha, ref).returncode == 0 or not ref_exists(st.root, f"{sha}^"):
+            break
+        at = f"{sha}^"
+        parent = primary_at(st, entries, at)
+    return parent
+
+
+def own_bump(st, entries, commits, ref):
+    """D3/D5: whether the newest of `commits` (newest first) that changed the primary version raised it. An edit that keeps
+    the version (a manifest's dependencies) is skipped, and a bump reverted later on the branch is no bump. Each commit is
+    judged against judged_parent: an unreadable parent on the branch is looked past, so a bump made through an unreadable
+    version counts and a stray line added and then removed does not. D9: a commit whose immediate parent is unreadable and on
+    the branch is a change when it matched a version that parent did not; it is a bump when each version it matched is
+    greater than the version it is judged against (than each semver of it, when that is unreadable too), else no bump, and
+    the walk stops. Any other commit: one whose own version is unreadable is no change
+    when that version is among those it matched (or it is unreadable too), else a bump only when it matched at least one
+    version and every one is greater. One judged against an unreadable version (on `ref`) is no change when its version is
+    the greatest semver among those matched, no bump when it is a lower one of them, else a bump when greater than every
+    semver among them (or none)."""
     for c in commits:
         mine = primary_at(st, entries, c)
-        parent = primary_at(st, entries, f"{c}^") if ref_exists(st.root, f"{c}^") else None
+        parent = judged_parent(st, entries, c, ref)
+        if ref_exists(st.root, f"{c}^"):
+            direct = primary_at(st, entries, f"{c}^")
+            if isinstance(direct, Unreadable) and git(st.root, "merge-base", "--is-ancestor", text_of(git(st.root, "rev-parse", f"{c}^")), ref).returncode != 0:
+                matched = mine.versions if isinstance(mine, Unreadable) else ({mine} if mine is not None else set())
+                if matched - direct.versions:  # D9: a version its unreadable parent on the branch did not match is a change
+                    seen = [sv(v) for v in parent.versions if sv(v)] if isinstance(parent, Unreadable) else (
+                        [sv(parent)] if parent is not None and sv(parent) else [])
+                    return all(sv(v) and all(sv(v) > s for s in seen) for v in matched)
+        if isinstance(mine, Unreadable):
+            if isinstance(parent, Unreadable) or (parent is not None and parent in mine.versions):
+                continue
+            if not mine.versions:
+                return False
+            if parent is None or not sv(parent):
+                return True
+            return all(sv(v) and sv(v) > sv(parent) for v in mine.versions)
         if mine == parent:
             continue
         if mine is None:
             return False
+        if isinstance(parent, Unreadable):
+            seen = [sv(v) for v in parent.versions if sv(v)]
+            if mine in parent.versions:
+                if sv(mine) and seen and sv(mine) < max(seen):
+                    return False  # it kept a lower one of its parent's versions: the higher one, a bump, is dropped
+                continue  # it kept the highest of its parent's versions, which is on ref: no change
+            return not seen or not sv(mine) or all(sv(mine) > s for s in seen)
         return parent is None or not (sv(mine) and sv(parent)) or sv(mine) > sv(parent)
     return False
 
 
 def check_ahead_of(st, entries, ref, version):
-    """D3: a branch that bumped must be greater than `ref`'s version."""
+    """D3/D5: a branch that bumped must be greater than `ref`'s version. An unreadable version at `ref` passes, as an absent
+    one does; an unreadable merge base counts as bumped only when the branch's version is not among those it matched."""
     if not ref_exists(st.root, ref):
         raise Stop("no_main", f"main ref '{ref}' does not exist")
     theirs = primary_at(st, entries, ref)
-    if theirs is None:
+    if theirs is None or isinstance(theirs, Unreadable):
         return
     base = git(st.root, "merge-base", "HEAD", ref)
     base_version = primary_at(st, entries, text_of(base)) if base.returncode == 0 and text_of(base) else None
-    bumped = base_version != version
+    bumped = version not in base_version.versions if isinstance(base_version, Unreadable) else base_version != version
     if not bumped:
         r = git(st.root, "log", "--no-merges", "--topo-order", "--format=%H", f"{ref}..HEAD", "--",
                 f":(glob){entries[0][0]}" if has_glob(entries[0][0]) else f":(literal){entries[0][0]}")
         if r.returncode != 0:
             raise Stop("git_failed", f"git log failed: {err_of(r)}", code=3)
-        bumped = own_bump(st, entries, text_of(r).split())
+        bumped = own_bump(st, entries, text_of(r).split(), ref)
     if bumped and not (sv(version) and sv(theirs) and sv(version) > sv(theirs)):
         raise Stop("version_not_ahead_of_main", f"this branch bumped to {version}, which is not greater than {ref}'s {theirs}: "
                    f"another change reached {ref} first. Rerun bump --to with a version greater than {theirs}",
@@ -805,7 +935,7 @@ def published_tags(st):
         return local_tags(st)
     if getattr(st, "_published", None) is not None:
         return st._published
-    r = git(st.root, "ls-remote", "--tags", "--refs", "origin")
+    r = git_net(st.root, "ls-remote", "--tags", "--refs", "origin")
     if r.returncode != 0:
         shown = "git ls-remote --tags --refs origin"
         raise Stop("remote_tags_unreadable", f"{shown} failed: {err_of(r) or 'exit ' + str(r.returncode)}; no tag was written",
@@ -917,6 +1047,168 @@ def first_sentence(proposal):
     return s if len(s) <= MAX_WHY else s[:MAX_WHY - 1] + "…"
 
 
+MAX_SUMMARY = 600
+MAX_ITEM = 500
+MAX_ITEMS = 150
+MAX_PARSED = 1000
+HEADINGS = ("added", "changed", "fixed", "removed")
+NOTES_HEAD = re.compile(r"^##[ \t]+Release Notes[ \t]*$", re.I)
+SUB_HEAD = re.compile(r"^###(?!#)[ \t]*(.*?)[ \t]*$")
+ITEM_START = re.compile(r"^[-*+][ \t]+(.*)$")
+CODE_SPAN = re.compile(r"(?<!`)(`+)(?!`)(.+?)(?<!`)\1(?!`)", re.S)
+REFERENCE = re.compile(r"#\d+(?!\w)")
+
+
+def parse_release_notes(text):
+    """The `## Release Notes` section of a proposal: None when there is no such heading, else {"summary", "items": {heading:
+    [(text, line)]}, "errors": [(line, message)]}, valid when errors is empty. HTML comments go first (their newlines stay, so
+    lines still count the file's). The section runs to the next `##` heading or the end. The summary is the text before the first
+    `###`, whitespace collapsed, at most 600 characters. The headings are Added, Changed, Fixed and Removed (any case), each at
+    most once, followed only by items: a line starting `-`, `*` or `+` and a space, joined with the indented lines after it, at
+    most 500 characters collapsed. Every error is collected with its line."""
+    text = re.sub(r"<!--.*?-->", lambda m: "\n" * m.group(0).count("\n"), text, flags=re.S)
+    lines = [l.rstrip("\r") for l in text.split("\n")]
+    start = next((i for i, l in enumerate(lines) if NOTES_HEAD.match(l)), None)
+    if start is None:
+        return None
+    end = next((i for i in range(start + 1, len(lines)) if re.match(r"##(?!#)", lines[i])), len(lines))
+    errors, items, summary, seen = [], {}, [], set()
+    cur, item = None, None  # the heading being read (None under an invalid one), the open item [parts, line]
+
+    def close():
+        nonlocal item
+        if item is not None and cur is not None:
+            t = re.sub(r"\s+", " ", " ".join(item[0])).strip()
+            if not t:
+                errors.append((item[1], "empty list item"))
+            elif len(t) > MAX_ITEM:
+                errors.append((item[1], f"item is {len(t)} characters, over the {MAX_ITEM} limit"))
+            else:
+                items[cur].append((t, item[1]))
+        item = None
+
+    for i in range(start + 1, end):
+        line, n = lines[i], i + 1
+        h = SUB_HEAD.match(line)
+        if h:
+            close()
+            name = h.group(1)
+            if name.lower() not in HEADINGS:
+                errors.append((n, f"unknown heading '{name}' (use Added, Changed, Fixed or Removed)"))
+                cur = None
+            elif name.lower() in seen:
+                errors.append((n, f"heading '{name}' appears twice"))
+                cur = None
+            else:
+                cur = name.lower()
+                items[cur] = []
+            seen.add(name.lower())
+            continue
+        if not line.strip():
+            continue
+        if not seen:
+            summary.append(line.strip())
+            continue
+        if cur is None:
+            continue  # under an invalid heading: that heading's error covers it
+        m = ITEM_START.match(line)
+        if m:
+            close()
+            item = [[m.group(1)], n]
+        elif line[0] in " \t" and item is not None:
+            item[0].append(line.strip())
+        else:
+            close()
+            errors.append((n, f"line is neither a list item nor an indented continuation: {line.strip()[:60]}"))
+    close()
+    body_errors = len(errors)
+    summary = re.sub(r"\s+", " ", " ".join(summary)).strip()
+    if not summary:
+        errors.append((start + 1, "the summary is missing (text before the first ### heading)"))
+    elif len(summary) > MAX_SUMMARY:
+        errors.append((start + 1, f"summary is {len(summary)} characters, over the {MAX_SUMMARY} limit"))
+    if not any(items.values()) and not body_errors:
+        errors.append((start + 1, "no list item under Added, Changed, Fixed or Removed"))
+    errors.sort(key=lambda e: e[0])
+    return {"summary": summary, "items": {k: v for k, v in items.items() if v}, "errors": errors}
+
+
+def item_line(text, pr):
+    """The notes line of one item: ` (#<pr>)` appended when the item names no issue or PR outside a code span and `pr` is known."""
+    if pr is not None and not REFERENCE.search(CODE_SPAN.sub(" ", text)):
+        return f"- {text} (#{pr})"
+    return f"- {text}"
+
+
+def cmd_notes(a):
+    """`notes --proposal <file>`: parse one proposal's section. No git, no network, no opt-in (design D5)."""
+    path = a.get("proposal")
+    if not path:
+        usage("notes needs --proposal <file>")
+    if not os.path.isfile(path):
+        usage(f"--proposal file not found: {path}")
+    limit = f"{MAX_PROPOSAL // 1024} KB"
+    size = os.path.getsize(path)
+    if size > MAX_PROPOSAL:
+        raise Stop("release_notes_invalid", f"{path} is {size} bytes, over the {limit} limit",
+                   errors=[{"line": None, "message": f"the proposal is over the {limit} limit"}])
+    with open(path, "rb") as f:
+        parsed = parse_release_notes(f.read().decode("utf-8", "replace"))
+    if parsed is None:
+        raise Stop("no_release_notes", f"{path} has no '## Release Notes' section")
+    if parsed["errors"]:
+        errs = [{"line": n, "message": m} for n, m in parsed["errors"]]
+        raise Stop("release_notes_invalid", f"{path}: " + "; ".join(f"line {e['line']}: {e['message']}" for e in errs), errors=errs)
+    return {"ok": True, "summary": parsed["summary"],
+            "items": {h: [{"text": t, "line": item_line(t, "<pr>")} for t, _ in parsed["items"][h]] for h in HEADINGS if h in parsed["items"]}}
+
+
+def blob_sizes(root, specs):
+    """Byte sizes for `<commit>:<path>` specs through one `git cat-file --batch-check`; None for a missing object."""
+    if not specs:
+        return []
+    r = git(root, "cat-file", "--batch-check", data=("\n".join(specs) + "\n").encode("utf-8", "surrogateescape"))
+    if r.returncode != 0:
+        raise Stop("git_failed", f"git cat-file failed: {err_of(r)}", code=3)
+    out = []
+    for line in r.stdout.decode("utf-8", "replace").splitlines()[:len(specs)]:
+        head = line.split(" ")
+        out.append(None if head[-1] == "missing" or len(head) < 3 else int(head[2]))
+    return out
+
+
+def read_sections(root, commit, prefix, rows, version):
+    """{dirname: {"section", "warning", "bump"}} for the last MAX_PARSED archive directories of `rows`. One size pass over every
+    proposal.md and tasks.md, then one read of the blobs within MAX_PROPOSAL. A proposal over the bound is never read for its
+    section (a warning); a tasks.md over it counts as having no bump task. `section` is the parsed section when valid, `bump`
+    is True when tasks.md has a ticked `release.sh bump --to <version>` task."""
+    dirs = [d for d, _ in rows[-MAX_PARSED:]]
+    base = f"{commit}:{prefix}/changes/archive/"
+    specs = [f"{base}{d}/{f}" for d in dirs for f in ("proposal.md", "tasks.md")]
+    sizes = blob_sizes(root, specs)
+    want = [s for s, z in zip(specs, sizes) if z is not None and z <= MAX_PROPOSAL]
+    blobs = dict(zip(want, cat_batch(root, want)))
+    bump = re.compile(r"^[ \t]*[-*+][ \t]+\[[ \t]*x[ \t]*\][ \t]+.*release\.sh[ \t]+bump[ \t]+--to[ \t]+" + re.escape(version) + r"(?!\.?\d)",
+                      re.I | re.M)
+    out = {}
+    for i, d in enumerate(dirs):
+        (ps, ts), (psz, tsz) = specs[2 * i:2 * i + 2], sizes[2 * i:2 * i + 2]
+        row = {"section": None, "warning": None, "bump": False}
+        if psz is not None and psz > MAX_PROPOSAL:
+            row["warning"] = f"the proposal is {psz} bytes, over the {MAX_PROPOSAL // 1024} KB limit"
+        elif psz is not None and blobs.get(ps) is not None:
+            parsed = parse_release_notes(decode(blobs[ps]))
+            if parsed and parsed["errors"]:
+                n, msg = parsed["errors"][0]
+                row["warning"] = f"line {n}: {msg}"
+            elif parsed:
+                row["section"] = parsed
+        if tsz is not None and tsz <= MAX_PROPOSAL and blobs.get(ts) is not None:
+            row["bump"] = bool(bump.search(decode(blobs[ts])))
+        out[d] = row
+    return out
+
+
 def archive_dirs(root, commit, prefix):
     """Names of the archive directories under `<prefix>/changes/archive/` at `commit`."""
     base = f"{prefix}/changes/archive/"
@@ -1020,11 +1312,12 @@ def code_slug(st):
     return slug
 
 
-def gh_run(st, *args):
-    """`gh <args>` in the code repo with GH_REPO unset (the repo is always named by the call). Through bash, so a shell-script
-    gh (a shim) runs on Windows too."""
+def gh_run(st, *args, paged=False):
+    """`gh <args>` in the code repo with GH_REPO unset (the repo is always named by the call), under the network bounds. Through
+    bash, so a shell-script gh (a shim) runs on Windows too. Raises Cut when a bound stopped it."""
     env = {k: v for k, v in ENV.items() if k != "GH_REPO"}
-    return run([BASH, "-c", 'exec gh "$@"', "gh", *args] if BASH else ["gh", *args], cwd=st.root, env=env)
+    return net([BASH, "-c", 'exec gh "$@"', "gh", *args] if BASH else ["gh", *args], "gh " + " ".join(args[:2]), cwd=st.root,
+               env=env, paged=paged)
 
 
 def merged_pulls(st, ref):
@@ -1032,7 +1325,7 @@ def merged_pulls(st, ref):
     slug = code_slug(st)
     branch = ref[len("origin/"):] if ref.startswith("origin/") else ref
     url = f"repos/{slug}/pulls?state=closed&base={branch}&per_page=100"
-    r = gh_run(st, "api", "--paginate", url)
+    r = gh_run(st, "api", "--paginate", url, paged=True)
     shown = f"gh api --paginate {url}"
     if r.returncode != 0:
         raise Stop("pr_discovery_failed", f"{shown} failed: {err_of(r) or 'exit ' + str(r.returncode)}", code=3, call=shown)
@@ -1101,10 +1394,9 @@ def store_changes(st, a, prev, rel, rng):
     return [(d, pr) for _, d, pr in found], sref, prefix, info, top
 
 
-def build_notes(tag, changes):
-    if not changes:
-        return f"No change was archived in this release ({tag})."
-    lines = [f"Changes in {tag}:", ""]
+def change_lines(changes):
+    """`- <name> (#<pr>): <why>` per change; names only, then `…and <n> more`, past MAX_LISTED."""
+    lines = []
     for c in changes[:MAX_LISTED]:
         if len(changes) > MAX_LISTED:
             lines.append(f"- {c['name']}")
@@ -1112,7 +1404,30 @@ def build_notes(tag, changes):
             lines.append(f"- {c['name']}" + (f" (#{c['pr']})" if c["pr"] is not None else "") + (f": {c['why']}" if c["why"] else ""))
     if len(changes) > MAX_LISTED:
         lines.append(f"…and {len(changes) - MAX_LISTED} more")
-    return "\n".join(lines)
+    return lines
+
+
+def build_notes(tag, changes, sections=None, summary=None):
+    """`sections` is parallel to `changes`: a change's valid parsed section or None. With no valid section the text is
+    `Changes in <tag>:` and one line per change; else the summary, the Added/Changed/Fixed/Removed groups (at most MAX_ITEMS
+    items, then `…and <n> more items`) and `Changes:` for the changes without a section, one blank line between blocks."""
+    if not changes:
+        return f"No change was archived in this release ({tag})."
+    sections = sections or [None] * len(changes)
+    if not any(sections):
+        return "\n".join([f"Changes in {tag}:", "", *change_lines(changes)])
+    flat = [(h, item_line(t, c["pr"])) for h in HEADINGS for c, s in zip(changes, sections) if s for t, _ in s["items"].get(h, [])]
+    listed, blocks = flat[:MAX_ITEMS], [summary]
+    for h in HEADINGS:
+        group = [l for g, l in listed if g == h]
+        if group:
+            blocks.append("\n".join([f"{h.capitalize()}:", *group]))
+    if len(flat) > MAX_ITEMS:
+        blocks[-1] += f"\n…and {len(flat) - MAX_ITEMS} more items"
+    plain = [c for c, s in zip(changes, sections) if not s]
+    if plain:
+        blocks.append("\n".join(["Changes:", *change_lines(plain)]))
+    return "\n\n".join(blocks)
 
 
 def load_main(st, a):
@@ -1187,7 +1502,7 @@ def remote_tag(st, tag):
     when origin cannot be read."""
     if origin_url(st) is None:
         return None, None, None
-    r = git(st.root, "ls-remote", "--tags", "origin", f"refs/tags/{tag}", f"refs/tags/{tag}^{{}}")
+    r = git_net(st.root, "ls-remote", "--tags", "origin", f"refs/tags/{tag}", f"refs/tags/{tag}^{{}}")
     if r.returncode != 0:
         shown = f"git ls-remote --tags origin refs/tags/{tag}"
         raise Stop("remote_tags_unreadable", f"{shown} failed: {err_of(r) or 'exit ' + str(r.returncode)}; no tag was written",
@@ -1222,11 +1537,13 @@ def status_doc(st, a, loaded=None, release=True):
     else:
         rows, wcommit, prefix = local_changes(st, prev_sha, sha, rng)
         wroot = st.root
-    shown = rows[:MAX_LISTED]
-    why = whys(wroot, wcommit, prefix, [d for d, _ in shown])
+    secs = read_sections(wroot, wcommit, prefix, rows, v)
+    ok = [d for d, _ in rows if d in secs and secs[d]["section"]]
+    bumpers = [d for d in ok if secs[d]["bump"]]
+    summary_of = bumpers[0] if len(bumpers) == 1 else (ok[-1] if ok else None)
+    why = whys(wroot, wcommit, prefix, [d for d, _ in rows if d not in ok][:MAX_LISTED])  # Why lines of the listed no-section changes
     changes = [{"name": change_name(d), "why": why.get(d), "pr": pr} for d, pr in rows]
-    for c in changes[MAX_LISTED:]:
-        c["why"] = None
+    warnings = [{"change": change_name(d), "error": secs[d]["warning"]} for d, _ in rows if d in secs and secs[d]["warning"]]
     tag = tag_for(st, v)
     tl = git(st.root, "rev-parse", "--verify", "--quiet", f"refs/tags/{tag}^{{commit}}")
     remote, remote_annotated, remote_obj = remote_tag(st, tag)
@@ -1239,7 +1556,9 @@ def status_doc(st, a, loaded=None, release=True):
     return {"ok": True, "version": v, "tag": tag, "release_commit": sha, "main": ref, "files": files,
             "previous": {"commit": prev_sha, "version": prev[0] if prev else None, "basis": prev[2] if prev else None},
             "range": {"from": prev_sha, "to": sha, "commits": len(rng)},
-            "changes": changes, "notes": build_notes(tag, changes),
+            "changes": changes, "warnings": warnings,
+            "notes": build_notes(tag, changes, [secs[d]["section"] if d in ok else None for d, _ in rows],
+                                 secs[summary_of]["section"]["summary"] if summary_of else None),
             "tag_local": text_of(tl) if tl.returncode == 0 else None, "tag_remote": remote, "tag_lightweight": lightweight,
             "tag_object": {"local": text_of(lo) if lo is not None and lo.returncode == 0 else None, "remote": remote_obj},
             **({"github_release": release_state(st, tag)[0]} if release else {}), "repo": st.root, "tag_repo": st.root, **({"store": info} if info else {})}
@@ -1298,7 +1617,10 @@ def release_state(st, tag):
     slug = release_slug(st)
     if not slug:
         return "not_github", None
-    r = gh_run(st, "release", "view", tag, "--repo", slug)
+    try:
+        r = gh_run(st, "release", "view", tag, "--repo", slug)
+    except Cut as c:
+        raise cut_stop(c)
     if r.returncode == 0:
         return "existing", slug
     if "release not found" in err_of(r).lower():
@@ -1308,13 +1630,30 @@ def release_state(st, tag):
                code=3, call=shown)
 
 
+def release_read_back(st, tag, slug, c):
+    """D5: `gh release create` was stopped by a bound. Read the release back (one `gh release view`, never retried): found counts
+    as done; not found stops with the limit; a failed read-back leaves the state unknown."""
+    try:
+        state, _ = release_state(st, tag)
+    except (Stop, Cut):
+        raise Stop(c.limit, f"{c.limit}: {c.call} was stopped by its bound and reading the release back failed too: the state "
+                   f"of the GitHub release is unknown. The tag {tag} is on origin and a re-run reads the release again",
+                   code=3, call=c.call, state="unknown")
+    if state == "existing":
+        return "created", f"https://github.com/{slug}/releases/tag/{tag}"
+    raise cut_stop(c, f"the release was not created (read back). The tag {tag} is on origin and a re-run creates only the release")
+
+
 def github_release(st, tag):
     """D6 step 4. Returns (state, url): created | existing | disabled | not_github."""
     state, slug = release_state(st, tag)
     if state == "absent":
         shown = f"gh release create {tag} --repo {slug} --verify-tag"
-        r = with_file(tag_message(st, tag), lambda path: gh_run(st, "release", "create", tag, "--repo", slug, "--verify-tag",
-                                                               "--title", tag, "--notes-file", path))
+        try:
+            r = with_file(tag_message(st, tag), lambda path: gh_run(st, "release", "create", tag, "--repo", slug, "--verify-tag",
+                                                                   "--title", tag, "--notes-file", path))
+        except Cut as c:
+            return release_read_back(st, tag, slug, Cut(c.limit, f"gh release create {tag}"))
         if r.returncode == 0:
             out = text_of(r).splitlines()
             return "created", out[-1] if out else None
@@ -1323,6 +1662,42 @@ def github_release(st, tag):
         raise Stop("release_create_failed", f"{shown} failed: {err_of(r) or 'exit ' + str(r.returncode)}; the tag {tag} is on "
                    "origin, a re-run creates only the release", code=3, call=shown)
     return state, None
+
+
+def conflict_stop(tag, v, sha, at, where, written):
+    return Stop("tag_conflict", f"tag {tag} already points at {at} {where}, but the release commit for {v} is {sha}; "
+                f"{written}. Fix the tag by hand: publish never moves, deletes or forces a tag",
+                tag=tag, tag_commit=at, release_commit=sha, where=where)
+
+
+def mismatch_stop(tag, local_obj, remote_obj, written):
+    return Stop("tag_mismatch", f"tag {tag} is at the release commit both locally and on origin, but as different tag "
+                f"objects (local {local_obj[:12]}, origin {remote_obj[:12]}): a lost push race. The release body "
+                f"must be origin's tag message, and {written}. Delete the local tag by hand "
+                f"(git tag -d {tag}); a re-run then fetches origin's: publish never moves, deletes or forces a tag",
+                tag=tag, local_object=local_obj, remote_object=remote_obj)
+
+
+def push_read_back(st, tag, v, sha, c):
+    """D5: the tag push was stopped by a bound, so it may or may not have landed. Read origin's tag back (one ls-remote, never
+    retried): done only when it is the local tag object at the release commit; another commit is tag_conflict, the same commit
+    as another tag object is tag_mismatch; absent stops with the limit; an unreadable origin leaves the state unknown."""
+    try:
+        commit, _, obj = remote_tag(st, tag)
+    except (Stop, Cut):
+        raise Stop(c.limit, f"{c.limit}: {c.call} was stopped by its bound and reading origin's {tag} back failed too: the state "
+                   f"of the tag on origin is unknown; no GitHub release was created. The local tag {tag} stays, and a re-run "
+                   "reads origin again before it pushes", code=3, call=c.call, state="unknown")
+    if commit is None:
+        raise cut_stop(c, f"the tag {tag} is not on origin (read back), so nothing landed. The local tag stays and a re-run "
+                          "pushes it; no GitHub release was created")
+    if commit != sha:
+        raise conflict_stop(tag, v, sha, commit, "on origin", f"the push was stopped by {c.limit} and another clone's tag won; "
+                            "no GitHub release was created")
+    local_obj = text_of(git(st.root, "rev-parse", f"refs/tags/{tag}"))
+    if obj != local_obj:
+        raise mismatch_stop(tag, local_obj, obj, f"the push was stopped by {c.limit} and another clone's tag won; no GitHub "
+                            "release was created")
 
 
 def cmd_publish(st, a):
@@ -1342,9 +1717,7 @@ def cmd_publish(st, a):
     local, remote = doc["tag_local"], doc["tag_remote"]
     for where, at in (("locally", local), ("on origin", remote)):
         if at and at != sha:
-            raise Stop("tag_conflict", f"tag {tag} already points at {at} {where}, but the release commit for {v} is {sha}; "
-                       "nothing was written. Fix the tag by hand: publish never moves, deletes or forces a tag",
-                       tag=tag, tag_commit=at, release_commit=sha, where=where)
+            raise conflict_stop(tag, v, sha, at, where, "nothing was written")
     if doc["tag_lightweight"]:
         where = " and ".join(doc["tag_lightweight"])
         raise Stop("lightweight_tag", f"tag {tag} exists {where} as a lightweight tag at the release commit; a release is an "
@@ -1352,16 +1725,12 @@ def cmd_publish(st, a):
                    tag=tag, where=doc["tag_lightweight"])
     objs = doc["tag_object"]
     if local and remote and objs["local"] != objs["remote"]:
-        raise Stop("tag_mismatch", f"tag {tag} is at the release commit both locally and on origin, but as different tag "
-                   f"objects (local {objs['local'][:12]}, origin {objs['remote'][:12]}): a lost push race. The release body "
-                   "must be origin's tag message, and nothing was written. Delete the local tag by hand "
-                   f"(git tag -d {tag}); a re-run then fetches origin's: publish never moves, deletes or forces a tag",
-                   tag=tag, local_object=objs["local"], remote_object=objs["remote"])
+        raise mismatch_stop(tag, objs["local"], objs["remote"], "nothing was written")
     # D6: read each step's state, do only what is missing
     if local:
         tag_local = "existing"
     elif remote:
-        r = git(st.root, "fetch", "origin", f"refs/tags/{tag}:refs/tags/{tag}")
+        r = git_net(st.root, "fetch", "origin", f"refs/tags/{tag}:refs/tags/{tag}")
         if r.returncode != 0:
             raise Stop("tag_fetch_failed", f"git fetch origin refs/tags/{tag}:refs/tags/{tag} failed: {err_of(r)}; a re-run retries",
                        code=3, call=f"git fetch origin refs/tags/{tag}")
@@ -1377,7 +1746,11 @@ def cmd_publish(st, a):
     if remote:
         tag_remote = "existing"
     else:
-        r = git(st.root, "push", "origin", f"refs/tags/{tag}:refs/tags/{tag}")
+        try:
+            r = git_net(st.root, "push", "origin", f"refs/tags/{tag}:refs/tags/{tag}")
+        except Cut as c:
+            push_read_back(st, tag, v, sha, Cut(c.limit, f"git push origin refs/tags/{tag}"))  # returns only when it landed
+            r = subprocess.CompletedProcess([], 0, b"", b"")
         if r.returncode != 0:
             raise Stop("tag_push_failed", f"git push origin refs/tags/{tag}:refs/tags/{tag} failed: {err_of(r) or 'exit ' + str(r.returncode)}; "
                        f"the local tag {tag} exists and a re-run pushes it (or stops with tag_mismatch if another clone's {tag} "
@@ -1387,6 +1760,7 @@ def cmd_publish(st, a):
     gh_state, url = github_release(st, tag)
     out = {"ok": True, "version": v, "tag": tag, "release_commit": sha, "tag_local": tag_local, "tag_remote": tag_remote,
            "github_release": gh_state, "notes": tag_message(st, tag).rstrip("\n"), "repo": st.root, "tag_repo": st.root}
+    out["warnings"] = doc["warnings"] if tag_local == "created" else []  # they describe notes derived now, not the tag's
     if url:
         out["release_url"] = url
     if "store" in doc:
@@ -1410,8 +1784,13 @@ def main(argv):
         if len(rest) < 2:
             usage("--dir needs a value")
         d, rest = rest[1], rest[2:]
+    if rest[:1] == ["notes"]:  # before the repo and the opt-in gate: one file, no git, no network (design D5)
+        a, pos = parse_args(rest[1:], {"--proposal": "proposal"})
+        if pos:
+            usage(f"unexpected argument {pos[0]}")
+        emit(cmd_notes(a))
     if not rest or rest[0] not in COMMANDS:
-        usage("usage: release.sh [--dir <repo>] check [--main ref] | bump --to V | status --version V [--main ref] [--store dir] | untagged [--main ref] [--local] | publish --version V")
+        usage("usage: release.sh [--dir <repo>] check [--main ref] | bump --to V | status --version V [--main ref] [--store dir] | untagged [--main ref] [--local] | publish --version V | notes --proposal <file>")
     fn, spec = COMMANDS[rest[0]]
     a, pos = parse_args(rest[1:], spec)
     if pos:
@@ -1429,6 +1808,8 @@ try:
     main(sys.argv[1:])
 except Stop as e:
     emit(e.obj(), e.code)
+except Cut as e:  # a bound stopped a network command nobody handles by name
+    emit(cut_stop(e).obj(), 3)
 except SystemExit:
     raise
 except Exception as e:  # a bug must still answer with one JSON document

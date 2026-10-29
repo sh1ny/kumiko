@@ -1,10 +1,12 @@
 #!/usr/bin/env bash
 # One-call PR snapshot: state, checks, unresolved threads, unhandled comments
-# and reviews, as one JSON line. Needs only gh (uses gh's built-in --jq).
+# and reviews, as one JSON line. Needs gh (uses gh's built-in --jq) and Python 3.8+:
+# bounded.py gives every gh call a deadline and a size bound, so a hung call ends as
+# `deadline_exceeded` on stderr (exit 1 in a watch); without Python, exit 2 `no_python`.
 #
 # Usage: bash pr-snapshot.sh [PR-number|PR-url] [--repo owner/name] [--logs]
 #                            [--reviewer LOGIN:ROLE:SECONDS]...
-#                            [--wait [--timeout SECONDS] [--interval SECONDS]]
+#                            [--wait [--timeout SECONDS] [--interval SECONDS] [--until attention]]
 #        bash pr-snapshot.sh --full NODE_ID [--repo owner/name]
 #   (no PR)   the PR for the current branch
 #   --reviewer  report whether LOGIN (required|advisory, timeout in seconds)
@@ -20,8 +22,13 @@
 #   --wait    poll inside this process; print {"wake":..., "snapshot":...}
 #             once anything changes (checks, threads, comments, reviews, head,
 #             state, edits, a list getting cut off) or the timeout passes
-#             (default 1800s, interval 300s); "incomplete" at once if the first
-#             snapshot is already cut off; exits 1 if the last poll failed.
+#             (default 1800s, interval 300s) - elapsed time from the start, polls
+#             included, and never slept past; "waited" is the elapsed seconds. Each
+#             poll, the first snapshot included, has one 120 s deadline for all its gh
+#             calls (SPECWRIGHT_NET_DEADLINE, a non-negative number of seconds, lowers it), so the timeout is reported
+#             within ~130 s of passing. "incomplete" at once if the first good
+#             snapshot is already cut off; exits 1 if the last poll failed (a failed
+#             first snapshot has no base: the first good poll becomes it).
 #             One watcher per PR on this machine: a newer --wait on the same
 #             PR (from any agent; owner/name compared case-insensitively) takes
 #             over, and the older one exits 4 before its next poll, so a lost
@@ -29,6 +36,16 @@
 #             watcher's exit never ends a newer watcher's ownership. If the
 #             state directory cannot be created, it polls unowned and says so
 #             on stderr.
+#   --until attention  (with --wait only; "quiet" or any other mode exits 2 before any gh
+#             call) keep waiting while a poll differs from the first good snapshot only
+#             in checks or merge state, a check is still pending, no check fails that
+#             was not failing in that snapshot, and the merge state is not DIRTY. Any
+#             other difference wakes "changed". Skipped polls add no polls and no gh
+#             calls; the wake JSON counts them as "filtered" (always present with
+#             --wait, 0 without --until). A "timeout" wake still means nothing else
+#             changed, filtered polls included. The snapshot's "attn" is "sig" without
+#             the checks and merge state; "fail_names" are the failing checks' names,
+#             base64 each.
 # "head_cutoff": {source, at} says where reports start to count and each
 # reviewer's timeout starts: source push | first_seen | first_seen_unsaved (the
 # push is not in the activity log; see prepare_cfg).
@@ -40,7 +57,21 @@
 # Wrap with as.sh to pin the GitHub identity.
 set -euo pipefail
 
-pr= repo= full= logs=0 wait=0 timeout=1800 interval=300 reviewers=
+# Every gh call runs through bounded.py (a deadline and a byte bound on stdout and stderr; see its header), so a stuck network or a
+# huge response ends as a named limit instead of a hang. Python 3.8+ runs it. The wrapper starts gh through bash, so the
+# same call works where gh is a shell shim.
+py=
+for c in python3 python; do
+  if command -v "$c" >/dev/null 2>&1 && "$c" -c 'import sys; sys.exit(sys.version_info < (3, 8))' >/dev/null 2>&1; then py=$c; break; fi
+done
+[ -n "$py" ] || { echo 'pr-snapshot.sh: no_python: needs python 3.8+ for its bounded gh calls' >&2; exit 2; }
+# native Windows python cannot run an MSYS path: hand it Windows paths (-m: forward slashes bash accepts)
+SW_DIR=$(cd "$(dirname "$0")" && pwd -P)
+SW_BASH=${BASH:-bash}
+if command -v cygpath >/dev/null 2>&1; then SW_DIR=$(cygpath -m "$SW_DIR"); SW_BASH=$(cygpath -w "$SW_BASH"); fi
+gh() { "$py" -I "$SW_DIR/bounded.py" ${SW_PAGED:+--paged} ${SW_SECRET:+--secret} -- "$SW_BASH" -c 'exec gh "$@"' gh "$@"; }
+
+pr= repo= full= logs=0 wait=0 timeout=1800 interval=300 reviewers= until=
 while [ $# -gt 0 ]; do
   case $1 in
     --repo) repo=${2:?--repo needs owner/name}; shift 2 ;;
@@ -54,6 +85,7 @@ while [ $# -gt 0 ]; do
     --full) full=${2:?--full needs a node id}; shift 2 ;;
     --wait) wait=1; shift ;;
     --timeout) timeout=${2:?--timeout needs seconds}; shift 2 ;;
+    --until) until=${2:?--until needs a mode (attention)}; shift 2 ;;
     --interval)
       interval=${2:?--interval needs seconds}
       printf '%s' "$interval" | grep -Eq '^[1-9][0-9]*$'         || { echo "pr-snapshot: bad --interval '$2' (want whole seconds > 0)" >&2; exit 2; }
@@ -65,6 +97,10 @@ while [ $# -gt 0 ]; do
     *) echo "pr-snapshot: unknown argument '$1'" >&2; exit 2 ;;
   esac
 done
+if [ -n "$until" ]; then
+  [ "$until" = attention ] || { echo "pr-snapshot: bad --until '$until' (want attention)" >&2; exit 2; }
+  [ "$wait" = 1 ] || { echo "pr-snapshot: --until needs --wait" >&2; exit 2; }
+fi
 if [ -n "$full" ]; then
   printf '%s' "$full" | grep -Eq '^[A-Za-z0-9_=-]+$' \
     || { echo "pr-snapshot: bad --full id '$full'" >&2; exit 2; }
@@ -357,6 +393,15 @@ def norm: sub("\\[bot\\]$"; "");
                | select(thumbs and .lastEditedAt != null and rtimes[.id] == null) | .id ],
     complete: ($truncated | length == 0), truncated: $truncated,
     # base64 keeps the signature free of quotes, so sig_of can cut it out safely
+    fail_names: [ $checks[] | select(.state == "fail") | .name | @base64 ],
+    # attn: sig without the checks and merge state (what --until attention compares)
+    attn: ([ $p.state, $p.headRefOid,
+            ($threads | map(.id + ":" + .rev + (if .rebound then ":rebound" else "" end) + (if .resolved then ":resolved" else "" end)) | join(",")),
+            ($comments | map(.id + ":" + .rev) | join(",")),
+            ($reviews | map(.id + ":" + .rev) | join(",")),
+            ($stale_verdicts | map(.author + ":" + .review_id) | join(",")),
+            ($reviewers | map(.login + ":" + .state) | join(",")),
+            ($truncated | sort | join(",")) ] | join("|") | @base64),
     sig: ([ $p.state, $p.headRefOid, $p.mergeStateStatus,
             ($checks | map(.name + "=" + .state) | sort | join(",")),
             ($threads | map(.id + ":" + .rev + (if .rebound then ":rebound" else "" end) + (if .resolved then ":resolved" else "" end)) | join(",")),
@@ -402,18 +447,27 @@ resolve_first_seen() {
   if printf '%s' "$d" | grep -Eq "$DATE_RE"; then seen_date=$d seen_src=first_seen; fi
   return 0
 }
+# bounded.py exits 124 (deadline_exceeded) or 125 (response_too_large). A lookup
+# below that hits one fails the snapshot, in every mode, with the limit named on
+# stderr; it never takes the lookup's fallback (no clock, no push time). Returns 0
+# when <rc> is a limit.
+limit_hit() {  # <rc> <command>
+  case $1 in 124) echo "bounded: deadline_exceeded: $2" >&2 ;; 125) echo "bounded: response_too_large: $2" >&2 ;; *) return 1 ;; esac
+}
 # A snapshot without --reviewer only records its sighting of the head (so a
 # later reviewer check counts from it), and never fails over it: any error
-# there returns 0 and leaves cfg unset.
+# there but a named limit returns 0 and leaves cfg unset.
 prepare_cfg() {
-  local info oid branch hrepo date pushed cutoff fail=1
+  local info raw oid branch hrepo date pushed cutoff fail=1 rc
   [ -n "$reviewers" ] || fail=0
   info=$(gh api graphql -f owner="$owner" -f name="$name" -F pr="$pr" -f query='
     query($owner:String!,$name:String!,$pr:Int!){ repository(owner:$owner,name:$name){ pullRequest(number:$pr){
       headRefOid headRefName headRepository { nameWithOwner } } } }' \
-    --jq '.data.repository.pullRequest | [.headRefOid, .headRefName, (.headRepository.nameWithOwner // "-")] | join(" ")') || return $fail
+    --jq '.data.repository.pullRequest | [.headRefOid, .headRefName, (.headRepository.nameWithOwner // "-")] | join(" ")') \
+    || { rc=$?; case $rc in 124|125) return 1 ;; esac; return $fail; }  # bounded.py named the limit
   read -r oid branch hrepo <<<"$info"
-  date=$(gh api -i rate_limit 2>/dev/null | tr -d '\r' | sed -n 's/^[Dd]ate: //p' | head -n 1) || date=
+  raw=$(gh api -i rate_limit 2>/dev/null) || { rc=$?; limit_hit $rc "gh api rate_limit" && return 1; raw=; }
+  date=$(printf '%s\n' "$raw" | tr -d '\r' | sed -n 's/^[Dd]ate: //p' | head -n 1) || date=
   printf '%s' "$oid" | grep -Eq '^[0-9a-f]{40}$' || return $fail
   printf '%s' "$date" | grep -Eq "$DATE_RE" || return $fail
   [ "$oid" = "$pushed_oid" ] || { pushed_oid=$oid pushed_at= first_seen=$date seen_src= seen_date=; }
@@ -421,7 +475,8 @@ prepare_cfg() {
   # look the push up until found; it can reach the log after the first poll
   if [ -z "$pushed_at" ] && [ "$hrepo" != - ]; then
     pushed_at=$(gh api "repos/$hrepo/activity?ref=refs/heads/$branch&per_page=100" \
-      --jq "[.[] | select(.after == \"$oid\")][0].timestamp // empty" 2>/dev/null) || pushed_at=
+      --jq "[.[] | select(.after == \"$oid\")][0].timestamp // empty" 2>/dev/null) \
+      || { rc=$?; limit_hit $rc "gh api repos/$hrepo/activity" && return 1; pushed_at=; }
     printf '%s' "$pushed_at" | grep -Eq '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\.[0-9]+)?Z$' || pushed_at=
   fi
   if [ -n "$pushed_at" ]; then
@@ -464,21 +519,62 @@ snapshot() {
   printf '%s\n' "$out"
 }
 sig_of() { printf '%s' "$1" | grep -o '"sig":"[^"]*"' || true; }
+attn_of() { printf '%s' "$1" | grep -o '"attn":"[^"]*"' || true; }
+fails_of() { printf '%s' "$1" | grep -o '"fail_names":\[[^]]*\]' | grep -oE '"[A-Za-z0-9+/=]+"' || true; }
+# --until attention: may the poll $1, which differs from the baseline $base, be skipped?
+only_progress() {
+  local f
+  [ "$(attn_of "$1")" = "$(attn_of "$base")" ] || return 1
+  case $1 in *'"merge_state":"DIRTY"'*) return 1 ;; esac
+  printf '%s' "$1" | grep -Eq '"pending":[1-9]' || return 1
+  while read -r f; do
+    [ -n "$f" ] || continue
+    fails_of "$base" | grep -qxF -- "$f" || return 1
+  done < <(fails_of "$1")
+  return 0
+}
 
 if [ "$wait" = 1 ]; then
   claim_watch
-  prepare_cfg; base=$(snapshot); base_sig=$(sig_of "$base"); waited=0; wake=timeout; snap=$base; ok=1
+  # One poll, the first snapshot included, has one deadline for all its gh calls (SPECWRIGHT_NET_DEADLINE, default 120 s),
+  # so a hung poll ends at that deadline and the timeout below is still reported on time. It is unset right after, so
+  # --logs and anything else get the normal per-command deadline. Sets $next.
+  poll() {
+    local rc=0 at
+    # bounded.py reads SPECWRIGHT_NET_DEADLINE by its one rule (a non-negative decimal that lowers 120 s, never raises it)
+    at=$("$py" -I "$SW_DIR/bounded.py" --deadline-at 2>/dev/null) || at=
+    case $at in ''|*[!0-9.]*) at=$(( $(date +%s) + 120 )) ;; esac
+    export SPECWRIGHT_NET_DEADLINE_AT=$at
+    { prepare_cfg && next=$(snapshot); } || rc=$?
+    unset SPECWRIGHT_NET_DEADLINE_AT
+    return $rc
+  }
+  take_over() { echo "pr-snapshot: a newer watcher took over PR $pr; this one stops" >&2; exit 4; }
+  # --timeout is elapsed time from here, polls included.
+  start=$SECONDS base= base_sig= snap= wake=timeout ok=1 filtered=0
+  if poll; then base=$next snap=$next; else ok=0; fi  # a failed first snapshot has no base: the first good poll becomes it
+  base_sig=$(sig_of "$base")
   # Activity beyond a cut-off page cannot be seen, so do not wait for it.
-  case $base in *'"complete":false'*) wake=incomplete; timeout=0 ;; esac
-  while [ "$waited" -lt "$timeout" ]; do
-    sleep "$interval"; waited=$((waited + interval))
-    still_owner || { echo "pr-snapshot: a newer watcher took over PR $pr; this one stops" >&2; exit 4; }
+  case $base in *'"complete":false'*) wake=incomplete ;; esac
+  while [ "$wake" = timeout ]; do
+    elapsed=$((SECONDS - start))
+    [ "$elapsed" -lt "$timeout" ] || break
+    nap=$interval; [ "$nap" -le $((timeout - elapsed)) ] || nap=$((timeout - elapsed))
+    sleep "$nap"
+    still_owner || take_over
     # keep the last good snapshot; a failed poll never replaces it
-    if prepare_cfg && next=$(snapshot); then snap=$next; ok=1; else ok=0; continue; fi
-    if [ "$(sig_of "$snap")" != "$base_sig" ]; then wake=changed; break; fi
+    if poll; then snap=$next; ok=1; else ok=0; continue; fi
+    if [ -z "$base" ]; then
+      base=$snap base_sig=$(sig_of "$snap")
+      case $base in *'"complete":false'*) wake=incomplete ;; esac
+    elif [ "$(sig_of "$snap")" != "$base_sig" ]; then
+      if [ "$until" = attention ] && only_progress "$snap"; then filtered=$((filtered + 1)); else wake=changed; fi
+    fi
   done
+  # a watcher taken over during a hung poll stops here, not with a timeout report
+  [ "$wake" != timeout ] || still_owner || take_over
   [ "$ok" = 1 ] || { echo "pr-snapshot: the last poll failed; GitHub state unknown" >&2; exit 1; }
-  printf '{"wake":"%s","waited":%s,"snapshot":%s}\n' "$wake" "$waited" "$snap"
+  printf '{"wake":"%s","waited":%s,"filtered":%s,"snapshot":%s}\n' "$wake" "$((SECONDS - start))" "$filtered" "$snap"
 else
   prepare_cfg; snap=$(snapshot)
   printf '%s\n' "$snap"
@@ -486,8 +582,11 @@ fi
 
 if [ "$logs" = 1 ]; then
   ids=$(printf '%s' "$snap" | grep -o '"fail_run_ids":\[[0-9,]*\]' | grep -o '[0-9][0-9]*' || true)
+  limited=
   for id in $ids; do
     printf '\n===== failed log: run %s =====\n' "$id"
-    gh run view "$id" -R "$repo" --log-failed 2>&1 | tail -n 80 || true
+    rc=0; gh run view "$id" -R "$repo" --log-failed 2>&1 | tail -n 80 || rc=${PIPESTATUS[0]}
+    if limit_hit "$rc" "gh run view $id"; then limited=1; fi
   done
+  [ -z "$limited" ] || exit 1  # the snapshot is printed; a cut-off log is still a named failure
 fi
