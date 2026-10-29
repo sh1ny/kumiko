@@ -187,10 +187,15 @@ void main() {
 
         // Active tabs and focus: g2 shows bravo (not its last tab); g1 is
         // focused last.
-        await tester.tap(find.text('Workspace overview · bravo'));
-        await tester.pumpAndSettle();
-        await tester.tap(find.text('Workspace overview · alpha'));
-        await tester.pumpAndSettle();
+        // A tab strip scrolls when its group is narrow (macOS opens a smaller
+        // window), so bring each tab into view before tapping it.
+        for (final label in ['bravo', 'alpha']) {
+          final tab = find.text('Workspace overview · $label');
+          await tester.ensureVisible(tab);
+          await tester.pumpAndSettle();
+          await tester.tap(tab);
+          await tester.pumpAndSettle();
+        }
 
         final before = c.layout!;
         final beforeSplit = before.root as SplitNode;

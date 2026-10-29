@@ -80,17 +80,20 @@ jobs:
       - name: Desktop integration test
         working-directory: packages/desktop
         run: |
-          # Runs every file in integration_test/: launch_test.dart and
-          # workbench_reopen_test.dart.
           # The debug app finds the release host through KUMIKO_HOST: rebuilding
           # the Linux bundle wipes it, and adding files to a macOS debug .app
           # breaks its signature for the next build.
+          # One `flutter test` per file: a desktop app relaunched for a second
+          # file in the same run fails to start ("Unable to start the app").
           host="$PWD/../host/build/host/bundle/bin/kumiko_host"
-          case "$RUNNER_OS" in
-            Windows) flutter test integration_test -d windows --dart-define=KUMIKO_HOST="$(cygpath -w "$host.exe")" ;;
-            Linux) xvfb-run -a flutter test integration_test -d linux --dart-define=KUMIKO_HOST="$host" ;;
-            macOS) flutter test integration_test -d macos --dart-define=KUMIKO_HOST="$host" ;;
-          esac
+          set -e
+          for file in integration_test/*_test.dart; do
+            case "$RUNNER_OS" in
+              Windows) flutter test "$file" -d windows --dart-define=KUMIKO_HOST="$(cygpath -w "$host.exe")" ;;
+              Linux) xvfb-run -a flutter test "$file" -d linux --dart-define=KUMIKO_HOST="$host" ;;
+              macOS) flutter test "$file" -d macos --dart-define=KUMIKO_HOST="$host" ;;
+            esac
+          done
 
       - name: Build desktop release with the host bundled
         run: |
