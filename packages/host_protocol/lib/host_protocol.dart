@@ -5,4 +5,6 @@ export 'src/close_reason.dart';
 export 'src/connection.dart';
 export 'src/fair_writer.dart';
 export 'src/frame_codec.dart';
+export 'src/launcher.dart';
 export 'src/messages.dart';
+export 'src/stderr_ring.dart';
