@@ -108,6 +108,34 @@ void main() {
     expect([for (final f in sink.frames) ...f.payload], [...big, 7, 8, 9]);
   });
 
+  test('ready waits for room in the window, and fails once closed', () async {
+    sink.blocking = false;
+    final channel = writer.openChannel(1); // no credit yet
+    expect(channel.room, channelWindow);
+    await channel.ready;
+
+    channel.write(Uint8List(channelWindow)).ignore();
+    expect(channel.room, 0);
+    var ready = false;
+    channel.ready.then((_) => ready = true).ignore();
+    await settle();
+    expect(ready, isFalse, reason: 'the window is full');
+
+    channel.grant(100);
+    await settle();
+    expect(ready, isTrue);
+    expect(channel.room, 100);
+    expect(channel.sentBytes, 100);
+
+    channel.write(Uint8List(100)).ignore();
+    final closed = expectLater(
+      channel.ready,
+      throwsA(isA<ChannelClosedException>()),
+    );
+    writer.closeChannel(1);
+    await closed;
+  });
+
   test('control past 4 MiB marks the peer lost', () {
     for (var i = 0; i < 8 && fatal.isEmpty; i++) {
       writer.sendControl(Uint8List(maxControlMessage));

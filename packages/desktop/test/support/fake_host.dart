@@ -59,6 +59,10 @@ class FakeHostLink implements HostLink {
   final List<String> calls = [];
   bool quitCalled = false;
 
+  /// When set, a `cleanup/units` answer, computed when it was asked, is
+  /// held until this completes.
+  Completer<void>? unitsGate;
+
   final StreamController<CleanupState> _states = StreamController.broadcast();
   final Completer<HostLoss> _lost = Completer();
 
@@ -110,12 +114,14 @@ class FakeHostLink implements HostLink {
         [for (var i = 0; i < w.unitCount; i++) unit(n * 1000 + i)];
     final start = cursor == null ? 0 : int.parse(cursor);
     final end = (start + unitsPageSize).clamp(0, all.length);
-    return CleanupUnitsResult(
+    final result = CleanupUnitsResult(
       revision: this.revision,
       stale: revision != null && revision != this.revision,
       units: all.sublist(start, end),
       nextCursor: end < all.length ? '$end' : null,
     );
+    await unitsGate?.future;
+    return result;
   }
 
   @override

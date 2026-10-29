@@ -704,23 +704,32 @@ class TestChannelStatsParams {
   Json toJson() => {'channel': channel};
 }
 
-/// What a test channel's producer has read from its source and what the
-/// host's writer holds unsent for it.
+/// What a test channel's producer has read from its source, what of it is on
+/// the wire, and what the host's writer holds unsent for it.
 class TestChannelStatsResult {
   const TestChannelStatsResult({
     required this.producedBytes,
+    required this.sentBytes,
     required this.queuedBytes,
   });
 
   factory TestChannelStatsResult.fromJson(Json json) => TestChannelStatsResult(
     producedBytes: _req<int>(json, 'producedBytes'),
+    sentBytes: _req<int>(json, 'sentBytes'),
     queuedBytes: _req<int>(json, 'queuedBytes'),
   );
 
   final int producedBytes;
+
+  /// Bytes of the channel on the wire.
+  final int sentBytes;
   final int queuedBytes;
 
-  Json toJson() => {'producedBytes': producedBytes, 'queuedBytes': queuedBytes};
+  Json toJson() => {
+    'producedBytes': producedBytes,
+    'sentBytes': sentBytes,
+    'queuedBytes': queuedBytes,
+  };
 }
 
 class TestChannelOpenResult {

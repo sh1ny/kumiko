@@ -34,6 +34,10 @@ class _Chunk {
 /// receiver grants nothing. At most [channelWindow] bytes are held here
 /// unsent: a write waits until there is room, larger writes are taken a
 /// window at a time, and writes are queued in call order.
+///
+/// A waiting write keeps the caller's buffer. A producer that must bound
+/// all of its unsent bytes awaits [ready] and reads at most [room] bytes
+/// from its source before each write, which is then queued at once.
 class ChannelWriter {
   ChannelWriter._(this.id, this._writer);
 
@@ -43,6 +47,7 @@ class ChannelWriter {
   int _credit = 0;
   bool _closed = false;
   int _queued = 0;
+  int _sentBytes = 0;
 
   /// Writes waiting for room, and the end of their FIFO chain.
   int _waiting = 0;
@@ -55,6 +60,20 @@ class ChannelWriter {
   /// Bytes accepted by [write] and not yet on the wire, at most
   /// [channelWindow].
   int get queuedBytes => _queued;
+
+  /// Bytes of this channel on the wire so far.
+  int get sentBytes => _sentBytes;
+
+  /// Bytes a write may add now and be queued at once.
+  int get room => _closed || _waiting > 0 ? 0 : channelWindow - _queued;
+
+  /// Completes once [room] is above zero; fails once the channel is closed.
+  Future<void> get ready async {
+    while (!_closed && room == 0) {
+      await (_space ??= Completer<void>()).future;
+    }
+    if (_closed) throw ChannelClosedException(id);
+  }
 
   /// Completes once every byte of [data] has been handed to the sink and
   /// flushed.
@@ -97,6 +116,7 @@ class ChannelWriter {
       flushed.completeError(e, s);
     } finally {
       _waiting--;
+      _wake();
     }
   }
 
@@ -112,6 +132,12 @@ class ChannelWriter {
   /// [bytes] of the queue went on the wire.
   void _sent(int bytes) {
     _queued -= bytes;
+    _sentBytes += bytes;
+    _wake();
+  }
+
+  /// Lets writes and [ready] waiting for room look again.
+  void _wake() {
     final space = _space;
     _space = null;
     space?.complete();
@@ -126,8 +152,7 @@ class ChannelWriter {
   void _close() {
     _closed = true;
     _queued = 0;
-    _space?.complete();
-    _space = null;
+    _wake();
     for (final chunk in _chunks) {
       chunk.done.completeError(ChannelClosedException(id));
     }

@@ -70,7 +70,9 @@ class CleanupController extends ChangeNotifier {
 
   bool isLoadingUnits(String workspace) => _loadingUnits.contains(workspace);
 
-  /// Loads the next page of [workspace]'s units, appending it.
+  /// Loads the next page of [workspace]'s units, appending it. Every page,
+  /// the first too, is checked against the revision of the loaded list, and
+  /// a page answered after the list reloaded is dropped.
   Future<void> loadMoreUnits(String workspace) async {
     if (!_loadingUnits.add(workspace)) return;
     final known = _units.containsKey(workspace);
@@ -81,15 +83,18 @@ class CleanupController extends ChangeNotifier {
     }
     _actionMessage = null;
     notifyListeners();
+    final token = _loadToken;
     var stale = false;
     try {
       final result = await _link.cleanupUnits(
         workspace,
         cursor: cursor,
-        revision: known ? _loadedRevision : null,
+        revision: _loadedRevision,
       );
       if (_disposed) return;
-      if (result.stale) {
+      if (token != _loadToken) {
+        // The list reloaded meanwhile; this page belongs to the old one.
+      } else if (result.stale) {
         stale = true;
       } else {
         _units[workspace] = [...?_units[workspace], ...result.units];

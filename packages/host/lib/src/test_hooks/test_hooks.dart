@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:io';
+import 'dart:math' as math;
 import 'dart:typed_data';
 
 import 'package:host_protocol/host_protocol.dart';
@@ -89,6 +90,7 @@ class TestHostExtension implements HostExtension {
         }
         return TestChannelStatsResult(
           producedBytes: producer.produced,
+          sentBytes: producer.channel.sentBytes,
           queuedBytes: producer.channel.queuedBytes,
         ).toJson();
     }
@@ -108,20 +110,23 @@ class _Producer {
   /// Bytes read from the source so far.
   int produced = 0;
 
-  /// Writes byte `i % 251` at stream offset `i` in writes of [chunk] bytes,
-  /// at about [rate] bytes per second (unthrottled when [rate] is 0). Each
-  /// write waits for credit, so a channel without credit stops its source
-  /// (design D7).
+  /// Writes byte `i % 251` at stream offset `i` in writes of at most
+  /// [chunk] bytes, at about [rate] bytes per second (unthrottled when
+  /// [rate] is 0). The source is read only once the writer has room, and no
+  /// more than that room, so a channel without credit stops its source and
+  /// the host holds at most a window of it unsent (design D7).
   Future<void> run(int rate, int chunk) async {
     final clock = Stopwatch()..start();
     try {
       while (true) {
-        final bytes = Uint8List(chunk);
-        for (var i = 0; i < chunk; i++) {
+        await channel.ready;
+        final n = math.min(chunk, channel.room);
+        final bytes = Uint8List(n);
+        for (var i = 0; i < n; i++) {
           bytes[i] = (produced + i) % 251;
         }
-        produced += chunk;
-        await channel.write(bytes);
+        produced += n;
+        channel.write(bytes).ignore();
         if (rate > 0) {
           final due = Duration(microseconds: produced * 1000000 ~/ rate);
           final wait = due - clock.elapsed;

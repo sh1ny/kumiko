@@ -337,12 +337,14 @@ void main() {
     await Future<void>.delayed(const Duration(milliseconds: 500));
     final second = await stats();
 
-    // A window on the wire, at most a window queued in the host's writer,
-    // and the source stopped: it read one write and is waiting on it.
-    expect(first.queuedBytes, lessThanOrEqualTo(_window));
-    expect(second.queuedBytes, lessThanOrEqualTo(_window));
+    // A window on the wire; of everything the source made, at most a window
+    // is unsent, held anywhere in the host; and the source stopped.
+    for (final s in [first, second]) {
+      expect(s.producedBytes - s.sentBytes, lessThanOrEqualTo(_window));
+      expect(s.queuedBytes, lessThanOrEqualTo(_window));
+    }
+    expect(second.sentBytes, _window);
     expect(second.producedBytes, first.producedBytes);
-    expect(second.producedBytes, write);
 
     // Resumed, every byte still arrives once, in order.
     stalled.subscription.resume();

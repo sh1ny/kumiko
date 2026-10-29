@@ -195,4 +195,50 @@ void main() {
     expect(link.calls, contains('retry ws-1'));
     expect(find.byType(WorkspaceTile), findsNothing);
   });
+
+  testWidgets('the first unit page is checked against the loaded revision', (
+    tester,
+  ) async {
+    final link = FakeHostLink(workspaces: [workspace(1, unitCount: 25)]);
+    await pumpConnected(tester, link);
+    expect(link.calls.where((c) => c == 'list -'), hasLength(1));
+
+    // The list changes before its cleanup/state notification arrives.
+    link.revision++;
+    await tester.tap(find.text('Show more units'));
+    await tester.pumpAndSettle();
+
+    expect(
+      link.calls.where((c) => c == 'list -'),
+      hasLength(2),
+      reason: 'a stale first unit page reloads the list',
+    );
+  });
+
+  testWidgets('a unit page answered after a reload is dropped', (tester) async {
+    final link = FakeHostLink(workspaces: [workspace(1, unitCount: 25)])
+      ..unitsPageSize = 15;
+    await pumpConnected(tester, link);
+    final gate = link.unitsGate = Completer();
+    await tester.tap(find.text('Show more units'));
+    await tester.pump();
+
+    // While that page is outstanding, the workspace shrinks and the list
+    // reloads.
+    link.workspaces[0] = workspace(1, unitCount: 12);
+    link.revision++;
+    link.emitState();
+    await tester.pumpAndSettle();
+    expect(find.text('12 units'), findsOneWidget);
+
+    gate.complete();
+    await tester.pumpAndSettle();
+
+    expect(
+      find.textContaining('scan-unreadable'),
+      findsNWidgets(10),
+      reason: 'the units of the reloaded list, not the old page',
+    );
+    expect(find.text('Show more units'), findsOneWidget);
+  });
 }
