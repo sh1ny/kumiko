@@ -129,7 +129,7 @@ Paths are relative to the repository root.
 
 ## 10. Integration check
 
-- [ ] 10.1 Run the ADR 0001 M1 qualification list on Windows locally and on Linux and macOS in CI (lock, killed desktop, killed host with all fixtures, crash windows, gate refusal, reconciliation after a killed owner). Record measured values in `openspec/architecture.md` Resource bounds: control latency worst case, unit termination and shutdown durations. Verify: every test-map row is green, and `openspec validate scaffold-desktop-and-host --strict` passes.
+- [x] 10.1 Run the ADR 0001 M1 qualification list on Windows locally and on Linux and macOS in CI (lock, killed desktop, killed host with all fixtures, crash windows, gate refusal, reconciliation after a killed owner). Record measured values in `openspec/architecture.md` Resource bounds: control latency worst case, unit termination and shutdown durations. Verify: every test-map row is green, and `openspec validate scaffold-desktop-and-host --strict` passes.
 
 ## Workflow follow-up
 

@@ -100,7 +100,9 @@ void main() {
     expect(isProcessAlive(unit.pid, unit.startTime), isTrue);
     expect(isProcessAlive(unit.pid, unit.startTime + 1), isFalse);
 
+    final watch = Stopwatch()..start();
     final result = await unit.terminate();
+    print('measured: unit termination ${watch.elapsedMilliseconds} ms');
 
     expect(result.terminated, isTrue, reason: '${result.reason}');
     expect(isProcessAlive(unit.pid, unit.startTime), isFalse);
@@ -151,6 +153,10 @@ void main() {
         final watch = Stopwatch()..start();
 
         final result = await unit.terminate();
+        print(
+          'measured: termination of a unit ignoring SIGTERM '
+          '${watch.elapsedMilliseconds} ms',
+        );
 
         expect(result.terminated, isTrue, reason: '${result.reason}');
         expect(watch.elapsed, greaterThanOrEqualTo(const Duration(seconds: 2)));

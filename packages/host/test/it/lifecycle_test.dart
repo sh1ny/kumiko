@@ -37,7 +37,12 @@ void main() {
       unorderedEquals([a, b]),
     );
 
+    final watch = Stopwatch()..start();
     final quit = await desktop.session.quit();
+    print(
+      'measured: shutdown on quit with 2 units '
+      '${watch.elapsedMilliseconds} ms on ${Platform.operatingSystem}',
+    );
 
     expect(quit.timedOut, isFalse);
     expect(quit.exitCode, 0);
@@ -73,11 +78,16 @@ void main() {
 
     standin.kill(ProcessSignal.sigkill);
     await standin.exitCode;
+    final watch = Stopwatch()..start();
 
     await eventually(
       () => !isProcessAlive(hostPid, hostStart),
       within: const Duration(seconds: 40),
       reason: 'host still running',
+    );
+    print(
+      'measured: shutdown on desktop loss '
+      '${watch.elapsedMilliseconds} ms on ${Platform.operatingSystem}',
     );
     await expectAllGone(reports);
   });

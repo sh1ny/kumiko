@@ -76,7 +76,9 @@ void main() {
     final starts = {for (final l in lines) l.pid: processStartTime(l.pid)!};
     expect(jobActiveProcesses(unit.jobHandle), greaterThanOrEqualTo(3));
 
+    final watch = Stopwatch()..start();
     final result = await unit.terminate();
+    print('measured: unit termination ${watch.elapsedMilliseconds} ms');
 
     expect(result.terminated, isTrue, reason: '${result.reason}');
     expect(jobActiveProcesses(unit.jobHandle), 0);
