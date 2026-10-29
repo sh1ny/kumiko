@@ -4,6 +4,7 @@
 library;
 
 export 'src/contained_unit.dart';
+export 'src/fs_identity.dart';
 export 'src/libc.dart' show sessionIdOf;
 export 'src/marker_scan.dart';
 export 'src/posix_process_table.dart'
