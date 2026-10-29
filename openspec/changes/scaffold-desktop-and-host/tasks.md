@@ -83,7 +83,7 @@ Paths are relative to the repository root.
 
 ## 3. Dependency audit (product-telemetry)
 
-- [ ] 3.1 Write `tool/test/audit_dependencies_test.dart` covering the three product-telemetry scenarios: a clean graph, a denylisted transitive package with its path, a missing lock, and a failing `pub deps`. Use fixture `pub deps --json` outputs and an injectable runner. Also test the D1 dependency rules: `desktop` must not depend on `host`, `domain` must not import `dart:io` or `dart:ffi`, and nothing reachable from `packages/host/bin/kumiko_host.dart` may import `lib/src/test_hooks/` (D10). Verify: the tests fail because the tool is missing.
+- [x] 3.1 Write `tool/test/audit_dependencies_test.dart` covering the three product-telemetry scenarios: a clean graph, a denylisted transitive package with its path, a missing lock, and a failing `pub deps`. Use fixture `pub deps --json` outputs and an injectable runner. Also test the D1 dependency rules: `desktop` must not depend on `host`, `domain` must not import `dart:io` or `dart:ffi`, and nothing reachable from `packages/host/bin/kumiko_host.dart` may import `lib/src/test_hooks/` (D10). Verify: the tests fail because the tool is missing.
 - [ ] 3.2 Implement `tool/audit_dependencies.dart` (denylist, patterns and allowlist file from design D13; exit non-zero with the package and its path) and `tool/audit_allowlist.yaml` (empty, with a header explaining the reason format). Add the audit to CI on every OS. Verify: the 3.1 tests pass and their rows are green; `dart run tool/audit_dependencies.dart` passes on the real workspace.
 
 ## 4. Protocol library (`host_protocol`)
