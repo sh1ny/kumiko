@@ -121,7 +121,7 @@ Library facts checked against current docs: `package:sqlite3` bundles a prebuilt
   - `test/unit.end`;
   - `test/channel.open {rateBytesPerSec, writeBytes}`, where `writeBytes` (default 16 KiB, at most 4 MiB) is the size of each write the producer makes;
   - `test/channel.stats {channel}`, which returns the bytes produced, the bytes sent on the wire and the bytes the host's writer holds unsent for that channel; the test producer reads its source only when the writer has room, so produced minus sent is everything the host holds unsent (Amended 2026-10-29: pre-ship review rounds 4 and 5 needed an observable bound on the host's per-channel buffering);
-  - `test/fault.set {crashAfterPendingWrite | crashAfterSpawnBeforePid | killFails | pendingWriteFails | runningWriteFails | identityReadFails}`.
+  - `test/fault.set {crashAfterPendingWrite | crashAfterSpawnBeforePid | killFails | pendingWriteFails | runningWriteFails | identityReadFails | terminateHangs}`.
 
   Dispatch: `--test-fixture` modes are dispatched only by the test entry point; `--unit-exec` (D2) is dispatched by the shared host `main`, so both executables have it.
 
