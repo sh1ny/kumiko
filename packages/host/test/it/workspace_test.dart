@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:domain/domain.dart';
@@ -488,6 +489,43 @@ void main() {
     await restart(desktop);
     expect((await desktop.listWorkspaces()).workspaces, isEmpty);
     expect((await desktop.loadWorkbench()).workspaces, isEmpty);
+  });
+
+  test('remove clears stored contexts at the next revision', () async {
+    final desktop = await start();
+    final opened = (await desktop.openWorkspace(folder('ctx').path)).workspace;
+    LayoutDocument withContext() => LayoutDocument(
+      root: TabGroup(
+        id: 'g1',
+        context: opened.id,
+        tabs: const [],
+        active: null,
+      ),
+      focusedGroup: 'g1',
+      recent: const [],
+      sidebarCollapsed: false,
+    );
+    await desktop.saveWorkbench(layoutToJson(withContext()), 3);
+
+    final removed = await desktop.removeWorkspace(opened.id);
+
+    expect(removed.revision, 4);
+    expect(LedgerView(profile).workspaces(), isEmpty);
+    await stopHost(desktop);
+    await withStore(profile, (store) {
+      final row = store
+          .select(
+            "SELECT layout, revision FROM working_set WHERE id = 'personal'",
+          )
+          .single;
+      expect(row['revision'], 4);
+      final stored = decodeLayout(row['layout'] as String);
+      expect(stored.groups.single.context, isNull);
+    });
+    await restart(desktop);
+    final load = await desktop.loadWorkbench();
+    expect(load.revision, 4);
+    expect(jsonEncode(load.layout), isNot(contains(opened.id)));
   });
 
   test('check in flight at removal publishes nothing', () async {

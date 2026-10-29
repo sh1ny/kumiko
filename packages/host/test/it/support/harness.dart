@@ -276,6 +276,14 @@ class Desktop {
   Future<WorkbenchLoadResult> loadWorkbench() async =>
       WorkbenchLoadResult.fromJson(await _call(Method.workbenchLoad, {}));
 
+  Future<WorkbenchSaveResult> saveWorkbench(Json layout, int revision) async =>
+      WorkbenchSaveResult.fromJson(
+        await _call(
+          Method.workbenchSave,
+          WorkbenchSaveParams(layout: layout, revision: revision).toJson(),
+        ),
+      );
+
   Future<void> resolveFault(String path, {int? delayMs, bool hang = false}) =>
       _call(
         Method.testResolveFault,
