@@ -19,7 +19,10 @@ Future<int> _hostProcessCount(HostOs os) async {
     ]);
     return RegExp('kumiko_host.exe').allMatches('${out.stdout}').length;
   }
-  final out = await Process.run('pgrep', ['-x', 'kumiko_host']);
+  // Matched on the executable path at the start of the command line: the
+  // Dart runtime renames its main thread (`dart:kumiko_hos` on Linux), so the
+  // process name does not match.
+  final out = await Process.run('pgrep', ['-f', '^[^ ]*kumiko_host( |\$)']);
   return '${out.stdout}'.trim().split('\n').where((l) => l.isNotEmpty).length;
 }
 
