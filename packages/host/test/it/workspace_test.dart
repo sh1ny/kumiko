@@ -122,6 +122,33 @@ void main() {
     },
   );
 
+  test('opening a renamed directory moves its workspace to the new path', () async {
+    final dir = folder('before');
+    final desktop = await start();
+    final first = (await desktop.openWorkspace(dir.path)).workspace;
+    final moved = Directory(joinPath(root.path, 'after'));
+    dir.renameSync(moved.path);
+
+    final again = await desktop.openWorkspace(moved.path);
+
+    final expected = resolved(moved);
+    expect(expected.id, first.identity, reason: 'a rename keeps identity');
+    expect(again.existing, isTrue);
+    expect(again.workspace.id, first.id);
+    expect(again.workspace.path, expected.realPath);
+    expect(again.workspace.label, 'after');
+    expect(again.workspace.availability, Availability.available);
+    final rows = LedgerView(profile).workspaces();
+    expect(rows, hasLength(1));
+    expect(rows.single['path'], expected.realPath);
+    expect(rows.single['label'], 'after');
+
+    // Still available on the next check, at the new path.
+    final checked = await desktop.checkWorkspace(first.id);
+    expect(checked.workspace.availability, Availability.available);
+    expect(checked.workspace.path, expected.realPath);
+  });
+
   test('replaced directory at the same path keeps the id and updates '
       'identity', () async {
     final dir = folder('project');

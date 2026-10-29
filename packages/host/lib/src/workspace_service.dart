@@ -170,14 +170,35 @@ class WorkspaceService {
   /// Applies a resolution of workspace [id] that took [seq] and returns true,
   /// unless the row is gone or a later resolution was applied first.
   /// Applying writes back a changed identity, sets what is shown and
-  /// publishes `workspace/changed`.
-  bool _apply(String id, int seq, ResolveResult result) {
+  /// publishes `workspace/changed`. With [relocate], the workspace also
+  /// moves to the resolved path and its folder name.
+  bool _apply(
+    String id,
+    int seq,
+    ResolveResult result, {
+    bool relocate = false,
+  }) {
     final current = row(id);
     if (current == null || seq <= (_applied[id] ?? 0)) return false;
     var updated = current;
     switch (result) {
       case ResolveFound(:final directory):
-        if (directory.id != current.identity) {
+        if (relocate && directory.realPath != current.path) {
+          final label = _labelOf(directory.realPath);
+          _guard(
+            () => _store.execute(
+              'UPDATE workspace SET path = ?, identity = ?, label = ? '
+              'WHERE id = ?',
+              [directory.realPath, directory.id, label, id],
+            ),
+          );
+          updated = WorkspaceRow(
+            id: id,
+            path: directory.realPath,
+            identity: directory.id,
+            label: label,
+          );
+        } else if (directory.id != current.identity) {
           _guard(
             () => _store.execute(
               'UPDATE workspace SET identity = ? WHERE id = ?',
@@ -241,7 +262,12 @@ class WorkspaceService {
             _rowWhere('path', directory.realPath);
         if (known != null) {
           // An open that lost the ordering writes and publishes nothing.
-          _apply(known.id, seq, result);
+          _apply(
+            known.id,
+            seq,
+            result,
+            relocate: await _moved(known, directory),
+          );
           return WorkspaceOpenResult(
             workspace: record(row(known.id) ?? known),
             existing: true,
@@ -258,6 +284,24 @@ class WorkspaceService {
           cleanupRevision: ledger.revision,
         );
     }
+  }
+
+  /// The directory of [known], matched by identity, was opened at another
+  /// path: it moved when its stored path no longer resolves to it (missing
+  /// or another directory). A link to it leaves the stored path, and so
+  /// does a stored path that cannot be resolved now, or one another
+  /// workspace already holds.
+  Future<bool> _moved(WorkspaceRow known, ResolvedDirectory directory) async {
+    if (known.path == directory.realPath ||
+        known.identity != directory.id ||
+        _rowWhere('path', directory.realPath) != null) {
+      return false;
+    }
+    return switch (await resolver.resolve(known.path, queue: false)) {
+      ResolveMissing() => true,
+      ResolveFound(directory: final at) => at.id != directory.id,
+      _ => false,
+    };
   }
 
   WorkspaceRow _create(ResolvedDirectory directory) {
