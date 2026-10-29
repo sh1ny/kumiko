@@ -154,6 +154,8 @@ class VersionRange {
   final int min;
   final int max;
 
+  bool contains(int version) => version >= min && version <= max;
+
   /// The highest version in both ranges, or null when they do not overlap.
   int? highestCommon(VersionRange other) {
     final high = max < other.max ? max : other.max;

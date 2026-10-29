@@ -1,5 +1,6 @@
 import 'dart:convert';
 import 'dart:io';
+import 'dart:typed_data';
 
 /// The host's own diagnostic log (design D12): minimal JSON lines in
 /// `<profile>/logs/host.log`, rotated at [maxBytes] with two files kept
@@ -16,6 +17,9 @@ class HostLog {
   final String version;
   final int maxBytes;
   int _size;
+
+  /// Lines held by [batch] until it ends.
+  BytesBuilder? _held;
 
   static HostLog open(
     Directory profile, {
@@ -46,6 +50,28 @@ class HostLog {
     final line =
         '${jsonEncode({'ts': DateTime.now().toUtc().toIso8601String(), 'component': 'host', 'version': version, 'op': op, 'durationMs': ?duration?.inMilliseconds, 'code': ?code, ...ids})}\n';
     final bytes = utf8.encode(line);
+    final held = _held;
+    if (held != null) {
+      held.add(bytes);
+    } else {
+      _write(bytes);
+    }
+  }
+
+  /// Runs [body] with its events written in one flushed append when it
+  /// ends, so recording many units costs one disk flush, not one each.
+  T batch<T>(T Function() body) {
+    if (_held != null) return body();
+    final held = _held = BytesBuilder(copy: false);
+    try {
+      return body();
+    } finally {
+      _held = null;
+      if (held.isNotEmpty) _write(held.takeBytes());
+    }
+  }
+
+  void _write(List<int> bytes) {
     try {
       if (_size > 0 && _size + bytes.length > maxBytes) _rotate();
       _file.writeAsBytesSync(bytes, mode: FileMode.append, flush: true);

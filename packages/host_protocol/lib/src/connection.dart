@@ -357,13 +357,27 @@ class Connection {
     if (pending.method == Method.hello) {
       // Set synchronously: whatever the host sent after the answer is already
       // in this chunk and must find the session open.
+      final HelloResult parsed;
       try {
-        final parsed = HelloResult.fromJson(_asJson(result));
-        _negotiated = Negotiated(parsed.version, parsed.capabilities);
+        parsed = HelloResult.fromJson(_asJson(result));
       } on RpcException catch (e) {
         pending.completer.completeError(e);
         return;
       }
+      // The host may only choose within what this side offered.
+      final unrequested = parsed.capabilities.difference(capabilities);
+      final problem = !versions.contains(parsed.version)
+          ? 'version ${parsed.version} is outside ${versions.min}..${versions.max}'
+          : unrequested.isNotEmpty
+          ? 'unrequested capabilities ${unrequested.join(', ')}'
+          : null;
+      if (problem != null) {
+        pending.completer.completeError(
+          RpcException(ErrorCode.protocolError, 'hello result: $problem'),
+        );
+        throw ProtocolViolation('hello result: $problem');
+      }
+      _negotiated = Negotiated(parsed.version, parsed.capabilities);
     }
     pending.completer.complete(result);
   }

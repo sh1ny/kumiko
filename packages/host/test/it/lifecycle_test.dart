@@ -142,6 +142,28 @@ void main() {
   );
 
   test(
+    'the next host reconciles units an earlier host left unresolved',
+    () async {
+      final desktop = await Desktop.start(profile);
+      addTearDown(desktop.dispose);
+      await desktop.waitState();
+      await desktop.setFault(TestFault.killFails);
+      final id = await desktop.launch(target, TestFixture.sleeper);
+      final reports = await waitReports(target, 1);
+      expect((await desktop.end(id)).cleaned, isFalse);
+      expect(LedgerView(profile).unit(id)!['state'], 'unresolved');
+      await desktop.session.quit();
+
+      // Nothing keeps the next host from ending the unit now.
+      await desktop.restart();
+      await desktop.waitState(where: (s) => !s.reconciling);
+      await expectAllGone(reports);
+      expect(LedgerView(profile).unit(id), isNull);
+      expect(await desktop.allWorkspaces(), isEmpty);
+    },
+  );
+
+  test(
     'termination past the deadline keeps the row; the host exits on time',
     () async {
       const deadline = Duration(milliseconds: 1500);
@@ -183,6 +205,7 @@ void main() {
     addTearDown(host.dispose);
     final hello = await host.hello();
     expect(hello.capabilities, testCapabilities);
+    await host.reconciled;
     await host.connection.request(
       Method.testUnitLaunch,
       TestUnitLaunchParams(

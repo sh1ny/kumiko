@@ -53,7 +53,7 @@ class CleanupService {
     final clock = Stopwatch()..start();
     // After the hello reply is on its way, not before.
     await Future<void>.delayed(options.reconcileDelay);
-    final rows = ledger.earlierActive();
+    final rows = ledger.earlierUnits();
     try {
       final outcomes = await settler.settle(
         rows,

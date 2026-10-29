@@ -228,7 +228,8 @@ class Desktop {
     await eventually(
       () => states.any(test),
       within: within,
-      reason: 'no matching cleanup/state; got $states',
+      reason:
+          'no matching cleanup/state; got ${[for (final s in states) s.toJson()]}',
     );
     return states.lastWhere(test);
   }
@@ -362,10 +363,12 @@ class RawHost {
     this.connection,
     this.stderrText,
     this._job,
+    this._reconciled,
   );
 
   final Process process;
   final int? _job;
+  final Completer<void> _reconciled;
   final StreamSubscription<List<int>> _reading;
   final Connection connection;
   final StringBuffer stderrText;
@@ -395,12 +398,20 @@ class RawHost {
     final stderrText = StringBuffer();
     process.stderr.transform(utf8.decoder).listen(stderrText.write);
     process.stdin.done.then<void>((_) {}, onError: (Object _) {});
+    final reconciled = Completer<void>();
     final connection = Connection(
       input: input.stream,
       output: IOSinkAdapter(process.stdin),
       capabilities: capabilities,
+      onNotification: (method, params) {
+        if (method == Method.cleanupState &&
+            !CleanupState.fromJson(params).reconciling &&
+            !reconciled.isCompleted) {
+          reconciled.complete();
+        }
+      },
     );
-    return RawHost._(process, reading, connection, stderrText, job);
+    return RawHost._(process, reading, connection, stderrText, job, reconciled);
   }
 
   int get pid => process.pid;
@@ -410,6 +421,10 @@ class RawHost {
     desktopStartTime: processStartTime(pid),
     outerJobHeld: _job != null,
   );
+
+  /// Completes once the host reports that reconciliation has ended.
+  Future<void> get reconciled =>
+      _reconciled.future.timeout(const Duration(seconds: 30));
 
   /// Stops reading the host's stdout, so the pipe fills.
   void stopReading() => _reading.pause();
@@ -509,8 +524,9 @@ void seedUnit(
 final String _seededAt = DateTime.now().toUtc().toIso8601String();
 
 /// A ledger of [workspaces] unresolved workspaces with [unitsEach] units
-/// each, left by an earlier host instance whose desktop is gone and whose
-/// units' pids belong to no process.
+/// each, left by an earlier host instance that never recorded their pids,
+/// under a desktop that still runs (this test process). Reconciliation cannot
+/// confirm such a unit cleaned, so the rows stay unresolved until confirmed.
 Future<void> seedUnresolved(
   Directory profile, {
   required int workspaces,
@@ -519,7 +535,7 @@ Future<void> seedUnresolved(
   int pathBytes = 3000,
 }) => withStore(profile, (store) {
   store.execute('BEGIN');
-  seedInstance(store);
+  seedInstance(store, desktopPid: pid, desktopStartedAt: processStartTime(pid));
   final reason = 'r' * reasonBytes;
   for (var w = 0; w < workspaces; w++) {
     final tag = w.toString().padLeft(4, '0');
@@ -530,8 +546,6 @@ Future<void> seedUnresolved(
         state: 'unresolved',
         path: '/seed/$tag/${'p' * pathBytes}',
         identity: 'seed:$tag',
-        pid: 2147480000 + u,
-        startedAt: 1,
         reason: reason,
       );
     }

@@ -228,33 +228,35 @@ class Settler {
     List<UnitRow> rows,
     Map<String, UnitOutcome> outcomes, {
     bool shuttingDown = false,
-  }) {
-    for (final row in rows) {
-      final outcome = outcomes[row.containmentId];
-      if (outcome == null) continue;
-      if (outcome.cleaned) {
-        ledger.delete(row.containmentId);
-        log.event('unit-cleaned', ids: {'unit': row.containmentId});
-      } else if (!shuttingDown) {
-        ledger.markUnresolved(row.containmentId, outcome.reason!);
-        log.event(
-          'unit-unresolved',
-          code: outcome.reason,
-          ids: {'unit': row.containmentId},
-        );
-      } else if (row.state == 'unresolved') {
-        ledger.markUnresolved(
-          row.containmentId,
-          'shutdown-deadline: ${outcome.reason}',
-        );
-        log.event(
-          'unit-unresolved',
-          code: 'shutdown-deadline',
-          ids: {'unit': row.containmentId},
-        );
+  }) => log.batch(
+    () => ledger.inTransaction(() {
+      for (final row in rows) {
+        final outcome = outcomes[row.containmentId];
+        if (outcome == null) continue;
+        if (outcome.cleaned) {
+          ledger.delete(row.containmentId);
+          log.event('unit-cleaned', ids: {'unit': row.containmentId});
+        } else if (!shuttingDown) {
+          ledger.markUnresolved(row.containmentId, outcome.reason!);
+          log.event(
+            'unit-unresolved',
+            code: outcome.reason,
+            ids: {'unit': row.containmentId},
+          );
+        } else if (row.state == 'unresolved') {
+          ledger.markUnresolved(
+            row.containmentId,
+            'shutdown-deadline: ${outcome.reason}',
+          );
+          log.event(
+            'unit-unresolved',
+            code: 'shutdown-deadline',
+            ids: {'unit': row.containmentId},
+          );
+        }
       }
-    }
-  }
+    }),
+  );
 }
 
 /// A process table whose kills fail (an injected kill failure).

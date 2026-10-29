@@ -42,13 +42,20 @@ void main() {
       (await desktop.allWorkspaces()).single.targetIdentity;
 
   test('pages over 1 MiB of unresolved results; actions cover all units', () async {
-    await seedUnresolved(profile, workspaces: 40, unitsEach: 120);
+    // Enough workspaces for the pages to pass 1 MiB in total.
+    const count = 80;
+    await seedUnresolved(
+      profile,
+      workspaces: count,
+      unitsEach: 120,
+      pathBytes: 4000,
+    );
     final desktop = await Desktop.start(profile);
     addTearDown(desktop.dispose);
 
     final state = await desktop.waitState();
-    expect(state.unresolvedWorkspaces, 40);
-    expect(state.unresolvedUnits, 4800);
+    expect(state.unresolvedWorkspaces, count);
+    expect(state.unresolvedUnits, count * 120);
     expect(
       jsonEncode(state.toJson()).length,
       lessThan(200),
@@ -79,9 +86,9 @@ void main() {
       cursor = page.nextCursor;
       pages++;
     } while (cursor != null);
-    expect(pages, 2);
-    expect(workspaces, hasLength(40));
-    expect(workspaces.map((w) => w.targetIdentity).toSet(), hasLength(40));
+    expect(pages, (count / maxListWorkspaces).ceil());
+    expect(workspaces, hasLength(count));
+    expect(workspaces.map((w) => w.targetIdentity).toSet(), hasLength(count));
 
     // Every unit of every workspace, in pages of at most 100.
     final first = workspaces.first.targetIdentity;
@@ -114,9 +121,10 @@ void main() {
     expect(total, greaterThan(1024 * 1024), reason: 'more than one message');
 
     // Retry and confirm act on all units of the workspace, whatever was paged.
+    // Units without a recorded pid stay unresolved on retry.
     final retried = await desktop.retry(first);
-    expect(retried.resolvedUnits, 120);
-    expect(retried.unresolvedUnits, 0);
+    expect(retried.resolvedUnits, 0);
+    expect(retried.unresolvedUnits, 120);
     final second = workspaces[1].targetIdentity;
     final confirmed = await desktop.confirm(second);
     expect(confirmed.resolvedUnits, 120);
@@ -130,11 +138,12 @@ void main() {
     expect(stale.stale, isTrue);
     expect(stale.revision, greaterThan(state.revision));
     expect(stale.workspaces, hasLength(25));
+    // Only the confirmed workspace is gone; the retried one stays.
     final after = await desktop.waitState(
-      where: (s) => s.unresolvedWorkspaces == 38,
+      where: (s) => s.unresolvedWorkspaces == count - 1,
     );
-    expect(after.unresolvedUnits, 38 * 120);
-    expect((await desktop.allWorkspaces()), hasLength(38));
+    expect(after.unresolvedUnits, (count - 1) * 120);
+    expect((await desktop.allWorkspaces()), hasLength(count - 1));
   });
 
   test('retry after exit cleans and unblocks workspace', () async {

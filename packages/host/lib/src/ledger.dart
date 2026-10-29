@@ -152,6 +152,24 @@ class Ledger {
     );
   });
 
+  /// Runs [body] in one transaction: its writes are committed together, or
+  /// none of them is.
+  T inTransaction<T>(T Function() body) {
+    _guard(() => _store.execute('BEGIN IMMEDIATE'));
+    try {
+      final result = body();
+      _guard(() => _store.execute('COMMIT'));
+      return result;
+    } on Object {
+      try {
+        _store.execute('ROLLBACK');
+      } on Object {
+        // Already rolled back by SQLite.
+      }
+      rethrow;
+    }
+  }
+
   void markUnresolved(String containmentId, String reason) => _guard(() {
     _store.execute(
       "UPDATE unit SET state = 'unresolved', unresolved_reason = ?, "
@@ -180,13 +198,13 @@ class Ledger {
     return rows.isEmpty ? null : UnitRow.fromRow(rows.single);
   });
 
-  /// Pending and running rows left by earlier host instances, which the
-  /// reconciliation at startup handles. Unresolved rows wait for a retry or a
-  /// confirmation.
-  List<UnitRow> earlierActive() => _guard(
+  /// Every row left by earlier host instances, which the reconciliation at
+  /// startup handles: pending, running and unresolved alike, so a unit an
+  /// earlier host could not end is tried again before any launch.
+  List<UnitRow> earlierUnits() => _guard(
     () => [
       for (final r in _store.select(
-        "SELECT * FROM unit WHERE host_instance_id != ? AND state != 'unresolved' "
+        'SELECT * FROM unit WHERE host_instance_id != ? '
         'ORDER BY created_at, containment_id',
         [instanceId],
       ))
