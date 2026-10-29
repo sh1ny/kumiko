@@ -2,7 +2,9 @@ name: ci
 
 on:
   push:
-    branches: [main]
+    # probe/** is temporary: throwaway refs for CI evidence during apply,
+    # removed in task 9.4.
+    branches: [main, 'probe/**']
   pull_request:
 
 permissions:
