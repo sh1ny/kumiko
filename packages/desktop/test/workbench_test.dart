@@ -997,6 +997,41 @@ void main() {
       await tester.pump(const Duration(seconds: 3));
     });
 
+    uiTest('a workspace record received during the load is applied after it', (
+      tester,
+    ) async {
+      final link = linkWith(null);
+      // The load snapshot still has A checking, then is held.
+      link.loadAnswers.add(
+        WorkbenchLoadResult(
+          layout: null,
+          restoreError: null,
+          revision: 0,
+          workspaces: [
+            workspaceRecord('A', availability: Availability.checking),
+            workspaceRecord('B', availability: Availability.checking, seq: 3),
+          ],
+          cleanupRevision: 1,
+        ),
+      );
+      link.loadGate = Completer<void>();
+      final c = await pumpWorkbench(tester, link);
+
+      // A's resolution is published before the load answer is processed;
+      // B's arrives with an older seq than the snapshot's.
+      link.emitWorkspaceChanged(workspaceRecord('A', seq: 2));
+      link.emitWorkspaceChanged(workspaceRecord('B', seq: 2));
+      await tester.pump();
+
+      link.loadGate!.complete();
+      await tester.pump();
+      await tester.pump();
+
+      expect(c.workspace('A')!.availability, Availability.available);
+      expect(c.workspace('B')!.availability, Availability.checking);
+      expect(find.text('Checking...'), findsOneWidget);
+    });
+
     uiTest('a cleanup revision received during the load is kept', (
       tester,
     ) async {

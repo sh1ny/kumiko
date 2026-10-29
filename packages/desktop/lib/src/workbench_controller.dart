@@ -89,6 +89,11 @@ class WorkbenchController extends ChangeNotifier {
   /// the remove must not add it back.
   final Set<String> _removed = {};
 
+  /// `workspace/changed` records that arrived while `workbench/load` was
+  /// out: applied once its snapshot is installed, or a resolution published
+  /// meanwhile would be lost under the snapshot. Null when not loading.
+  List<WorkspaceChanged>? _heldChanges;
+
   /// The layout, or null until the first load.
   LayoutDocument? get layout => _layout;
   List<WorkspaceRecord> get workspaces => _workspaces;
@@ -127,6 +132,7 @@ class WorkbenchController extends ChangeNotifier {
     _listLoaded = false;
     _listRequested = 0;
     _latestStateRevision = 0;
+    _heldChanges = [];
     _reconciling = link.hello.state == HostState.reconciling;
     _subscriptions
       ..add(link.cleanupStates.listen(_onCleanupState))
@@ -157,6 +163,11 @@ class WorkbenchController extends ChangeNotifier {
         result.workspaces.map((w) => MapEntry(w.id, result.cleanupRevision)),
       );
     _listApplied = result.cleanupRevision;
+    final held = _heldChanges ?? const [];
+    _heldChanges = null;
+    for (final e in held) {
+      _applyRecord(e.workspace, e.cleanupRevision);
+    }
     // A `cleanup/state` that arrived while the load was out may be newer.
     _latestStateRevision = max(_latestStateRevision, result.cleanupRevision);
     _listLoaded = true;
@@ -200,6 +211,7 @@ class WorkbenchController extends ChangeNotifier {
   /// The host is gone: keep the layout, forget the link.
   void detach() {
     _generation++;
+    _heldChanges = null;
     _detachLink();
     _link = null;
     _loading = false;
@@ -216,6 +228,7 @@ class WorkbenchController extends ChangeNotifier {
   bool _stale(int generation) => _disposed || generation != _generation;
 
   void _failLoad(String reason) {
+    _heldChanges = null;
     _loading = false;
     _loadError = 'Could not load the workbench: $reason';
     notifyListeners();
@@ -504,6 +517,10 @@ class WorkbenchController extends ChangeNotifier {
 
   void _onWorkspaceChanged(WorkspaceChanged e) {
     if (_disposed) return;
+    if (_heldChanges case final held?) {
+      held.add(e);
+      return;
+    }
     _applyRecord(e.workspace, e.cleanupRevision);
     notifyListeners();
   }
