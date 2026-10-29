@@ -1,0 +1,111 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install Linux desktop build dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang cmake ninja-build pkg-config libgtk-3-dev liblzma-dev libstdc++-12-dev xvfb
+
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: 3.47.7
+          cache: true
+
+      - name: Resolve workspace
+        run: flutter pub get
+
+      - name: Audit dependencies
+        run: dart run tool/audit_dependencies.dart
+
+      - name: Analyze Dart packages
+        run: dart analyze --fatal-infos
+
+      - name: Analyze desktop
+        working-directory: packages/desktop
+        run: flutter analyze --fatal-infos
+
+      - name: Test
+        run: |
+          echo "::group::test tool"
+          dart test tool/test
+          echo "::endgroup::"
+          echo "::group::build test host"
+          (cd packages/host && dart build cli -t tool/kumiko_host_test.dart -o build/host-test)
+          echo "::endgroup::"
+          for dir in packages/*/; do
+            [ -d "${dir}test" ] || continue
+            echo "::group::test ${dir}"
+            if [ "${dir}" = "packages/desktop/" ]; then
+              (cd "${dir}" && flutter test)
+            else
+              (cd "${dir}" && dart test)
+            fi
+            echo "::endgroup::"
+          done
+
+      # The release contract test (packages/host/test/it/release_contract_test.dart)
+      # runs with the host package tests above; it builds the release host itself.
+
+      - name: Build release host
+        working-directory: packages/host
+        run: dart build cli -o build/host
+
+      - name: Desktop integration test
+        working-directory: packages/desktop
+        run: |
+          # The debug app finds the release host through KUMIKO_HOST: rebuilding
+          # the Linux bundle wipes it, and adding files to a macOS debug .app
+          # breaks its signature for the next build.
+          host="$PWD/../host/build/host/bundle/bin/kumiko_host"
+          case "$RUNNER_OS" in
+            Windows) flutter test integration_test -d windows --dart-define=KUMIKO_HOST="$(cygpath -w "$host.exe")" ;;
+            Linux) xvfb-run -a flutter test integration_test -d linux --dart-define=KUMIKO_HOST="$host" ;;
+            macOS) flutter test integration_test -d macos --dart-define=KUMIKO_HOST="$host" ;;
+          esac
+
+      - name: Build desktop release with the host bundled
+        run: |
+          os=$(echo "$RUNNER_OS" | tr '[:upper:]' '[:lower:]')
+          (cd packages/desktop && flutter build "$os" --release)
+          dart run tool/bundle_host.dart --skip-build
+          case "$RUNNER_OS" in
+            Windows) bundle=packages/desktop/build/windows/x64/runner/Release; exe=host/bin/kumiko_host.exe ;;
+            Linux) bundle=packages/desktop/build/linux/x64/release/bundle; exe=host/bin/kumiko_host ;;
+            macOS) bundle=packages/desktop/build/macos/Build/Products/Release/Kumiko.app; exe=Contents/MacOS/host/bin/kumiko_host ;;
+          esac
+          test -x "$bundle/$exe"
+          # tar keeps the executable bits and the macOS framework symlinks.
+          tar -czf "kumiko-$os.tar.gz" -C "$(dirname "$bundle")" "$(basename "$bundle")"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: kumiko-${{ runner.os }}
+          path: kumiko-*.tar.gz
+          if-no-files-found: error

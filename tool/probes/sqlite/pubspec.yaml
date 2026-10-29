@@ -1,0 +1,9 @@
+name: sqlite_probe
+description: Throwaway probe for the SQLite binding (ADR 0008). Not a workspace member.
+publish_to: none
+version: 0.0.0
+
+environment:
+  sdk: ^3.13.0
+dependencies:
+  sqlite3: ^3.8.0

@@ -1,0 +1,16 @@
+{
+  "root": "kumiko_workspace",
+  "packages": [
+    {"name": "kumiko_workspace", "version": "0.0.0", "kind": "root", "source": "root", "dependencies": ["test"], "directDependencies": ["test"], "devDependencies": ["test"]},
+    {"name": "desktop", "version": "0.1.0", "kind": "root", "source": "root", "dependencies": ["domain", "host_protocol", "process_containment"], "directDependencies": ["domain", "host_protocol", "process_containment"]},
+    {"name": "host", "version": "0.0.0", "kind": "root", "source": "root", "dependencies": ["domain", "host_protocol", "process_containment", "sqlite3"], "directDependencies": ["domain", "host_protocol", "process_containment", "sqlite3"]},
+    {"name": "domain", "version": "0.0.0", "kind": "root", "source": "root", "dependencies": [], "directDependencies": []},
+    {"name": "host_protocol", "version": "0.0.0", "kind": "root", "source": "root", "dependencies": ["domain"], "directDependencies": ["domain"]},
+    {"name": "process_containment", "version": "0.0.0", "kind": "root", "source": "root", "dependencies": [], "directDependencies": []},
+    {"name": "sqlite3", "version": "3.8.0", "kind": "transitive", "source": "hosted", "dependencies": ["collection", "remote_logger"], "directDependencies": ["collection", "remote_logger"]},
+    {"name": "collection", "version": "1.19.1", "kind": "transitive", "source": "hosted", "dependencies": [], "directDependencies": []},
+    {"name": "test", "version": "1.31.1", "kind": "dev", "source": "hosted", "dependencies": [], "directDependencies": []}
+    ,{"name": "remote_logger", "version": "1.0.0", "kind": "transitive", "source": "hosted", "dependencies": ["sentry"], "directDependencies": ["sentry"]},
+    {"name": "sentry", "version": "8.0.0", "kind": "transitive", "source": "hosted", "dependencies": [], "directDependencies": []}
+  ]
+}

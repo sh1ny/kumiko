@@ -1,0 +1,19 @@
+name: host
+description: The Kumiko execution host - a headless child process of the desktop.
+publish_to: none
+resolution: workspace
+
+environment:
+  sdk: ^3.13.0
+
+executables:
+  kumiko_host:
+
+dependencies:
+  domain: any
+  host_protocol: any
+  process_containment: any
+  sqlite3: ^3.8.0
+
+dev_dependencies:
+  test: ^1.26.0

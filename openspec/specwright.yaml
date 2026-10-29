@@ -3,7 +3,7 @@
 # How a change finishes after archive:
 #   local - merge the feature branch into main with --no-ff, no push
 #   pr    - archive on the branch, push to the PR; GitHub merges
-finish: local
+finish: pr
 
 # Main branch. Omit to detect (main, else master).
 # main_branch: main
@@ -83,16 +83,18 @@ pr:
   # reviewers:
   #   chatgpt-codex-connector: { role: required, request: "@codex review" }
   #   my-review-bot: { role: advisory, timeout: 15m }
+  reviewers:
+    chatgpt-codex-connector: { role: required, request: "@codex review" }
   # Account that posts the requests. Default: review_request.login, else
   # github.login.
-  # request_as: ""
+  request_as: sh1ny
   # Who merges a ready PR. user = you merge on GitHub; watch reports ready
   # and stops. agent = with finish: pr, watch archives the change without
   # asking, merges the PR at the head it reported ready and cleans up (ADR
   # 0009). Agent mode needs a required reviewer in reviewers (store:
   # planning_store.reviewers), else it reports ready and merges nothing.
   # GitHub records the run login as the merger.
-  merge: user
+  merge: agent
   # Agent merge method: merge | squash | rebase. A method the repository
   # disallows is refused and reported; no other method is tried.
   merge_method: merge
