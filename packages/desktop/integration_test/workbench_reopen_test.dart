@@ -187,13 +187,15 @@ void main() {
 
         // Active tabs and focus: g2 shows bravo (not its last tab); g1 is
         // focused last.
-        // A tab strip scrolls when its group is narrow (macOS opens a smaller
-        // window), so bring each tab into view before tapping it.
+        // A tab strip scrolls when its group is narrow (macOS opens an 800x600
+        // window), and its visible part can be narrower than a whole label,
+        // whose centre then lies under the group's header buttons. Bring each
+        // tab into view and tap the start of its label.
         for (final label in ['bravo', 'alpha']) {
           final tab = find.text('Workspace overview · $label');
           await tester.ensureVisible(tab);
           await tester.pumpAndSettle();
-          await tester.tap(tab);
+          await tester.tapAt(tester.getTopLeft(tab) + const Offset(4, 6));
           await tester.pumpAndSettle();
         }
 
