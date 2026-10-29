@@ -57,6 +57,9 @@ jobs:
           echo "::group::test tool"
           dart test tool/test
           echo "::endgroup::"
+          echo "::group::build test host"
+          (cd packages/host && dart build cli -t tool/kumiko_host_test.dart -o build/host-test)
+          echo "::endgroup::"
           for dir in packages/*/; do
             [ -d "${dir}test" ] || continue
             echo "::group::test ${dir}"
