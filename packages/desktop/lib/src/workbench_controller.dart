@@ -652,20 +652,28 @@ class WorkbenchController extends ChangeNotifier {
   /// A fresh id for a profile the user adds.
   String newProfileId() => _newId('profile');
 
+  /// The link for a profile call. Without a host the call fails as on a
+  /// closed connection, which the profile dialog reports.
+  HostLink _profileLink() =>
+      _link ??
+      (throw ConnectionClosedException(
+        const CloseReason(CloseReason.closedLocally, 'no host is connected'),
+      ));
+
   /// Saves a user profile; throws what the host refuses with.
   Future<ShellProfile> saveProfile(ShellProfile profile) async {
-    final saved = await _link!.saveProfile(profile);
+    final saved = await _profileLink().saveProfile(profile);
     await refreshProfiles();
     return saved;
   }
 
   Future<void> removeProfile(String id) async {
-    await _link!.removeProfile(id);
+    await _profileLink().removeProfile(id);
     await refreshProfiles();
   }
 
   Future<void> setDefaultProfile(String id) async {
-    await _link!.setDefaultProfile(id);
+    await _profileLink().setDefaultProfile(id);
     await refreshProfiles();
   }
 

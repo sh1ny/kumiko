@@ -57,6 +57,26 @@ void main() {
     expect(result.skipped, order);
   });
 
+  test('a relative or empty PATH entry is never searched, so a shell in '
+      'the working directory is not detected', () {
+    probeOrder(Platform.operatingSystem).forEach(install);
+    final before = Directory.current;
+    Directory.current = bin;
+    addTearDown(() => Directory.current = before);
+
+    final result = detectShells(
+      DetectionConfig(
+        os: Platform.operatingSystem,
+        pathDirs: const ['.', '', 'sub/..'],
+        wellKnownDirs: const ['.'],
+        maxProbes: 20,
+        cap: const Duration(seconds: 2),
+      ),
+    );
+
+    expect(result.found, isEmpty);
+  });
+
   test('a file that is not executable is not a shell', () {
     if (Platform.isWindows) return; // Windows has no execute bit.
     final name = probeOrder(Platform.operatingSystem).first;

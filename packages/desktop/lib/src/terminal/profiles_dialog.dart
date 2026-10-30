@@ -168,6 +168,12 @@ class _ProfilesDialogState extends State<ProfilesDialog> {
 
   /// The id of the profile being edited, or null while listing.
   String? _editing;
+
+  /// Arguments or environment of the edited profile that one entry per line
+  /// cannot show (an empty argument, a line break): kept unchanged on save,
+  /// and their fields are read-only.
+  List<String>? _keptArgs;
+  Map<String, String>? _keptEnv;
   List<String> _issues = const [];
   String? _error;
 
@@ -196,12 +202,16 @@ class _ProfilesDialogState extends State<ProfilesDialog> {
         ? '${profile.name} copy'
         : profile.name;
     _executable.text = profile?.executable ?? '';
-    _args.text = profile?.args.join('\n') ?? '';
+    final args = profile?.args ?? const <String>[];
+    final env = profile?.env ?? const <String, String>{};
+    _keptArgs = args.any((a) => a.isEmpty || _breaksLine(a)) ? args : null;
+    _keptEnv =
+        env.entries.any((e) => _breaksLine(e.key) || _breaksLine(e.value))
+        ? env
+        : null;
+    _args.text = args.join('\n');
     _cwd.text = profile?.cwd ?? '';
-    _env.text = [
-      for (final e in (profile?.env ?? const <String, String>{}).entries)
-        '${e.key}=${e.value}',
-    ].join('\n');
+    _env.text = [for (final e in env.entries) '${e.key}=${e.value}'].join('\n');
     _editing = newId || profile == null
         ? _controller.newProfileId()
         : profile.id;
@@ -209,11 +219,14 @@ class _ProfilesDialogState extends State<ProfilesDialog> {
     _error = null;
   }
 
+  static bool _breaksLine(String s) => s.contains('\n') || s.contains('\r');
+
   Future<void> _save() async {
     final id = _editing!;
     final issues = <String>[];
-    final env = <String, String>{};
-    for (final line in _env.text.split('\n')) {
+    final env = <String, String>{...?_keptEnv};
+    final lines = _keptEnv == null ? _env.text.split('\n') : const <String>[];
+    for (final line in lines) {
       if (line.trim().isEmpty) continue;
       final at = line.indexOf('=');
       if (at < 0) {
@@ -226,10 +239,12 @@ class _ProfilesDialogState extends State<ProfilesDialog> {
       id: id,
       name: _name.text.trim(),
       executable: _executable.text.trim(),
-      args: [
-        for (final a in _args.text.split('\n'))
-          if (a.isNotEmpty) a,
-      ],
+      args:
+          _keptArgs ??
+          [
+            for (final a in _args.text.split('\n'))
+              if (a.isNotEmpty) a,
+          ],
       cwd: _cwd.text.trim().isEmpty ? null : _cwd.text.trim(),
       env: env,
     );
@@ -373,6 +388,7 @@ class _ProfilesDialogState extends State<ProfilesDialog> {
       TextEditingController c, {
       int? lines,
       String? hint,
+      bool kept = false,
     }) => Padding(
       padding: const EdgeInsets.only(bottom: 8),
       child: TextField(
@@ -380,7 +396,15 @@ class _ProfilesDialogState extends State<ProfilesDialog> {
         controller: c,
         minLines: lines,
         maxLines: lines == null ? 1 : null,
-        decoration: InputDecoration(labelText: label, hintText: hint),
+        readOnly: kept,
+        decoration: InputDecoration(
+          labelText: label,
+          hintText: hint,
+          helperText: kept
+              ? 'Holds an empty entry or a line break, which this editor '
+                    'cannot show; kept unchanged.'
+              : null,
+        ),
       ),
     );
     return Column(
@@ -391,13 +415,20 @@ class _ProfilesDialogState extends State<ProfilesDialog> {
         const SizedBox(height: 8),
         field('profile-name', 'Name', _name),
         field('profile-executable', 'Executable', _executable),
-        field('profile-args', 'Arguments, one per line', _args, lines: 2),
+        field(
+          'profile-args',
+          'Arguments, one per line',
+          _args,
+          lines: 2,
+          kept: _keptArgs != null,
+        ),
         field('profile-cwd', 'Working directory (optional)', _cwd),
         field(
           'profile-env',
           'Environment, NAME=value per line',
           _env,
           lines: 2,
+          kept: _keptEnv != null,
         ),
         for (final issue in _issues)
           Text(

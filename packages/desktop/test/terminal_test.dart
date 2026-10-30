@@ -707,6 +707,61 @@ void main() {
       expect(saved.id, isNot(startsWith('builtin:')));
     });
 
+    uiTest('editing only the name of a profile whose argument has a line '
+        'break and whose list has an empty entry keeps its argv and '
+        'environment; one per line cannot show them, so they are read-only', (
+      tester,
+    ) async {
+      final rig = await pumpEmpty(tester);
+      const original = ShellProfile(
+        id: 'user-1',
+        name: 'script',
+        executable: '/bin/bash',
+        args: ['-c', 'echo a\necho b', ''],
+        env: {'GREETING': 'hello\nworld'},
+      );
+      rig.link.profiles = const ProfileListResult(
+        profiles: [original],
+        defaultId: 'user-1',
+        defaultAvailable: true,
+      );
+      await openProfiles(tester);
+      await tester.tap(key('edit-user-1'));
+      await tester.pumpAndSettle();
+
+      expect(tester.widget<TextField>(key('profile-args')).readOnly, isTrue);
+      expect(tester.widget<TextField>(key('profile-env')).readOnly, isTrue);
+      await tester.enterText(key('profile-name'), 'renamed');
+      await tester.tap(key('profile-save'));
+      await flush(tester);
+      await tester.pumpAndSettle();
+
+      final saved = rig.link.savedProfiles.single;
+      expect(saved.name, 'renamed');
+      expect(saved.args, original.args);
+      expect(saved.env, original.env);
+    });
+
+    uiTest('saving a profile after the host disconnected shows the host is '
+        'gone instead of failing', (tester) async {
+      final rig = await pumpEmpty(tester);
+      await openProfiles(tester);
+      await tester.tap(key('add-profile'));
+      await tester.pumpAndSettle();
+      await tester.enterText(key('profile-name'), 'late');
+      await tester.enterText(key('profile-executable'), '/bin/sh');
+
+      rig.controller.detach();
+      await tester.pumpAndSettle();
+      await tester.tap(key('profile-save'));
+      await flush(tester);
+      await tester.pumpAndSettle();
+
+      expect(tester.takeException(), isNull);
+      expect(find.text('The host is gone.'), findsOneWidget);
+      expect(rig.link.savedProfiles, isEmpty);
+    });
+
     uiTest('a profile with an empty executable is refused with a message', (
       tester,
     ) async {

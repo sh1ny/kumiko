@@ -165,6 +165,29 @@ void main() {
       );
     });
 
+    test('a bare name is not looked up in a relative PATH entry, so a '
+        'program in the working directory does not run', () async {
+      final local = File(p.join(tmp.path, 'kumiko-local-program'))
+        ..writeAsStringSync('#!/bin/sh\nexit 0\n');
+      await Process.run('chmod', ['755', local.path]);
+      final unit = spawnPosixUnit(
+        shimExecutable: exe,
+        containmentId: 'pty-posix-relative',
+        argv: ['kumiko-local-program'],
+        environment: {'PATH': '.:'},
+        workingDirectory: tmp.path,
+        pty: const PtyOptions(size: PtySize(80, 24)),
+      );
+      await expectLater(
+        unit,
+        throwsA(
+          isA<SpawnFailed>()
+              .having((e) => e.stage, 'stage', 'exec')
+              .having((e) => e.errno, 'errno', 2),
+        ),
+      );
+    });
+
     test('a missing program raises SpawnFailed at exec', () async {
       await expectLater(
         startPosix([p.join(tmp.path, 'does-not-exist')]),

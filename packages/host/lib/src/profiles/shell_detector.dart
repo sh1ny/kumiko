@@ -157,6 +157,9 @@ String? _find(String name, DetectionConfig config) {
   final sep = windows ? '\\' : '/';
   final file = windows ? '$name.exe' : name;
   for (final dir in [...config.pathDirs, ...config.wellKnownDirs]) {
+    // A relative or empty entry names the working directory of the moment,
+    // which can be a checkout: only absolute directories are searched.
+    if (!File(dir).isAbsolute) continue;
     final path = dir.endsWith(sep) ? '$dir$file' : '$dir$sep$file';
     if (windows && name == 'bash' && _isWslLauncher(path)) continue;
     if (_isRunnable(path, windows: windows)) return path;

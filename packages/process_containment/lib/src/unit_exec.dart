@@ -121,7 +121,9 @@ Never _fail(String message, int code) {
 String? _resolveProgram(String name, String? path) {
   if (name.contains('/')) return name;
   for (final dir in (path ?? '/usr/bin:/bin').split(':')) {
-    if (dir.isEmpty) continue;
+    // An empty or relative entry names the working directory, which can be
+    // a checkout: only absolute directories are searched.
+    if (!dir.startsWith('/')) continue;
     final candidate = '$dir/$name';
     if (FileSystemEntity.isFileSync(candidate)) return candidate;
   }
