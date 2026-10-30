@@ -1335,8 +1335,13 @@ enum TestFault {
   layoutSaveHangs,
   pendingWriteFails,
   profileWriteFails,
+
   /// A terminal's output never reaches end of file after its shell exits.
   ptyNoEof,
+
+  /// A terminal's reader yields a fixed byte sequence before the PTY's own
+  /// output (the relay fidelity check).
+  ptyScriptedOutput,
   runningWriteFails,
   terminateHangs,
 }

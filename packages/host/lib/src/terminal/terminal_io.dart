@@ -15,10 +15,11 @@ const int _eof = 0;
 const int _written = 1;
 
 class _ReaderInit {
-  _ReaderInit(this.out, this.handle, this.suppressEof);
+  _ReaderInit(this.out, this.handle, this.suppressEof, this.scripted);
   final SendPort out;
   final int handle;
   final bool suppressEof;
+  final List<Uint8List> scripted;
 }
 
 /// The reader isolate of one terminal (design D3).
@@ -40,13 +41,15 @@ class PtyReaderIsolate {
   /// Starts the reader of [handle]. [onChunk], [onEof] (end of output; never
   /// called with [suppressEof], which models a PTY that never ends) and
   /// [onError] (the read failed; the end of output follows) run on the
-  /// calling isolate.
+  /// calling isolate. [scripted] chunks are yielded, one per [next], before
+  /// the first read of [handle] (a test fault).
   static Future<PtyReaderIsolate> start(
     int handle, {
     required void Function(Uint8List chunk) onChunk,
     required void Function() onEof,
     required void Function(String error) onError,
     bool suppressEof = false,
+    List<Uint8List> scripted = const [],
   }) async {
     final port = ReceivePort();
     final exit = ReceivePort();
@@ -66,7 +69,7 @@ class PtyReaderIsolate {
     unawaited(exited.then((_) => port.close()));
     await Isolate.spawn(
       _readerMain,
-      _ReaderInit(port.sendPort, handle, suppressEof),
+      _ReaderInit(port.sendPort, handle, suppressEof, scripted),
       onExit: exit.sendPort,
     );
     return PtyReaderIsolate._(await ready.future, exited);
@@ -84,6 +87,7 @@ Future<void> _readerMain(_ReaderInit init) async {
   init.out.send(commands.sendPort);
   var tokens = 0;
   var discarding = false;
+  var scripted = 0;
   Completer<void>? wake;
   commands.listen((message) {
     if (message == _next) {
@@ -100,7 +104,9 @@ Future<void> _readerMain(_ReaderInit init) async {
         await (wake = Completer<void>()).future;
       }
       if (tokens > 0) tokens--;
-      final chunk = ptyReadChunk(init.handle);
+      final chunk = scripted < init.scripted.length
+          ? init.scripted[scripted++]
+          : ptyReadChunk(init.handle);
       if (chunk == null) {
         if (init.suppressEof) {
           // A PTY that never reaches the end of its output: keep "reading"

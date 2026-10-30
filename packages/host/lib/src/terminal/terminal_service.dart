@@ -239,6 +239,7 @@ class TerminalService {
           onEof: () => _enqueue(t, () => _onEof(t)),
           onError: (error) => _enqueue(t, () => _onReadError(t, error)),
           suppressEof: faults.ptyNoEof,
+          scripted: faults.ptyScriptedOutput ? scriptedPtyOutput : const [],
         );
         t.writer = await PtyWriterIsolate.start(handles.writeHandle);
       } on Object {

@@ -24,12 +24,10 @@ import 'dart:typed_data';
 
 import 'package:process_containment/process_containment.dart';
 
-/// The blob printed by `bytes`: every byte value except LF, in an order the
-/// test reproduces, wrapped in `BEGIN;` and `END;`.
-Uint8List blob() => Uint8List.fromList([
-  for (var i = 0; i < 256; i++)
-    if ((i * 7 + 3) % 256 != 0x0A) (i * 7 + 3) % 256,
-]);
+/// The blob printed by `bytes`: every byte value, in an order the test
+/// reproduces, wrapped in `BEGIN;` and `END;`.
+Uint8List blob() =>
+    Uint8List.fromList([for (var i = 0; i < 256; i++) (i * 7 + 3) % 256]);
 
 Future<void> main(List<String> args) async {
   final mode = args.isEmpty ? 'shell' : args.first;

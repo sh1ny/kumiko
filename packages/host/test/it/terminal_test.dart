@@ -2,6 +2,7 @@ import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
 
+import 'package:host/src/host_faults.dart' show scriptedPtyOutput;
 import 'package:host_protocol/host_protocol.dart';
 import 'package:test/test.dart';
 
@@ -411,8 +412,33 @@ void main() {
         // are what the host can be held to.
         expect(received, isNotEmpty);
       } else {
-        expect(received, orderedEquals(blob()));
+        // The default output processing writes each LF as CR LF; every other
+        // byte is the program's own.
+        expect(
+          received,
+          orderedEquals([
+            for (final b in blob()) ...(b == 0x0A ? [0x0D, 0x0A] : [b]),
+          ]),
+        );
       }
+    });
+
+    test('a scripted PTY-reader byte sequence equals the complete sequence '
+        'the desktop receives', () async {
+      // The reader yields known chunks (escape sequences, NUL, malformed
+      // UTF-8, split across chunk boundaries) before the PTY's own output, so
+      // the relay is held to byte equality on every OS, ConPTY included.
+      final desktop = await start();
+      await desktop.saveFixtureProfile(cwd: work.path);
+      await desktop.setFault(TestFault.ptyScriptedOutput);
+      final t = await shell(desktop);
+
+      final expected = [for (final chunk in scriptedPtyOutput) ...chunk];
+      await eventually(
+        () => t.bytes.length >= expected.length,
+        reason: 'the scripted bytes did not all arrive',
+      );
+      expect(t.bytes.sublist(0, expected.length), orderedEquals(expected));
     });
 
     test('resize is seen by the child (fixture reports its window size after '
