@@ -367,6 +367,13 @@ class TerminalController extends ChangeNotifier {
     if (link._closeRequested) {
       // A confirmed close ends in removal, whatever the exit reason.
       _removeEnded(link);
+    } else if (e.reason == TerminalExitReason.exited &&
+        e.status == 0 &&
+        e.outputComplete) {
+      // A clean exit (status 0, complete output) closes the pane, as if the
+      // user had (D9): no warning, and no wait for the engine, so output it
+      // has not taken is dropped. Other ends stay visible as ended.
+      _removeEnded(link);
     } else {
       _maybeFinish(link);
     }

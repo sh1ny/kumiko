@@ -101,7 +101,14 @@ class FakeTerminalSurface implements TerminalSurface {
         );
         return KeyEventResult.handled;
       },
-      child: Text('surface $number', key: ValueKey('surface-$number')),
+      // Fills what it is given, like a real terminal view.
+      child: SizedBox.expand(
+        key: ValueKey('surface-box-$number'),
+        child: Align(
+          alignment: Alignment.topLeft,
+          child: Text('surface $number', key: ValueKey('surface-$number')),
+        ),
+      ),
     ),
   );
 

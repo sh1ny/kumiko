@@ -77,6 +77,21 @@ Future<void> confirm(WidgetTester tester) async {
   await tester.pumpAndSettle();
 }
 
+/// Types [key] and returns what each host terminal has received.
+Future<Map<String, List<String>>> typed(
+  WidgetTester tester,
+  Rig rig,
+  LogicalKeyboardKey key,
+) async {
+  await tester.sendKeyDownEvent(key);
+  await tester.sendKeyUpEvent(key);
+  await flush(tester);
+  return {
+    for (final e in rig.link.terminals.entries)
+      e.key: [for (final w in e.value.written) utf8.decode(w)],
+  };
+}
+
 void main() {
   group('launcher', () {
     uiTest('Terminal opens a new active tab holding a terminal pane with the '
@@ -762,20 +777,282 @@ void main() {
       expect(key('start-shell-${pane.id}'), findsOneWidget);
     });
 
-    uiTest('exited status 0 shows ended with Start shell and no new open is '
-        'sent', (tester) async {
+    uiTest('exited status 0 closes the pane without a dialog, its sibling '
+        'takes the space and focus, and no new open is sent', (tester) async {
+      final rig = await pumpEmpty(tester);
+      await launch(tester);
+      final first = rig.terminalPanes.single;
+      await tester.tap(key('split-right-${first.id}'));
+      await flush(tester);
+      await tester.pumpAndSettle();
+      final second = rig.layout.focusedPane!;
+      final calls = hostCalls(rig);
+
+      rig.link.emitExit('t2', status: 0);
+      await flush(tester);
+      await tester.pumpAndSettle();
+
+      expect(key('close-warning'), findsNothing);
+      expect(rig.layout.panes.map((p) => p.id), [first.id]);
+      expect(rig.layout.tabs.single.root.id, first.id, reason: 'no split left');
+      expect(rig.layout.focusedPane, first.id);
+      expect(rig.linkOf(second), isNull);
+      expect(rig.link.opened, hasLength(2));
+      expect(rig.link.closed, isEmpty, reason: 'nothing is live to close');
+      expect(rig.link.released, ['t2']);
+      expect(hostCalls(rig), calls + 1, reason: 'only the release');
+      expect(
+        tester.getRect(key('pane-${first.id}')).right,
+        tester.getRect(key('central-area')).right,
+      );
+      // Focus went to the sibling: keys reach it.
+      await tester.sendKeyDownEvent(LogicalKeyboardKey.keyD);
+      await tester.sendKeyUpEvent(LogicalKeyboardKey.keyD);
+      await flush(tester);
+      expect(
+        [for (final w in rig.link.terminals['t1']!.written) utf8.decode(w)],
+        ['key:D'],
+      );
+    });
+
+    uiTest('a clean exit in the only pane closes the tab, and the last tab '
+        'shows the empty state', (tester) async {
+      final rig = await pumpEmpty(tester);
+      await launch(tester);
+      await launch(tester);
+      expect(rig.layout.tabs, hasLength(2));
+
+      rig.link.emitExit('t2');
+      await flush(tester);
+      await tester.pumpAndSettle();
+      expect(rig.layout.tabs, hasLength(1));
+      expect(rig.layout.activeTab, rig.layout.tabs.single.id);
+
+      rig.link.emitExit('t1');
+      await flush(tester);
+      await tester.pumpAndSettle();
+      expect(rig.layout.tabs, isEmpty);
+      expect(rig.layout.activeTab, isNull);
+      expect(key('empty-state'), findsOneWidget);
+      expect(key('new-terminal'), findsOneWidget);
+      expect(key('add-tab'), findsOneWidget);
+      expect(rig.link.released, containsAll(['t1', 't2']));
+    });
+
+    uiTest('exit status 3 keeps the pane ended with the earlier output and '
+        'Start shell; a started shell that exits 0 closes its pane', (
+      tester,
+    ) async {
       final rig = await pumpEmpty(tester);
       await launch(tester);
       final pane = rig.terminalPanes.single;
+      final surface = rig.surfaces.last;
+      rig.link.lastTerminal.send(bytesOf('before exit\r\n'));
+      await flush(tester);
 
-      rig.link.emitExit('t1', status: 0);
+      rig.link.emitExit('t1', status: 3);
       await flush(tester);
 
       expect(rig.linkOf(pane.id)!.status, TerminalStatus.ended);
-      expect(find.textContaining('exit status 0'), findsOneWidget);
+      expect(find.textContaining('exit status 3'), findsOneWidget);
       expect(key('start-shell-${pane.id}'), findsOneWidget);
+      expect(utf8.decode(surface.fedAll), 'before exit\r\n');
       expect(rig.link.opened, hasLength(1));
-      expect(rig.link.released, ['t1'], reason: 'everything was consumed');
+      expect(rig.layout.panes, hasLength(1));
+
+      await tester.tap(key('start-shell-${pane.id}'));
+      await flush(tester);
+      await tester.pumpAndSettle();
+      expect(rig.linkOf(pane.id)!.status, TerminalStatus.live);
+      expect(rig.link.opened, hasLength(2));
+
+      rig.link.emitExit('t2', status: 0);
+      await flush(tester);
+      await tester.pumpAndSettle();
+      expect(rig.layout.tabs, isEmpty);
+    });
+
+    uiTest('a clean exit while the close dialog is open removes the pane '
+        'once, and confirming then sends no close', (tester) async {
+      final rig = await pumpEmpty(tester);
+      await launch(tester);
+      final first = rig.terminalPanes.single;
+      await tester.tap(key('split-right-${first.id}'));
+      await flush(tester);
+      await tester.pumpAndSettle();
+      final second = rig.layout.focusedPane!;
+      await tapClosePane(tester, second);
+      expect(key('close-warning'), findsOneWidget);
+
+      rig.link.emitExit('t2', status: 0);
+      await flush(tester);
+      await confirm(tester);
+
+      expect(rig.layout.panes.map((p) => p.id), [first.id]);
+      expect(rig.link.closed, isEmpty);
+    });
+
+    uiTest('a signal, an io-error and a closed exit with no status keep the '
+        'pane; none closes it', (tester) async {
+      final rig = await pumpEmpty(tester);
+      await launch(tester);
+      await launch(tester);
+      await launch(tester);
+
+      rig.link.emitExit('t1', status: null);
+      rig.link.emitExit('t2', status: null, reason: TerminalExitReason.ioError);
+      rig.link.emitExit('t3', status: 137);
+      await flush(tester);
+      await tester.pumpAndSettle();
+
+      expect(rig.layout.panes, hasLength(3));
+      for (final p in rig.layout.panes) {
+        expect(rig.linkOf(p.id)!.status, TerminalStatus.ended);
+      }
+    });
+
+    uiTest('a clean exit in an unfocused pane of the active tab leaves the '
+        'focus unchanged and only deletes the pane from recent', (
+      tester,
+    ) async {
+      final rig = await pumpEmpty(tester);
+      await launch(tester);
+      final first = rig.terminalPanes.single;
+      await tester.tap(key('split-right-${first.id}'));
+      await flush(tester);
+      await tester.pumpAndSettle();
+      final second = rig.layout.focusedPane!;
+      rig.controller.focusPane(first.id);
+      await tester.pumpAndSettle();
+      final recent = [
+        for (final id in rig.layout.recent)
+          if (id != second) id,
+      ];
+      final tab = rig.layout.activeTab;
+
+      rig.link.emitExit('t2', status: 0);
+      await flush(tester);
+      await tester.pumpAndSettle();
+
+      expect(rig.layout.pane(second), isNull);
+      expect(rig.layout.activeTab, tab);
+      expect(rig.layout.focusedPane, first.id);
+      expect(rig.layout.recent, recent);
+      final got = await typed(tester, rig, LogicalKeyboardKey.keyE);
+      expect(got['t1'], ['key:E']);
+    });
+
+    uiTest('a clean exit in a pane of an inactive tab leaves the active tab '
+        'and keyboard focus unchanged and only deletes the pane from recent; a '
+        'clean exit in the only pane of an inactive tab closes that tab and '
+        'does the same', (tester) async {
+      final rig = await pumpEmpty(tester);
+      await launch(tester);
+      final first = rig.terminalPanes.single;
+      await tester.tap(key('split-right-${first.id}'));
+      await flush(tester);
+      await tester.pumpAndSettle();
+      final firstTab = rig.layout.tabs.single.id;
+      await launch(tester); // t3, in a second tab that is active
+      final active = rig.layout.activeTab;
+      final focused = rig.layout.focusedPane;
+      expect(active, isNot(firstTab));
+
+      final before = rig.layout.recent;
+      rig.link.emitExit('t1', status: 0); // one of two panes of firstTab
+      await flush(tester);
+      await tester.pumpAndSettle();
+      expect(rig.layout.pane(first.id), isNull);
+      expect(rig.layout.tabs, hasLength(2));
+      expect(rig.layout.activeTab, active);
+      expect(rig.layout.focusedPane, focused);
+      expect(rig.layout.recent, [
+        for (final id in before)
+          if (id != first.id) id,
+      ], reason: 'survivors keep their order; the removed id is deleted');
+      final recent = rig.layout.recent;
+
+      rig.link.emitExit('t2', status: 0); // now the only pane of firstTab
+      await flush(tester);
+      await tester.pumpAndSettle();
+      expect(rig.layout.tabs.map((t) => t.id), [active]);
+      expect(rig.layout.activeTab, active);
+      expect(rig.layout.focusedPane, focused);
+      expect(rig.layout.recent, [
+        for (final id in recent)
+          if (rig.layout.pane(id) != null) id,
+      ]);
+      final got = await typed(tester, rig, LogicalKeyboardKey.keyF);
+      expect(got['t3'], ['key:F']);
+      expect(got['t1'], isEmpty);
+      expect(got['t2'], isEmpty);
+    });
+
+    uiTest('status 0 with outputComplete false keeps the pane ended with '
+        'output may be incomplete and Start shell', (tester) async {
+      final rig = await pumpEmpty(tester);
+      await launch(tester);
+      final pane = rig.terminalPanes.single;
+      rig.link.lastTerminal.send(bytesOf('partial'));
+      await flush(tester);
+
+      rig.link.emitExit('t1', status: 0, outputComplete: false);
+      await flush(tester);
+      await tester.pumpAndSettle();
+
+      expect(rig.layout.panes, hasLength(1));
+      expect(rig.linkOf(pane.id)!.status, TerminalStatus.ended);
+      expect(find.textContaining('output may be incomplete'), findsOneWidget);
+      expect(key('start-shell-${pane.id}'), findsOneWidget);
+      expect(utf8.decode(rig.surfaces.last.fedAll), 'partial');
+    });
+
+    uiTest('a clean exit closes the pane at once while the engine is '
+        'stalled, drops the unconsumed output and releases the terminal', (
+      tester,
+    ) async {
+      final rig = await pumpEmpty(tester);
+      await launch(tester);
+      final pane = rig.terminalPanes.single;
+      rig.surfaces.last.stall();
+      final big = Uint8List(1024 * 1024 + 4096);
+      rig.link.lastTerminal
+        ..send(big)
+        ..send(big)
+        ..send(bytesOf('last words\r\n'));
+      await flush(tester);
+      expect(rig.link.lastTerminal.queuedBytes, greaterThan(0));
+
+      rig.link.emitExit('t1', status: 0);
+      await flush(tester);
+      await tester.pumpAndSettle();
+
+      expect(rig.layout.pane(pane.id), isNull, reason: 'did not wait');
+      expect(rig.linkOf(pane.id), isNull);
+      expect(rig.link.released, ['t1']);
+      expect(rig.link.closed, isEmpty);
+      expect(rig.layout.tabs, isEmpty);
+    });
+
+    uiTest('the ended grid fills the pane height below the banner', (
+      tester,
+    ) async {
+      final rig = await pumpEmpty(tester);
+      await launch(tester);
+      final pane = rig.terminalPanes.single;
+      final live = tester.getSize(key('surface-box-1')).height;
+
+      rig.link.emitExit('t1', status: 3);
+      await flush(tester);
+      await tester.pumpAndSettle();
+
+      final box = tester.getRect(key('surface-box-1'));
+      final body = tester.getRect(key('pane-${pane.id}'));
+      final banner = tester.getRect(key('start-shell-${pane.id}'));
+      expect(box.bottom, body.bottom, reason: 'no blank area below the grid');
+      expect(box.top, greaterThanOrEqualTo(banner.bottom));
+      expect(box.height, greaterThan(live / 2));
+      expect(box.width, body.width);
     });
 
     uiTest('an externally killed shell reports its status and the ended view '
@@ -906,12 +1183,53 @@ void main() {
       expect(rig.surfaces.last.fed, isEmpty);
 
       rig.link.lastTerminal.send(bytesOf('old output'));
-      rig.link.emitExit('t1');
+      rig.link.emitExit('t1', status: 1);
       await flush(tester);
       await tester.tap(key('start-shell-p9'));
       await flush(tester);
       expect(rig.surfaces.made, hasLength(2));
       expect(rig.surfaces.last.fed, isEmpty, reason: 'new, empty scrollback');
+    });
+
+    uiTest('a restored pane stays ended, not restored, and keeps Start shell '
+        'while another pane exits cleanly', (tester) async {
+      final rig = await pumpTerminals(
+        tester,
+        layout: docOf([
+          tabOf(
+            't1',
+            restoredTerminal(
+              'p9',
+              ws: 'ws-a',
+              profileId: 'builtin:bash',
+              profileName: 'bash',
+            ),
+          ),
+        ]),
+        records: [workspaceRecord('ws-a')],
+      );
+      await launch(tester);
+      expect(rig.layout.tabs, hasLength(2));
+
+      rig.link.emitExit('t1', status: 0);
+      await flush(tester);
+      await tester.pumpAndSettle();
+
+      expect(rig.layout.tabs, hasLength(1));
+      expect(rig.layout.pane('p9'), isNotNull);
+      await tester.tap(key('tab-t1'));
+      await tester.pumpAndSettle();
+      expect(find.textContaining('Ended, not restored'), findsOneWidget);
+      expect(key('start-shell-p9'), findsOneWidget);
+
+      await tester.tap(key('start-shell-p9'));
+      await flush(tester);
+      expect(rig.linkOf('p9')!.status, TerminalStatus.live);
+      rig.link.emitExit('t2', status: 0);
+      await flush(tester);
+      await tester.pumpAndSettle();
+      expect(rig.layout.pane('p9'), isNull);
+      expect(rig.layout.tabs, isEmpty);
     });
 
     uiTest('a missing profile is named and Start shell offers the default '
@@ -1002,11 +1320,121 @@ void main() {
       expect(rig.surfaces.made.first.disposed, isFalse);
     });
 
+    uiTest('a clean exit during the dialog removes that pane at once; confirm '
+        'closes only the other terminal', (tester) async {
+      final rig = await pumpEmpty(tester);
+      await launch(tester);
+      final first = rig.terminalPanes.single;
+      await tester.tap(key('split-right-${first.id}'));
+      await flush(tester);
+      await tester.pumpAndSettle();
+      final second = rig.layout.focusedPane!;
+      await tapCloseTab(tester, rig.layout.tabs.single.id);
+      expect(key('close-warning'), findsOneWidget);
+
+      rig.link.emitExit('t2', status: 0);
+      await flush(tester);
+      await tester.pumpAndSettle();
+      expect(rig.layout.pane(second), isNull, reason: 'at once');
+      expect(rig.link.closed, isEmpty);
+
+      await confirm(tester);
+      expect(rig.link.closed, ['t1'], reason: 'only the one still present');
+      expect(rig.link.released, ['t2']);
+      rig.link.emitExit('t1', status: null, reason: TerminalExitReason.closed);
+      await flush(tester);
+      await tester.pumpAndSettle();
+      expect(rig.layout.tabs, isEmpty);
+      expect(rig.link.released, unorderedEquals(['t1', 't2']));
+    });
+
+    uiTest('a clean exit during the dialog, then cancel, leaves the other '
+        'terminal running', (tester) async {
+      final rig = await pumpEmpty(tester);
+      await launch(tester);
+      final first = rig.terminalPanes.single;
+      await tester.tap(key('split-right-${first.id}'));
+      await flush(tester);
+      await tester.pumpAndSettle();
+      final second = rig.layout.focusedPane!;
+      await tapClosePane(tester, first.id);
+
+      rig.link.emitExit('t2', status: 0);
+      await flush(tester);
+      await tester.tap(key('close-warning-cancel'));
+      await tester.pumpAndSettle();
+
+      expect(rig.layout.pane(second), isNull);
+      expect(rig.layout.pane(first.id), isNotNull);
+      expect(rig.linkOf(first.id)!.status, TerminalStatus.live);
+      expect(rig.link.closed, isEmpty);
+      expect(rig.link.terminals['t1']!.listening, isTrue);
+    });
+
+    uiTest('a non-zero exit during the dialog keeps the pane ended, and '
+        'confirm removes it without sending another close', (tester) async {
+      final rig = await pumpEmpty(tester);
+      await launch(tester);
+      final first = rig.terminalPanes.single;
+      await tester.tap(key('split-right-${first.id}'));
+      await flush(tester);
+      await tester.pumpAndSettle();
+      final second = rig.layout.focusedPane!;
+      await tapCloseTab(tester, rig.layout.tabs.single.id);
+
+      rig.link.emitExit('t2', status: 1);
+      await flush(tester);
+      await tester.pumpAndSettle();
+      expect(rig.linkOf(second)!.status, TerminalStatus.ended);
+      expect(rig.layout.pane(second), isNotNull);
+
+      await confirm(tester);
+      expect(rig.link.closed, ['t1'], reason: 'no second close for t2');
+      expect(rig.layout.pane(second), isNull);
+      rig.link.emitExit('t1', status: null, reason: TerminalExitReason.closed);
+      await flush(tester);
+      await tester.pumpAndSettle();
+      expect(rig.layout.tabs, isEmpty);
+      expect(rig.link.released, unorderedEquals(['t1', 't2']));
+    });
+
+    uiTest('a mixed dialog: one of four exits cleanly, confirm closes the '
+        'other three', (tester) async {
+      final rig = await pumpEmpty(tester);
+      await fourPaneTab(tester, rig);
+      await tapCloseTab(tester, rig.layout.tabs.single.id);
+
+      rig.link.emitExit('t4', status: 0);
+      await flush(tester);
+      await confirm(tester);
+
+      expect(rig.link.closed, unorderedEquals(['t1', 't2', 't3']));
+      expect(rig.layout.panes, hasLength(3), reason: 'closing, not removed');
+    });
+
+    uiTest('a mixed dialog: one of four exits cleanly, cancel keeps the '
+        'other three running', (tester) async {
+      final rig = await pumpEmpty(tester);
+      await fourPaneTab(tester, rig);
+      await tapCloseTab(tester, rig.layout.tabs.single.id);
+
+      rig.link.emitExit('t4', status: 0);
+      await flush(tester);
+      await tester.tap(key('close-warning-cancel'));
+      await tester.pumpAndSettle();
+
+      expect(rig.link.closed, isEmpty);
+      expect(rig.layout.panes, hasLength(3));
+      for (final p in rig.layout.panes) {
+        expect(rig.linkOf(p.id)!.status, TerminalStatus.live);
+      }
+    });
+
     uiTest('an ended terminal pane closes without a dialog', (tester) async {
       final rig = await pumpEmpty(tester);
       await launch(tester);
       final pane = rig.terminalPanes.single;
-      rig.link.emitExit('t1');
+      rig.link.emitExit('t1', status: 1);
       await flush(tester);
 
       await tapClosePane(tester, pane.id);
@@ -1051,7 +1479,7 @@ void main() {
       final rig = await pumpEmpty(tester);
       final panes = await fourPaneTab(tester, rig);
       final tabId = rig.layout.tabs.single.id;
-      rig.link.emitExit('t4'); // the fourth ended
+      rig.link.emitExit('t4', status: 1); // the fourth ended
       await flush(tester);
 
       await tapCloseTab(tester, tabId);
@@ -1421,6 +1849,61 @@ void main() {
       expect(rig.surfaces.made, hasLength(made));
       expect(surface.disposed, isFalse);
       expect(utf8.decode(surface.fedAll), 'scrollback');
+    });
+
+    uiTest('a clean exit right after a move removes the pane by id with no '
+        'duplicate close or release and no unrelated pane removed', (
+      tester,
+    ) async {
+      final rig = await pumpEmpty(tester);
+      await launch(tester);
+      final first = rig.terminalPanes.single;
+      await tester.tap(key('split-right-${first.id}'));
+      await flush(tester);
+      await tester.pumpAndSettle();
+      final moved = rig.layout.focusedPane!;
+      await tester.tap(key('move-$moved'));
+      await tester.pumpAndSettle();
+      expect(rig.layout.tabs, hasLength(2));
+
+      rig.link.emitExit('t2', status: 0);
+      await flush(tester);
+      await tester.pumpAndSettle();
+
+      expect(rig.layout.pane(moved), isNull);
+      expect(rig.layout.pane(first.id), isNotNull);
+      expect(rig.layout.tabs.map((t) => t.id), [
+        rig.layout.tabOf(first.id)!.id,
+      ]);
+      expect(rig.linkOf(first.id)!.status, TerminalStatus.live);
+      expect(rig.link.released, ['t2']);
+      expect(rig.link.closed, isEmpty);
+    });
+
+    uiTest('a clean exit right before a move removes the pane by id with no '
+        'duplicate close or release and no unrelated pane removed', (
+      tester,
+    ) async {
+      final rig = await pumpEmpty(tester);
+      await launch(tester);
+      final first = rig.terminalPanes.single;
+      await tester.tap(key('split-right-${first.id}'));
+      await flush(tester);
+      await tester.pumpAndSettle();
+      final moved = rig.layout.focusedPane!;
+
+      // The exit is delivered in the same turn as the tap on Move.
+      rig.link.emitExit('t2', status: 0);
+      await tester.tap(key('move-$moved'), warnIfMissed: false);
+      await flush(tester);
+      await tester.pumpAndSettle();
+
+      expect(rig.layout.pane(moved), isNull);
+      expect(rig.layout.pane(first.id), isNotNull);
+      expect(rig.layout.tabs, hasLength(1));
+      expect(rig.linkOf(first.id)!.status, TerminalStatus.live);
+      expect(rig.link.released, ['t2']);
+      expect(rig.link.closed, isEmpty);
     });
 
     uiTest('a pane moved while its open is pending attaches when the open '

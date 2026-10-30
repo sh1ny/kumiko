@@ -37,54 +37,71 @@ class TerminalPaneView extends StatelessWidget {
     }
     return ListenableBuilder(
       listenable: link,
-      builder: (context, _) {
-        final ended = link.status == TerminalStatus.ended;
-        return Column(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            if (ended)
-              Flexible(
-                child: SingleChildScrollView(
-                  child: _EndedView(
-                    controller: controller,
-                    pane: pane,
-                    profileId: link.profileId,
-                    profileName: link.profileName,
-                    lines: _lines(link),
-                    compact: true,
+      builder: (context, _) => LayoutBuilder(
+        builder: (context, box) {
+          final ended = link.status == TerminalStatus.ended;
+          // The banner takes at most half the pane; the grid gets the rest.
+          final maxBanner = box.hasBoundedHeight ? box.maxHeight / 2 : 200.0;
+          return Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              if (ended)
+                // A banner is only as tall as its text, up to half the pane, and
+                // scrolls beyond that. It is not flexible: a flex child would
+                // be given half of the room whatever it needs.
+                ConstrainedBox(
+                  constraints: BoxConstraints(maxHeight: maxBanner),
+                  child: ListView(
+                    shrinkWrap: true,
+                    children: [
+                      _EndedView(
+                        controller: controller,
+                        pane: pane,
+                        profileId: link.profileId,
+                        profileName: link.profileName,
+                        lines: _lines(link),
+                        compact: true,
+                      ),
+                    ],
+                  ),
+                )
+              else if (_lines(link) case final lines when lines.isNotEmpty)
+                ConstrainedBox(
+                  constraints: BoxConstraints(maxHeight: maxBanner),
+                  child: ListView(
+                    shrinkWrap: true,
+                    children: [
+                      Material(
+                        color: Theme.of(context)
+                            .colorScheme
+                            .surfaceContainerHigh,
+                        child: Padding(
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 12,
+                            vertical: 4,
+                          ),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [for (final l in lines) Text(l)],
+                          ),
+                        ),
+                      ),
+                    ],
                   ),
                 ),
-              )
-            else if (_lines(link) case final lines when lines.isNotEmpty)
-              Flexible(
-                child: SingleChildScrollView(
-                  child: Material(
-                    color: Theme.of(context).colorScheme.surfaceContainerHigh,
-                    child: Padding(
-                      padding: const EdgeInsets.symmetric(
-                        horizontal: 12,
-                        vertical: 4,
-                      ),
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [for (final l in lines) Text(l)],
-                      ),
-                    ),
-                  ),
+              // Mounted from the start: the first layout gives the open its
+              // size. The global key keeps the view when the pane moves in the
+              // tree (a split, a move into a split).
+              Expanded(
+                child: KeyedSubtree(
+                  key: GlobalObjectKey(link),
+                  child: link.surface.view,
                 ),
               ),
-            // Mounted from the start: the first layout gives the open its
-            // size. The global key keeps the view when the pane moves in the
-            // tree (a split, a move into a split).
-            Expanded(
-              child: KeyedSubtree(
-                key: GlobalObjectKey(link),
-                child: link.surface.view,
-              ),
-            ),
-          ],
-        );
-      },
+            ],
+          );
+        },
+      ),
     );
   }
 
