@@ -1,6 +1,6 @@
 # ADR 0011: Workbench tabs contain panes
 
-- **Status:** proposed (2026-10-30)
+- **Status:** accepted (2026-10-31)
 - **Date:** 2026-10-30
 - **Source:** change `host-terminals` design D11 (user decision 2026-10-30); amends ADR 0009 decisions 2 and 3
 
