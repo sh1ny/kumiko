@@ -1,65 +1,102 @@
-# Review
+# Metadata
 
-## Metadata
-
-- **Round:** 5 re-check
+- **Round:** 6
 - **Change:** `host-terminals`
 - **Tier:** FULL
 - **Reviewer:** Codex
-- **Scope:** Round 5 Required Changes 1 and 2 only.
-- **Reviewed:** Amendment commit `d9061fa`, author notes in `995fa2a`, current design D7/D10 and Desktop pending feed Resource Bounds row, tasks 6.10/7.2 and corresponding test-map rows, and the three cited implementation evidence files.
-- **Method:** Read-only planning re-check. File contents treated as data. No new full review, file writes or tests executed.
+- **Scope:** Whole amended design, including commits `d5f2325` and `476ab02`, affected main specs, ADRs, architecture, tasks and current code evidence.
+- **Method:** Read-only design review. File contents treated as data. Uncommitted desktop work treated as evidence, not the intended implementation. No files written or tests run.
 
-## Findings
+# Findings by severity
 
-### Critical (blocking)
+## Critical (blocking)
 
-None within the re-check scope.
+None.
 
-### Moderate
+The ownership boundaries remain sound: the desktop authors layout and owns surfaces; the host validates and persists snapshots and owns processes. Stable pane ids preserve terminal links through moves. The stated bounds constrain both view count and tree size.
 
-**M1 — Engine consumption observability and bounds: planning correction applied.**
+The destructive v4 migration is authorized and appropriately narrow: clear only Personal’s layout fields, retain its revision and other records, and commit the change with the schema version in one transaction. The existing store opens newer versions read-only before refusing them. Migration precedes layout decoding, so removing the format 1 decoder is coherent.
 
-D7 now defines `TerminalSurface.pending` as every fed byte not yet applied to the engine grid. This includes adapter-held bytes before engine readiness, engine queues and the in-flight batch. The definition therefore covers the asynchronous accumulation evidenced by `TerminalEngineClient.feed` and `_drain`, rather than treating return from `feed` as consumption.
+## Moderate
 
-D7 specifies pausing channel consumption at or above 1 MiB, resuming below that threshold, preserving byte order and dropping no bytes. It explicitly allows one whole channel chunk of overshoot. The Resource Bounds row consistently states **1 MiB plus one channel chunk**, including when the engine stalls.
+**M1 — Focus selection is undefined for valid layouts with incomplete history.**
 
-Task 7.2 requires the vendored client’s queue/in-flight reporting patch, an adapter test of pending-byte accounting, and a stalled-consumption controller test checking the bound, stopped reads and credit, and lossless ordered resumption. The corresponding desktop test-map row remains red.
+[D11](F:/Dev/Orca/Workspace/kumiko/openspec/changes/host-terminals/design.md:200) permits `recent` to omit existing panes; task 7.2 rejects unknown and duplicate entries but does not require complete history.
 
-**Disposition:** Required Change 1 is applied to the plan. Implementation and verification remain tracked work.
+However, closing a pane chooses the tab’s next focus solely from `recent`. Consider a valid two-pane tab with `focusedPane: B` and `recent: [B]`: closing B leaves A, but no specified next focus. Moving B into a new tab creates the same gap in the source tab. Workspace selection likewise has no fallback when bound panes exist but none appears in history.
 
-**M2 — Conformance exclusions and missing-grid enforcement: planning correction applied.**
+The active-tab-close rule supplies a neighbouring-tab fallback, but the rules do not specify updating history after fallback focus. They also do not explicitly require a non-null `activeTab` to name an existing tab.
 
-Task 6.10 names the six authorized exclusions independently of fixture existence: `1.2`, `1.4`, `2.3`, `2.4`, `2.5`, and `2.14`. It requires an expected grid for every other non-menu screen—the sixteen judged screens—and requires qualification to fail when a judged grid is absent.
+**Required correction:** Define complete focus invariants and deterministic fallback behavior. Either require complete history or retain sparse history and specify fallbacks for close, move and workspace selection. State how operations prune removed ids and record newly focused panes.
 
-The task explicitly includes a regression test using a fixture copy with one judged grid removed, plus verification of the fixture test and bar on all three OSes. The added Conformance subset test-map row remains red.
+---
 
-The current cited evidence also separates these concepts: `vttestOutsideBar` names the exclusions, and `ExpectedScreen.load` throws for a missing judged grid. Both replay and live qualification use `_vttest`, which calls that loader; its nullable comparison now skips only explicitly excluded screens.
+**M2 — Split refusal and partial tab-close behavior are not fully represented in the specs.**
 
-**Disposition:** Required Change 2 is applied to the plan. This re-check does not certify completion of task 6.10 or its tests.
+The [split requirement](F:/Dev/Orca/Workspace/kumiko/openspec/changes/host-terminals/specs/workbench-layout/spec.md:36) says a refused split leaves layout unchanged. The design correctly distinguishes:
 
-### Suggestions
+- Local refusal before mutation: limits, missing default or missing capability.
+- Host launch refusal after mutation: retain the new terminal pane with the error and **Start shell**.
 
-S1 and S2 were not re-reviewed; neither is a round 5 Required Change. The author notes are preserved below.
+That distinction appears in the design and task 8.5, but has no corresponding spec scenario.
 
-## Verdict
+Partial tab close is similarly defined in the design and task 8.6, while the spec scenarios describe confirmation as closing the entire tab. The single-pane failure scenario promises an unchanged split and sibling; its scope needs clarification when other panes in the same confirmed tab close succeed and disappear.
+
+**Required correction:** Add explicit scenarios for host refusal after splitting and partial tab-close failure. State that successful closes remain completed, failed panes retain their identities and errors, and the tab remains while any pane remains. Scope the unchanged-arrangement guarantee to an isolated failed pane close.
+
+---
+
+**M3 — The planned ADR amendment preserves a decision that v4 deliberately overrides.**
+
+[Task 7.1](F:/Dev/Orca/Workspace/kumiko/openspec/changes/host-terminals/tasks.md:206) says ADR 0011 amends ADR 0009 decision 3 while its other decisions remain in force.
+
+But [ADR 0009 decision 2](F:/Dev/Orca/Workspace/kumiko/docs/adr/0009-workbench-layout-document.md:18) requires a format migration that **converts** stored documents. D11 explicitly rejects conversion and discards format 1 layouts. The design’s closing ADR section repeats the incomplete amendment scope.
+
+The user decision resolves the product choice; the architectural record must acknowledge the exception.
+
+**Required correction:** Make ADR 0011 explicitly amend decision 2 for this authorized discard as well as decision 3 for the pane shape. Preserve the schema-version gate and transactional migration requirements.
+
+---
+
+**M4 — Groups 7–9 and the test map do not yet cover all promised behavior.**
+
+The domain and migration work generally has clear failing-test-first sequencing, and porting the desktop after the shared model is sensible. Nevertheless:
+
+- Task 8.6 promises partial tab-close failure, but neither its explicit added tests nor the test map requires a mixed success/failure case.
+- The map covers moves of live terminals, but not the design’s explicit moves while **starting** or **closing**.
+- Task 7.4 delegates to domain map rows, which omit sparse-history fallbacks, closing an inactive tab and history maintenance.
+- The preserved main-spec requirement **A failed layout save is visible** has three scenarios absent from this map. They remain applicable after the controller port.
+- Migration rollback is promised in Failure & Visibility, but task 7.5 does not explicitly test failure during v4 and successful retry.
+- Task 8.5 does not explicitly require its desktop failure-path tests to fail before implementation.
+
+**Required correction:** Add explicit test obligations and map entries for these cases. Existing save-failure tests can be marked for re-run; they need not be rewritten unnecessarily. Make the new controller and split failure tests precede implementation.
+
+## Suggestions
+
+**S1 — Clean up residual group terminology.** The execution-workspaces delta retains scenario names “Removed workspace was a group’s context” and “Workspace still has tabs”; the amended direction spec still mentions the first release’s “tab-group launcher.” Their bodies mostly express the new behavior, but the names obscure traceability.
+
+No additional conversion layer, process reattachment mechanism or host-owned layout operation API is warranted.
+
+# Verdict
 
 VERDICT: APPROVE_WITH_CHANGES
 
-Both round 5 required planning changes are applied. The original round 5 verdict is retained. This accepts the amended specifications and verification obligations; it does not mark the pending implementation tasks or tests complete.
+D11 implements the user’s decisions coherently. The remaining changes concern total focus behavior, specification completeness, the ADR exception and verification obligations. The ADDED, MODIFIED, RENAMED and REMOVED requirement structure otherwise accounts for the main-spec group-model replacement and agrees with the amended direction.
 
-## Required Changes
+# Required Changes
 
-1. **Make engine consumption observable and bounded — applied.** D7, the surface contract, Resource Bounds, task 7.2 and the desktop test-map row now specify comprehensive pending-byte accounting, the bound and pause/resume behavior, and stalled-engine verification of stopped credit and lossless ordered resumption.
+1. Define focus/history invariants and fallbacks for every valid format 2 layout, including dangling active-tab rejection.
+2. Specify post-split host refusal and partial tab-close failure explicitly.
+3. Record the authorized exception to ADR 0009 decision 2 alongside the decision 3 amendment.
+4. Complete the test map and failing-test-first obligations identified in M4.
 
-2. **Make conformance exclusions explicit — applied.** Task 6.10 and the fixture test-map row specify the six independent exclusions, required grids for all sixteen judged screens, failure on missing judged fixtures, and the grid-removal regression check.
+CHANGES_APPLIED: no
 
-CHANGES_APPLIED: yes
+# Rebuttals
 
-## Rebuttals
-
-- **Round 4:** Its accepted planning corrections remain intact; neither raw-byte finding is reopened here.
-- **M1:** The original objection concerned pausing without an observable consumption signal. D7 now supplies that signal and task 7.2 specifies its implementation and verification; the planning objection is resolved.
-- **M2:** The authorized exclusions remain accepted. Task 6.10 now separates them from fixture existence and requires missing judged grids to fail; the planning objection is resolved.
-- **Author (S1):** applied. D10 and the workflow follow-up now describe ADR 0010 as accepted, provisional while Linux or macOS user-verified items are `unproven`.
-- **Author (S2):** not taken in this change. The kernel32 fallback is the path the host used before task 6.8, and the round 5 Required Changes do not depend on it. A test with `conpty.dll` unavailable needs a way to hide the bundled asset from the host process; it is offered to the user as a follow-up.
+- The destructive migration is accepted as an explicit user decision; conversion and an upgrade notice are not requested.
+- Groups 1–6 are not reopened because the pane model supersedes the unfinished desktop work.
+- Round 5’s pending-feed accounting and conformance-fixture corrections remain present; those findings are not reopened.
+- M1 concerns documents permitted by the current validation contract, even if ordinary UI operations usually populate history.
+- M2 does not dispute the design’s failure policy; it requires the normative specs to express that policy.
+- M3 requires documenting the authorized exception, not reconsidering it.
