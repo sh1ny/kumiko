@@ -44,7 +44,7 @@ review:
   timeout: 20m
   # Pre-ship input bound, code and store diff together. Over it, no review
   # starts until you raise it or set preship: false.
-  max_diff_kb: 1024
+  max_diff_kb: 3072
   # true = review the finished change before its first PR or a local merge;
   # ship and the local merge wait for a pass. false = no pre-ship review.
   preship: true
