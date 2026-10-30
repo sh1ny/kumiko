@@ -394,7 +394,7 @@ Kumiko SHALL show central tabs between the sidebars. Each tab SHALL hold a horiz
 - **THEN** its sibling takes the freed space, and no empty pane remains.
 
 ### Requirement: The tab strip provides a labeled click launcher
-The central tab strip, and the central area when no tab is open, SHALL provide a visible + control opening a readable, labeled click menu of supported view types. A new view SHALL open in a new tab, inheriting the project, workspace, and host context selected in navigation. Hover MUST NOT be required to discover or activate the menu. Source: user decision 2026-10-30, replacing the per-group launcher.
+The central tab strip SHALL provide a visible + control, also with no tab open, opening a readable, labeled click menu of supported view types. With no tab open, the central area SHALL show a short empty state with a prominent New terminal action. A new view SHALL open in a new tab, inheriting the project, workspace, and host context selected in navigation. Hover MUST NOT be required to discover or activate the menu. Source: user decisions 2026-10-30, replacing the per-group launcher.
 
 #### Scenario: Open a new view in a new tab
 - **WHEN** a user with a workspace selected clicks the tab strip's + control and selects a supported new terminal or chat view
@@ -402,7 +402,7 @@ The central tab strip, and the central area when no tab is open, SHALL provide a
 
 #### Scenario: No tab is open
 - **WHEN** the user has closed every tab
-- **THEN** the central area shows the launcher with the same labeled choices rather than an empty pane.
+- **THEN** the central area shows a short empty state with a prominent New terminal action and its shortcut, the tab strip's + control still offers the labeled choices, and no empty pane is shown.
 
 #### Scenario: Launcher is used without hovering
 - **WHEN** a user clicks the tab strip's + control without first hovering over it
@@ -523,7 +523,7 @@ Kumiko SHALL allow the left and right sidebars to collapse completely and indepe
 Kumiko's first functional release SHALL exclude embedded browser and mobile emulator views from the workbench and launcher, including disabled or coming-soon launch choices. Neither surface SHALL be required for supported working views or terminal-native development tools.
 
 #### Scenario: Use the release launcher for supported work
-- **WHEN** a user opens the first release's tab-group launcher
+- **WHEN** a user opens the first release's tab-strip launcher
 - **THEN** its supported view choices provide workbench access without requiring a browser or mobile emulator surface.
 
 #### Scenario: Look for an excluded view type
