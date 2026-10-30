@@ -16,8 +16,10 @@ const int maxProfileArgBytes = 4096;
 /// Environment overrides in one profile.
 const int maxProfileEnv = 128;
 
-/// UTF-8 size of one encoded profile (64 KiB).
-const int maxProfileBytes = 64 * 1024;
+/// UTF-8 size of one encoded profile (12 KiB): [maxUserProfiles] of them and
+/// the detected shells fit in one `profile/list` result, which as a control
+/// message is at most 1 MiB.
+const int maxProfileBytes = 12 * 1024;
 
 /// Id prefix of detected, in-memory profiles.
 const String builtinProfilePrefix = 'builtin:';
@@ -138,7 +140,7 @@ class ProfileDefinition {
     if (issues.isEmpty &&
         utf8.encode(jsonEncode(toJson())).length > maxProfileBytes) {
       issues.add(
-        const ProfileIssue('profile', 'A profile may be at most 64 KiB.'),
+        const ProfileIssue('profile', 'A profile may be at most 12 KiB.'),
       );
     }
     return issues;

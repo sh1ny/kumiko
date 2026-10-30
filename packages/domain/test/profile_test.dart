@@ -108,11 +108,11 @@ void main() {
       expect(profile(env: env(129)).validate(), isNotEmpty);
     });
 
-    test('a profile over 64 KiB is invalid even within the other bounds', () {
-      // 20 arguments of 4 KiB are 80 KiB.
-      final big = profile(args: List.filled(20, 'a' * 4096));
-      expect(big.validate().single.message, contains('64 KiB'));
-      final fits = profile(args: List.filled(10, 'a' * 4096));
+    test('a profile over 12 KiB is invalid even within the other bounds', () {
+      // Three arguments of 4 KiB are just over 12 KiB.
+      final big = profile(args: List.filled(3, 'a' * 4096));
+      expect(big.validate().single.message, contains('12 KiB'));
+      final fits = profile(args: List.filled(2, 'a' * 4096));
       expect(fits.validate(), isEmpty);
     });
   });

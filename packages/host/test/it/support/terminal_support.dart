@@ -269,3 +269,35 @@ int hostRssKiB(int pid) {
   final r = Process.runSync('ps', ['-o', 'rss=', '-p', '$pid']);
   return int.parse((r.stdout as String).trim());
 }
+
+/// The pseudo-terminals process [hostPid] holds: its console host children
+/// (`conhost.exe` / `OpenConsole.exe`, Windows) or its open PTY master
+/// descriptors (`/dev/ptmx`, through `/proc` on Linux and `lsof` on macOS).
+Future<int> ptysHeldBy(int hostPid) async {
+  if (Platform.isWindows) {
+    final r = await Process.run('powershell', [
+      '-NoProfile',
+      '-Command',
+      'Get-CimInstance Win32_Process -Filter "ParentProcessId=$hostPid" | '
+          r'Where-Object { $_.Name -in "conhost.exe","OpenConsole.exe" } | '
+          r'ForEach-Object { $_.ProcessId }',
+    ]);
+    return RegExp(r'\d+').allMatches(r.stdout as String).length;
+  }
+  if (Platform.isLinux) {
+    var n = 0;
+    for (final fd in Directory('/proc/$hostPid/fd').listSync()) {
+      try {
+        if (Link(fd.path).targetSync().endsWith('ptmx')) n++;
+      } on FileSystemException {
+        // closed while listing
+      }
+    }
+    return n;
+  }
+  final r = await Process.run('lsof', ['-p', '$hostPid', '-Fn']);
+  return [
+    for (final l in LineSplitter.split(r.stdout as String))
+      if (l.startsWith('n') && l.contains('ptmx')) l,
+  ].length;
+}

@@ -369,8 +369,13 @@ class WorkbenchController extends ChangeNotifier {
 
   /// The keyboard follows the window's focused pane: [paneId]'s terminal view
   /// takes it after the frame that mounts or reveals the view.
-  void _wantKeyboard(String? paneId) {
+  /// Whether the pending keyboard request came from a click in the pane,
+  /// which leaves the keys with a control of the pane that took them.
+  bool _keyboardUnlessInPane = false;
+
+  void _wantKeyboard(String? paneId, {bool unlessInPane = false}) {
     _keyboardTarget = paneId;
+    _keyboardUnlessInPane = unlessInPane;
     if (paneId != null) _scheduleKeyboardFocus();
   }
 
@@ -407,7 +412,23 @@ class WorkbenchController extends ChangeNotifier {
     final link = terminals.linkOf(id);
     if (link == null) return;
     _keyboardTarget = null;
+    // A click that put the keys in a control of the pane, such as the
+    // search field, leaves them there.
+    if (_keyboardUnlessInPane && _keyboardInPane(id)) return;
     link.surface.requestFocus();
+  }
+
+  /// Whether the primary focus sits inside the view of pane [id].
+  static bool _keyboardInPane(String id) {
+    final context = FocusManager.instance.primaryFocus?.context;
+    if (context == null) return false;
+    final paneKey = Key('pane-$id');
+    var inside = false;
+    context.visitAncestorElements((e) {
+      if (e.widget.key == paneKey) inside = true;
+      return !inside;
+    });
+    return inside;
   }
 
   void _setLayout(LayoutDocument d, {bool refocus = false}) {
@@ -813,10 +834,11 @@ class WorkbenchController extends ChangeNotifier {
     final d = _layout;
     if (d == null) return;
     if (d.focusedPane == paneId) {
-      _wantKeyboard(paneId); // clicked while the keys went elsewhere
+      // Clicked while the keys went elsewhere.
+      _wantKeyboard(paneId, unlessInPane: true);
       return;
     }
-    _commit(d.focusPane(paneId));
+    if (_commit(d.focusPane(paneId))) _keyboardUnlessInPane = true;
   }
 
   void setRatio(String splitId, double ratio) {

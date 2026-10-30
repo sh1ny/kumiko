@@ -140,8 +140,9 @@ class UnitManager {
       if (faults.crashAfterPendingWrite) _crash();
 
       final ContainedUnit unit;
+      ContainedUnit? spawned;
       try {
-        unit = await _spawn(
+        unit = spawned = await _spawn(
           id,
           argv,
           workingDirectory ?? identity.realPath,
@@ -150,6 +151,7 @@ class UnitManager {
         );
         if (faults.identityReadFails) await _failIdentity(unit);
       } on Object catch (e) {
+        if (spawned != null) await _releasePty(spawned);
         await _settleFailedSpawn(id, e);
         if (e is SpawnFailed || e is ProcessException) rethrow;
         throw RpcException(ErrorCode.internalError, 'spawn failed: $e');
@@ -177,6 +179,8 @@ class UnitManager {
           // The row stays pending; the next host reconciles it.
           log.event('unit-end-failed', ids: {'unit': id});
         }
+        // Nobody took the pseudo-terminal yet: it goes with the launch.
+        await _releasePty(unit);
         rethrow;
       }
       final entry = live[id] = LiveUnit(unit);
@@ -257,6 +261,24 @@ class UnitManager {
       ledger.markUnresolved(id, reason);
       onUnresolved();
     }
+  }
+
+  /// Closes the pseudo-terminal of a unit whose launch failed after the
+  /// spawn, before a terminal took its handles: the console close starts
+  /// (Windows), then both handles close, which also lets a console close
+  /// waiting for undrained output return, as a terminal's abandoned open does.
+  static Future<void> _releasePty(ContainedUnit unit) async {
+    final pty = switch (unit) {
+      PosixUnit(:final pty) => pty,
+      WindowsUnit(:final pty) => pty,
+      _ => null,
+    };
+    if (pty == null) return;
+    if (pty.console case final console?) {
+      (await ConsoleCloser.start(console)).done.ignore();
+    }
+    closePtyHandle(pty.readHandle);
+    closePtyHandle(pty.writeHandle);
   }
 
   /// Fails a spawn after the unit started, as `spawnPosixUnit` does when the

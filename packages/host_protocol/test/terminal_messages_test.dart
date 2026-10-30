@@ -1,5 +1,7 @@
 import 'dart:async';
+import 'dart:convert';
 
+import 'package:domain/domain.dart' show maxUserProfiles;
 import 'package:host_protocol/host_protocol.dart';
 import 'package:test/test.dart';
 
@@ -101,6 +103,50 @@ void main() {
     expect(m.args, isEmpty);
     expect(m.env, isEmpty);
     expect(m.isBuiltin, isTrue);
+  });
+
+  test('64 user profiles at the size bound and every detected shell fit in '
+      'one profile/list response', () {
+    int sizeOf(ShellProfile p) => utf8.encode(jsonEncode(p.toJson())).length;
+    ShellProfile atBound(int i) {
+      final args = <String>[];
+      ShellProfile make() => ShellProfile(
+        id: 'user-$i',
+        name: 'Profile $i',
+        executable: 'sh',
+        args: args,
+      );
+      // Each further argument costs its bytes plus quotes and a comma.
+      while (sizeOf(make()) + maxProfileArgBytes + 3 <= maxProfileBytes) {
+        args.add('a' * maxProfileArgBytes);
+      }
+      args.add('a' * (maxProfileBytes - sizeOf(make()) - 3));
+      final p = ShellProfile.fromJson(make().toJson()); // within the bound
+      expect(sizeOf(p), greaterThan(maxProfileBytes - 8));
+      return p;
+    }
+
+    final result = ProfileListResult(
+      profiles: [
+        // The five probed shells, each at a long resolved path.
+        for (final name in ['pwsh', 'powershell', 'nu', 'bash', 'fish'])
+          ShellProfile(
+            id: 'builtin:$name',
+            name: name,
+            executable: '/${'p' * 1024}/$name',
+          ),
+        for (var i = 0; i < maxUserProfiles; i++) atBound(i),
+      ],
+      defaultId: 'user-0',
+      defaultAvailable: true,
+    );
+    final response = jsonEncode({
+      'jsonrpc': '2.0',
+      'id': 1 << 31,
+      'result': result.toJson(),
+    });
+
+    expect(utf8.encode(response).length, lessThan(maxControlMessage));
   });
 
   test('ShellProfile rejects a wrong shape and over-size content', () {

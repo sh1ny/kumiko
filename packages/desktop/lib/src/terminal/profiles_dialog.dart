@@ -29,14 +29,23 @@ Future<String?> showProfilePicker(
                 key: const Key('choose-profile-prompt'),
               ),
             ),
-          for (final p in profiles)
-            ListTile(
-              key: Key('pick-${p.id}'),
-              dense: true,
-              title: Text(p.name),
-              subtitle: Text(p.executable),
-              onTap: () => Navigator.of(context).pop(p.id),
+          // Up to 64 user profiles plus the detected shells: the list
+          // scrolls when it is taller than the dialog may grow.
+          Flexible(
+            child: ListView(
+              shrinkWrap: true,
+              children: [
+                for (final p in profiles)
+                  ListTile(
+                    key: Key('pick-${p.id}'),
+                    dense: true,
+                    title: Text(p.name),
+                    subtitle: Text(p.executable),
+                    onTap: () => Navigator.of(context).pop(p.id),
+                  ),
+              ],
             ),
+          ),
         ],
       ),
     ),
@@ -90,11 +99,21 @@ Future<bool> showCloseWarning(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           const Text('Closing ends their shells:'),
-          for (final w in warnings)
-            Text(
-              '${w.title}: ${w.reason}',
-              key: Key('close-warning-item-${w.paneId}'),
+          // Closing the workbench can name every terminal: the list scrolls.
+          Flexible(
+            child: SingleChildScrollView(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  for (final w in warnings)
+                    Text(
+                      '${w.title}: ${w.reason}',
+                      key: Key('close-warning-item-${w.paneId}'),
+                    ),
+                ],
+              ),
             ),
+          ),
         ],
       ),
       actions: [

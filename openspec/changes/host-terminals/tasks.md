@@ -200,7 +200,7 @@ Extra tests owed by the design (no spec row): Windows pending-console-cleanup ca
 
 ## 4. Shell profiles: domain model, store v3 and host service
 
-- [x] 4.1 Write failing `profile_test.dart`: the args list round-trips, empty executable invalid, invalid env names invalid, and the Resource Bounds limits (64 profiles, 256 args of ≤ 4 KiB, 128 env, 64 KiB). Implement the pure profile model and validation in `domain`. Verify it passes and flip its domain rows green.
+- [x] 4.1 Write failing `profile_test.dart`: the args list round-trips, empty executable invalid, invalid env names invalid, and the Resource Bounds limits (64 profiles, 256 args of ≤ 4 KiB, 128 env, 12 KiB). Implement the pure profile model and validation in `domain`. Verify it passes and flip its domain rows green.
 - [x] 4.2 Write a failing v3 test in `migrations_test.dart` (v2 store migrates to v3 with `shell_profile` and `setting`, ledger and layout untouched, newer store refused), then add the v3 step in `store.dart`. Verify it passes.
 - [x] 4.3 Write failing `profiles_test.dart` tests for every shell-profiles row mapped there, using a fake PATH and fixture executables, plus the store-fault injection through test hooks. Implement the host `ProfileService`: off-isolate detection with the per-OS probe order and the 2 s cap, the CRUD with built-in protection, `setDefault`, the first-launch default and unavailable-default reporting, and wire the `profile/*` methods in `Host._onRequest`. Verify the rows pass and flip them green.
 

@@ -69,6 +69,9 @@ class FakeTerminalSurface implements TerminalSurface {
 
   final FocusNode _focus = FocusNode();
 
+  /// The focus of the search-field stand-in inside [view].
+  final FocusNode searchFocus = FocusNode();
+
   @override
   void requestFocus() {
     if (_focus.context != null) _focus.requestFocus();
@@ -104,9 +107,32 @@ class FakeTerminalSurface implements TerminalSurface {
       // Fills what it is given, like a real terminal view.
       child: SizedBox.expand(
         key: ValueKey('surface-box-$number'),
-        child: Align(
-          alignment: Alignment.topLeft,
-          child: Text('surface $number', key: ValueKey('surface-$number')),
+        child: Stack(
+          children: [
+            Align(
+              alignment: Alignment.topLeft,
+              child: Text('surface $number', key: ValueKey('surface-$number')),
+            ),
+            // Stands in for the engine's search field: a control inside the
+            // view that takes the keyboard on pointer down.
+            Align(
+              alignment: Alignment.topRight,
+              child: Listener(
+                behavior: HitTestBehavior.opaque,
+                onPointerDown: (_) => searchFocus.requestFocus(),
+                child: Focus(
+                  focusNode: searchFocus,
+                  // Like a text field, it keeps the keys it is given.
+                  onKeyEvent: (_, _) => KeyEventResult.handled,
+                  child: SizedBox(
+                    key: ValueKey('surface-search-$number'),
+                    width: 24,
+                    height: 12,
+                  ),
+                ),
+              ),
+            ),
+          ],
         ),
       ),
     ),
@@ -116,6 +142,7 @@ class FakeTerminalSurface implements TerminalSurface {
   void dispose() {
     disposed = true;
     _focus.dispose();
+    searchFocus.dispose();
   }
 }
 

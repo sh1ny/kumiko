@@ -370,7 +370,7 @@ sequenceDiagram
 | Terminals per host | Existing unit cap 64, shared with all units | `unit-cap` refusal shown | n/a | Bounded |
 | Pending console cleanups (Windows) | Active terminals + pending console cleanups ≤ 64 (D3) | Open refused with `console-cleanup-pending` | 5 s per `ClosePseudoConsole` before an entry is registered | Bounded; entries clear when the native call returns or the host exits |
 | Resize messages | At most one per 50 ms per terminal plus a trailing one | Coalesced | n/a | Bounded |
-| User profiles | 64 profiles; ≤ 256 args of ≤ 4 KiB each; ≤ 128 env entries; ≤ 64 KiB per profile | Save refused with a reason | n/a | Bounded |
+| User profiles | 64 profiles; ≤ 256 args of ≤ 4 KiB each; ≤ 128 env entries; ≤ 12 KiB per profile, so the 64 and the detected shells fit in one `profile/list` result under the 1 MiB control-message bound | Save refused with a reason | n/a | Bounded |
 | Shell detection | ≤ 20 probes, 2 s total, off the main isolate | Remaining probes skipped and logged; found ones offered | 2 s | n/a |
 | Layout tabs (format 2, D11) | ≤ 128 tabs; never more tabs than panes | Launcher refused with the limit shown | n/a | Bound by the pane bound |
 | Layout panes (format 2, D11) | ≤ 16 panes per tab, ≤ 128 panes per document (format 1 had ≤ 16 groups, ≤ 128 tabs) | Split, launcher and **Move into split** refused with the limit; a document over it is `layout-invalid` | n/a | 128 views, as format 1 allowed |

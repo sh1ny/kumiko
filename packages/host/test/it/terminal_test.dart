@@ -259,6 +259,26 @@ void main() {
       );
     });
 
+    test('a ledger write failing after the spawn refuses the open with '
+        'store-error and leaves no pseudo-terminal in the host', () async {
+      final desktop = await start();
+      await desktop.saveFixtureProfile(cwd: work.path);
+      final before = await ptysHeldBy(desktop.session.pid);
+      await desktop.setFault(TestFault.runningWriteFails);
+
+      final e = await rpcFailure(desktop.openTerminalRaw('fixture'));
+
+      expect(e.reason, ErrorCode.storeError);
+      expect(LedgerView(profile).units(), isEmpty);
+      final deadline = DateTime.now().add(const Duration(seconds: 10));
+      var held = await ptysHeldBy(desktop.session.pid);
+      while (held != before && DateTime.now().isBefore(deadline)) {
+        await Future<void>.delayed(const Duration(milliseconds: 200));
+        held = await ptysHeldBy(desktop.session.pid);
+      }
+      expect(held, before, reason: 'pseudo-terminals the host holds');
+    });
+
     test('no terminal start leaves a reserved channel behind', () async {
       // A refused open frees its two slots: after many refusals the channels
       // are still all available.

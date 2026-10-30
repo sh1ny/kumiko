@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 
+import 'package:desktop/src/terminal/profiles_dialog.dart';
 import 'package:desktop/src/terminal/terminal_controller.dart';
 import 'package:desktop/src/workbench_controller.dart';
 import 'package:domain/domain.dart';
@@ -463,6 +464,25 @@ void main() {
       expect(got['t2'], isEmpty);
     });
 
+    uiTest('a click on a control inside the focused terminal pane keeps '
+        'the keyboard there', (tester) async {
+      final rig = await pumpEmpty(tester);
+      await launch(tester);
+      final surface = rig.surfaces.last;
+
+      // The stand-in's listener takes the hit, not its empty box.
+      await tester.tap(
+        key('surface-search-${surface.number}'),
+        warnIfMissed: false,
+      );
+      await tester.pump();
+      await tester.pump();
+
+      expect(surface.searchFocus.hasPrimaryFocus, isTrue);
+      final got = await typeKey(tester, rig, LogicalKeyboardKey.keyF);
+      expect(got['t1'], isEmpty);
+    });
+
     uiTest('focusing a non-terminal pane takes the keys from the terminal', (
       tester,
     ) async {
@@ -561,6 +581,82 @@ void main() {
   });
 
   group('shell profiles', () {
+    testWidgets('a close warning naming more terminals than fit in the '
+        'window scrolls, and its buttons stay reachable', (tester) async {
+      tester.view.physicalSize = const Size(800, 400);
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.reset);
+      final warnings = [
+        for (var i = 0; i < 64; i++)
+          (paneId: 'p$i', title: 'Terminal $i', reason: 'running'),
+      ];
+      bool? confirmed;
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Builder(
+            builder: (context) => TextButton(
+              onPressed: () async =>
+                  confirmed = await showCloseWarning(context, warnings),
+              child: const Text('open'),
+            ),
+          ),
+        ),
+      );
+      await tester.tap(find.text('open'));
+      await tester.pumpAndSettle();
+
+      await tester.scrollUntilVisible(
+        key('close-warning-item-p63'),
+        200,
+        scrollable: find.descendant(
+          of: key('close-warning'),
+          matching: find.byType(Scrollable),
+        ),
+      );
+      await tester.tap(key('close-warning-confirm'));
+      await tester.pumpAndSettle();
+
+      expect(confirmed, isTrue);
+    });
+
+    testWidgets('a picker with more profiles than fit in the window '
+        'scrolls, and the last profile can be chosen', (tester) async {
+      tester.view.physicalSize = const Size(800, 400);
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.reset);
+      final profiles = [
+        for (var i = 0; i < 70; i++)
+          ShellProfile(id: 'user-$i', name: 'Profile $i', executable: 'sh'),
+      ];
+      String? picked;
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Builder(
+            builder: (context) => TextButton(
+              onPressed: () async =>
+                  picked = await showProfilePicker(context, profiles),
+              child: const Text('open'),
+            ),
+          ),
+        ),
+      );
+      await tester.tap(find.text('open'));
+      await tester.pumpAndSettle();
+
+      await tester.scrollUntilVisible(
+        key('pick-user-69'),
+        200,
+        scrollable: find.descendant(
+          of: key('profile-picker'),
+          matching: find.byType(Scrollable),
+        ),
+      );
+      await tester.tap(key('pick-user-69'));
+      await tester.pumpAndSettle();
+
+      expect(picked, 'user-69');
+    });
+
     Future<void> openProfiles(WidgetTester tester) async {
       await launch(tester, entry: 'shell-profiles');
       expect(key('profiles-dialog'), findsOneWidget);
