@@ -2,10 +2,12 @@
 
 ## Metadata
 
-- **Round:** 4
-- **Prior round:** Round 3 codex APPROVE_WITH_CHANGES; all three required changes applied and accepted, with CHANGES_APPLIED recorded as yes; verdict voided by amendments `8a727d2` and `d2da4dc`.
-- **Reviewer:** cross-model CLI (codex)
-- **Reviewed:** Re-check of Required Changes 1–2 only: round-4 review and author Rebuttals; `git show e784c03`; current terminal-sessions raw-byte requirement; tasks’ Binary-safe output and Windows re-rendering rows and tasks 5.1, 5.3 and 5.6. Consulted `terminal_test.dart`, fixture `blob()` and `terminal_service.dart` as evidence, and the supplied Flutter test-architecture skill as data. Read-only planning re-check; no new full review, file edits or tests executed.
+- **Round:** 5
+- **Change:** `host-terminals`
+- **Tier:** FULL
+- **Reviewer:** Codex
+- **Scope:** Current planning artifacts, supplied amendment commits and aggregate diff, ADRs 0001–0010, architecture, and supporting implementation and CI evidence.
+- **Method:** Read-only design review covering ownership, failure, bounds, ordering, decisions, over-engineering and specs. No files written; no tests executed.
 
 ## Findings
 
@@ -15,60 +17,61 @@ None.
 
 ### Moderate
 
-**M1 — The amended POSIX guarantee still promises bytes the PTY can legitimately transform.**
+**M1 — The adopted engine boundary cannot enforce the planned desktop output bound.**
 
-`specs/terminal-sessions/spec.md:66` promises the PTY-produced bytes, then states that on Linux and macOS these are the bytes the program wrote. That equivalence does not hold generally: terminal output processing can translate LF to CR-LF, among other transformations. See [termios output flags](https://man7.org/linux/man-pages/man3/termios.3.html).
+`design.md:138` and its Resource Bounds table require pausing channel consumption when the engine’s pending feed reaches 1 MiB. Task 7.2 carries that requirement forward.
 
-The POSIX spawn and shim sources preserve terminal operation rather than establishing an immutable, transparent output mode. The fixture explicitly excludes LF from `blob()` to avoid line-discipline transformation. Its passing comparison therefore cannot establish the unconditional POSIX claim.
+However, `TerminalSurface.feed` returns `void` and exposes neither pending bytes nor consumption completion. `AlacrittySurface.feed` forwards immediately to the engine. The vendored `TerminalEngineClient` appends bytes to `_buf`, then asynchronously processes a batch while further bytes accumulate (`terminal_engine_client.dart:142–181`).
 
-**Consequence:** ordinary shell output can violate the scenario while the host correctly relays every master-side byte. Implementing transparency to satisfy that wording would also interfere with normal terminal semantics. The contract should consistently begin at the PTY output boundary on every OS.
+Consequently, completing a `feed` call does not mean those bytes have been consumed. A controller that bounds only its own queue can continue returning channel credit while output accumulates inside the engine. The spike’s throughput result does not establish a bound under a stalled engine.
 
-**M2 — The Windows test-map rows do not prove the retained byte-preservation guarantee.**
+**Consequence:** group 7 cannot implement the stated memory guarantee through the approved interface. The design must define an observable consumption or admission contract, including bytes queued before engine initialization and bytes in flight.
 
-Both amended rows at `tasks.md:25-26` are green and map to the raw-bytes integration test. Its Windows branch checks ordered `BEGIN;`/`END;` markers and only `expect(received, isNotEmpty)` for their contents.
+**M2 — Conformance qualification silently accepts missing expected grids.**
 
-Those checks establish neither equality with ConPTY output nor preservation of the intervening sequence. A host that decodes malformed data, strips escape sequences, or drops or reorders interior bytes can still pass.
+The amended bar explicitly identifies six unjudged screens and requires comparison of the other sixteen.
 
-ConPTY’s re-rendering makes comparison with the program’s original blob inappropriate, but does not remove the requirement to preserve the bytes ConPTY actually emits. Microsoft explicitly describes relaying pseudo-console output without local transcoding in [Creating a Pseudoconsole session](https://learn.microsoft.com/en-us/windows/console/creating-a-pseudoconsole-session).
+`ExpectedScreen.load` returns `null` whenever an expected-grid file is absent (`integration_test/bar/vttest.dart:29–31`). `_vttest` then treats that as “ran, not judged” and produces no mismatch (`terminal_bar_test.dart:218`). There is no independent check that missing grids correspond exactly to the authorized exclusions.
 
-**Consequence:** the map declares the amended Windows byte contract covered while its defining invariant remains untested. This needs a deterministic relay-boundary assertion, alongside the existing real-ConPTY smoke test.
+Deleting a judged screen’s `.txt` fixture therefore weakens both replay and live qualification without failing the test. The spike-results checker validates recorded statuses, not fixture completeness.
+
+**Consequence:** the implementation used as qualification evidence does not enforce the amended subset. Explicit exclusions and required expected grids need separate representations.
 
 ### Suggestions
 
-None.
+**S1 — Reconcile the remaining ADR lifecycle wording.**
 
-### Re-check
+Design D10 and the workflow follow-up still describe ADR 0010 as proposed until merge. The ADR and architecture now record accepted, provisional adoption. Update those remaining statements to reflect the current decision.
 
-The findings above are retained from round 4; their dispositions against the current planning files follow.
+**S2 — Add focused fallback verification.**
 
-1. **Required Change 1 — Applied as required.** “Binary-safe output” now defines equality at the pseudo-terminal read boundary, preserving order and forbidding host modification. The retained POSIX program-byte comparison is conditional on default output processing and explicitly accounts for LF becoming CR LF. The test-map row and unchecked task 5.6 require every byte value, including LF, with that expected transformation. This supplies the assertable output-processing case missing from the original plan. Task 5.6 carries the amendment to completed task 5.3; accepting this placement does not imply the new test exists. The existing fixture still excludes LF, and the row correctly remains red.
-
-2. **Required Change 2 — Applied as required.** The Windows re-rendering row now covers only the real-ConPTY surrounding-text ordering check, consistent with the existing test’s ordered `BEGIN;` and `END;` assertions. The separate Binary-safe output row requires equality between a scripted PTY-reader sequence and the complete desktop-received sequence on every OS, including escape sequences, NUL and malformed UTF-8 across chunk boundaries. Unchecked task 5.6 carries this additional work after completed tasks 5.1/5.3 and explicitly gates turning the row green on verification across all three OSes. Its planned injection through the reader path exercises the service relay boundary evidenced by `PtyReaderIsolate.start` forwarding chunks to `_onChunk`, which writes them to the output channel. The existing marker/nonempty test is no longer credited as fidelity proof.
-
-Both required planning changes are applied. The added fidelity and POSIX LF tests remain implementation work explicitly tracked by task 5.6 and the red coverage row.
+The bundled-console test proves the normal `OpenConsole.exe` path. Add a separate-process test for unavailable `conpty.dll`, covering creation, resize and close through kernel32. Clarify the narrower failure contract: a loadable DLL with a missing companion executable is not covered by the current library-load probe.
 
 ## Verdict
 
 VERDICT: APPROVE_WITH_CHANGES
 
+The user-authorized provisional adoption, hardware-only frame gate, Windows transcript replay and vendored engine are reasonable decisions. Two gaps remain in bounded consumption and qualification enforcement.
+
+The remaining design follows the established ownership model: the host owns PTYs and process cleanup; the desktop owns rendering, search and close confirmation. Attach ordering, channel reservations and cleanup ownership remain explicit. Vendoring records provenance, patches and update procedures, with native builds and desktop checks on three OSes.
+
+Task 6.9’s controller attachment, supplied search bar and painter patch have focused supporting tests. Windows replay is accurately distinguished from ConPTY coverage. The frame gate remains an explicit real-hardware obligation, and the provisional checker preserves Linux/macOS unproven items.
+
+Groups 7 and 8 still follow from the design, subject to M1 and M2. Their unfinished desktop integration and architecture updates are appropriately tracked as pending.
+
 ## Required Changes
 
-1. **Correct the POSIX output claim.** In “Binary-safe output,” remove the unconditional statement that POSIX PTY output equals the program’s writes. State that the desktop receives exactly the bytes read from the PTY output endpoint, in order and unchanged by the host. If retaining a program-byte comparison, condition it on a fixture-controlled output mode. Update its test-map description and task 5.3 accordingly; include an assertable POSIX case with output processing enabled that preserves the resulting PTY bytes.
+1. **Make engine consumption observable and bounded.** Amend D7, the surface contract, Resource Bounds and task 7.2 to specify admission/completion or queue-pressure signals. Account for adapter queues, pre-initialization buffering and in-flight batches. Add a desktop test with engine consumption deliberately stalled: verify the stated bound, stopped channel credit, ordered resumption and no dropped bytes.
 
-2. **Separate Windows re-rendering coverage from relay fidelity.** Update both amended test-map rows and tasks 5.1/5.3 to require:
+2. **Make conformance exclusions explicit.** Define the six authorized unjudged screen IDs independently of fixture existence. Require expected grids for all sixteen judged screens and fail on missing fixtures. Add a regression check demonstrating that removing a judged grid fails qualification, and include this verification in the remaining tasks.
 
-   - a real-ConPTY test asserting the surrounding printable text remains in order despite NUL/invalid-UTF-8 input;
-   - a deterministic test at the terminal-service relay boundary comparing a known PTY-reader byte sequence with the complete desktop-received sequence, including escape sequences, NUL and malformed UTF-8 across chunk boundaries.
-
-   Keep the fidelity coverage pending until that equality assertion exists; marker order and nonempty contents alone must not mark it green.
-
-CHANGES_APPLIED: yes
+CHANGES_APPLIED: no
 
 ## Rebuttals
 
-- **Required Change 1 (POSIX output claim): fixed — accepted by reviewer.** specs/terminal-sessions/spec.md "Binary-safe output" now promises exactly the bytes read from the pseudo-terminal, unmodified by the host; the program-byte comparison is conditioned on the default output processing and states the LF to CR LF translation, so it is assertable. tasks.md test-map row "Binary-safe output" describes the POSIX case with every byte value, LF included, expected as CR LF.
-- **Required Change 2 (Windows relay fidelity): fixed — accepted by reviewer.** The "Binary-safe output" row is back to red and now requires a scripted PTY-reader sequence (escape sequences, NUL, malformed UTF-8 split across chunk boundaries) compared with the complete desktop-received sequence on all OSes. The "Windows pseudo-console re-renders output" row covers only the real-ConPTY check that the printable text around the NUL and invalid UTF-8 bytes arrives in order, and points to the Binary-safe row for fidelity. Tasks 5.1 and 5.3 are already done and committed, so the added work is the new task 5.6 rather than an edit to their text; 5.6 keeps the row red until the equality assertion passes on all three OSes.
-
-Round-3 findings remain resolved as recorded in its accepted re-check.
-
-The Windows inheritance amendment matches the implementation; Microsoft’s pseudo-console example also uses `bInheritHandles=FALSE`. No concrete blocking launch defect was established. The Windows re-rendering clarification is consistent with ADR 0006’s native ConPTY backend and desktop engine boundary, and does not require changing proposed ADR 0010. The outstanding findings concern the output contract and its planned proof.
+- **Round 4:** Its accepted planning corrections remain intact; neither raw-byte finding is reopened here.
+- **M1:** Task 7.2’s planned pause is insufficient without a signal distinguishing engine admission from actual consumption.
+- **M2:** The authorized exclusions are accepted. The finding concerns accidental additional exclusions caused by missing fixtures.
+- No author rebuttals to the Round 5 findings were available.
+- **Author (S1):** applied. D10 and the workflow follow-up now describe ADR 0010 as accepted, provisional while Linux or macOS user-verified items are `unproven`.
+- **Author (S2):** not taken in this change. The kernel32 fallback is the path the host used before task 6.8, and the round 5 Required Changes do not depend on it. A test with `conpty.dll` unavailable needs a way to hide the bundled asset from the host process; it is offered to the user as a follow-up.
