@@ -19,11 +19,35 @@ Run from the vttest main menu, every screen of each item, no skipping:
 2. main menu item 2, "Test of screen features";
 3. main menu item 3, "Test of character sets".
 
-The conformance row passes only when every screen reached through those three items renders as vttest describes, apart from the screens outside the bar below. The agent records the vttest version, the sub-screens it ran and the screens it excluded in Notes. Other main menu items (for example keyboard, terminal reports, VT52, non-VT100 tests) are outside the subset.
+The conformance row passes only when every screen reached through those three items renders as vttest describes, apart from what is outside the bar below. The agent records the vttest version, the screens it ran and what it left unjudged in Notes. Other main menu items (for example keyboard, terminal reports, VT52, non-VT100 tests) are outside the subset.
 
-Outside the bar (user decision 2026-10-30): screens whose check depends on 132-column mode (DECCOLM), reverse-screen mode (DECSCNM), or a character set other than US ASCII and DEC Special Graphics (national replacement sets such as UK, alternate ROM). They still run, so they cannot hide a crash or a corrupted later screen, but their own rendering is not judged. Modern terminals (Alacritty, Windows Terminal, kitty) leave these out by design.
+Outside the bar (user decisions 2026-10-30): 132-column mode (DECCOLM), reverse-screen mode (DECSCNM), text blink (SGR 5), and character sets other than US ASCII and DEC Special Graphics (British, DEC Alternate ROM). Modern terminals (Alacritty, Windows Terminal, kitty) leave these out by design. Every screen still runs, so an unjudged one cannot hide a crash or corrupt a later screen.
 
-How it runs (user decision 2026-10-30): on Linux and macOS, vttest runs live through the host's pseudo-terminal with scripted keystrokes at 80x24. Each screen's output is also recorded as a byte transcript on Linux and committed; on Windows, which has no native vttest, the transcripts are replayed into the engine (Notes say "replayed, not through ConPTY"). Every screen is compared with a hand-written expected grid.
+Screens of vttest 2.7 (20230201) answering as a VT100-family terminal, 22 in all:
+
+| Screen | vttest check | Judged |
+|---|---|---|
+| 1.1 | border of `*` and `+`, frame of `E` (80 columns) | yes |
+| 1.2 | the same in 132 columns | no: 132 columns |
+| 1.3 | autowrap, mixing control and print characters (80 columns) | yes |
+| 1.4 | the same in 132 columns | no: 132 columns |
+| 1.5 | cursor-control characters inside escape sequences | yes |
+| 1.6 | leading zeros in escape sequences | yes |
+| 2.1 | wrap around mode | yes |
+| 2.2 | tab setting and resetting | yes |
+| 2.3 | 132 columns, light background | no: 132 columns, reverse screen |
+| 2.4 | 80 columns, light background | no: reverse screen |
+| 2.5 | 132 columns, dark background | no: 132 columns |
+| 2.6 | 80 columns, dark background | yes |
+| 2.7, 2.8 | soft scroll, region and full screen (final screen) | yes |
+| 2.9, 2.10 | jump scroll, region and full screen | yes |
+| 2.11, 2.12 | origin mode | yes |
+| 2.13 | graphic rendition, dark background | yes, except blink |
+| 2.14 | graphic rendition, light background | no: reverse screen |
+| 2.15 | save and restore cursor | yes, except blink |
+| 3.1 | installed character sets | US ASCII and DEC Special Graphics rows only |
+
+How it runs (user decision 2026-10-30): on Linux and macOS, vttest runs live through the host's pseudo-terminal with scripted keystrokes at 80x24. Each screen's output is also recorded as a byte transcript on Linux and committed; on Windows, which has no native vttest, the transcripts are replayed into the engine (Notes say "replayed, not through ConPTY"). Every judged screen is compared with a hand-written expected grid.
 
 ## windows
 
