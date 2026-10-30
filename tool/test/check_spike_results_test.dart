@@ -135,6 +135,14 @@ void main() {
       );
     });
 
+    test('CRLF line endings read the same as LF', () {
+      final report = checkSpikeResults(
+        _results(_unprovenUserOnPosix).replaceAll('\n', '\r\n'),
+      );
+      expect(report.failures, isEmpty);
+      expect(report.verdict, 'ADOPTABLE');
+    });
+
     test('a blank adopted candidate fails', () {
       final report = checkSpikeResults(_results(_allPass, adopted: ''));
       expect(report.verdict, isNull);
@@ -204,8 +212,11 @@ void main() {
 
     test('the recorded results file in the change passes', () {
       final out = StringBuffer();
-      expect(runSpikeCheck([defaultSpikeResultsPath], out: out), 0,
-          reason: '$out');
+      expect(
+        runSpikeCheck([defaultSpikeResultsPath], out: out),
+        0,
+        reason: '$out',
+      );
       expect(out.toString(), contains('ADOPTABLE'));
     });
   });

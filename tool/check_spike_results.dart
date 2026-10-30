@@ -106,7 +106,8 @@ SpikeReport checkSpikeResults(String markdown) {
   final heading = RegExp(r'^##\s+(\S+)\s*$');
 
   final parsed = <(String, String, _Row)>[];
-  for (final line in markdown.split('\n')) {
+  // A Windows checkout may carry CRLF, and `.` does not match `\r`.
+  for (final line in markdown.replaceAll('\r\n', '\n').split('\n')) {
     final a = adoptedLine.firstMatch(line);
     if (a != null) {
       adopted = a.group(1)!.trim();

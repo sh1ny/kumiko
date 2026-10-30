@@ -19,16 +19,44 @@ final List<VttestStep> vttestSteps = [
   (key: '\r', id: 'menu.3'),
 ];
 
+/// The screens that run but are not judged: what they test is outside the
+/// bar (spike-results.md). Every other non-menu screen is judged.
+const Set<String> vttestOutsideBar = {
+  '1.2',
+  '1.4',
+  '2.3',
+  '2.4',
+  '2.5',
+  '2.14',
+};
+
+/// What is wrong with the expected grids in [dir]: a judged screen without
+/// one, or a screen outside the bar with one. Empty when they match.
+List<String> vttestFixtureProblems(Directory dir) => [
+  for (final s in vttestSteps)
+    if (!s.id.startsWith('menu.'))
+      if (vttestOutsideBar.contains(s.id) &&
+          File('${dir.path}/${s.id}.txt').existsSync())
+        '${s.id}: outside the bar but has an expected grid'
+      else if (!vttestOutsideBar.contains(s.id) &&
+          !File('${dir.path}/${s.id}.txt').existsSync())
+        '${s.id}: judged but has no expected grid',
+];
+
 /// A judged screen's expected grid (`vttest/<id>.txt`): 24 rows of 80 cells,
 /// the rows that are judged, and for some screens the expected attributes
 /// (1 bold, 2 underline, 4 inverse; blink is outside the bar).
 class ExpectedScreen {
   ExpectedScreen._(this.id, this.title, this.rows, this.judged, this.attrs);
 
-  /// Reads `<dir>/<id>.txt`, or returns null when [id] is not judged.
+  /// Reads `<dir>/<id>.txt`, or returns null when [id] is outside the bar.
+  /// Throws a [StateError] when a judged screen has no expected grid.
   static ExpectedScreen? load(Directory dir, String id) {
+    if (vttestOutsideBar.contains(id)) return null;
     final file = File('${dir.path}/$id.txt');
-    if (!file.existsSync()) return null;
+    if (!file.existsSync()) {
+      throw StateError('vttest $id is judged but has no expected grid');
+    }
     final lines = file.readAsStringSync().replaceAll('\r\n', '\n').split('\n');
     final title = lines[0].replaceFirst(RegExp(r'^# '), '');
     final spec = lines[1].replaceFirst('rows: ', '');
