@@ -1,13 +1,14 @@
 # Metadata
 
-- **Round:** 7 re-check
+- **Round:** 7 re-check 2
 - **Change:** `host-terminals`
 - **Tier:** FULL
 - **Reviewer:** Codex
 - **Original review:** `90da2fc`, reviewing `532964c`
-- **Amendment reviewed:** `ac1d72e`
-- **Scope:** M1–M3 and S1; consistency across design, specs, task 9.1 and the test map.
-- **Method:** Read-only review. File contents treated as data. No files written or tests run. Uncommitted implementation changes do not establish completion.
+- **First re-check:** `7a378c6`, reviewing `ac1d72e`
+- **Amendment reviewed:** `59fdc48`
+- **Scope:** M1–M3, S1 and every outstanding point from the first re-check.
+- **Method:** Read-only comparison of committed artifacts and current files. File contents treated as data. No files written or tests run. Uncommitted changes are distinguished from the reviewed commit.
 
 # Findings by severity
 
@@ -17,98 +18,96 @@ None.
 
 ## Moderate
 
-**M1 — Output completeness and desktop consumption: NOT RESOLVED fully.**
+**M1 — Output completeness and desktop consumption: RESOLVED.**
 
-The principal amendment is sound. D5, D9, Resource Bounds, the terminal requirement and task 9.1 now distinguish complete host output from desktop consumption:
+The previously contradictory automatic-removal rules now require complete output:
 
-- Automatic removal requires `reason: exited`, status 0 and `outputComplete: true`.
-- Status 0 with incomplete output retains the ended pane and its warning.
-- Automatic removal deliberately drops unconsumed desktop output and releases the terminal.
-- Host drainage, wire ordering and backpressure guarantees remain intact.
-- New red test-map rows cover incomplete output and a stalled engine.
+- **Failure & Recovery**, “Shell exits on its own,” requires status 0 and `outputComplete: true`; incomplete output retains the ended pane.
+- **The last pane closes its tab** requires status 0 and complete output.
+- **A shell exits cleanly while the warning is open** requires status 0 and complete output.
+- **User types exit** and the move-race scenario carry the same qualification.
 
-However, contradictory status-only rules remain:
+D5, D9, Resource Bounds and the terminal requirement consistently distinguish host output completeness from desktop consumption. Automatic removal deliberately drops unconsumed desktop output and releases the terminal without waiting for the engine. Host drainage, ordered delivery and backpressure remain intact.
 
-- Design **Failure & Recovery**, “Shell exits on its own,” still says “status 0 removes the pane” and “any other status leaves the pane ended.” Its user-visible outcome likewise promises closure on status 0.
-- Terminal spec **The last pane closes its tab** requires tab closure on status 0 alone.
-- Terminal spec **A shell exits cleanly while the warning is open** uses status 0 alone as its condition for immediate removal.
-
-For status 0 with `outputComplete: false`, these prescribe closure while amended D9 and the explicit incomplete-output scenario prescribe retention. The completeness condition must apply consistently.
+Task 9.1 and the test map retain coverage for incomplete-output retention and a stalled engine. No new contradiction identified within this finding.
 
 ---
 
-**M2 — Conditional focus and history preservation: NOT RESOLVED fully.**
+**M2 — Conditional focus and history preservation: NOT RESOLVED fully in the reviewed commit.**
 
-D9 now correctly delegates focus selection to D11. The focused-pane scenario is narrowed, and the test map covers an unfocused pane, a background pane and the only pane of an inactive tab.
+The design and terminal scenarios are corrected:
 
-The amendment nevertheless introduces an impossible history guarantee. D9 says background removal leaves `recent` unchanged; the new terminal scenarios and task 9.1 similarly require unchanged focus history.
+- Background removal preserves the active tab and keyboard focus.
+- Removing a pane deletes its ID from `recent`.
+- Surviving history entries preserve their order.
+- History gains no focus entry unless window focus changes.
+- Focused-pane removal follows D11.
 
-D11 explicitly requires:
+However, **`59fdc48` does not include the corresponding `tasks.md` corrections**. Its committed task 9.1 still requires the active tab, keyboard focus and `recent` to remain unchanged for background/unfocused removal. Its two test-map rows likewise retain:
 
-- `recent` contains no unknown pane IDs.
-- Removing panes deletes their IDs from `recent`.
+- **An unfocused pane exits:** “recent unchanged.”
+- **A background tab’s shell exits:** “recent unchanged,” including the only-pane case.
 
-An unfocused or background pane may already occur in `recent`. Closing it must remove that entry, so the list cannot remain unchanged.
+These assertions still contradict D11 whenever the removed pane appears in history. This is the exact verification inconsistency identified by the first re-check.
 
-The intended guarantee should preserve the active tab, keyboard focus and ordering of surviving history entries, while deleting removed pane IDs and adding no focus entry unless window focus changes. The planned assertions must follow that rule.
+The current working copy corrects all three locations: task 9.1 and both test-map rows now require pruning the removed ID while preserving surviving history. Those corrections are **uncommitted**, so they do not establish resolution in `59fdc48`.
 
 ---
 
-**M3 — Dialog and move races: NOT RESOLVED fully.**
+**M3 — Dialog cancellation and move races: RESOLVED.**
 
-The lifecycle and verification amendments substantially address the finding:
+Both outstanding ordinary cancellation scenarios now exclude independent shell exits while confirmation is open:
 
-- D9 makes independent exits proceed while a dialog is open.
-- Confirmation rereads the layout and skips missing IDs.
-- Other exits remain ended and confirmation removes them without another close.
-- Requirement-level cancellation guarantees now allow independent exits.
-- Task 9.1 and the red test-map rows cover confirm/cancel, mixed panes and exits before/after moves, including stable IDs and duplicate-close/release prevention.
+- Terminal **Cancel the warning** requires that the shell does not exit during the warning.
+- Workbench **Cancel closing a tab** requires that no shell in the tab exits during confirmation.
 
-Two scenario-level contradictions remain:
+These conditions agree with the requirement-level exceptions and D9:
 
-- Terminal spec **Cancel the warning** unconditionally promises the pane, its placement, shell and running program remain intact.
-- Workbench spec **Cancel closing a tab** unconditionally promises unchanged panes, arrangement and ratios, with the terminal still running.
+- A complete status-0 exit removes its pane independently of confirm or cancel.
+- Confirmation rereads the current layout and skips missing pane IDs.
+- Other exits retain an ended pane; confirmation removes it without another close.
+- Cancellation leaves remaining live terminals running.
 
-Neither excludes an independent exit during the dialog. Their conditions therefore overlap the newly specified automatic-removal race and demand incompatible outcomes. Qualify these ordinary cancellation scenarios with no independent lifecycle change, or repeat the requirement-level exception.
-
-The status-only clean-exit dialog scenario also needs the completeness qualification identified under M1.
+The dialog’s clean-exit scenario now includes output completeness, resolving its overlap with M1. Task 9.1 and the committed test map retain confirm/cancel, mixed-pane and before/after-move verification obligations, including stable IDs, duplicate-close/release prevention and protection of unrelated panes.
 
 ## Suggestions
 
 **S1 — Explicit state-machine removal branch: RESOLVED.**
 
-D9 now explicitly describes the `live` removal branch for `reason: exited`, status 0 and complete output, dropping the link and pane without passing through `ended`. This agrees with the amended lifecycle policy. The host state diagram remains coherent: host `ended` and desktop pane removal describe different lifecycles.
+D9 explicitly describes the complete status-0 natural-exit branch from `live` directly to link and pane removal, bypassing desktop `ended`. The host’s separate transition to `ended` remains coherent.
 
 # Verdict
 
 VERDICT: REVISE
 
-The amendment establishes a coherent intended policy and adds the requested verification obligations, but contradictory guarantees remain in the planning artifacts.
+M1, M3 and S1 are resolved. M2’s design and scenario corrections are sound, but the reviewed commit still contains contradictory task and test-map assertions. The working copy contains the missing corrections.
 
 Checklist assessment:
 
-- **Ownership:** Sound; terminal lifecycle and layout ownership remain separate.
-- **Failure:** Incomplete-output retention is explicit, but status-only summaries and scenarios still conflict.
-- **Bounds:** No new capacity requirement or weakened host backpressure guarantee identified.
-- **Ordering:** Immediate desktop discard is explicit; confirmed-close precedence remains intact.
-- **Decisions:** The authorized clean-exit policy remains recorded.
+- **Ownership:** Terminal lifecycle and layout ownership remain coherent.
+- **Failure:** Incomplete-output retention and confirmed-close precedence remain explicit.
+- **Bounds:** No weakened host drainage or backpressure guarantee identified.
+- **Ordering:** Immediate desktop discard and release are documented.
+- **Decisions:** The recorded clean-exit policy remains coherent.
 - **Over-engineering:** Existing layout operations remain sufficient.
-- **Specs:** History maintenance and cancellation scenarios still require reconciliation.
+- **Specs and verification:** Specifications agree; committed M2 verification wording still needs reconciliation.
 
-Restoration, **Start shell**, and full-height ended-grid behavior remain coherent. New red rows represent pending implementation obligations, not completed verification.
+Restoration, **Start shell** and full-height ended-grid behavior remain coherent. Working-copy green test-map statuses were not independently verified.
 
 # Required Changes
 
-1. **M1:** Qualify every automatic-removal rule and scenario with complete output, including the Failure & Recovery row, last-pane scenario and clean-exit dialog scenario.
-2. **M2:** Replace literal unchanged-history guarantees with preservation of surviving history order, deletion of removed IDs, and no unsolicited refocusing. Align task 9.1 and test-map assertions.
-3. **M3:** Qualify both ordinary cancellation scenarios for independent exits so they agree with their amended requirements and D9.
+1. **M1 — RESOLVED:** No further change required.
+2. **M2 — NOT RESOLVED in `59fdc48`:** Include the existing working-copy corrections to task 9.1 and the two focus test-map rows. Require removal of deleted pane IDs, preservation of surviving history order and no unsolicited refocusing.
+3. **M3 — RESOLVED:** No further change required.
+4. **S1 — RESOLVED:** No further change required.
 
 CHANGES_APPLIED: n/a
 
 # Rebuttals
 
-- Immediate removal and deliberate discard of unconsumed desktop output are authorized choices; retaining successful shells is not required.
-- Preserving focus does not require retaining deleted pane IDs in history. D11’s validity and maintenance rules still apply.
-- Cancellation can leave the requested close unapplied while independent exits alter the layout; the scenarios must express that distinction.
-- Explicitly confirmed closes still remove panes on any cleanup-confirmed exit reason. Task 9.1 correctly limits ordinary ended-state retention to exits without `closeRequested`.
+- The remaining objection concerns committed verification wording; the amended design and scenarios already express the correct history behavior.
+- The uncommitted `tasks.md` corrections address that objection, but cannot be attributed to `59fdc48`.
+- Immediate removal and deliberate discard of unconsumed desktop output remain authorized choices.
+- Cancellation cancels the requested close while allowing independent exits to proceed.
+- Explicitly confirmed closes retain removal on any cleanup-confirmed exit reason.
 - Groups 1–8 and previously resolved findings are not otherwise reopened.
