@@ -1,3 +1,5 @@
+import 'dart:typed_data';
+
 import 'package:host_protocol/host_protocol.dart';
 
 /// What the desktop UI needs from a started host. The real one wraps a
@@ -61,8 +63,50 @@ abstract interface class HostLink {
   /// `workspace/remove`: forgets workspace [id].
   Future<WorkspaceRemoveResult> workspaceRemove(String id);
 
+  /// `profile/list` (capability `terminal`).
+  Future<ProfileListResult> profileList();
+
+  /// `profile/save` (capability `terminal`): creates or replaces a
+  /// user-defined profile and returns it as stored.
+  Future<ShellProfile> saveProfile(ShellProfile profile);
+
+  /// `terminal/open`, then the attach handshake (design D4): both channels
+  /// are registered, `terminal/attach` is sent, and only then is the output
+  /// window granted. Pausing the returned output stream stops credit, so the
+  /// host stops reading the terminal.
+  Future<TerminalChannels> openTerminal(TerminalOpenParams params);
+
+  /// `terminal/resize`.
+  Future<void> resizeTerminal(String terminalId, int cols, int rows);
+
+  /// `terminal/close`.
+  Future<void> closeTerminal(String terminalId);
+
+  /// `terminal/release`: closes an ended terminal's channels.
+  Future<void> releaseTerminal(String terminalId);
+
+  /// The `terminal/exited` notifications.
+  Stream<TerminalExited> get terminalExits;
+
   /// Ends the host as the desktop quits.
   Future<void> quit();
+}
+
+/// An attached terminal's two data channels.
+class TerminalChannels {
+  TerminalChannels({
+    required this.terminalId,
+    required this.output,
+    required this.write,
+  });
+
+  final String terminalId;
+
+  /// The terminal's output, in order. Single subscription.
+  final Stream<Uint8List> output;
+
+  /// Sends input; completes once the bytes are within the input window.
+  final Future<void> Function(Uint8List bytes) write;
 }
 
 /// Starts a host. Throws [HostStartException]; Restart host calls it again.

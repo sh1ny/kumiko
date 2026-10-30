@@ -1,0 +1,26 @@
+# vttest 2.7 (20230201) screen 2.2: tab setting and resetting
+rows: all
+|      *     *     *     *     *     *     *     *     *     *     *     *     * |
+|      *     *     *     *     *     *     *     *     *     *     *     *     * |
+|                                                                                |
+|Test of TAB setting/resetting. These two lines                                  |
+|should look the same. Push <RETURN>                                             |
+|                                                                                |
+|                                                                                |
+|                                                                                |
+|                                                                                |
+|                                                                                |
+|                                                                                |
+|                                                                                |
+|                                                                                |
+|                                                                                |
+|                                                                                |
+|                                                                                |
+|                                                                                |
+|                                                                                |
+|                                                                                |
+|                                                                                |
+|                                                                                |
+|                                                                                |
+|                                                                                |
+|                                                                                |

@@ -30,7 +30,23 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y clang cmake ninja-build pkg-config libgtk-3-dev liblzma-dev libstdc++-12-dev xvfb
+          sudo apt-get install -y clang cmake ninja-build pkg-config libgtk-3-dev liblzma-dev libstdc++-12-dev xvfb vttest
+
+      # The terminal engine bar test runs vttest live on Linux and macOS
+      # (openspec/changes/host-terminals/spike-results.md).
+      - name: Install vttest
+        if: runner.os == 'macOS'
+        run: brew install vttest
+
+      # The terminal engine's native crate builds from the vendored, patched
+      # Alacritty core (third_party/; ADR 0010). macOS builds universal binaries.
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ runner.os == 'macOS' && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: third_party/rust_lib_flutter_alacritty/rust
 
       - uses: subosito/flutter-action@v2
         with:
@@ -95,6 +111,23 @@ jobs:
             esac
           done
 
+      # Throughput runs in a profile build, as a user would see it. CI VMs
+      # render in software, so frame times are printed but judged only on real
+      # hardware (KUMIKO_GATE_FRAMES; spike-results.md).
+      - name: Desktop integration test (profile)
+        working-directory: packages/desktop
+        run: |
+          host="$PWD/../host/build/host/bundle/bin/kumiko_host"
+          set -e
+          for file in integration_test/profile/*_test.dart; do
+            args=(--profile --driver=test_driver/integration_test.dart --target="$file")
+            case "$RUNNER_OS" in
+              Windows) flutter drive "${args[@]}" -d windows --dart-define=KUMIKO_HOST="$(cygpath -w "$host.exe")" ;;
+              Linux) xvfb-run -a flutter drive "${args[@]}" -d linux --dart-define=KUMIKO_HOST="$host" ;;
+              macOS) flutter drive "${args[@]}" -d macos --dart-define=KUMIKO_HOST="$host" ;;
+            esac
+          done
+
       - name: Build desktop release with the host bundled
         run: |
           os=$(echo "$RUNNER_OS" | tr '[:upper:]' '[:lower:]')
@@ -106,6 +139,11 @@ jobs:
             macOS) bundle=packages/desktop/build/macos/Build/Products/Release/Kumiko.app; exe=Contents/MacOS/host/bin/kumiko_host ;;
           esac
           test -x "$bundle/$exe"
+          # The host ships the open-source ConPTY beside it (design D2).
+          if [ "$RUNNER_OS" = Windows ]; then
+            test -f "$bundle/host/lib/conpty.dll"
+            test -f "$bundle/host/lib/OpenConsole.exe"
+          fi
           # tar keeps the executable bits and the macOS framework symlinks.
           tar -czf "kumiko-$os.tar.gz" -C "$(dirname "$bundle")" "$(basename "$bundle")"
 

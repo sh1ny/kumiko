@@ -1,0 +1,29 @@
+[?3hTest of autowrap, mixing control and print characters.
+The left/right margins should have letters in order:
+[3;21r[?6h[19;1HA[19;132Ha
+[18;132HaB[19;132HB b
+[19;132HC		c[19;2HC
+[19;132H
+[18;1HD[18;132Hd[19;1HE[19;132He
+[18;132HeF[19;132HF f
+[19;132HG		g[19;2HG
+[19;132H
+[18;1HH[18;132Hh[19;1HI[19;132Hi
+[18;132HiJ[19;132HJ j
+[19;132HK		k[19;2HK
+[19;132H
+[18;1HL[18;132Hl[19;1HM[19;132Hm
+[18;132HmN[19;132HN n
+[19;132HO		o[19;2HO
+[19;132H
+[18;1HP[18;132Hp[19;1HQ[19;132Hq
+[18;132HqR[19;132HR r
+[19;132HS		s[19;2HS
+[19;132H
+[18;1HT[18;132Ht[19;1HU[19;132Hu
+[18;132HuV[19;132HV v
+[19;132HW		w[19;2HW
+[19;132H
+[18;1HX[18;132Hx[19;1HY[19;132Hy
+[18;132HyZ[19;132HZ z
+[?6l[r[22;1HPush <RETURN>

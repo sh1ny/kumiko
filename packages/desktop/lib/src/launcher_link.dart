@@ -159,6 +159,65 @@ class SessionLink implements HostLink {
       );
 
   @override
+  Future<ProfileListResult> profileList() async =>
+      ProfileListResult.fromJson(await _request(Method.profileList, {}));
+
+  @override
+  Future<ShellProfile> saveProfile(ShellProfile profile) async =>
+      ProfileSaveResult.fromJson(
+        await _request(Method.profileSave, ProfileSaveParams(profile).toJson()),
+      ).profile;
+
+  @override
+  Future<TerminalChannels> openTerminal(TerminalOpenParams params) async {
+    final connection = session.connection;
+    final opened = TerminalOpenResult.fromJson(
+      await _request(Method.terminalOpen, params.toJson()),
+    );
+    final output = connection.attachInbound(
+      opened.outputChannel,
+      grantInitial: false,
+    );
+    final input = connection.attachOutbound(opened.inputChannel);
+    await _request(
+      Method.terminalAttach,
+      TerminalAttachParams(opened.terminalId).toJson(),
+    );
+    connection.grantInitial(opened.outputChannel);
+    return TerminalChannels(
+      terminalId: opened.terminalId,
+      output: output,
+      write: input.write,
+    );
+  }
+
+  @override
+  Future<void> resizeTerminal(String terminalId, int cols, int rows) =>
+      _request(
+        Method.terminalResize,
+        TerminalResizeParams(
+          terminalId: terminalId,
+          cols: cols,
+          rows: rows,
+        ).toJson(),
+      );
+
+  @override
+  Future<void> closeTerminal(String terminalId) =>
+      _request(Method.terminalClose, TerminalCloseParams(terminalId).toJson());
+
+  @override
+  Future<void> releaseTerminal(String terminalId) => _request(
+    Method.terminalRelease,
+    TerminalReleaseParams(terminalId).toJson(),
+  );
+
+  @override
+  Stream<TerminalExited> get terminalExits => session.notifications
+      .where((n) => n.method == Method.terminalExited)
+      .map((n) => TerminalExited.fromJson(n.params));
+
+  @override
   Future<void> quit() async {
     await session.quit();
   }

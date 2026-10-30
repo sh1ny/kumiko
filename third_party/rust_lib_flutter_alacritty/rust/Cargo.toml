@@ -1,0 +1,17 @@
+[package]
+name = "rust_lib_flutter_alacritty"
+version = "0.2.0"
+edition = "2021"
+
+[lib]
+crate-type = ["cdylib", "staticlib"]
+
+[dependencies]
+flutter_rust_bridge = "=2.12.0"
+# Kumiko: the vendored engine (hhoao/alacritty e6cf18f plus the patch in
+# third_party/alacritty_terminal/KUMIKO.md).
+alacritty_terminal = { path = "../../alacritty_terminal" }
+regex-syntax = "0.8"
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(frb_expand)'] }

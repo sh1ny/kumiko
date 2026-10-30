@@ -163,7 +163,8 @@ const int _openExisting = 3;
 /// With [pty] the unit gets a pseudo-console instead of `NUL` stdio (design
 /// D2): two pipes plus `CreatePseudoConsole`, passed as
 /// `PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE` in the attribute list, no std handles
-/// and no `CREATE_NO_WINDOW`. Nothing is inherited, so the handle-list
+/// and no `CREATE_NO_WINDOW`; Ctrl+C is not ignored in it, whatever the
+/// creator inherited. Nothing is inherited, so the handle-list
 /// attribute is not needed there. The pipe ends and the `HPCON` are in
 /// [WindowsUnit.pty]; the caller closes them (the console through a
 /// [ConsoleCloser]). A failure then throws [SpawnFailed] with the failing
@@ -318,6 +319,12 @@ WindowsUnit spawnWindowsUnit({
     final cwd = workingDirectory?.toNativeUtf16();
     if (cwd != null) toFree.add(cwd);
 
+    if (pty != null) {
+      // A child inherits "ignore Ctrl+C" from its creator, and the host may
+      // have been started with it set; a terminal's programs must see Ctrl+C.
+      // The flag is per process, so the creator stops ignoring Ctrl+C too.
+      setConsoleCtrlHandler(nullptr, 0);
+    }
     final ok = createProcessW(
       application,
       commandLine,

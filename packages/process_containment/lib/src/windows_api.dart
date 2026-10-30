@@ -71,6 +71,14 @@ final int Function(int, int, int) openProcessNative = _kernel32
 final int Function(int) closeHandleNative = _kernel32
     .lookupFunction<Int32 Function(IntPtr), int Function(int)>('CloseHandle');
 
+/// `SetConsoleCtrlHandler`; with a null handler it sets (`1`) or clears
+/// (`0`) whether this process, and the processes it creates, ignore Ctrl+C.
+final int Function(Pointer<Void>, int) setConsoleCtrlHandler = _kernel32
+    .lookupFunction<
+      Int32 Function(Pointer<Void>, Int32),
+      int Function(Pointer<Void>, int)
+    >('SetConsoleCtrlHandler');
+
 final int Function(int, int) terminateProcessNative = _kernel32
     .lookupFunction<Int32 Function(IntPtr, Uint32), int Function(int, int)>(
       'TerminateProcess',
@@ -246,27 +254,74 @@ writeFileNative = _kernel32
       int Function(int, Pointer<Uint8>, int, Pointer<Uint32>, Pointer<Void>)
     >('WriteFile');
 
+/// The bundled open-source ConPTY (design D2; `hook/build.dart`).
+const String _conptyAsset = 'package:process_containment/conpty';
+
+@Native<Int32 Function(Int32, IntPtr, IntPtr, Uint32, Pointer<IntPtr>)>(
+  assetId: _conptyAsset,
+  symbol: 'ConptyCreatePseudoConsole',
+)
+external int _conptyCreate(
+  int coord,
+  int input,
+  int output,
+  int flags,
+  Pointer<IntPtr> console,
+);
+
+@Native<Int32 Function(IntPtr, Int32)>(
+  assetId: _conptyAsset,
+  symbol: 'ConptyResizePseudoConsole',
+)
+external int _conptyResize(int console, int coord);
+
+@Native<Void Function(IntPtr)>(
+  assetId: _conptyAsset,
+  symbol: 'ConptyClosePseudoConsole',
+)
+external void _conptyClose(int console);
+
+/// Whether the bundled ConPTY loads. Otherwise the inbox one in `kernel32`
+/// serves, so a damaged install still opens terminals. Decided the same way
+/// on every isolate (closers run on their own), so a console is always
+/// resized and closed by the library that created it. The probe passes no
+/// result pointer, which ConPTY rejects with `E_INVALIDARG` before doing
+/// anything; a missing library throws instead.
+final bool bundledConpty = () {
+  try {
+    _conptyCreate(0, -1, -1, 0, nullptr);
+    return true;
+  } on ArgumentError {
+    return false;
+  }
+}();
+
 /// `CreatePseudoConsole(COORD size, input, output, flags, &HPCON)`; returns an
 /// `HRESULT` (0 is success). `COORD` is two 16-bit values passed by value in
 /// one 32-bit register: [coord] is `cols | rows << 16`.
 final int Function(int, int, int, int, Pointer<IntPtr>) createPseudoConsole =
-    _kernel32.lookupFunction<
-      Int32 Function(Int32, IntPtr, IntPtr, Uint32, Pointer<IntPtr>),
-      int Function(int, int, int, int, Pointer<IntPtr>)
-    >('CreatePseudoConsole');
+    bundledConpty
+    ? _conptyCreate
+    : _kernel32.lookupFunction<
+        Int32 Function(Int32, IntPtr, IntPtr, Uint32, Pointer<IntPtr>),
+        int Function(int, int, int, int, Pointer<IntPtr>)
+      >('CreatePseudoConsole');
 
 /// `ResizePseudoConsole(HPCON, COORD)`; returns an `HRESULT`.
-final int Function(int, int) resizePseudoConsole = _kernel32
-    .lookupFunction<Int32 Function(IntPtr, Int32), int Function(int, int)>(
-      'ResizePseudoConsole',
-    );
+final int Function(int, int) resizePseudoConsole = bundledConpty
+    ? _conptyResize
+    : _kernel32.lookupFunction<
+        Int32 Function(IntPtr, Int32),
+        int Function(int, int)
+      >('ResizePseudoConsole');
 
 /// `ClosePseudoConsole(HPCON)`. Can block while the console's output is not
 /// read (design D3): call it only from a closer isolate.
-final void Function(int) closePseudoConsole = _kernel32
-    .lookupFunction<Void Function(IntPtr), void Function(int)>(
-      'ClosePseudoConsole',
-    );
+final void Function(int) closePseudoConsole = bundledConpty
+    ? _conptyClose
+    : _kernel32.lookupFunction<Void Function(IntPtr), void Function(int)>(
+        'ClosePseudoConsole',
+      );
 
 /// `PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE`.
 const int procThreadAttributePseudoconsole = 0x00020016;

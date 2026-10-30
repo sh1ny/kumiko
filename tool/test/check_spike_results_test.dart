@@ -202,9 +202,11 @@ void main() {
       expect(runSpikeCheck([p.join(dir.path, 'nope.md')], out: out), 1);
     });
 
-    test('the unfilled results file in the change fails', () {
+    test('the recorded results file in the change passes', () {
       final out = StringBuffer();
-      expect(runSpikeCheck([defaultSpikeResultsPath], out: out), 1);
+      expect(runSpikeCheck([defaultSpikeResultsPath], out: out), 0,
+          reason: '$out');
+      expect(out.toString(), contains('ADOPTABLE'));
     });
   });
 }

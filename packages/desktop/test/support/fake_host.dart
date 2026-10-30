@@ -261,7 +261,9 @@ class FakeHostLink implements HostLink {
     int? revision,
     String? workspace,
   }) async {
-    calls.add('list ${cursor ?? '-'}${workspace == null ? '' : ' ws=$workspace'}');
+    calls.add(
+      'list ${cursor ?? '-'}${workspace == null ? '' : ' ws=$workspace'}',
+    );
     final start = cursor == null ? 0 : int.parse(cursor);
     final end = (start + pageSize).clamp(0, workspaces.length);
     return CleanupListResult(
@@ -326,6 +328,35 @@ class FakeHostLink implements HostLink {
     emitState();
     return CleanupActionResult(resolvedUnits: w.unitCount, unresolvedUnits: 0);
   }
+
+  // --- terminals: not scripted yet ---------------------------------------
+
+  @override
+  Future<ProfileListResult> profileList() =>
+      throw UnimplementedError('profile/list is not scripted');
+
+  @override
+  Future<ShellProfile> saveProfile(ShellProfile profile) =>
+      throw UnimplementedError('profile/save is not scripted');
+
+  @override
+  Future<TerminalChannels> openTerminal(TerminalOpenParams params) =>
+      throw UnimplementedError('terminal/open is not scripted');
+
+  @override
+  Future<void> resizeTerminal(String terminalId, int cols, int rows) =>
+      throw UnimplementedError('terminal/resize is not scripted');
+
+  @override
+  Future<void> closeTerminal(String terminalId) =>
+      throw UnimplementedError('terminal/close is not scripted');
+
+  @override
+  Future<void> releaseTerminal(String terminalId) =>
+      throw UnimplementedError('terminal/release is not scripted');
+
+  @override
+  Stream<TerminalExited> get terminalExits => const Stream.empty();
 
   @override
   Future<void> quit() async => quitCalled = true;

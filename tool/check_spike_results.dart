@@ -47,6 +47,12 @@ const spikeItems = <SpikeItem>[
   SpikeItem('Input: CJK IME composition', 'user'),
   SpikeItem('Unicode: wide characters and emoji widths', 'agent'),
   SpikeItem('Throughput: 100 MB cat and Ctrl+C interrupt', 'agent'),
+  // Judged on real hardware only: CI VMs render in software (user decision
+  // 2026-10-30).
+  SpikeItem(
+    'Throughput: frames under 100 ms during the 100 MB cat, on real hardware',
+    'user',
+  ),
   SpikeItem('Resize: rapid resize storm', 'user'),
   SpikeItem('Conformance: vttest subset', 'agent'),
   SpikeItem('Selection, copy and scrollback search', 'user'),

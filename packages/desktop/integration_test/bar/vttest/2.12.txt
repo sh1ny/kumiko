@@ -1,0 +1,26 @@
+# vttest 2.7 (20230201) screen 2.12: origin mode, top line
+rows: all
+|This line should be at the top of the screen. Push <RETURN>                     |
+|                                                                                |
+|                                                                                |
+|                                                                                |
+|                                                                                |
+|                                                                                |
+|                                                                                |
+|                                                                                |
+|                                                                                |
+|                                                                                |
+|                                                                                |
+|                                                                                |
+|                                                                                |
+|                                                                                |
+|                                                                                |
+|                                                                                |
+|                                                                                |
+|                                                                                |
+|                                                                                |
+|                                                                                |
+|                                                                                |
+|                                                                                |
+|                                                                                |
+|Origin mode test. This line should be at the bottom of the screen.              |
