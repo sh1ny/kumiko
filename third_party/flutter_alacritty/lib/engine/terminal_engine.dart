@@ -193,12 +193,21 @@ class TerminalEngine {
   /// about moving the engine to `lib/src/` to fix the annotation.)
   MirrorGrid get gridForView => _grid;
 
+  /// Bytes fed and not yet applied to the grid: held before the first
+  /// [resize], then the client's queued plus in-flight bytes. 0 once the grid
+  /// holds every byte fed.
+  ValueListenable<int> get pending => _pending;
+  final ValueNotifier<int> _pending = ValueNotifier<int>(0);
+
+  void _clientPendingChanged() => _pending.value = _client!.pending.value;
+
   /// PTY → engine. Buffers until the first [resize] establishes a real grid
   /// width — parsing terminal output before the line width is known would write
   /// into a fabricated grid (see [_pendingFeed]).
   void feed(Uint8List bytes) {
     if (_client == null) {
       _pendingFeed.add(bytes);
+      _pending.value = _pendingFeed.length;
       return;
     }
     _client!.feed(bytes);
@@ -477,7 +486,9 @@ class TerminalEngine {
     if (_disposed) return;
     _drainPending();
     _disposed = true;
+    _client?.pending.removeListener(_clientPendingChanged);
     _client?.dispose();
+    _pending.dispose();
     _grid.dispose();
     _title.dispose();
     _outputCtl.close();
@@ -524,6 +535,7 @@ class TerminalEngine {
       grid: _grid,
       schedule: schedule,
     );
+    _client!.pending.addListener(_clientPendingChanged);
     _client!.onPtyResize = _onPtyResize;
     _client!.useRasterPresent = _pendingRasterEnabled;
     _client!.onRasterPresent =

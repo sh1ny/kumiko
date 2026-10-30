@@ -47,6 +47,38 @@ void main() {
     }
   }
 
+  testWidgets('pending rises on feed and returns to 0 once the grid holds '
+      'every byte, before and after the engine binds', (tester) async {
+    final surface = AlacrittySurface();
+    addTearDown(surface.dispose);
+    expect(surface.pending.value, 0);
+
+    // Before the view gives the engine a size, the bytes are held.
+    final early = utf8.encode('\x1b[2J\x1b[Hearly\r\n');
+    surface.feed(Uint8List.fromList(early));
+    expect(surface.pending.value, early.length);
+
+    await tester.pumpWidget(
+      MaterialApp(home: SizedBox(width: 800, height: 400, child: surface.view)),
+    );
+    await settle(tester);
+    expect(surface.pending.value, 0, reason: 'applied at the first size');
+    expect(
+      surface.engine.grid.codepointAt(0, 0),
+      0x65,
+      reason: 'the held bytes',
+    );
+
+    // Bound: queued bytes count at once, and drain to 0.
+    final lines = utf8.encode('line\r\n' * 2000);
+    surface.feed(Uint8List.fromList(lines));
+    expect(surface.pending.value, lines.length);
+    for (var i = 0; i < 50 && surface.pending.value != 0; i++) {
+      await tester.pump(const Duration(milliseconds: 100));
+    }
+    expect(surface.pending.value, 0);
+  });
+
   testWidgets('a mouse drag selects text', (tester) async {
     final (surface, key) = await show(tester);
     surface.feed(utf8.encode('\x1b[2J\x1b[H${'hello\r\n' * 3}'));

@@ -114,18 +114,19 @@ void main() {
     }
 
     testWidgets(
-      'fresh profile opens Personal with one empty group and no prompt',
+      'fresh profile opens Personal with no tab, the empty state and no prompt',
       (tester) async {
         await launch(tester);
 
         final layout = _controller(tester).layout!;
-        expect(layout.root, isA<TabGroup>());
-        expect(layout.groupCount, 1);
-        expect(layout.tabCount, 0);
-        expect(layout.group(layout.focusedGroup)!.context, isNull);
+        expect(layout.tabs, isEmpty);
+        expect(layout.activeTab, isNull);
+        expect(layout.selectedWorkspace, isNull);
 
         expect(find.text('Personal'), findsOneWidget);
-        expect(find.text('No tabs. Use + to open a view.'), findsOneWidget);
+        expect(find.byKey(const Key('empty-state')), findsOneWidget);
+        expect(find.text('No tab is open.'), findsOneWidget);
+        expect(find.byKey(const Key('new-terminal')), findsOneWidget);
         expect(find.byIcon(Icons.add), findsOneWidget);
         expect(find.text('Open folder'), findsOneWidget);
         // No prompt: no dialog and no notice.
@@ -137,7 +138,8 @@ void main() {
     );
 
     testWidgets(
-      'quit and reopen restores groups, split, ratio, tabs and focus',
+      'quit and reopen restores tab order, a split tab with its direction '
+      'and ratio, panes, the active tab and the focused pane',
       (tester) async {
         final names = ['alpha', 'bravo', 'charlie'];
         for (final n in names) {
@@ -154,62 +156,58 @@ void main() {
           await _pumpUntil(tester, () => c.workspaces.length == before + 1);
         }
 
-        Future<void> openOverview(String groupId, String label) async {
-          await tester.tap(find.byKey(Key('add-$groupId')));
+        // The overview of the selected workspace, in a new tab.
+        Future<void> openOverview(int tabs) async {
+          await tester.tap(find.byKey(const Key('add-tab')));
           await tester.pumpAndSettle();
           await tester.tap(find.text('Workspace overview').last);
           await tester.pumpAndSettle();
-          expect(find.text('Workspace overview · $label'), findsOneWidget);
+          expect(c.layout!.tabs, hasLength(tabs));
         }
 
-        // alpha in the first group, then split right; bravo and charlie in the
-        // new group.
-        final g1 = c.layout!.focusedGroup;
+        // alpha and bravo in two tabs; bravo moves into a split of alpha's.
         await openFolder();
-        await openOverview(g1, 'alpha');
-        await tester.tap(find.byKey(Key('split-h-$g1')));
+        await openOverview(1);
+        final alphaTab = c.layout!.tabs.single.id;
+        await openFolder();
+        await openOverview(2);
+        final bravoTab = c.layout!.tabs.last.id;
+        await tester.tap(find.byKey(Key('tab-$alphaTab')));
         await tester.pumpAndSettle();
-        final g2 = c.layout!.focusedGroup;
-        expect(g2, isNot(g1));
+        await tester.tap(find.byKey(Key('tab-menu-$bravoTab')));
+        await tester.pumpAndSettle();
+        await tester.tap(find.byKey(Key('move-split-right-$bravoTab')));
+        await tester.pumpAndSettle();
+        expect(c.layout!.tabs, hasLength(1));
+        final split = c.layout!.tabs.single.root as SplitNode;
 
+        // A third tab, charlie's, which stays after the split tab.
         await openFolder();
-        await openOverview(g2, 'bravo');
-        await openFolder();
-        await openOverview(g2, 'charlie');
+        await openOverview(2);
 
         // A non-default ratio, by dragging the handle.
-        final split = c.layout!.root as SplitNode;
+        await tester.tap(find.byKey(Key('tab-$alphaTab')));
+        await tester.pumpAndSettle();
         await tester.drag(
           find.byKey(Key('split-handle-${split.id}')),
           const Offset(120, 0),
         );
         await tester.pumpAndSettle();
 
-        // Active tabs and focus: g2 shows bravo (not its last tab); g1 is
-        // focused last.
-        // A tab strip scrolls when its group is narrow (macOS opens an 800x600
-        // window), and its visible part can be narrower than a whole label,
-        // whose centre then lies under the group's header buttons. Bring each
-        // tab into view and tap the start of its label.
-        for (final label in ['bravo', 'alpha']) {
-          final tab = find.text('Workspace overview · $label');
-          await tester.ensureVisible(tab);
-          await tester.pumpAndSettle();
-          await tester.tapAt(tester.getTopLeft(tab) + const Offset(4, 6));
-          await tester.pumpAndSettle();
-        }
+        // The active tab is the split tab (not the last), and its focused
+        // pane is the second one.
+        final second = split.second.id;
+        await tester.tapAt(tester.getCenter(find.byKey(Key('pane-$second'))));
+        await tester.pumpAndSettle();
 
         final before = c.layout!;
-        final beforeSplit = before.root as SplitNode;
+        final beforeSplit = before.tabs.first.root as SplitNode;
         expect(beforeSplit.direction, SplitDirection.horizontal);
         expect(beforeSplit.ratio, isNot(0.5));
-        expect(before.focusedGroup, g1);
-        expect(before.group(g1)!.tabs.length, 1);
-        expect(before.group(g2)!.tabs.length, 2);
-        expect(
-          before.tab(before.group(g2)!.active!)!.item,
-          before.group(g2)!.tabs.first.item,
-        );
+        expect(before.activeTab, alphaTab);
+        expect(before.focusedPane, second);
+        expect(before.tabs, hasLength(2));
+        expect(before.paneCount, 3);
 
         await quit(tester);
 
@@ -222,24 +220,24 @@ void main() {
         expect(_controller(tester).restoreNotice, isNull);
 
         expect(layoutToJson(after), layoutToJson(before));
-        final afterSplit = after.root as SplitNode;
+        final afterSplit = after.tabs.first.root as SplitNode;
         expect(afterSplit.id, beforeSplit.id);
         expect(afterSplit.direction, SplitDirection.horizontal);
         expect(afterSplit.ratio, beforeSplit.ratio);
-        expect(after.focusedGroup, g1);
-        expect(after.group(g2)!.active, before.group(g2)!.active);
+        expect(after.activeTab, alphaTab);
+        expect(after.focusedPane, second);
         expect(
           [for (final t in after.tabs) t.id],
           [for (final t in before.tabs) t.id],
         );
 
         // And the UI shows them.
-        expect(find.byKey(Key('group-$g1')), findsOneWidget);
-        expect(find.byKey(Key('group-$g2')), findsOneWidget);
-        for (final n in names) {
-          expect(find.text('Workspace overview · $n'), findsOneWidget);
-        }
+        expect(find.byKey(Key('tab-$alphaTab')), findsOneWidget);
         expect(find.byKey(Key('split-handle-${split.id}')), findsOneWidget);
+        for (final p in after.tabs.first.panes) {
+          expect(find.byKey(Key('pane-${p.id}')), findsOneWidget);
+        }
+        expect(find.byKey(Key('focused-pane-$second')), findsOneWidget);
       },
     );
   });

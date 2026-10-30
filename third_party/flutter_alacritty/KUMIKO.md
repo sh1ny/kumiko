@@ -7,7 +7,7 @@ beside it (`../rust_lib_flutter_alacritty/KUMIKO.md`).
 - **Source:** `flutter_alacritty` 2.4.1 from pub.dev (archive SHA-256
   `6a1f0bfcaacd98f2fe3a9a625fbe606028ecb0ac1bf61eaa17fd23eff1a9926c`),
   https://github.com/hhoao/flutter_alacritty. Only `lib/`, `pubspec.yaml`
-  and the licence are kept; every file but the patched one is unchanged.
+  and the licence are kept; every file but the patched ones is unchanged.
 - **Licence:** MIT (`LICENSE`).
 
 ## Patch
@@ -23,6 +23,18 @@ runs are now collected and drawn with one `drawVertices` per pass; triangles
 of one draw that share an edge cover each pixel exactly once. Test:
 `packages/desktop/integration_test/terminal_surface_test.dart` (no seam
 between rows at pixel ratios 1.0, 1.25 and 1.5).
+
+**The engine reports the bytes it has not applied**
+(`lib/engine/terminal_engine_client.dart`, `lib/engine/terminal_engine.dart`).
+The client coalesces fed bytes and advances the engine off the UI thread, so
+the host has no way to tell whether the engine keeps up with a flood. The
+client now counts the bytes queued plus those of the advance in flight
+(`pending`), and `TerminalEngine.pending` exposes it (before the first
+`resize`, the bytes held for the binding). It reaches 0 once the grid holds
+every byte fed. Kumiko's terminal controller pauses reading a host terminal
+when it exceeds 1 MiB. Test:
+`packages/desktop/integration_test/terminal_surface_test.dart` (pending rises
+on feed and returns to 0).
 
 To move to a newer upstream version, copy its `lib/`, `pubspec.yaml` and
 licence again and re-apply the patch until upstream carries the fix.

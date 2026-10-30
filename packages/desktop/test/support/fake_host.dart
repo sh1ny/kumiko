@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:collection';
+import 'dart:typed_data';
 
 import 'package:desktop/src/host_link.dart';
 import 'package:host_protocol/host_protocol.dart';
@@ -329,35 +330,218 @@ class FakeHostLink implements HostLink {
     return CleanupActionResult(resolvedUnits: w.unitCount, unresolvedUnits: 0);
   }
 
-  // --- terminals: not scripted yet ---------------------------------------
+  // --- terminals -----------------------------------------------------------
+
+  /// What `profile/list` answers.
+  ProfileListResult profiles = const ProfileListResult(
+    profiles: [
+      ShellProfile(id: 'builtin:pwsh', name: 'pwsh', executable: '/bin/pwsh'),
+      ShellProfile(id: 'builtin:bash', name: 'bash', executable: '/bin/bash'),
+    ],
+    defaultId: 'builtin:pwsh',
+    defaultAvailable: true,
+  );
+
+  /// Per-call answers for `terminal/open`, consumed first-in first-out: an
+  /// `Exception` or `Error` is thrown. The default opens a [FakeTerminal].
+  final Queue<Object> terminalOpenAnswers = Queue();
+
+  /// Holds the `terminal/open` answer until it completes.
+  Completer<void>? terminalOpenGate;
+
+  /// Holds the `terminal/close` answer until it completes.
+  Completer<void>? terminalCloseGate;
+
+  /// Thrown by `terminal/close` when set.
+  Object? closeError;
+
+  final List<TerminalOpenParams> opened = [];
+  final List<({String id, int cols, int rows})> resizes = [];
+  final List<String> closed = [];
+  final List<String> released = [];
+  final List<ShellProfile> savedProfiles = [];
+  final List<String> removedProfiles = [];
+  final List<String> defaultsSet = [];
+  final Map<String, FakeTerminal> terminals = {};
+  int _terminalCount = 0;
+
+  final StreamController<TerminalExited> _exits = StreamController.broadcast(
+    sync: true,
+  );
+  final StreamController<TerminalCloseFailed> _closeFailures =
+      StreamController.broadcast(sync: true);
+
+  /// The newest terminal opened.
+  FakeTerminal get lastTerminal => terminals.values.last;
 
   @override
-  Future<ProfileListResult> profileList() =>
-      throw UnimplementedError('profile/list is not scripted');
+  Future<ProfileListResult> profileList() async {
+    calls.add('profile/list');
+    return profiles;
+  }
 
   @override
-  Future<ShellProfile> saveProfile(ShellProfile profile) =>
-      throw UnimplementedError('profile/save is not scripted');
+  Future<ShellProfile> saveProfile(ShellProfile profile) async {
+    calls.add('profile/save ${profile.id}');
+    if (profile.isBuiltin) throw RpcException(ErrorCode.profileLocked);
+    savedProfiles.add(profile);
+    profiles = ProfileListResult(
+      profiles: [
+        for (final p in profiles.profiles)
+          if (p.id != profile.id) p,
+        profile,
+      ],
+      defaultId: profiles.defaultId,
+      defaultAvailable: profiles.defaultAvailable,
+    );
+    return profile;
+  }
 
   @override
-  Future<TerminalChannels> openTerminal(TerminalOpenParams params) =>
-      throw UnimplementedError('terminal/open is not scripted');
+  Future<void> removeProfile(String id) async {
+    calls.add('profile/remove $id');
+    removedProfiles.add(id);
+    profiles = ProfileListResult(
+      profiles: [
+        for (final p in profiles.profiles)
+          if (p.id != id) p,
+      ],
+      defaultId: profiles.defaultId,
+      defaultAvailable: profiles.defaultId != id && profiles.defaultAvailable,
+    );
+  }
 
   @override
-  Future<void> resizeTerminal(String terminalId, int cols, int rows) =>
-      throw UnimplementedError('terminal/resize is not scripted');
+  Future<void> setDefaultProfile(String id) async {
+    calls.add('profile/setDefault $id');
+    defaultsSet.add(id);
+    profiles = ProfileListResult(
+      profiles: profiles.profiles,
+      defaultId: id,
+      defaultAvailable: profiles.profiles.any((p) => p.id == id),
+    );
+  }
 
   @override
-  Future<void> closeTerminal(String terminalId) =>
-      throw UnimplementedError('terminal/close is not scripted');
+  Future<TerminalChannels> openTerminal(TerminalOpenParams params) async {
+    calls.add('terminal/open ${params.profileId}');
+    opened.add(params);
+    final scripted = terminalOpenAnswers.isEmpty
+        ? null
+        : terminalOpenAnswers.removeFirst();
+    await terminalOpenGate?.future;
+    if (scripted is Exception || scripted is Error) throw scripted!;
+    final terminal = FakeTerminal('t${++_terminalCount}');
+    terminals[terminal.id] = terminal;
+    return TerminalChannels(
+      terminalId: terminal.id,
+      output: terminal.output.stream,
+      write: terminal.write,
+    );
+  }
 
   @override
-  Future<void> releaseTerminal(String terminalId) =>
-      throw UnimplementedError('terminal/release is not scripted');
+  Future<void> resizeTerminal(String terminalId, int cols, int rows) async {
+    calls.add('terminal/resize $terminalId');
+    resizes.add((id: terminalId, cols: cols, rows: rows));
+  }
 
   @override
-  Stream<TerminalExited> get terminalExits => const Stream.empty();
+  Future<void> closeTerminal(String terminalId) async {
+    calls.add('terminal/close $terminalId');
+    closed.add(terminalId);
+    await terminalCloseGate?.future;
+    if (closeError case final error?) throw error;
+  }
+
+  @override
+  Future<void> releaseTerminal(String terminalId) async {
+    calls.add('terminal/release $terminalId');
+    released.add(terminalId);
+  }
+
+  @override
+  Stream<TerminalExited> get terminalExits => _exits.stream;
+
+  @override
+  Stream<TerminalCloseFailed> get terminalCloseFailures =>
+      _closeFailures.stream;
+
+  /// The host reports that [terminalId] ended.
+  void emitExit(
+    String terminalId, {
+    int? status = 0,
+    TerminalExitReason reason = TerminalExitReason.exited,
+    bool outputComplete = true,
+  }) => _exits.add(
+    TerminalExited(
+      terminalId: terminalId,
+      status: status,
+      reason: reason,
+      outputComplete: outputComplete,
+    ),
+  );
+
+  void emitCloseFailed(
+    String terminalId, [
+    String reason = 'scan-unreadable',
+  ]) => _closeFailures.add(
+    TerminalCloseFailed(terminalId: terminalId, reason: reason),
+  );
 
   @override
   Future<void> quit() async => quitCalled = true;
+}
+
+/// A host terminal as the desktop sees it: an output channel that, like the
+/// real one (`_Inbound.pump` in `host_protocol`), hands a chunk to its
+/// listener only while the listener is not paused, and counts the credit it
+/// would have returned for it. A listener that pauses therefore stops the
+/// delivery and the credit, and the rest waits in [queue].
+class FakeTerminal {
+  FakeTerminal(this.id) {
+    output = StreamController<Uint8List>(
+      sync: true,
+      onListen: _pump,
+      onResume: _pump,
+    );
+  }
+
+  final String id;
+  late final StreamController<Uint8List> output;
+
+  /// Chunks the host sent that the listener has not taken.
+  final Queue<Uint8List> queue = Queue();
+
+  /// Bytes handed to the listener; the credit returned equals this.
+  int delivered = 0;
+
+  /// Every `write` the desktop made, in order.
+  final List<Uint8List> written = [];
+
+  /// Holds the `write` answers until it completes.
+  Completer<void>? writeGate;
+
+  bool get listening => output.hasListener;
+  bool get paused => output.isPaused;
+  int get queuedBytes => queue.fold(0, (n, c) => n + c.length);
+
+  /// The host sends [bytes] on the output channel.
+  void send(Uint8List bytes) {
+    queue.add(bytes);
+    _pump();
+  }
+
+  void _pump() {
+    while (queue.isNotEmpty && output.hasListener && !output.isPaused) {
+      final chunk = queue.removeFirst();
+      delivered += chunk.length;
+      output.add(chunk);
+    }
+  }
+
+  Future<void> write(Uint8List bytes) async {
+    await writeGate?.future;
+    written.add(bytes);
+  }
 }

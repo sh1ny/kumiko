@@ -1,16 +1,25 @@
+import 'dart:async';
+
 import 'package:domain/domain.dart';
-import 'package:flutter/gestures.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:host_protocol/host_protocol.dart';
 
 import 'cleanup_controller.dart';
 import 'cleanup_list_view.dart';
+import 'terminal/profiles_dialog.dart';
+import 'terminal/terminal_pane_view.dart';
 import 'workbench_controller.dart';
 
 const String _openFolderValue = '#open-folder';
+const String _terminalValue = '#terminal';
+const String _terminalProfileValue = '#terminal-profile';
+const String _shellProfilesValue = '#shell-profiles';
 
-/// The workbench: workspaces sidebar, split tab groups, notices.
-class WorkbenchPage extends StatelessWidget {
+/// The workbench: workspaces sidebar, a tab strip over the active tab's pane
+/// tree, notices.
+class WorkbenchPage extends StatefulWidget {
   const WorkbenchPage({super.key, required this.controller, this.cleanup});
 
   final WorkbenchController controller;
@@ -18,6 +27,48 @@ class WorkbenchPage extends StatelessWidget {
   /// The host's whole *cleanup unresolved* list, including entries for
   /// directories that are not (or no longer) workspaces.
   final CleanupController? cleanup;
+
+  @override
+  State<WorkbenchPage> createState() => _WorkbenchPageState();
+}
+
+class _WorkbenchPageState extends State<WorkbenchPage> {
+  WorkbenchController get controller => widget.controller;
+  CleanupController? get cleanup => widget.cleanup;
+
+  @override
+  void initState() {
+    super.initState();
+    // Early, so the shortcut runs before the focused terminal view's own key
+    // handling, which would otherwise consume it.
+    FocusManager.instance.addEarlyKeyEventHandler(_onKey);
+  }
+
+  @override
+  void dispose() {
+    FocusManager.instance.removeEarlyKeyEventHandler(_onKey);
+    super.dispose();
+  }
+
+  /// Ctrl+Shift+T (Cmd+T on macOS): New terminal.
+  KeyEventResult _onKey(KeyEvent event) {
+    if (event is! KeyDownEvent || event.logicalKey != LogicalKeyboardKey.keyT) {
+      return KeyEventResult.ignored;
+    }
+    final keyboard = HardwareKeyboard.instance;
+    final matches = defaultTargetPlatform == TargetPlatform.macOS
+        ? keyboard.isMetaPressed &&
+              !keyboard.isControlPressed &&
+              !keyboard.isShiftPressed &&
+              !keyboard.isAltPressed
+        : keyboard.isControlPressed &&
+              keyboard.isShiftPressed &&
+              !keyboard.isAltPressed &&
+              !keyboard.isMetaPressed;
+    if (!matches || controller.layout == null) return KeyEventResult.ignored;
+    unawaited(launchTerminalFlow(context, controller));
+    return KeyEventResult.handled;
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -39,7 +90,7 @@ class WorkbenchPage extends StatelessWidget {
                           child: CircularProgressIndicator(strokeWidth: 2),
                         ),
                         SizedBox(width: 12),
-                        Text('Loading the workbench...'),
+                        Flexible(child: Text('Loading the workbench...')),
                       ],
                     ),
             );
@@ -54,7 +105,7 @@ class WorkbenchPage extends StatelessWidget {
                       _CollapsedStrip(controller: controller)
                     else
                       _Sidebar(controller: controller),
-                    Expanded(child: _NodeView(controller, layout.root)),
+                    Expanded(child: _CentralArea(controller: controller)),
                   ],
                 ),
               ),
@@ -117,7 +168,11 @@ class WorkbenchPage extends StatelessWidget {
 }
 
 class _Banner extends StatelessWidget {
-  const _Banner({required this.color, required this.text, this.actions = const []});
+  const _Banner({
+    required this.color,
+    required this.text,
+    this.actions = const [],
+  });
 
   final Color color;
   final String text;
@@ -155,33 +210,50 @@ class _StatusBar extends StatelessWidget {
       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 2),
       child: Row(
         children: [
-          const Text('Host connected'),
+          const Flexible(
+            child: Text(
+              'Host connected',
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+            ),
+          ),
           const SizedBox(width: 12),
-          Text('Protocol version ${hello.version}, host ${hello.hostVersion}'),
-          const Spacer(),
+          Expanded(
+            child: Text(
+              'Protocol version ${hello.version}, host ${hello.hostVersion}',
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+            ),
+          ),
           // Always reachable, also with the sidebar collapsed and for
           // entries no workspace badge leads to.
           if (cleanup != null)
-            ListenableBuilder(
-              listenable: cleanup,
-              builder: (context, _) {
-                final workspaces = cleanup.unresolvedWorkspaces;
-                if (workspaces == 0) return const SizedBox.shrink();
-                final units = cleanup.unresolvedUnits;
-                return TextButton(
-                  key: const Key('cleanup-all'),
-                  onPressed: () => showDialog<void>(
-                    context: context,
-                    builder: (_) => _CleanupDialog.shared(cleanup),
-                  ),
-                  child: Text(
-                    'Cleanup unresolved: $workspaces '
-                    '${workspaces == 1 ? 'workspace' : 'workspaces'}, '
-                    '$units ${units == 1 ? 'unit' : 'units'}',
-                    style: TextStyle(color: Theme.of(context).colorScheme.error),
-                  ),
-                );
-              },
+            Flexible(
+              child: ListenableBuilder(
+                listenable: cleanup,
+                builder: (context, _) {
+                  final workspaces = cleanup.unresolvedWorkspaces;
+                  if (workspaces == 0) return const SizedBox.shrink();
+                  final units = cleanup.unresolvedUnits;
+                  return TextButton(
+                    key: const Key('cleanup-all'),
+                    onPressed: () => showDialog<void>(
+                      context: context,
+                      builder: (_) => _CleanupDialog.shared(cleanup),
+                    ),
+                    child: Text(
+                      'Cleanup unresolved: $workspaces '
+                      '${workspaces == 1 ? 'workspace' : 'workspaces'}, '
+                      '$units ${units == 1 ? 'unit' : 'units'}',
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(
+                        color: Theme.of(context).colorScheme.error,
+                      ),
+                    ),
+                  );
+                },
+              ),
             ),
         ],
       ),
@@ -220,8 +292,8 @@ class _Sidebar extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final layout = controller.layout!;
-    final focused = layout.group(layout.focusedGroup);
-    final personalSelected = focused?.context == null;
+    final selected = layout.selectedWorkspace;
+    final personalSelected = selected == null;
     return SizedBox(
       key: const Key('sidebar'),
       width: 260,
@@ -246,8 +318,10 @@ class _Sidebar extends StatelessWidget {
               ],
             ),
             ListTile(
+              key: const Key('personal'),
               dense: true,
               selected: personalSelected,
+              onTap: controller.selectPersonal,
               leading: const Icon(Icons.person_outline),
               title: const Text('Personal'),
             ),
@@ -263,7 +337,7 @@ class _Sidebar extends StatelessWidget {
                       key: ValueKey('ws-tile-${w.id}'),
                       controller: controller,
                       record: w,
-                      selected: focused?.context == w.id,
+                      selected: selected == w.id,
                     ),
                 ],
               ),
@@ -301,7 +375,9 @@ class _WorkspaceTile extends StatelessWidget {
     final unavailable = record.availability == Availability.unavailable;
     return Material(
       key: Key('ws-${record.id}'),
-      color: selected ? theme.colorScheme.secondaryContainer : Colors.transparent,
+      color: selected
+          ? theme.colorScheme.secondaryContainer
+          : Colors.transparent,
       child: InkWell(
         onTap: () => controller.selectWorkspace(record.id),
         child: Padding(
@@ -326,7 +402,7 @@ class _WorkspaceTile extends StatelessWidget {
                   ),
                   IconButton(
                     key: Key('remove-${record.id}'),
-                    tooltip: bound ? 'Close its tabs first' : 'Remove',
+                    tooltip: bound ? 'Close its panes first' : 'Remove',
                     iconSize: 18,
                     icon: const Icon(Icons.delete_outline),
                     onPressed: bound
@@ -337,7 +413,7 @@ class _WorkspaceTile extends StatelessWidget {
               ),
               if (bound)
                 Text(
-                  "${record.label}'s tabs must be closed first.",
+                  "${record.label}'s panes must be closed first.",
                   style: theme.textTheme.bodySmall,
                 ),
               if (record.availability == Availability.checking)
@@ -443,7 +519,392 @@ class _CleanupDialogState extends State<_CleanupDialog> {
   }
 }
 
-// --- split tree --------------------------------------------------------------
+// --- central area ------------------------------------------------------------
+
+/// The key combination for New terminal, as shown on the button.
+String newTerminalShortcutLabel() =>
+    defaultTargetPlatform == TargetPlatform.macOS ? 'Cmd+T' : 'Ctrl+Shift+T';
+
+/// Runs a terminal launch (the launcher, New terminal, the shortcut, or a
+/// pane's split) and the prompts it may need: a profile to choose, or none
+/// to add.
+Future<void> launchTerminalFlow(
+  BuildContext context,
+  WorkbenchController controller, {
+  String? splitOf,
+  SplitDirection direction = SplitDirection.horizontal,
+  bool choose = false,
+  String? profileId,
+}) async {
+  final result = splitOf == null
+      ? await controller.launchTerminal(profileId: profileId, choose: choose)
+      : await controller.splitWithTerminal(
+          splitOf,
+          direction,
+          profileId: profileId,
+          choose: choose,
+        );
+  if (!context.mounted) return;
+  switch (result.kind) {
+    case TerminalLaunchKind.opened ||
+        TerminalLaunchKind.unavailable ||
+        TerminalLaunchKind.failed:
+      break;
+    case TerminalLaunchKind.chooseProfile:
+      final chosen = await showProfilePicker(
+        context,
+        result.profiles,
+        missingDefault: result.missingDefault,
+      );
+      if (chosen != null && context.mounted) {
+        await launchTerminalFlow(
+          context,
+          controller,
+          splitOf: splitOf,
+          direction: direction,
+          profileId: chosen,
+        );
+      }
+    case TerminalLaunchKind.noProfile:
+      if (await showNoProfilePrompt(context) && context.mounted) {
+        await showProfilesDialog(context, controller, startWithNew: true);
+      }
+  }
+}
+
+/// Closes [paneIds]; terminals that are running are confirmed first.
+Future<void> _closePanes(
+  BuildContext context,
+  WorkbenchController controller,
+  List<String> paneIds,
+) => controller.requestClose(paneIds, (warnings) async {
+  if (!context.mounted) return false;
+  return showCloseWarning(context, warnings);
+});
+
+/// The tab strip over the active tab's pane tree, or the empty state.
+class _CentralArea extends StatelessWidget {
+  const _CentralArea({required this.controller});
+
+  final WorkbenchController controller;
+
+  @override
+  Widget build(BuildContext context) {
+    final layout = controller.layout!;
+    final active = layout.active;
+    return Column(
+      key: const Key('central-area'),
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        _TabStrip(controller: controller),
+        Expanded(
+          child: active == null
+              ? _EmptyState(controller: controller)
+              // Every tab stays mounted, only the active one shown: a
+              // terminal view keeps its scroll, selection and search while
+              // its tab is in the background.
+              : Stack(
+                  fit: StackFit.expand,
+                  children: [
+                    for (final t in layout.tabs)
+                      KeyedSubtree(
+                        key: ValueKey('tab-body-${t.id}'),
+                        child: Offstage(
+                          offstage: t.id != active.id,
+                          child: TickerMode(
+                            enabled: t.id == active.id,
+                            child: ExcludeFocus(
+                              excluding: t.id != active.id,
+                              child: _NodeView(controller, t.root),
+                            ),
+                          ),
+                        ),
+                      ),
+                  ],
+                ),
+        ),
+      ],
+    );
+  }
+}
+
+class _TabStrip extends StatelessWidget {
+  const _TabStrip({required this.controller});
+
+  final WorkbenchController controller;
+
+  @override
+  Widget build(BuildContext context) {
+    final layout = controller.layout!;
+    final selected = layout.selectedWorkspace;
+    final reason = controller.terminalsUnavailableReason;
+    final suffix = reason == null ? '' : ' ($reason)';
+    return Material(
+      color: Theme.of(context).colorScheme.surfaceContainerLow,
+      child: SizedBox(
+        key: const Key('tab-strip'),
+        height: 36,
+        child: Row(
+          children: [
+            Expanded(
+              child: SingleChildScrollView(
+                scrollDirection: Axis.horizontal,
+                child: Row(
+                  children: [
+                    for (final t in layout.tabs)
+                      _TabChip(
+                        controller: controller,
+                        tab: t,
+                        active: t.id == layout.activeTab,
+                      ),
+                  ],
+                ),
+              ),
+            ),
+            PopupMenuButton<String>(
+              key: const Key('add-tab'),
+              tooltip: 'New tab',
+              icon: const Icon(Icons.add, size: 18),
+              style: _compactButton,
+              onSelected: (value) {
+                switch (value) {
+                  case _openFolderValue:
+                    controller.openFolder();
+                  case _terminalValue:
+                    launchTerminalFlow(context, controller);
+                  case _terminalProfileValue:
+                    launchTerminalFlow(context, controller, choose: true);
+                  case _shellProfilesValue:
+                    showProfilesDialog(context, controller);
+                  default:
+                    controller.openView(value);
+                }
+              },
+              itemBuilder: (_) => [
+                for (final kind in launcherViews)
+                  PopupMenuItem<String>(
+                    key: Key('launch-${kind.id}'),
+                    value: kind.id,
+                    enabled: !kind.needsWorkspace || selected != null,
+                    child: Text(
+                      kind.needsWorkspace && selected == null
+                          ? '${kind.label} (needs a workspace)'
+                          : kind.label,
+                    ),
+                  ),
+                const PopupMenuDivider(),
+                PopupMenuItem<String>(
+                  key: const Key('launch-terminal'),
+                  value: _terminalValue,
+                  enabled: reason == null,
+                  child: Text('Terminal$suffix'),
+                ),
+                PopupMenuItem<String>(
+                  key: const Key('launch-terminal-profile'),
+                  value: _terminalProfileValue,
+                  enabled: reason == null,
+                  child: const Text('Terminal with profile...'),
+                ),
+                PopupMenuItem<String>(
+                  key: const Key('shell-profiles'),
+                  value: _shellProfilesValue,
+                  enabled: reason == null,
+                  child: const Text('Shell profiles...'),
+                ),
+                const PopupMenuDivider(),
+                const PopupMenuItem<String>(
+                  key: Key('open-folder'),
+                  value: _openFolderValue,
+                  child: Text('Open folder...'),
+                ),
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+final ButtonStyle _compactButton = IconButton.styleFrom(
+  padding: EdgeInsets.zero,
+  minimumSize: const Size(28, 28),
+  tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+);
+
+class _TabChip extends StatelessWidget {
+  const _TabChip({
+    required this.controller,
+    required this.tab,
+    required this.active,
+  });
+
+  final WorkbenchController controller;
+  final LayoutTabNode tab;
+  final bool active;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final movable = controller.canMoveIntoSplit(tab.id);
+    return ConstrainedBox(
+      constraints: const BoxConstraints(maxWidth: 220),
+      child: Material(
+        key: Key('tab-${tab.id}'),
+        color: active
+            ? theme.colorScheme.secondaryContainer
+            : theme.colorScheme.surfaceContainerHighest,
+        child: InkWell(
+          onTap: () => controller.activateTab(tab.id),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Flexible(
+                child: Padding(
+                  padding: const EdgeInsets.only(left: 8),
+                  child: Text(
+                    controller.tabTitle(tab),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                ),
+              ),
+              if (tab.paneCount > 1)
+                Padding(
+                  padding: const EdgeInsets.only(left: 6),
+                  child: Text(
+                    '${tab.paneCount}',
+                    style: theme.textTheme.bodySmall,
+                  ),
+                ),
+              PopupMenuButton<String>(
+                key: Key('tab-menu-${tab.id}'),
+                tooltip: 'Tab actions',
+                icon: const Icon(Icons.more_vert, size: 14),
+                style: _compactButton,
+                onSelected: (value) {
+                  switch (value) {
+                    case 'right':
+                      controller.moveTabIntoSplit(
+                        tab.id,
+                        SplitDirection.horizontal,
+                      );
+                    case 'below':
+                      controller.moveTabIntoSplit(
+                        tab.id,
+                        SplitDirection.vertical,
+                      );
+                    case 'close':
+                      _closePanes(
+                        context,
+                        controller,
+                        controller.panesOfTab(tab.id),
+                      );
+                  }
+                },
+                itemBuilder: (_) => [
+                  PopupMenuItem<String>(
+                    key: Key('move-split-right-${tab.id}'),
+                    value: 'right',
+                    enabled: movable,
+                    child: const Text('Move into split right'),
+                  ),
+                  PopupMenuItem<String>(
+                    key: Key('move-split-below-${tab.id}'),
+                    value: 'below',
+                    enabled: movable,
+                    child: const Text('Move into split below'),
+                  ),
+                  const PopupMenuDivider(),
+                  PopupMenuItem<String>(
+                    key: Key('close-tab-${tab.id}'),
+                    value: 'close',
+                    child: const Text('Close tab'),
+                  ),
+                ],
+              ),
+              IconButton(
+                key: Key('close-${tab.id}'),
+                tooltip: 'Close tab',
+                icon: const Icon(Icons.close, size: 14),
+                style: _compactButton,
+                onPressed: () => _closePanes(
+                  context,
+                  controller,
+                  controller.panesOfTab(tab.id),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// No tab is open: a short message and a prominent New terminal.
+class _EmptyState extends StatelessWidget {
+  const _EmptyState({required this.controller});
+
+  final WorkbenchController controller;
+
+  @override
+  Widget build(BuildContext context) {
+    final reason = controller.terminalsUnavailableReason;
+    return LayoutBuilder(
+      builder: (context, constraints) => SingleChildScrollView(
+        child: ConstrainedBox(
+          constraints: BoxConstraints(minHeight: constraints.maxHeight),
+          child: Center(
+            key: const Key('empty-state'),
+            child: Padding(
+              padding: const EdgeInsets.all(16),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  const Text('No tab is open.', textAlign: TextAlign.center),
+                  const SizedBox(height: 12),
+                  FilledButton(
+                    key: const Key('new-terminal'),
+                    onPressed: reason == null
+                        ? () => launchTerminalFlow(context, controller)
+                        : null,
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        const Text(
+                          'New terminal',
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                        Text(
+                          newTerminalShortcutLabel(),
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: Theme.of(context).textTheme.bodySmall,
+                        ),
+                      ],
+                    ),
+                  ),
+                  if (reason != null)
+                    Padding(
+                      padding: const EdgeInsets.only(top: 8),
+                      child: Text(
+                        'A terminal cannot be started: $reason.',
+                        textAlign: TextAlign.center,
+                      ),
+                    ),
+                ],
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+// --- pane tree ---------------------------------------------------------------
 
 class _NodeView extends StatelessWidget {
   const _NodeView(this.controller, this.node);
@@ -453,10 +914,10 @@ class _NodeView extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) => switch (node) {
-    final TabGroup g => _GroupView(
-      key: ValueKey('group-view-${g.id}'),
+    final PaneNode p => _PaneView(
+      key: ValueKey('pane-view-${p.id}'),
       controller: controller,
-      group: g,
+      pane: p,
     ),
     final SplitNode s => _SplitView(
       key: ValueKey('split-view-${s.id}'),
@@ -523,132 +984,206 @@ class _SplitView extends StatelessWidget {
   }
 }
 
-class _GroupView extends StatelessWidget {
-  const _GroupView({super.key, required this.controller, required this.group});
+/// One pane: a thin header and the view, through one path for every kind.
+class _PaneView extends StatelessWidget {
+  const _PaneView({super.key, required this.controller, required this.pane});
 
   final WorkbenchController controller;
-  final TabGroup group;
+  final PaneNode pane;
 
   @override
   Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    final focused = controller.layout!.focusedGroup == group.id;
-    LayoutTab? active;
-    for (final t in group.tabs) {
-      if (t.id == group.active) active = t;
-    }
-    return DragTarget<String>(
-      onWillAcceptWithDetails: (_) => true,
-      onAcceptWithDetails: (d) => controller.moveTab(d.data, group.id),
-      builder: (context, candidates, _) => Listener(
-        onPointerDown: (_) => controller.focusGroup(group.id),
-        child: Container(
-          key: Key('group-${group.id}'),
-          decoration: BoxDecoration(
-            border: Border.all(
-              color: candidates.isNotEmpty
-                  ? theme.colorScheme.tertiary
-                  : focused
-                  ? theme.colorScheme.primary
-                  : theme.dividerColor,
-              width: focused || candidates.isNotEmpty ? 2 : 1,
+    final layout = controller.layout!;
+    final focused = layout.focusedPane == pane.id;
+    return Column(
+      key: Key('pane-${pane.id}'),
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        _PaneHeader(controller: controller, pane: pane, focused: focused),
+        Expanded(
+          child: ClipRect(
+            child: Listener(
+              behavior: HitTestBehavior.opaque,
+              onPointerDown: (_) => controller.focusPane(pane.id),
+              child: _PaneBody(controller: controller, pane: pane),
             ),
           ),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              _GroupHeader(controller: controller, group: group),
-              Expanded(
-                child: active == null
-                    ? const Center(
-                        child: Text('No tabs. Use + to open a view.'),
-                      )
-                    : _TabBody(controller: controller, tab: active),
-              ),
-            ],
-          ),
         ),
-      ),
+      ],
     );
   }
 }
 
-class _GroupHeader extends StatelessWidget {
-  const _GroupHeader({required this.controller, required this.group});
+class _PaneHeader extends StatelessWidget {
+  const _PaneHeader({
+    required this.controller,
+    required this.pane,
+    required this.focused,
+  });
 
   final WorkbenchController controller;
-  final TabGroup group;
+  final PaneNode pane;
+  final bool focused;
+
+  static const double _wideFrom = 200;
 
   @override
   Widget build(BuildContext context) {
-    return SizedBox(
-      height: 38,
+    final theme = Theme.of(context);
+    final workspace = pane.workspace == null
+        ? null
+        : controller.workspace(pane.workspace!);
+    final unavailable = workspace?.availability == Availability.unavailable;
+    final reason = controller.terminalsUnavailableReason;
+    final tab = controller.layout!.tabOf(pane.id);
+    final canMove = tab != null && tab.paneCount > 1;
+    String splitTip(String label) =>
+        reason == null ? label : '$label ($reason)';
+    void split(SplitDirection direction) => launchTerminalFlow(
+      context,
+      controller,
+      splitOf: pane.id,
+      direction: direction,
+    );
+    void close() => _closePanes(context, controller, [pane.id]);
+
+    final title = GestureDetector(
+      behavior: HitTestBehavior.opaque,
+      onTap: () => controller.focusPane(pane.id),
       child: Row(
         children: [
-          Expanded(
-            child: ScrollConfiguration(
-              // Dragging a tab must not scroll the strip; the wheel still does.
-              behavior: ScrollConfiguration.of(
-                context,
-              ).copyWith(dragDevices: <PointerDeviceKind>{}),
-              child: SingleChildScrollView(
-                scrollDirection: Axis.horizontal,
-                child: Row(
-                  children: [
-                    for (final t in group.tabs)
-                      _TabChip(
-                        controller: controller,
-                        tab: t,
-                        active: t.id == group.active,
-                      ),
-                  ],
-                ),
+          Flexible(
+            child: Padding(
+              padding: const EdgeInsets.only(left: 8),
+              child: Text(
+                controller.paneTitle(pane),
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: theme.textTheme.labelMedium,
               ),
             ),
           ),
-          PopupMenuButton<String>(
-            key: Key('add-${group.id}'),
-            tooltip: 'New tab',
-            icon: const Icon(Icons.add, size: 18),
-            padding: EdgeInsets.zero,
-            onSelected: (value) {
-              if (value == _openFolderValue) {
-                controller.openFolder(groupId: group.id);
-              } else {
-                controller.openView(group.id, value);
-              }
-            },
-            itemBuilder: (_) => [
-              for (final kind in registeredViews)
-                PopupMenuItem<String>(
-                  value: kind.id,
-                  enabled: !kind.needsWorkspace || group.context != null,
-                  child: Text(
-                    kind.needsWorkspace && group.context == null
-                        ? '${kind.label} (needs a workspace)'
-                        : kind.label,
+          if (unavailable)
+            Flexible(
+              child: Padding(
+                padding: const EdgeInsets.only(left: 6),
+                child: Text(
+                  'unavailable',
+                  maxLines: 1,
+                  softWrap: false,
+                  overflow: TextOverflow.ellipsis,
+                  style: theme.textTheme.bodySmall?.copyWith(
+                    color: theme.colorScheme.error,
                   ),
                 ),
-              const PopupMenuDivider(),
-              const PopupMenuItem<String>(
-                value: _openFolderValue,
-                child: Text('Open folder...'),
               ),
-            ],
-          ),
-          _SmallButton(
-            key: Key('split-h-${group.id}'),
-            tooltip: 'Split right',
-            icon: Icons.vertical_split,
-            onPressed: () =>
-                controller.split(group.id, SplitDirection.horizontal),
-          ),
-          _SmallButton(
-            key: Key('split-v-${group.id}'),
-            tooltip: 'Split down',
-            icon: Icons.horizontal_split,
-            onPressed: () =>
-                controller.split(group.id, SplitDirection.vertical),
+            ),
+        ],
+      ),
+    );
+
+    return Material(
+      key: Key('pane-header-${pane.id}'),
+      color: theme.colorScheme.surfaceContainerHigh,
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          focused
+              ? Container(
+                  key: Key('focused-pane-${pane.id}'),
+                  height: 2,
+                  color: theme.colorScheme.primary,
+                )
+              : const SizedBox(height: 2),
+          SizedBox(
+            height: 26,
+            child: LayoutBuilder(
+              builder: (context, constraints) {
+                if (constraints.maxWidth < _wideFrom) {
+                  return Row(
+                    children: [
+                      Expanded(child: title),
+                      PopupMenuButton<String>(
+                        key: Key('pane-menu-${pane.id}'),
+                        tooltip: 'Pane actions',
+                        icon: const Icon(Icons.more_vert, size: 14),
+                        style: _paneButtonStyle,
+                        onSelected: (value) => switch (value) {
+                          'right' => split(SplitDirection.horizontal),
+                          'down' => split(SplitDirection.vertical),
+                          'move' => controller.movePaneToNewTab(pane.id),
+                          _ => close(),
+                        },
+                        itemBuilder: (_) => [
+                          PopupMenuItem<String>(
+                            key: Key('split-right-${pane.id}'),
+                            value: 'right',
+                            enabled: reason == null,
+                            child: Text(splitTip('Split right')),
+                          ),
+                          PopupMenuItem<String>(
+                            key: Key('split-down-${pane.id}'),
+                            value: 'down',
+                            enabled: reason == null,
+                            child: Text(splitTip('Split down')),
+                          ),
+                          PopupMenuItem<String>(
+                            key: Key('move-${pane.id}'),
+                            value: 'move',
+                            enabled: canMove,
+                            child: const Text('Move to new tab'),
+                          ),
+                          PopupMenuItem<String>(
+                            key: Key('close-pane-${pane.id}'),
+                            value: 'close',
+                            child: const Text('Close pane'),
+                          ),
+                        ],
+                      ),
+                    ],
+                  );
+                }
+                return Row(
+                  children: [
+                    Expanded(child: title),
+                    IconButton(
+                      key: Key('split-right-${pane.id}'),
+                      tooltip: splitTip('Split right'),
+                      icon: const Icon(Icons.vertical_split, size: 14),
+                      style: _paneButtonStyle,
+                      onPressed: reason == null
+                          ? () => split(SplitDirection.horizontal)
+                          : null,
+                    ),
+                    IconButton(
+                      key: Key('split-down-${pane.id}'),
+                      tooltip: splitTip('Split down'),
+                      icon: const Icon(Icons.horizontal_split, size: 14),
+                      style: _paneButtonStyle,
+                      onPressed: reason == null
+                          ? () => split(SplitDirection.vertical)
+                          : null,
+                    ),
+                    IconButton(
+                      key: Key('move-${pane.id}'),
+                      tooltip: 'Move to new tab',
+                      icon: const Icon(Icons.open_in_new, size: 14),
+                      style: _paneButtonStyle,
+                      onPressed: canMove
+                          ? () => controller.movePaneToNewTab(pane.id)
+                          : null,
+                    ),
+                    IconButton(
+                      key: Key('close-pane-${pane.id}'),
+                      tooltip: 'Close pane',
+                      icon: const Icon(Icons.close, size: 14),
+                      style: _paneButtonStyle,
+                      onPressed: close,
+                    ),
+                  ],
+                );
+              },
+            ),
           ),
         ],
       ),
@@ -656,116 +1191,39 @@ class _GroupHeader extends StatelessWidget {
   }
 }
 
-class _SmallButton extends StatelessWidget {
-  const _SmallButton({
-    super.key,
-    required this.tooltip,
-    required this.icon,
-    required this.onPressed,
-  });
+final ButtonStyle _paneButtonStyle = IconButton.styleFrom(
+  padding: EdgeInsets.zero,
+  minimumSize: const Size(26, 26),
+  fixedSize: const Size(26, 26),
+  tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+);
 
-  final String tooltip;
-  final IconData icon;
-  final VoidCallback onPressed;
-
-  @override
-  Widget build(BuildContext context) => IconButton(
-    tooltip: tooltip,
-    icon: Icon(icon, size: 18),
-    padding: EdgeInsets.zero,
-    constraints: const BoxConstraints.tightFor(width: 32, height: 32),
-    onPressed: onPressed,
-  );
-}
-
-class _TabChip extends StatelessWidget {
-  const _TabChip({
-    required this.controller,
-    required this.tab,
-    required this.active,
-  });
+class _PaneBody extends StatelessWidget {
+  const _PaneBody({required this.controller, required this.pane});
 
   final WorkbenchController controller;
-  final LayoutTab tab;
-  final bool active;
+  final PaneNode pane;
 
   @override
   Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    final kind = viewKindOf(tab.kind);
-    final workspace = tab.workspace == null
-        ? null
-        : controller.workspace(tab.workspace!);
-    final unavailable = workspace?.availability == Availability.unavailable;
-    final title = kind == null
-        ? 'Unsupported view'
-        : workspace == null
-        ? kind.label
-        : '${kind.label} · ${workspace.label}';
-    final chip = Material(
-      color: active
-          ? theme.colorScheme.secondaryContainer
-          : theme.colorScheme.surfaceContainerHighest,
-      child: InkWell(
-        onTap: () => controller.activateTab(tab.id),
-        child: Padding(
-          padding: const EdgeInsets.only(left: 8),
-          child: Row(
-            children: [
-              Text(title),
-              if (unavailable) ...[
-                const SizedBox(width: 6),
-                Text(
-                  'unavailable',
-                  style: theme.textTheme.bodySmall?.copyWith(
-                    color: theme.colorScheme.error,
-                  ),
-                ),
-              ],
-              IconButton(
-                key: Key('close-${tab.id}'),
-                tooltip: 'Close tab',
-                icon: const Icon(Icons.close, size: 14),
-                padding: EdgeInsets.zero,
-                constraints: const BoxConstraints.tightFor(width: 28, height: 28),
-                onPressed: () => controller.closeTab(tab.id),
-              ),
-            ],
-          ),
-        ),
-      ),
-    );
-    return Draggable<String>(
-      key: Key('tab-${tab.id}'),
-      data: tab.id,
-      feedback: Material(
-        elevation: 4,
-        child: Padding(padding: const EdgeInsets.all(8), child: Text(title)),
-      ),
-      childWhenDragging: Opacity(opacity: 0.4, child: chip),
-      child: chip,
-    );
-  }
-}
-
-// --- tab bodies --------------------------------------------------------------
-
-class _TabBody extends StatelessWidget {
-  const _TabBody({required this.controller, required this.tab});
-
-  final WorkbenchController controller;
-  final LayoutTab tab;
-
-  @override
-  Widget build(BuildContext context) {
-    if (tab.kind == workspaceOverviewKind) {
-      return WorkspaceOverview(controller: controller, workspaceId: tab.workspace);
+    if (pane.kind == workspaceOverviewKind) {
+      return WorkspaceOverview(
+        controller: controller,
+        workspaceId: pane.workspace,
+      );
     }
-    return Padding(
-      padding: const EdgeInsets.all(16),
+    if (pane.kind == terminalKind) {
+      return TerminalPaneView(
+        key: ValueKey('terminal-view-${pane.id}'),
+        controller: controller,
+        pane: pane,
+      );
+    }
+    return SingleChildScrollView(
+      padding: const EdgeInsets.all(12),
       child: Text(
         'Unsupported view: this version of Kumiko does not know the view kind '
-        '"${tab.kind}". It is kept as it is.',
+        '"${pane.kind}". It is kept as it is.',
       ),
     );
   }
@@ -790,7 +1248,7 @@ class WorkspaceOverview extends StatelessWidget {
     final record = id == null ? null : controller.workspace(id);
     if (id == null || record == null) {
       return const Padding(
-        padding: EdgeInsets.all(16),
+        padding: EdgeInsets.all(12),
         child: Text('This workspace is no longer listed.'),
       );
     }
@@ -802,7 +1260,7 @@ class WorkspaceOverview extends StatelessWidget {
     };
     return SingleChildScrollView(
       key: Key('overview-$id'),
-      padding: const EdgeInsets.all(16),
+      padding: const EdgeInsets.all(12),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
@@ -812,7 +1270,8 @@ class WorkspaceOverview extends StatelessWidget {
           Text('Availability: $availability'),
           const SizedBox(height: 8),
           if (record.cleanup.groups > 0)
-            Row(
+            Wrap(
+              crossAxisAlignment: WrapCrossAlignment.center,
               children: [
                 Text(
                   'Cleanup unresolved: ${record.cleanup.groups} '

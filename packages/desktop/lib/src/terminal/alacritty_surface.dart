@@ -21,11 +21,15 @@ final class AlacrittySurface implements TerminalSurface {
     // search go through this one.
     _controller.attach(_engine);
     _view = _AlacrittyView(
+      key: _viewKey,
       engine: _engine,
       controller: _controller,
       onPtyResize: (cols, rows) => _size.add(_lastSize = (cols, rows)),
     );
   }
+
+  /// Loads the native engine; once, before the first surface is made.
+  static Future<void> init() => RustLib.init();
 
   late final TerminalEngine _engine;
 
@@ -33,6 +37,7 @@ final class AlacrittySurface implements TerminalSurface {
   @visibleForTesting
   TerminalEngine get engine => _engine;
   late final Widget _view;
+  final GlobalKey<_AlacrittyViewState> _viewKey = GlobalKey();
   final TerminalController _controller = TerminalController();
   final StreamController<(int, int)> _size =
       StreamController<(int, int)>.broadcast();
@@ -43,6 +48,9 @@ final class AlacrittySurface implements TerminalSurface {
 
   @override
   void feed(Uint8List bytes) => _engine.feed(bytes);
+
+  @override
+  ValueListenable<int> get pending => _engine.pending;
 
   @override
   Stream<Uint8List> get input => _engine.output;
@@ -57,7 +65,14 @@ final class AlacrittySurface implements TerminalSurface {
   Widget get view => _view;
 
   @override
+  void requestFocus() => _viewKey.currentState?.focus();
+
+  bool _disposed = false;
+
+  @override
   void dispose() {
+    if (_disposed) return;
+    _disposed = true;
     unawaited(_size.close());
     _controller.dispose();
     _engine.dispose();
@@ -69,6 +84,7 @@ final class AlacrittySurface implements TerminalSurface {
 /// [ToggleSearchIntent].
 class _AlacrittyView extends StatefulWidget {
   const _AlacrittyView({
+    super.key,
     required this.engine,
     required this.controller,
     required this.onPtyResize,
@@ -87,6 +103,8 @@ class _AlacrittyViewState extends State<_AlacrittyView> {
   bool _searchOpen = false;
   String _pattern = '';
   TerminalSearchOptions _options = const TerminalSearchOptions();
+
+  void focus() => _viewKey.currentState?.requestTerminalFocus();
 
   void _search(String pattern) {
     _pattern = pattern;

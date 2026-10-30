@@ -169,6 +169,14 @@ class SessionLink implements HostLink {
       ).profile;
 
   @override
+  Future<void> removeProfile(String id) =>
+      _request(Method.profileRemove, ProfileRemoveParams(id).toJson());
+
+  @override
+  Future<void> setDefaultProfile(String id) =>
+      _request(Method.profileSetDefault, ProfileSetDefaultParams(id).toJson());
+
+  @override
   Future<TerminalChannels> openTerminal(TerminalOpenParams params) async {
     final connection = session.connection;
     final opened = TerminalOpenResult.fromJson(
@@ -216,6 +224,11 @@ class SessionLink implements HostLink {
   Stream<TerminalExited> get terminalExits => session.notifications
       .where((n) => n.method == Method.terminalExited)
       .map((n) => TerminalExited.fromJson(n.params));
+
+  @override
+  Stream<TerminalCloseFailed> get terminalCloseFailures => session.notifications
+      .where((n) => n.method == Method.terminalCloseFailed)
+      .map((n) => TerminalCloseFailed.fromJson(n.params));
 
   @override
   Future<void> quit() async {

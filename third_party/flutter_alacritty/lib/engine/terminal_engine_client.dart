@@ -57,6 +57,15 @@ class TerminalEngineClient {
   static const interactiveWindow = Duration(milliseconds: 100);
 
   final BytesBuilder _buf = BytesBuilder(copy: false);
+
+  /// Bytes taken from [_buf] whose advance is not applied to the grid yet.
+  int _inFlight = 0;
+
+  /// Bytes fed and not yet applied to the grid: queued plus in flight. It
+  /// reaches 0 once the grid holds every byte fed.
+  final ValueNotifier<int> pending = ValueNotifier<int>(0);
+
+  void _updatePending() => pending.value = _buf.length + _inFlight;
   bool _drainScheduled = false;
   bool _advancing = false;
   DateTime? _interactiveUntil;
@@ -142,6 +151,7 @@ class TerminalEngineClient {
   void feed(Uint8List bytes) {
     if (_disposed) return;
     _buf.add(bytes);
+    _updatePending();
     _scheduleDrain();
   }
 
@@ -173,6 +183,7 @@ class TerminalEngineClient {
         }
         if (_disposed || _buf.isEmpty) break;
         final batch = _buf.takeBytes();
+        _inFlight = batch.length;
         if (_rasterHotPath) {
           final frame = await _raster!.advanceAndTakeRasterPresent(batch);
           if (_disposed) return;
@@ -183,6 +194,8 @@ class TerminalEngineClient {
           _applyUpdate(update);
         }
         if (_disposed) return;
+        _inFlight = 0;
+        _updatePending();
         _binding.pumpEvents(); // route PtyWrite/Title/Bell/Clipboard for this batch
       }
     } finally {
@@ -406,6 +419,7 @@ class TerminalEngineClient {
   void dispose() {
     _disposed = true;
     _binding.dispose();
+    pending.dispose();
   }
 
   String _gridPosSnapshot() => TerminalScrollTrace.pos(

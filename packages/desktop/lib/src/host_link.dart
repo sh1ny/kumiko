@@ -70,6 +70,12 @@ abstract interface class HostLink {
   /// user-defined profile and returns it as stored.
   Future<ShellProfile> saveProfile(ShellProfile profile);
 
+  /// `profile/remove` (capability `terminal`): forgets a user profile.
+  Future<void> removeProfile(String id);
+
+  /// `profile/setDefault` (capability `terminal`).
+  Future<void> setDefaultProfile(String id);
+
   /// `terminal/open`, then the attach handshake (design D4): both channels
   /// are registered, `terminal/attach` is sent, and only then is the output
   /// window granted. Pausing the returned output stream stops credit, so the
@@ -87,6 +93,9 @@ abstract interface class HostLink {
 
   /// The `terminal/exited` notifications.
   Stream<TerminalExited> get terminalExits;
+
+  /// The `terminal/closeFailed` notifications.
+  Stream<TerminalCloseFailed> get terminalCloseFailures;
 
   /// Ends the host as the desktop quits.
   Future<void> quit();
