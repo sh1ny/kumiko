@@ -88,16 +88,16 @@ The desktop SHALL report the terminal view's size in columns and rows, and the h
 A shell that exits on its own with status 0 and complete output (`outputComplete` true) SHALL close its pane as if the user had closed it, without a warning and without starting a new shell. Output the desktop has not yet consumed is dropped with the pane; the pane does not wait for the engine. Any other end, including status 0 with incomplete output, SHALL leave the terminal open, showing the exit status (and that output may be incomplete) and offering **Start shell**.
 
 #### Scenario: User types exit
-- **WHEN** the user types `exit` in the focused terminal pane, which has a sibling pane, or presses Ctrl+D at an empty prompt, and the shell exits with status 0
+- **WHEN** the user types `exit` in the focused terminal pane, which has a sibling pane, or presses Ctrl+D at an empty prompt, and the shell exits with status 0 and complete output
 - **THEN** the pane closes with no dialog, its sibling takes the space and keyboard focus, and no new shell runs
 
 #### Scenario: An unfocused pane exits
 - **WHEN** a shell exits cleanly in a pane of the active tab that is not the focused pane
-- **THEN** the pane closes, the tab's focused pane, the window's keyboard focus and the focus history are unchanged
+- **THEN** the pane closes, the tab's focused pane and the window's keyboard focus are unchanged, and the focus history only loses the closed pane
 
 #### Scenario: A background tab's shell exits
 - **WHEN** a shell exits cleanly in a pane of an inactive tab, including the only pane of that tab
-- **THEN** the pane closes (and its tab with it when it was the only pane), and the active tab, the keyboard focus and the focus history are unchanged
+- **THEN** the pane closes (and its tab with it when it was the only pane), the active tab and the keyboard focus are unchanged, and the focus history only loses the closed pane
 
 #### Scenario: Clean exit with incomplete output keeps the pane
 - **WHEN** a shell exits with status 0 and the host reports that the output may be incomplete
@@ -108,7 +108,7 @@ A shell that exits on its own with status 0 and complete output (`outputComplete
 - **THEN** the pane closes at once with that output dropped, and the host's release and channel cleanup complete as for any closed terminal
 
 #### Scenario: The last pane closes its tab
-- **WHEN** a shell exits with status 0 in the only pane of a tab
+- **WHEN** a shell exits with status 0 and complete output in the only pane of a tab
 - **THEN** the tab closes, and when it was the last tab the central area shows the empty state
 
 #### Scenario: Non-zero exit keeps the pane
@@ -188,7 +188,7 @@ Closing a pane or a tab that holds live terminals SHALL first warn that their ru
 - **THEN** the shell and vim are terminated, the pane is removed and its sibling takes its space, and nothing keeps running invisibly
 
 #### Scenario: Cancel the warning
-- **WHEN** the user closes a terminal pane with a live shell and chooses Cancel
+- **WHEN** the user closes a terminal pane with a live shell and chooses Cancel, and the shell does not exit while the warning is open
 - **THEN** the pane, its place in the split, its shell and any running program remain intact, with no input or output lost
 
 #### Scenario: Close a tab with several terminal panes
@@ -200,7 +200,7 @@ Closing a pane or a tab that holds live terminals SHALL first warn that their ru
 - **THEN** no warning is shown, and vim keeps running with the same shell, scrollback and binding
 
 #### Scenario: A shell exits cleanly while the warning is open
-- **WHEN** the warning for two live terminals is open and one shell exits with status 0
+- **WHEN** the warning for two live terminals is open and one shell exits with status 0 and complete output
 - **THEN** that pane closes at once, and confirming closes only the other terminal while cancelling leaves it running
 
 #### Scenario: A shell ends otherwise while the warning is open

@@ -117,7 +117,7 @@ The user SHALL be able to move a pane to a new tab, and to move a whole tab into
 - **THEN** tab 1's area is split, its two panes above and the overview below, tab 2 is gone from the strip, the overview pane is focused and stays bound to B
 
 #### Scenario: A shell exits cleanly around a move
-- **WHEN** a terminal's shell exits with status 0 just before or just after its pane is moved
+- **WHEN** a terminal's shell exits with status 0 and complete output just before or just after its pane is moved
 - **THEN** that pane is removed once, by its pane id, from wherever it then is, and no other pane is closed or moved
 
 #### Scenario: Nothing to move
@@ -174,7 +174,7 @@ Closing a pane or a tab SHALL first show one confirmation naming every view in i
 - **THEN** one confirmation names both terminals, and on confirm the tab closes and the terminals' processes end
 
 #### Scenario: Cancel closing a tab
-- **WHEN** the user closes a tab with a live terminal and cancels the confirmation
+- **WHEN** the user closes a tab with a live terminal and cancels the confirmation, and no shell in it exits while the confirmation is open
 - **THEN** the tab, its panes, their split arrangement and ratios are unchanged, and the terminal keeps running
 
 #### Scenario: Close a pane holding a live terminal
