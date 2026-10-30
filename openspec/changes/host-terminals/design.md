@@ -132,11 +132,12 @@ See `proposal.md` for scope; the M1 exit criteria are quoted there.
     - `Stream<Uint8List> input`;
     - `Stream<(int cols, int rows)> size`;
     - `scrollbackLimit`;
+    - `ValueListenable<int> pending`: the bytes passed to `feed` that the engine has not yet applied to its grid. It counts bytes held before the engine is ready, bytes queued in the engine and the batch in flight, and falls to 0 once every fed byte is applied (review round 5);
     - `dispose()`.
 
     Each candidate has one adapter. A string-based engine such as xterm.dart decodes with a streaming UTF-8 decoder in the adapter; the host contract stays byte-exact.
-  - **Session.** The desktop terminal controller pumps channel bytes into `feed`, pausing the channel subscription when the engine's pending-feed queue passes 1 MiB, so credit stops at the host. It debounces `size` to at most one resize every 50 ms, plus a trailing resize.
-  - **Dependency rule.** Audit rule D1 gains the adopted engine as the one allowed extra desktop dependency.
+  - **Session.** The desktop terminal controller pumps channel bytes into `feed` and pauses the channel subscription while `pending` is at or above 1 MiB, so credit stops at the host. It resumes when `pending` falls below 1 MiB. Bytes keep their order and none are dropped. A channel chunk already received when the pause begins is fed whole, so the bound is 1 MiB plus one chunk. `flutter_alacritty` queues fed bytes inside its client with no limit, so the vendored copy reports its queue and in-flight batch to the adapter (a third patch, `third_party/flutter_alacritty/KUMIKO.md`). It debounces `size` to at most one resize every 50 ms, plus a trailing resize.
+  - **Dependency rule.** Only the adapter imports the engine package. Audit rule D1 restricts the desktop's dependencies on workspace members only, so the engine, an external package, needs no entry there.
 - **Rejected:** The engine's types used across the workbench. Changing engines later, which is medium cost per ADR 0006, would then touch every terminal call site.
 - **Reversal cost:** low behind the boundary.
 
@@ -166,7 +167,7 @@ See `proposal.md` for scope; the M1 exit criteria are quoted there.
 
 ### D10: The engine choice is recorded as ADR 0010 after the spike
 
-- **Choice:** Write `docs/adr/0010-terminal-engine.md` (`Status: proposed`) with the per-OS results table during apply, once the user's results are in. It is reviewed as part of this change's pre-ship review and accepted when the change merges. `architecture.md` gains its index row.
+- **Choice:** Write `docs/adr/0010-terminal-engine.md` (`Status: proposed`) during apply and complete it with the per-OS results table once the user's results are in. It is then accepted, provisionally while Linux or macOS user-verified items are `unproven`, and reviewed with this change's pre-ship review. `architecture.md` gains its index row.
 - **Rejected:** Record the engine only in this design. ADR 0006 explicitly asks for a follow-up ADR, and the engine binds every later terminal feature.
 - **Reversal cost:** low (a document).
 
@@ -300,7 +301,7 @@ sequenceDiagram
 | Close acknowledgement | n/a | n/a | ≤ 250 ms (control bound) | Holds under saturation (qualification test) |
 | Close completion (termination confirmed) | n/a | `terminal/closeFailed`, unit unresolved | Overall settlement deadline of 30 s, covering termination (POSIX SIGTERM, 2 s grace, SIGKILL; Windows job termination), both marker-scan passes and scan settling (`Settler.settle`, `runMarkerScan`); `ClosePseudoConsole` ≤ 5 s on Windows falls within it. Completion is reported only after cleanup confirmation | n/a |
 | Desktop input queue per terminal | 1 MiB | Further input refused, *input paused* shown | none | Large pastes above 1 MiB are refused with a message |
-| Desktop pending feed per terminal | 1 MiB | Channel subscription paused, credit stops | none | Bounded |
+| Desktop pending feed per terminal (`TerminalSurface.pending`) | 1 MiB plus one channel chunk | Channel subscription paused until `pending` falls below 1 MiB, credit stops | none | Bounded, including a stalled engine |
 | Desktop scrollback | Engine line cap, default 10 000 lines, configurable | Oldest lines evicted | n/a | Memory ∝ cap × width |
 | Data channels per connection | 160 (D4) | `channel-limit` refusal | n/a | Unit cap 64 binds first |
 | Terminals per host | Existing unit cap 64, shared with all units | `unit-cap` refusal shown | n/a | Bounded |
