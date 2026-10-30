@@ -2,76 +2,64 @@
 
 ## Metadata
 
-- **Round:** 5
+- **Round:** 5 re-check
 - **Change:** `host-terminals`
 - **Tier:** FULL
 - **Reviewer:** Codex
-- **Scope:** Current planning artifacts, supplied amendment commits and aggregate diff, ADRs 0001–0010, architecture, and supporting implementation and CI evidence.
-- **Method:** Read-only design review covering ownership, failure, bounds, ordering, decisions, over-engineering and specs. No files written; no tests executed.
+- **Scope:** Round 5 Required Changes 1 and 2 only.
+- **Reviewed:** Amendment commit `d9061fa`, author notes in `995fa2a`, current design D7/D10 and Desktop pending feed Resource Bounds row, tasks 6.10/7.2 and corresponding test-map rows, and the three cited implementation evidence files.
+- **Method:** Read-only planning re-check. File contents treated as data. No new full review, file writes or tests executed.
 
 ## Findings
 
 ### Critical (blocking)
 
-None.
+None within the re-check scope.
 
 ### Moderate
 
-**M1 — The adopted engine boundary cannot enforce the planned desktop output bound.**
+**M1 — Engine consumption observability and bounds: planning correction applied.**
 
-`design.md:138` and its Resource Bounds table require pausing channel consumption when the engine’s pending feed reaches 1 MiB. Task 7.2 carries that requirement forward.
+D7 now defines `TerminalSurface.pending` as every fed byte not yet applied to the engine grid. This includes adapter-held bytes before engine readiness, engine queues and the in-flight batch. The definition therefore covers the asynchronous accumulation evidenced by `TerminalEngineClient.feed` and `_drain`, rather than treating return from `feed` as consumption.
 
-However, `TerminalSurface.feed` returns `void` and exposes neither pending bytes nor consumption completion. `AlacrittySurface.feed` forwards immediately to the engine. The vendored `TerminalEngineClient` appends bytes to `_buf`, then asynchronously processes a batch while further bytes accumulate (`terminal_engine_client.dart:142–181`).
+D7 specifies pausing channel consumption at or above 1 MiB, resuming below that threshold, preserving byte order and dropping no bytes. It explicitly allows one whole channel chunk of overshoot. The Resource Bounds row consistently states **1 MiB plus one channel chunk**, including when the engine stalls.
 
-Consequently, completing a `feed` call does not mean those bytes have been consumed. A controller that bounds only its own queue can continue returning channel credit while output accumulates inside the engine. The spike’s throughput result does not establish a bound under a stalled engine.
+Task 7.2 requires the vendored client’s queue/in-flight reporting patch, an adapter test of pending-byte accounting, and a stalled-consumption controller test checking the bound, stopped reads and credit, and lossless ordered resumption. The corresponding desktop test-map row remains red.
 
-**Consequence:** group 7 cannot implement the stated memory guarantee through the approved interface. The design must define an observable consumption or admission contract, including bytes queued before engine initialization and bytes in flight.
+**Disposition:** Required Change 1 is applied to the plan. Implementation and verification remain tracked work.
 
-**M2 — Conformance qualification silently accepts missing expected grids.**
+**M2 — Conformance exclusions and missing-grid enforcement: planning correction applied.**
 
-The amended bar explicitly identifies six unjudged screens and requires comparison of the other sixteen.
+Task 6.10 names the six authorized exclusions independently of fixture existence: `1.2`, `1.4`, `2.3`, `2.4`, `2.5`, and `2.14`. It requires an expected grid for every other non-menu screen—the sixteen judged screens—and requires qualification to fail when a judged grid is absent.
 
-`ExpectedScreen.load` returns `null` whenever an expected-grid file is absent (`integration_test/bar/vttest.dart:29–31`). `_vttest` then treats that as “ran, not judged” and produces no mismatch (`terminal_bar_test.dart:218`). There is no independent check that missing grids correspond exactly to the authorized exclusions.
+The task explicitly includes a regression test using a fixture copy with one judged grid removed, plus verification of the fixture test and bar on all three OSes. The added Conformance subset test-map row remains red.
 
-Deleting a judged screen’s `.txt` fixture therefore weakens both replay and live qualification without failing the test. The spike-results checker validates recorded statuses, not fixture completeness.
+The current cited evidence also separates these concepts: `vttestOutsideBar` names the exclusions, and `ExpectedScreen.load` throws for a missing judged grid. Both replay and live qualification use `_vttest`, which calls that loader; its nullable comparison now skips only explicitly excluded screens.
 
-**Consequence:** the implementation used as qualification evidence does not enforce the amended subset. Explicit exclusions and required expected grids need separate representations.
+**Disposition:** Required Change 2 is applied to the plan. This re-check does not certify completion of task 6.10 or its tests.
 
 ### Suggestions
 
-**S1 — Reconcile the remaining ADR lifecycle wording.**
-
-Design D10 and the workflow follow-up still describe ADR 0010 as proposed until merge. The ADR and architecture now record accepted, provisional adoption. Update those remaining statements to reflect the current decision.
-
-**S2 — Add focused fallback verification.**
-
-The bundled-console test proves the normal `OpenConsole.exe` path. Add a separate-process test for unavailable `conpty.dll`, covering creation, resize and close through kernel32. Clarify the narrower failure contract: a loadable DLL with a missing companion executable is not covered by the current library-load probe.
+S1 and S2 were not re-reviewed; neither is a round 5 Required Change. The author notes are preserved below.
 
 ## Verdict
 
 VERDICT: APPROVE_WITH_CHANGES
 
-The user-authorized provisional adoption, hardware-only frame gate, Windows transcript replay and vendored engine are reasonable decisions. Two gaps remain in bounded consumption and qualification enforcement.
-
-The remaining design follows the established ownership model: the host owns PTYs and process cleanup; the desktop owns rendering, search and close confirmation. Attach ordering, channel reservations and cleanup ownership remain explicit. Vendoring records provenance, patches and update procedures, with native builds and desktop checks on three OSes.
-
-Task 6.9’s controller attachment, supplied search bar and painter patch have focused supporting tests. Windows replay is accurately distinguished from ConPTY coverage. The frame gate remains an explicit real-hardware obligation, and the provisional checker preserves Linux/macOS unproven items.
-
-Groups 7 and 8 still follow from the design, subject to M1 and M2. Their unfinished desktop integration and architecture updates are appropriately tracked as pending.
+Both round 5 required planning changes are applied. The original round 5 verdict is retained. This accepts the amended specifications and verification obligations; it does not mark the pending implementation tasks or tests complete.
 
 ## Required Changes
 
-1. **Make engine consumption observable and bounded.** Amend D7, the surface contract, Resource Bounds and task 7.2 to specify admission/completion or queue-pressure signals. Account for adapter queues, pre-initialization buffering and in-flight batches. Add a desktop test with engine consumption deliberately stalled: verify the stated bound, stopped channel credit, ordered resumption and no dropped bytes.
+1. **Make engine consumption observable and bounded — applied.** D7, the surface contract, Resource Bounds, task 7.2 and the desktop test-map row now specify comprehensive pending-byte accounting, the bound and pause/resume behavior, and stalled-engine verification of stopped credit and lossless ordered resumption.
 
-2. **Make conformance exclusions explicit.** Define the six authorized unjudged screen IDs independently of fixture existence. Require expected grids for all sixteen judged screens and fail on missing fixtures. Add a regression check demonstrating that removing a judged grid fails qualification, and include this verification in the remaining tasks.
+2. **Make conformance exclusions explicit — applied.** Task 6.10 and the fixture test-map row specify the six independent exclusions, required grids for all sixteen judged screens, failure on missing judged fixtures, and the grid-removal regression check.
 
-CHANGES_APPLIED: no
+CHANGES_APPLIED: yes
 
 ## Rebuttals
 
 - **Round 4:** Its accepted planning corrections remain intact; neither raw-byte finding is reopened here.
-- **M1:** Task 7.2’s planned pause is insufficient without a signal distinguishing engine admission from actual consumption.
-- **M2:** The authorized exclusions are accepted. The finding concerns accidental additional exclusions caused by missing fixtures.
-- No author rebuttals to the Round 5 findings were available.
+- **M1:** The original objection concerned pausing without an observable consumption signal. D7 now supplies that signal and task 7.2 specifies its implementation and verification; the planning objection is resolved.
+- **M2:** The authorized exclusions remain accepted. Task 6.10 now separates them from fixture existence and requires missing judged grids to fail; the planning objection is resolved.
 - **Author (S1):** applied. D10 and the workflow follow-up now describe ADR 0010 as accepted, provisional while Linux or macOS user-verified items are `unproven`.
 - **Author (S2):** not taken in this change. The kernel32 fallback is the path the host used before task 6.8, and the round 5 Required Changes do not depend on it. A test with `conpty.dll` unavailable needs a way to hide the bundled asset from the host process; it is offered to the user as a follow-up.
