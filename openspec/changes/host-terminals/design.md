@@ -5,9 +5,9 @@
 | Trigger | Applies? | Evidence |
 |---|---|---|
 | T1 Components (new component, or 3+ with directed relationships) | Yes | New PTY spawn in `process_containment`, a host terminal service with per-terminal I/O isolates, a profile service, and a desktop terminal view behind an engine boundary: desktop → host → PTY → shell. |
-| T2 State (persistent state, caches, 3+ state machine) | Yes | Store schema v3 (user profiles, default profile). A terminal lifecycle with five states (starting, live, exiting, ended, closed). A desktop tab-to-terminal map. |
+| T2 State (persistent state, caches, 3+ state machine) | Yes | Store schema v3 (user profiles, default profile) and v4 (layout format 2, D11). A terminal lifecycle with five states (starting, live, exiting, ended, closed). A desktop pane-to-terminal map. |
 | T3 Concurrency | Yes | Blocking PTY reads and writes on isolates, credit-driven backpressure, exit racing final output, concurrent opens and closes. |
-| T4 Boundaries | Yes | New protocol methods and a capability, host-allocated desktop-to-host channels (`connection.dart:225-240` allows only sender-side allocation today), a store migration, a new layout tab kind, and a third-party engine dependency. |
+| T4 Boundaries | Yes | New protocol methods and a capability, host-allocated desktop-to-host channels (`connection.dart:225-240` allows only sender-side allocation today), two store migrations, a new view kind, a new layout format whose store migration discards stored format 1 layouts (D11), and a third-party engine dependency. |
 | T5 Volume | Yes | Unbounded terminal output (100 MB `cat`), user input bursts (paste), desktop scrollback, and the profile list. |
 | T6 Risk | Yes | Process trees that must not leak (ADR 0001), and close confirmations that guard against losing running work. |
 
@@ -29,15 +29,17 @@ See `proposal.md` for scope; the M1 exit criteria are quoted there.
   - Data channels are one-way, and today the sender allocates the id with `++_highestChannel` (`connection.dart:225-229`). Both peers allocating at once could collide.
   - Methods are gated by `methodCapability` (`messages.dart:40-54`).
   - The measured control-latency bound is a 250 ms worst-case round-trip under saturation (`packages/host/test/it/protocol_qualification_test.dart:213,238`).
-- **Layout.** `LayoutTab{id, kind, workspace, item, state ≤ 4 KiB}` (`domain/lib/src/layout/model.dart:8-30`).
+- **Layout (format 1, before D11).** A split tree of `TabGroup{id, context, tabs, active}` leaves, each with its own tab strip, and `LayoutTab{id, kind, workspace, item, state ≤ 4 KiB}` (`domain/lib/src/layout/model.dart:8-30`). `layoutFormat = 1`, `maxTabGroups = 16`, `maxTabs = 128` (`bounds.dart`). A split adds an empty group, and an emptied group that is the only one stays (`operations.dart:73-107`).
+  - The host decodes every stored and saved layout with the shared codec. An undecodable stored layout is returned as `restoreError` and not written at load (`host/lib/src/workbench_service.dart:46-77`). The `working_set` row has a `layout_format` column.
   - `openOrFocus` matches tabs on `kind` and `item` (`operations.dart:210-250`).
   - `closeTab` is a pure removal (`:192-206`).
   - The tab close button calls `controller.closeTab` with no confirmation (`desktop/lib/src/workbench_page.dart:731`).
+  - **User decision (2026-10-30):** this layout is replaced by tabs that contain panes (D11).
   - Unknown kinds render as *Unsupported view* (`:753-771`).
 - **Store.** Migrations v1 (ledger) and v2 (workspace, working set), each in its own transaction (`packages/host/lib/src/store/store.dart:13-67,133-155`). There is no settings table.
 - **Audit.** Rule D1 lets `desktop` depend only on `host_protocol`, `domain` and `process_containment` (`tool/audit_dependencies.dart:250-325`).
 - **CI.** Three OSes on Flutter 3.47.7, running analysis, package tests and the desktop integration tests, each against a built host (`.github/workflows/ci.yml`).
-- **Constraints.** ADR 0001 (process ownership and cleanup), ADR 0002 (channels, credit, control priority), ADR 0003 (store), ADR 0006 (host PTYs, desktop emulation, spike), ADR 0009 (layout document).
+- **Constraints.** ADR 0001 (process ownership and cleanup), ADR 0002 (channels, credit, control priority), ADR 0003 (store), ADR 0006 (host PTYs, desktop emulation, spike), ADR 0009 (layout document; D11 changes its format and leaf shape).
 - **Unverified assumption:** `flutter_alacritty` can be driven by bytes from an external source rather than its own PTY. ADR 0006 says its PTY backend is pluggable; the spike settles this as its first check.
 
 ## Decisions
@@ -141,26 +143,27 @@ See `proposal.md` for scope; the M1 exit criteria are quoted there.
 - **Rejected:** The engine's types used across the workbench. Changing engines later, which is medium cost per ADR 0006, would then touch every terminal call site.
 - **Reversal cost:** low behind the boundary.
 
-### D8: Terminal tabs carry only a profile reference; the live link is desktop memory
+### D8: Terminal panes carry only a profile reference; the live link is desktop memory
 
 - **Choice:**
-  - **Tab shape.** Layout tab `kind: terminal`. `item` is a fresh UUID per launch, so `openOrFocus` never matches an existing terminal and every launch opens a new one. `state` is `{"profileId": ..., "profileName": ...}`, well under 4 KiB.
-  - **Live link.** The desktop holds a `Map<tabId, TerminalLink>` (terminal id, channels, status) in memory.
-  - **Reopen.** A restored tab has no link and shows *ended, not restored*. **Start shell** opens a new host terminal and links it to the same tab.
-  - **Deleted profile.** If the profile no longer exists, the tab says so and **Start shell** offers the default profile.
+  - **Pane shape.** A pane (D11) with `kind: terminal`. `item` is a fresh UUID per launch, so `openOrFocus` never matches an existing terminal and every launch opens a new one. `state` is `{"profileId": ..., "profileName": ...}`, well under 4 KiB.
+  - **Live link.** The desktop holds a `Map<paneId, TerminalLink>` (terminal id, channels, status, surface) in memory. A pane keeps its id through every move (D11), so moving a pane or a tab keeps its link, surface and scrollback, and sends nothing to the host.
+  - **Split.** A split creates a terminal pane with the default profile and the split pane's workspace and starts it like a launcher terminal. With no default profile available, or without the `terminal` capability, the split is refused before any layout change.
+  - **Reopen.** A restored pane has no link and shows *ended, not restored*. **Start shell** opens a new host terminal and links it to the same pane.
+  - **Deleted profile.** If the profile no longer exists, the pane says so and **Start shell** offers the default profile.
 - **Rejected:** Recording live terminal ids in the layout, so that reopen could try to reattach. ADR 0006 and D7 rule out process survival, so any stored id would always be stale, and it would invite a "running" claim that cannot be true.
-- **Reversal cost:** low. The tab state is free-form JSON.
+- **Reversal cost:** low. The pane state is free-form JSON.
 
 ### D9: Close confirmations are a desktop policy over a per-kind `warnsOnClose` predicate
 
 - **Choice:**
-  - **Kind predicate.** Each registered tab kind supplies `warnsOnClose(tab) → String?` (the reason, or null). For terminals it returns the reason whenever the link status is `live` (shell alive), with no detection of child processes.
-  - **Close actions.** Tab close, group close and split close all go through `WorkbenchController.requestClose(tabIds)`. It collects the reasons, shows one dialog naming every affected tab, and on confirm sends `terminal/close` for each live terminal in parallel.
-  - **Confirmed close is an intent that survives any exit reason.** Confirming sets `closeRequested` on the tab's link before `terminal/close` is sent. The tab shows *Closing…*. The controller removes a `closeRequested` tab on **any** `terminal/exited` (reason `closed`, `exited` or `io-error`), or on an `unknown-terminal` reply to its close after the earlier `exited` was received. `terminal/exited` of any reason is sent only after the unit's end routine has confirmed cleanup (D5), so removal always follows confirmed cleanup. On `terminal/closeFailed` the tab stays with the error and `closeRequested` is cleared, and the workspace shows the host's *cleanup unresolved* state where it applies. A shell that exits while the confirmation dialog is open leaves `closeRequested` set on confirm; the already-received `exited` then removes the tab at once, without sending close.
-  - **Per-tab link state machine** (desktop): `none` → `starting` → `live` → `closing` → `ended`, plus `ended` → `starting` via **Start shell**.
-    - **Start.** **Start shell** and the launcher are disabled while the tab is `starting`, so repeated starts are serialized.
-    - **Warnings.** A `starting` tab warns like a `live` one, because its shell is about to exist.
-    - **Close while starting.** Closing a `starting` tab removes it from the layout and keeps the pending open in an *orphan* list owned by the controller. When the open result arrives, the controller sends `terminal/close` instead of attaching; if the result is an error, the orphan is dropped. The host's 10 s attach timeout (D4) is the backstop.
+  - **Kind predicate.** Each registered view kind supplies `warnsOnClose(pane) → String?` (the reason, or null). For terminals it returns the reason whenever the link status is `live` (shell alive), with no detection of child processes.
+  - **Close actions** (D11). Pane close and tab close both go through `WorkbenchController.requestClose(paneIds)`; a tab close passes every pane of the tab. It collects the reasons, shows one dialog naming every affected terminal, and on confirm sends `terminal/close` for each live terminal in parallel. Panes with nothing to wait for are removed at once; each terminal pane is removed when its close completes, and its sibling then takes its space. Moves never call it and never warn.
+  - **Confirmed close is an intent that survives any exit reason.** Confirming sets `closeRequested` on the pane's link before `terminal/close` is sent. The pane shows *Closing…*. The controller removes a `closeRequested` pane on **any** `terminal/exited` (reason `closed`, `exited` or `io-error`), or on an `unknown-terminal` reply to its close after the earlier `exited` was received. `terminal/exited` of any reason is sent only after the unit's end routine has confirmed cleanup (D5), so removal always follows confirmed cleanup. On `terminal/closeFailed` the pane stays in place with the error and `closeRequested` is cleared, and the workspace shows the host's *cleanup unresolved* state where it applies. A shell that exits while the confirmation dialog is open leaves `closeRequested` set on confirm; the already-received `exited` then removes the pane at once, without sending close.
+  - **Per-pane link state machine** (desktop): `none` → `starting` → `live` → `closing` → `ended`, plus `ended` → `starting` via **Start shell**.
+    - **Start.** **Start shell** and the launcher are disabled while the pane is `starting`, so repeated starts are serialized.
+    - **Warnings.** A `starting` pane warns like a `live` one, because its shell is about to exist.
+    - **Close while starting.** Closing a `starting` pane removes it from the layout and keeps the pending open in an *orphan* list owned by the controller. When the open result arrives, the controller sends `terminal/close` instead of attaching; if the result is an error, the orphan is dropped. The host's 10 s attach timeout (D4) is the backstop.
     - **Host change.** A result from an earlier host connection is ignored; that host's processes are gone with it.
 - **Rejected:** The host decides whether to warn, based on a per-terminal "busy" flag. It would need process-tree inspection that D7 explicitly does not require, and the close and exit confirmations belong to the desktop (`architecture.md:39`).
 - **Reversal cost:** low.
@@ -171,6 +174,52 @@ See `proposal.md` for scope; the M1 exit criteria are quoted there.
 - **Rejected:** Record the engine only in this design. ADR 0006 explicitly asks for a follow-up ADR, and the engine binds every later terminal feature.
 - **Reversal cost:** low (a document).
 
+### D11: Tabs contain panes: layout format 2; store migration v4 discards format 1 layouts
+
+- **User decision (2026-10-30, after trying the release build):** replace the VS Code-style layout, a split tree of tab groups each with its own tab strip, where a group created by a split can sit empty and can never be closed, with the Tern, Orca and tmux model. In the user's words: "Tabs contain panes, not the other way around. I can have a tab with a few panes inside, not a pane with a few tabs inside... I want to have a terminal open on the whole free real estate." Later the same day: "we still have the two bars to the side, but in the middle we have terminals OR whatever other window we open (chat UI over ACP, tasks, editor, ...) and they can all occupy a full tab or that tab can be split in panes and have another thing in the pane." The user chose to do this inside `host-terminals`, not as a separate change. **User decision (2026-10-30), on the stored layouts:** "There is no actual used by anyone previous builds so irrelevant, we can be destructive right now." So a stored format 1 layout is discarded, not converted. It amends the direction requirements "Tab groups and splits remain independent" and "Each tab group provides a labeled click launcher", and departs from direction decisions D28 ("Independent tab groups") and D30 ("The tab-group +"); D7 already spoke of "one tab containing four panes".
+- **Choice:**
+  - **Model.** The central area, between the left sidebar and the later right sidebar, which both stay outside it, is a strip of tabs. Each tab is a split tree whose leaves are panes. A pane hosts exactly one view for its whole life. View kinds are an open set: today terminal, workspace overview and *unsupported view*; later kinds such as chat over ACP, tasks or an editor are named only as examples and are not built here. The model, the operations and the codec treat every kind alike: any kind fills a one-pane tab or shares a split tab with any other kind, and splits and moves work the same for all. The one terminal-specific rule is the **default content of a split**: the desktop supplies a new terminal view (fresh UUID `item`, the default profile, the split pane's workspace) as the new pane's view. There are no empty panes: a split always has two children and a pane always has a view. Zero tabs is valid, and the central area then shows the launcher.
+  - **Document (format 2).**
+
+    ```json
+    {"format": 2,
+     "tabs": [{"id": "t1", "focusedPane": "p2",
+               "root": {"type": "split", "id": "s1", "direction": "horizontal", "ratio": 0.5,
+                        "first":  {"type": "pane", "id": "p1", "kind": "terminal", "workspace": "w1",
+                                   "item": "0b6b7d8e-...", "state": {"profileId": "builtin:pwsh", "profileName": "pwsh"}},
+                        "second": {"type": "pane", "id": "p2", "kind": "workspace-overview", "workspace": "w1",
+                                   "item": "w1", "state": {}}}}],
+     "activeTab": "t1",
+     "recent": ["p2", "p1"],
+     "sidebar": {"collapsed": false, "selected": "w1"}}
+    ```
+
+    - A pane is the format 1 tab shape `{id, kind, workspace, item, state}` with `type: pane`, and the pane id is the view's id. ADR 0009's field rules are unchanged: `workspace` is set at creation and never written by an operation, `item` drives open-or-focus, `state` is at most 4 KiB, and an unknown `kind` passes through unchanged.
+    - `direction: horizontal` places the children side by side (**Split right**), `vertical` stacks them (**Split down**); `ratio` is the first child's share, 0.1 to 0.9, as in format 1.
+    - `activeTab` is null if and only if `tabs` is empty. Each tab's `focusedPane` is one of its own panes; the focused pane of the window is the active tab's.
+    - `recent` lists pane ids, most recently focused first, without duplicates.
+    - `sidebar.selected` is the workspace new tabs bind to, or null for Personal. It replaces format 1's group contexts. It changes only through sidebar selection, Open folder and workspace removal; focusing a pane does not change it.
+    - Ids are unique across tabs, splits and panes. Tabs have no title or workspace of their own: a tab shows its focused pane's view title, plus the pane count when it has more than one.
+  - **Operations** (pure, in `domain`; the caller supplies every new id and the new view; none writes a view's `workspace`):
+    - `openTab(view)` appends a one-pane tab at the end of the strip and activates it. `openOrFocus(kind, item, view)` focuses the pane with the same `kind` and `item` wherever it is, activating its tab, and otherwise opens a tab.
+    - `splitPane(paneId, direction, view)` replaces the pane with a split of ratio 0.5, the old pane first and the new one second, and focuses the new pane.
+    - `closePane(paneId)` puts the sibling in the parent split's place; closing a tab's last pane closes the tab. `closeTab(tabId)` removes a tab and all its panes. A tab's next focused pane is its most recent remaining pane in `recent`. When the active tab closes, the tab holding the most recent remaining pane becomes active, else its right neighbour, else its left one, else none.
+    - `movePaneToNewTab(paneId, newTabId)` is refused for a tab's only pane; otherwise the pane leaves its tree as `closePane` would and becomes a one-pane tab right after its source tab, active and focused.
+    - `moveTabIntoSplit(tabId, direction, splitId)` is refused for the active tab and when the panes would exceed the per-tab bound. The active tab's root becomes `first` of a new split of ratio 0.5 and the moved tab's root its `second`; the moved tab leaves the strip and its focused pane is focused.
+    - `activateTab`, `focusPane`, `setRatio`, `selectWorkspace` (sets `sidebar.selected` and focuses the most recent pane bound to it, if any), `clearSelection(workspaceId)` and `repairSelection(known)` complete the set.
+  - **Bounds.** At most 128 tabs, 16 panes per tab and 128 panes in the document, so tabs ≤ panes ≤ 128. The existing bounds stay: document ≤ 256 KiB encoded, `state` ≤ 4 KiB, `item` ≤ 4 KiB, ids and kinds ≤ 64 B, ratio 0.1 to 0.9. The pane bounds reuse format 1's numbers (16 groups, 128 tabs), so every valid format 1 tab fits as a one-pane tab and neither the document nor the desktop's view count grows.
+  - **Store migration v4 discards format 1 layouts.** ADR 0009 §2 requires a format change to ship with a store migration, so store step v4 runs in its own transaction like every step and is destructive by user decision: it sets the Personal `working_set` row's `layout` and `layout_format` to null, keeping the row and its revision so later saves stay revision-guarded. Nothing else is touched: workspaces, ledger, profiles and settings stay. The first start after the upgrade therefore loads no layout and shows the first-launch layout (no tabs, the launcher), with no restore notice. No format 1 decoder is kept and nothing is converted.
+  - **Host validation.** `workbench/load` and `workbench/save` accept format 2 only; a format 1 document sent to save is refused `layout-invalid` ("unsupported layout format 1"). No code decodes format 1 any more. Save still refuses a pane bound to an unknown workspace (`unknown-workspace`). `sidebar.selected` is not checked at save; load repairs it to null when its workspace is gone, as format 1 group contexts were repaired. `workspace/remove` is refused while a pane is bound to the workspace, and clears `sidebar.selected` when it names it, stored at the next revision in the same transaction as the row deletion.
+  - **Older builds.** Because the store goes to v4, an older build's host (main at store v2, earlier builds of this branch at v3) refuses the store as newer, leaves it unmodified, and its desktop shows the store error (local-store "A store is never reset or downgraded"). It never reaches the restore path. That path was checked: `WorkbenchService.load` writes nothing when the stored layout fails validation, but the older desktop then starts from an empty layout and its first layout save replaces the row (ADR 0009 §6). The store version gate keeps that from happening; this change already makes the same trade with store v3 for profiles. There are no released builds or users, so nobody is cut off.
+  - **Desktop.** The tab strip shows each tab with its close button and a menu (**Move into split right**, **Move into split below**, **Close tab**), then the + launcher. Each pane has a header with its view title and workspace and the actions **Split right**, **Split down**, **Move to new tab** and **Close pane**; the focused pane is marked. Split dividers drag to set the ratio. With zero tabs the central area shows the launcher with a prominent **New terminal** and the + menu. View state that must survive a move (terminal links and surfaces) is owned by controllers keyed by pane id, never by the pane widget, so a move rebuilds the widget around the same surface and nothing restarts. Drag-and-drop of panes and tabs is not built.
+- **Rejected:**
+  - **Keeping tab groups** (the model shipped by `local-store-and-workbench-shell`) and adding terminals to them. The user tried it and rejected it: a split leaves an empty group that cannot be closed, and a terminal cannot fill the central area without a group's tab strip around it.
+  - **The group stopgap:** keep groups, close a group when it empties and hide the strip of a lone group. It removes the empty-group symptom but keeps panes that contain tabs, the model the user rejected, and every later view kind (chat, tasks, editor) would be built on it.
+  - **Converting format 1 layouts:** each group's tabs, in tree order, become one-pane tabs keeping their ids, bindings and state, the focused group's active tab becomes the active tab, and a notice says the split arrangement could not be kept, shown until the next save. Also considered in that family: making the group tree one tab whose panes are each group's active tab. Rejected by user decision 2026-10-30: there are no released builds or users of format 1, so it is not worth the code (a frozen format 1 decoder, the conversion, the notice and its protocol field).
+  - **Format 2 with no store version bump**, letting the decoder refuse format 1 at load. An older build would reach the restore path, and its first save would overwrite a format 2 layout (above). It also breaks ADR 0009 §2.
+  - **A separate change for the layout.** The user chose this change: terminals are the first view that needs the whole central area, and the close warnings are built on the same controller.
+- **Reversal cost:** medium. The format is stored data, so reversing it needs another format and migration, and the desktop workbench is rebuilt around it. The domain model, operations and codec are pure and fully tested. Until this change merges, no shipped build writes format 2.
+
 ## Diagrams (FULL)
 
 **T1 components:**
@@ -178,7 +227,7 @@ See `proposal.md` for scope; the M1 exit criteria are quoted there.
 ```mermaid
 graph LR
   subgraph Desktop
-    WB[WorkbenchController<br/>requestClose, launcher] --> TC[TerminalController<br/>tab→link map]
+    WB[WorkbenchController<br/>tabs and panes, requestClose, launcher] --> TC[TerminalController<br/>pane→link map]
     TC --> TS[TerminalSurface<br/>engine adapter]
     TC --> HL[HostLink<br/>attachOutbound]
   end
@@ -213,7 +262,7 @@ stateDiagram-v2
   exiting --> ended: read deadline expired (1 s active reading, parked time excluded) + queue flushed → terminal/exited{outputComplete false}
   closing --> ended: tree terminated → terminal/exited{closed}
   closing --> unresolved: 30 s overall settlement deadline passed → terminal/closeFailed
-  ended --> closed: terminal/release (or tab closed) → channels closed
+  ended --> closed: terminal/release (or pane closed) → channels closed
   unresolved --> closed: channels closed; unit stays unresolved in ledger
   closed --> [*]
 ```
@@ -267,28 +316,33 @@ sequenceDiagram
 | Built-in profiles | Host `ProfileService` (memory) | One host run | Re-detected at every host start | Host memory |
 | Terminal record (id, unit, channels, status) | Host `TerminalService` | `starting` to `closed` | Never rebuilt; gone with the host | Host memory |
 | Terminal unit row | Host `UnitManager` (ledger) | Spawn to end | Reconciled by the next host after a crash | Store `unit` |
-| Tab-to-terminal link | Desktop `TerminalController` | While the tab and desktop live | Lost on reopen, so the tab shows *ended* | Desktop memory |
-| Terminal tab (kind, item, profile ref) | Desktop layout (ADR 0009), saved by the host | Until the tab is closed | Restored on reopen | Store `working_set.layout` |
-| Scrollback and screen | Desktop engine | While the tab is open | Lost on close, crash or reopen | None durable |
+| Pane-to-terminal link and surface | Desktop `TerminalController` | While the pane and desktop live, through moves | Lost on reopen, so the pane shows *ended* | Desktop memory |
+| Terminal pane (kind, item, profile ref) | Desktop layout (ADR 0009, format 2, D11), saved by the host | Until the pane is closed | Restored on reopen | Store `working_set.layout` |
+| Tabs, split trees, active tab, focused panes, sidebar selection | Desktop layout (D11), saved by the host | Until changed | Restored on reopen; a missing selected workspace is repaired to Personal | Store `working_set.layout` |
+| Scrollback and screen | Desktop engine | While the pane is open, through moves | Lost on close, crash or reopen | None durable |
 | PTY size | Host (applied from desktop resize) | Terminal lifetime | Re-sent on view attach | Host PTY |
 
 ## Failure & Visibility (FULL)
 
 | Component | Fails / dies mid-operation → | Recovery | Retry safe? | Who finds out |
 |---|---|---|---|---|
-| Spawn (missing or unrunnable executable, PTY setup or `execve` failure) | Shim reports `{stage, errno}` on the status pipe (POSIX) or `CreateProcessW` fails (Windows); unit settled, then reservation released, no unit row survives; error result | User fixes the profile or picks another | Yes | User: error with path and OS reason in the tab |
+| Spawn (missing or unrunnable executable, PTY setup or `execve` failure) | Shim reports `{stage, errno}` on the status pipe (POSIX) or `CreateProcessW` fails (Windows); unit settled, then reservation released, no unit row survives; error result | User fixes the profile or picks another | Yes | User: error with path and OS reason in the pane |
 | Reader or writer isolate dies or errors | No more output, or input stops | Terminal service enters `closing`: tree terminated, then `terminal/exited {reason: io-error}` | No (new terminal) | User: ended state with reason; host log |
 | Writer blocked (shell not reading input) | Writer holds one chunk; input subscription paused, so credit stops; desktop input queue fills | Desktop stops accepting input beyond its queue and shows *input paused* | n/a | User |
 | Shell exits on its own | Normal | Reader EOF, queue flushed, then exit notification; channels kept until `terminal/release` | n/a | User: exit status shown |
 | Desktop never attaches (crash between open and attach, or orphaned open) | Shell running, no traffic | 10 s attach timeout closes the terminal | n/a | Nobody needs to: no process survives (agent test) |
-| Spawn succeeds, then something fails before attach | Unit running, reservation held | Unit settled by the normal end routine, reservation released, error result | Yes | User: error in the tab |
-| `terminal/close` cannot confirm the tree ended | Unit marked unresolved by the existing settle path; `terminal/closeFailed` | Existing cleanup retry and confirm UI | Yes (cleanup retry) | User: tab error, workspace *cleanup unresolved* |
+| Spawn succeeds, then something fails before attach | Unit running, reservation held | Unit settled by the normal end routine, reservation released, error result | Yes | User: error in the pane |
+| `terminal/close` cannot confirm the tree ended | Unit marked unresolved by the existing settle path; `terminal/closeFailed` | Existing cleanup retry and confirm UI | Yes (cleanup retry) | User: pane error, workspace *cleanup unresolved* |
 | `ClosePseudoConsole` exceeds 5 s | Process tree already terminated by the job; conhost lingers | Entry moved to the pending-console-cleanup registry (D3), holding one admission slot until the call returns or the host exits; conhost dies with the host's outer job | n/a | User: notice "terminal console host still running until Kumiko restarts"; host log |
-| Host dies | All PTYs close (outer job on Windows; SIGHUP plus process group on POSIX); next host reconciles `terminal` units | Existing reconciliation | Yes | User: host status page; tabs show *ended* |
+| Host dies | All PTYs close (outer job on Windows; SIGHUP plus process group on POSIX); next host reconciles `terminal` units | Existing reconciliation | Yes | User: host status page; terminal panes show *ended* |
 | Desktop dies | Host stdin EOF, host shutdown ends all units | Existing shutdown path | n/a | Nobody needs to: no process survives (agent test) |
 | ConPTY host (conhost/OpenConsole) | Spawned by the host process, outside the unit job; `ClosePseudoConsole` on terminal end; dies with the host's outer job | Host-death test covers it | n/a | Agent test asserts no leftover conhost |
 | Profile save, store write fails | No change | User retries | Yes | User: error in the profile editor |
-| Engine adapter throws on feed | Tab shows a render error; host terminal kept | User can close (with warning) | n/a | User; desktop log |
+| Engine adapter throws on feed | Pane shows a render error; host terminal kept | User can close (with warning) | n/a | User; desktop log |
+| Store v4 discards a stored format 1 layout (D11, by design) | Layout row cleared, migration succeeds | First start shows the first-launch layout | n/a | User sees the first-launch layout; no notice (user decision 2026-10-30) |
+| Store v4 migration fails (SQL error) | Transaction rolled back, store stays v3 | Existing migration-failure path; startup blocked | Yes (next start) | User: store error page |
+| Older build starts on a v4 store | Store refused unmodified (`store-newer`) | Run this build or a newer one | n/a | User: store error page with both versions |
+| Split refused (pane limit, no default profile, no terminal capability) | Layout unchanged | User picks a default profile or closes panes | Yes | User: reason on the split action |
 
 ## Resource Bounds (FULL)
 
@@ -309,22 +363,29 @@ sequenceDiagram
 | Resize messages | At most one per 50 ms per terminal plus a trailing one | Coalesced | n/a | Bounded |
 | User profiles | 64 profiles; ≤ 256 args of ≤ 4 KiB each; ≤ 128 env entries; ≤ 64 KiB per profile | Save refused with a reason | n/a | Bounded |
 | Shell detection | ≤ 20 probes, 2 s total, off the main isolate | Remaining probes skipped and logged; found ones offered | 2 s | n/a |
-| Post-exit PTY read (reaching EOF/EIO after the shell exited) | Until EOF, capped at 1 s of active reading after process exit; time parked for output-channel capacity is excluded | Read stops; bytes already read are flushed; `terminal/exited {outputComplete: false}`, shown in the tab | 1 s active reading | n/a |
+| Layout tabs (format 2, D11) | ≤ 128 tabs; never more tabs than panes | Launcher refused with the limit shown | n/a | Bound by the pane bound |
+| Layout panes (format 2, D11) | ≤ 16 panes per tab, ≤ 128 panes per document (format 1 had ≤ 16 groups, ≤ 128 tabs) | Split, launcher and **Move into split** refused with the limit; a document over it is `layout-invalid` | n/a | 128 views, as format 1 allowed |
+| Layout document (format 2) | ≤ 256 KiB encoded; `state` ≤ 4 KiB; `item` ≤ 4 KiB; ids and kinds ≤ 64 B; ratio 0.1 to 0.9 (unchanged from ADR 0009) | Save refused `layout-invalid` | n/a | Bounded |
+| Store v4 step | One row updated in one transaction | n/a | n/a | n/a |
+| Post-exit PTY read (reaching EOF/EIO after the shell exited) | Until EOF, capped at 1 s of active reading after process exit; time parked for output-channel capacity is excluded | Read stops; bytes already read are flushed; `terminal/exited {outputComplete: false}`, shown in the pane | 1 s active reading | n/a |
 
 ## Flow & State Gaps (FULL)
 
 - **Exit races final output.** The reader keeps relaying until EOF (POSIX `EIO` once the slave closes; Windows: after process exit the closer isolate calls `ClosePseudoConsole` while the reader keeps draining until the pipe breaks). `terminal/exited` waits for EOF (or the read-deadline-expired path, D5) and an empty, flushed output queue. Bytes always precede the exit notification. The read deadline counts only active reading time, so parking for credit never truncates output; only a PTY that keeps producing no EOF for 1 s of active reading ends with `outputComplete: false`.
 - **Close while output is stalled.** Close is a control message, so it is never queued behind data, and it is acknowledged within the control bound. The reader switches to discard (D3), so it never waits on credit. The tree is terminated, untransmitted output for that terminal is discarded on purpose (the user chose to close), and the channels close when `terminal/exited {closed}` is sent.
-- **Close and exit at the same time.** On the host, close during `exiting` moves to `closing`. The reader switches to discard and the queued output is dropped, so close never waits on desktop credit. The host then sends `terminal/exited {closed}` after cleanup is confirmed. A close that arrives after `ended` or `closed` gets `unknown-terminal`. On the desktop, `closeRequested` (D9) makes either exit reason, or `unknown-terminal` after a received `exited`, remove the tab. A confirmed close therefore never leaves its tab or group open. Tests: controller tests for exit during the confirmation dialog and exit before close acknowledgement; a host service test for close during credit-stalled final drainage.
+- **Close and exit at the same time.** On the host, close during `exiting` moves to `closing`. The reader switches to discard and the queued output is dropped, so close never waits on desktop credit. The host then sends `terminal/exited {closed}` after cleanup is confirmed. A close that arrives after `ended` or `closed` gets `unknown-terminal`. On the desktop, `closeRequested` (D9) makes either exit reason, or `unknown-terminal` after a received `exited`, remove the pane. A confirmed close therefore never leaves its pane or tab open. Tests: controller tests for exit during the confirmation dialog and exit before close acknowledgement; a host service test for close during credit-stalled final drainage.
 - **Concurrent opens.** Host-side allocation and the atomic two-slot reservation (D4) make ids unique and refuse cleanly at the limit. Each open passes the unit cap independently, so an over-cap open fails alone.
 - **Close while starting.** Handled by the desktop orphan list and the host attach timeout (D9, D4).
-- **A program ignores SIGTERM.** The close is acknowledged at once and the tab shows *Closing…*. SIGKILL follows after the 2 s grace period, and `terminal/exited {closed}` arrives only after the marker scan confirms cleanup, within the 30 s overall settlement deadline (Resource Bounds). Past that deadline the host sends `terminal/closeFailed` and the unit stays unresolved. A containment/service test with an escaped marked descendant and a delayed scan asserts that completion follows cleanup confirmation, and that an expired deadline stays visible and unresolved.
+- **A program ignores SIGTERM.** The close is acknowledged at once and the pane shows *Closing…*. SIGKILL follows after the 2 s grace period, and `terminal/exited {closed}` arrives only after the marker scan confirms cleanup, within the 30 s overall settlement deadline (Resource Bounds). Past that deadline the host sends `terminal/closeFailed` and the unit stays unresolved. A containment/service test with an escaped marked descendant and a delayed scan asserts that completion follows cleanup confirmation, and that an expired deadline stays visible and unresolved.
 - **Input after exit.** Frames for a closed inbound channel are dropped (existing `connection.dart:304-310`).
 - **Resize before the link is ready.** The desktop holds the latest size and sends it right after open; open carries the initial size.
-- **Profile edited or removed while in use.** The running terminal keeps the argv it started with. Tab state keeps the profile id, and reopen resolves it again (D8).
-- **Desktop reconnects to a new host.** All links are dropped and every terminal tab shows *ended*. No reattach.
+- **Profile edited or removed while in use.** The running terminal keeps the argv it started with. Pane state keeps the profile id, and reopen resolves it again (D8).
+- **Desktop reconnects to a new host.** All links are dropped and every terminal pane shows *ended*. No reattach.
 - **Restart in the middle of the v3 migration.** The step runs in its own transaction (`store.dart:133-155`), so it either completes or did not happen.
-- **Group close partly fails.** Tabs whose close succeeded are removed. Tabs whose close failed stay, with their errors. The group stays if any tab remains.
+- **Tab close partly fails.** Panes whose close succeeded are removed and their siblings take their space. Panes whose close failed stay, with their errors. The tab stays while any pane remains.
+- **Move while a terminal is starting or closing.** A move changes only the layout; the link keeps its state and its pending open or close, keyed by the unchanged pane id.
+- **Split whose terminal the host refuses.** A split whose new terminal is refused by the host (unit cap, workspace unavailable, cleanup unresolved) keeps the new pane, showing the refusal and **Start shell**, as a launcher terminal does; it is a terminal view, not an empty pane. Only refusals known before the layout change (pane limits, no default profile, no capability) refuse the split itself.
+- **Restart in the middle of the v4 migration.** The step runs in its own transaction, so the layout is either cleared with the version at v4, or untouched at v3.
 
 ## Mechanism Ledger (FULL)
 
@@ -337,7 +398,10 @@ sequenceDiagram
 | Reader discard mode and a separate closer isolate | Yes | Without them, closing a saturated or credit-stalled terminal can deadlock on Windows and leak conhost (round-1 review C3) | n/a |
 | Writer one-chunk admission | Yes | Without it credit returns before input is written and the host queues input without bound (round-1 review M4) | n/a |
 | Atomic two-slot channel reservation before spawn | Yes | Without it an open at the limit starts a shell and then fails (round-1 review M1) | n/a |
-| Desktop orphan list for opens that finish after their tab closed | Yes | Without it a shell runs with no tab until the attach timeout, so the user's close is not honoured promptly (round-1 review M2) | n/a |
+| Desktop orphan list for opens that finish after their pane closed | Yes | Without it a shell runs with no pane until the attach timeout, so the user's close is not honoured promptly (round-1 review M2) | n/a |
+| Conversion of format 1 layouts with a notice (D11) | No | There are no released builds or users of format 1 (user decision 2026-10-30) | Someone needs their format 1 layout back |
+| Store version gate for format 2 (v4) | Yes | Without it an older build's first save overwrites the format 2 layout, unseen (D11) | n/a |
+| Drag-and-drop of panes and tabs | No | Menu actions cover the required moves (D11) | Users ask for drag gestures |
 | Resize debounce | Yes | A resize storm floods channel 0 ahead of other control | n/a |
 | Busy-process detection for close warnings | No | D7 says no busy detection is needed; warning while the shell is alive is a superset | Users report too many prompts on idle shells |
 | Scrollback persistence | No | Reopen is layout-only by decision (ADR 0006) | A superseding decision |
@@ -355,11 +419,14 @@ sequenceDiagram
 - [POSIX shim `TIOCSCTTY` behaviour differs between Linux and macOS] → The shim opens the slave without `O_NOCTTY` and then calls `TIOCSCTTY` explicitly, which is valid on both. A per-OS test checks `tty` and job control (Ctrl+Z, `fg`) in bash.
 - [Raising `maxChannels` raises the worst-case memory per connection] → The unit cap still bounds terminals. The architecture resource table is updated with real numbers.
 - [Linux and macOS interactive items are unproven at merge (user decision 2026-10-29)] → Agent-scripted bar items still run on all three OSes in CI. The unproven items stay listed in `spike-results.md` and in ADR 0010. The M1 daily-driver exit criterion stays unverified until they are run, and milestone close lists it. A later fail leads to a superseding ADR and a fix change.
+- [The upgrade discards any stored format 1 layout (user decision 2026-10-30)] → There are no released builds or users; workspaces, profiles and the ledger are kept, and only the arrangement of the developer's own test profiles is lost.
+- [Older builds can no longer open the profile once this build has run (store v4)] → They refuse the store unmodified with a visible error rather than overwrite the layout; store v3 in this change already does the same.
+- [The desktop workbench is reworked while the earlier terminal UI work is uncommitted] → The per-pane link controller, profiles, close confirmation and ended view carry over in substance; only the group and split UI is replaced (tasks group 8).
 
 ## ADRs
 
 - **In force, constraining this change:** 0001 (child host, containment, cleanup), 0002 (frames, channels, credit, control priority), 0003 (host-owned store), 0006 (host PTYs, desktop emulation, spike), 0009 (layout document).
-- **To record during apply:** 0010 terminal engine (the adopted engine with per-OS spike results; ADR 0006 follow-up).
+- **To record during apply:** 0010 terminal engine (the adopted engine with per-OS spike results; ADR 0006 follow-up); 0011 workbench tabs contain panes (D11: layout format 2 and its store migration; amends ADR 0009 decision 3, whose tab shape becomes the pane shape inside tabs, and leaves its other decisions in force).
 
 ## Open Questions
 

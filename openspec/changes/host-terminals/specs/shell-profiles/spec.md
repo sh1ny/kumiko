@@ -52,7 +52,7 @@ The user SHALL be able to add, edit and remove their own shell profiles, includi
 - **THEN** the failure is shown, and the profile list is unchanged
 
 ### Requirement: One profile is the default
-Exactly one available profile SHALL be the default used by the Terminal launcher. On first launch the default SHALL be the platform's preferred detected shell. When the default profile becomes unavailable, the launcher SHALL say so and ask the user to pick another, without substituting one silently.
+Exactly one available profile SHALL be the default used by the Terminal launcher, **New terminal** and pane splits. On first launch the default SHALL be the platform's preferred detected shell. When the default profile becomes unavailable, the launcher and the split actions SHALL say so and ask the user to pick another, without substituting one silently.
 
 #### Scenario: First launch on Windows
 - **WHEN** Kumiko starts for the first time on Windows with pwsh and Windows PowerShell detected

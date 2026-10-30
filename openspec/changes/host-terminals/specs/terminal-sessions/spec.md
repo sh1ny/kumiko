@@ -22,14 +22,14 @@ Opening a terminal SHALL make the execution host start the selected shell profil
 - **THEN** the terminal reports that the executable was not found, naming its path, and no other shell is started in its place
 
 ### Requirement: A terminal in a workspace starts in that workspace
-A terminal opened from a group bound to a workspace SHALL start in that workspace's directory unless its profile sets a working directory. A terminal opened in Personal with no workspace SHALL start in the user's home directory unless its profile sets one.
+A terminal view bound to a workspace SHALL start in that workspace's directory unless its profile sets a working directory. A terminal bound to no workspace, opened in Personal, SHALL start in the user's home directory unless its profile sets one.
 
 #### Scenario: Open a terminal in a checkout
-- **WHEN** the user opens a terminal from a group bound to the workspace `C:\src\kumiko` with a profile that sets no working directory
+- **WHEN** the user opens a terminal bound to the workspace `C:\src\kumiko`, from the launcher with that workspace selected or by splitting a pane bound to it, with a profile that sets no working directory
 - **THEN** the shell's working directory is `C:\src\kumiko`
 
 #### Scenario: Open a terminal in Personal
-- **WHEN** the user opens a terminal from a Personal group with no workspace on first launch
+- **WHEN** the user chooses **New terminal** in Personal with no workspace on first launch
 - **THEN** the shell starts in the user's home directory, with no project, server or network prompt
 
 #### Scenario: Workspace is unavailable
@@ -41,7 +41,7 @@ Each terminal's shell process tree SHALL be a contained unit of the host, counte
 
 #### Scenario: Unit cap reached
 - **WHEN** the user opens a terminal while the host already runs its maximum number of units
-- **THEN** the launch is refused with the reason `unit-cap` shown in the terminal tab, and no shell is started
+- **THEN** the launch is refused with the reason `unit-cap` shown in the terminal pane, and no shell is started
 
 #### Scenario: Workspace cleanup unresolved
 - **WHEN** the user opens a terminal in a workspace under *cleanup unresolved*
@@ -153,38 +153,42 @@ The user SHALL be able to run an installed coding-agent CLI such as Claude Code,
 - **THEN** the shell's own not-found error is shown in the terminal, and the terminal stays usable
 
 ### Requirement: Closing live terminals warns about process loss
-Closing a tab, tab group or split that holds terminals whose shell is alive SHALL first warn that their running processes will end, naming every affected terminal. Cancel SHALL keep them open and running; confirm SHALL terminate their process trees and close the views. Terminals whose shell has ended close without a warning.
+Closing a pane or a tab that holds terminals whose shell is alive SHALL first warn that their running processes will end, naming every affected terminal. Cancel SHALL keep them open and running; confirm SHALL terminate their process trees and close the views. Terminals whose shell has ended close without a warning. Moving a pane or a tab SHALL NOT warn or end any process.
 
 #### Scenario: Close a terminal running vim
-- **WHEN** the user closes a terminal tab running vim and confirms the warning
-- **THEN** the shell and vim are terminated and the tab is removed, and nothing keeps running invisibly
+- **WHEN** the user closes a terminal pane running vim and confirms the warning
+- **THEN** the shell and vim are terminated, the pane is removed and its sibling takes its space, and nothing keeps running invisibly
 
 #### Scenario: Cancel the warning
-- **WHEN** the user closes a terminal tab with a live shell and chooses Cancel
-- **THEN** the tab, its shell and any running program remain intact, with no input or output lost
+- **WHEN** the user closes a terminal pane with a live shell and chooses Cancel
+- **THEN** the pane, its place in the split, its shell and any running program remain intact, with no input or output lost
 
-#### Scenario: Close a group with several terminals
-- **WHEN** the user closes a tab group holding three terminals with live shells and one whose shell has ended
-- **THEN** one warning names the three live terminals, and confirming terminates all three and closes the group
+#### Scenario: Close a tab with several terminal panes
+- **WHEN** the user closes a tab whose panes hold three terminals with live shells and one whose shell has ended
+- **THEN** one warning names the three live terminals, and confirming terminates all three and closes the tab
+
+#### Scenario: Move a live terminal
+- **WHEN** the user moves a pane whose terminal runs vim to a new tab, then moves that tab into a split of another tab
+- **THEN** no warning is shown, and vim keeps running with the same shell, scrollback and binding
 
 #### Scenario: Close an ended terminal
-- **WHEN** the user closes a terminal tab whose shell has already exited
-- **THEN** the tab closes without a warning
+- **WHEN** the user closes a terminal pane whose shell has already exited
+- **THEN** the pane closes without a warning
 
 #### Scenario: Close a terminal that is still starting
-- **WHEN** the user closes a terminal tab and confirms before its shell launch has finished
-- **THEN** the tab is removed, and when the launch completes its shell is terminated at once, with no process left running
+- **WHEN** the user closes a terminal pane and confirms before its shell launch has finished
+- **THEN** the pane is removed, and when the launch completes its shell is terminated at once, with no process left running
 
 #### Scenario: Program ignores termination
 - **WHEN** the user confirms closing a terminal whose program ignores SIGTERM
-- **THEN** the tab shows *Closing…*, the process tree is terminated and its cleanup confirmed within the overall settlement deadline and the tab is removed, or the tab stays with an error and its workspace shows *cleanup unresolved*
+- **THEN** the pane shows *Closing…*, the process tree is terminated and its cleanup confirmed within the overall settlement deadline and the pane is removed, or the pane stays with an error and its workspace shows *cleanup unresolved*
 
 ### Requirement: Reopen restores terminal arrangement, not processes
-Quit and reopen SHALL restore each terminal tab in its group and position, shown as *ended, not restored* with its profile name and a **Start shell** action. Reopen SHALL NOT start a shell, re-run an earlier program or command, or claim that one is running or resumed.
+Quit and reopen SHALL restore each terminal pane in its tab and its place in the tab's split tree, shown as *ended, not restored* with its profile name and a **Start shell** action. Reopen SHALL NOT start a shell, re-run an earlier program or command, or claim that one is running or resumed.
 
 #### Scenario: Reopen a four-pane terminal arrangement
-- **WHEN** the user quits with four terminal panes running vim and lazygit, then reopens Kumiko
-- **THEN** the four panes are restored in place, each shown as *ended, not restored*, and no shell, vim or lazygit process is started
+- **WHEN** the user quits with one tab split into four terminal panes running vim and lazygit, then reopens Kumiko
+- **THEN** the tab and its four panes are restored in the same arrangement and ratios, each shown as *ended, not restored*, and no shell, vim or lazygit process is started
 
 #### Scenario: Start a shell in a restored pane
 - **WHEN** the user chooses **Start shell** in a restored terminal pane
