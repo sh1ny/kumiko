@@ -63,7 +63,7 @@ The host SHALL relay pseudo-terminal output to the desktop and desktop input to 
 
 #### Scenario: Binary-safe output
 - **WHEN** a program writes bytes that include escape sequences, invalid UTF-8 and NUL bytes
-- **THEN** the desktop receives exactly the bytes the pseudo-terminal produced, in order and unmodified by the host, before they reach the emulator; on Linux and macOS these are the bytes the program wrote
+- **THEN** the desktop receives exactly the bytes read from the pseudo-terminal, in order and unmodified by the host, before they reach the emulator; on Linux and macOS, with the terminal's default output processing, these are the program's bytes with each line feed written as carriage return and line feed
 
 #### Scenario: Windows pseudo-console re-renders output
 - **WHEN** a program on Windows writes bytes that include NUL bytes or invalid UTF-8
