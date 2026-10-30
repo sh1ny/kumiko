@@ -17,12 +17,12 @@ The central area SHALL show a strip of tabs. Each tab SHALL hold a split tree of
 - **WHEN** the stored layout holds a pane with no view kind
 - **THEN** the layout fails validation and is reported as a layout that cannot be restored, and no empty pane is shown
 
-### Requirement: With no tabs, the central area shows the launcher
-When no tab is open, the central area SHALL show the launcher: a prominent **New terminal** action and the + menu. **New terminal** SHALL open a new tab holding one terminal pane with the default shell profile, bound to the workspace selected in the sidebar, or to no workspace in Personal. The sidebars and the tab strip's + control SHALL stay visible.
+### Requirement: With no tabs, the central area shows an empty state
+When no tab is open, the central area SHALL show a short message that no tab is open and one prominent **New terminal** button showing its keyboard shortcut. **New terminal** SHALL open a new tab holding one terminal pane with the default shell profile, bound to the workspace selected in the sidebar, or to no workspace in Personal. The sidebars and the tab strip with its + menu SHALL stay visible. Source: user decision 2026-10-30.
 
 #### Scenario: Close the last tab
 - **WHEN** the user closes the only open tab
-- **THEN** the central area shows the launcher with **New terminal** and the + menu, and the sidebar and its selection are unchanged
+- **THEN** no tab is active, the central area shows the empty-state message and **New terminal** with its shortcut, the tab strip's + menu stays available, and the sidebar and its selection are unchanged
 
 #### Scenario: New terminal from the empty area
 - **WHEN** no tab is open, workspace A is selected in the sidebar, and the user chooses **New terminal**
@@ -32,8 +32,23 @@ When no tab is open, the central area SHALL show the launcher: a prominent **New
 - **WHEN** no tab is open and the connected host does not support terminals
 - **THEN** **New terminal** is shown disabled with the reason, and the + menu's other entries work
 
+### Requirement: New terminal has a keyboard shortcut
+**Ctrl+Shift+T** on Windows and Linux, and **Cmd+T** on macOS, SHALL open a new terminal tab as **New terminal** does, whether or not tabs are open. The workbench SHALL handle the shortcut before the focused view, so a focused terminal SHALL NOT receive it. Source: user decision 2026-10-30.
+
+#### Scenario: Shortcut with no tabs
+- **WHEN** no tab is open, workspace A is selected, and the user presses the shortcut
+- **THEN** a new active tab opens holding one terminal pane bound to A, running the default profile
+
+#### Scenario: Shortcut while a terminal is focused
+- **WHEN** a terminal pane running a shell is focused and the user presses the shortcut
+- **THEN** a new terminal tab opens and is active, and the focused shell receives no input from the key press
+
+#### Scenario: Shortcut without terminals
+- **WHEN** the connected host does not support terminals and the user presses the shortcut
+- **THEN** no tab opens and the workbench shows the reason
+
 ### Requirement: Splitting a pane opens a shell beside it
-**Split right** and **Split down** on a pane of any view kind SHALL place a new pane beside it, taking half of its space, running a new terminal with the default shell profile and bound to the split pane's workspace, or to none. The split SHALL NOT open a picker, and the new pane SHALL be focused. The new terminal is the only kind-specific rule of the pane model. A refused split SHALL leave the layout unchanged and say why.
+**Split right** and **Split down** on a pane of any view kind SHALL put a new pane beside it in half its space, with no picker, running a terminal with the default shell profile bound to the split pane's workspace, or to none, and focus it. This terminal is the pane model's only kind-specific rule. A split refused before the pane is made SHALL leave the layout unchanged and say why; if the host refuses the terminal, the new pane SHALL stay with the reason and **Start shell**.
 
 #### Scenario: Split a terminal right
 - **WHEN** the user chooses **Split right** on a terminal pane bound to workspace A
@@ -55,23 +70,39 @@ When no tab is open, the central area SHALL show the launcher: a prominent **New
 - **WHEN** the connected host does not support terminals
 - **THEN** **Split right** and **Split down** are shown disabled with the reason
 
+#### Scenario: Host refuses the new terminal
+- **WHEN** the user chooses **Split right** on a pane and the host refuses to start the new terminal, for example at its terminal limit
+- **THEN** the new pane stays beside the split pane, focused, showing the host's reason and **Start shell**, and the split pane is unchanged
+
 ### Requirement: Closing a pane gives its space to its sibling
-Closing a pane SHALL remove it and its view, and its sibling SHALL take the space of their split. Closing the last pane of a tab SHALL close the tab. The workbench SHALL never hold an empty pane or a tab without panes. After a close, the most recently focused remaining pane of the tab, or of the next active tab, SHALL be focused.
+Closing a pane SHALL give its space to its sibling; closing a tab's last pane SHALL close the tab. No empty pane or paneless tab SHALL exist. If the closed pane was focused, the sibling's first pane in tree order SHALL be focused. Closing the active tab SHALL activate the tab to its right, else to its left, with that tab's own focused pane, else no tab. Closing another tab SHALL change no focus. A failed close of a single pane SHALL leave the arrangement unchanged.
 
 #### Scenario: Close one of two panes
-- **WHEN** the user closes the right pane of a tab split into two panes
+- **WHEN** the user closes the focused right pane of a tab split into two panes
 - **THEN** the left pane fills the tab, the split is gone, and the left pane is focused
 
 #### Scenario: Close a pane in a nested split
 - **WHEN** a tab holds pane A beside a split of B above C, and the user closes B
 - **THEN** C takes B's space, A and the ratio of the outer split are unchanged
 
+#### Scenario: Close the focused pane beside a split
+- **WHEN** a tab holds pane A beside a split of B above C, A is focused, and the user closes A
+- **THEN** the split of B above C fills the tab and B, the first pane of the sibling in tree order, is focused
+
 #### Scenario: Close the last pane of the active tab
-- **WHEN** the user closes the only pane of the active tab while two other tabs are open
-- **THEN** the tab closes, and the tab holding the most recently focused remaining pane becomes active with that pane focused
+- **WHEN** three tabs are open, the middle one is active with one pane, and the user closes that pane
+- **THEN** the tab closes, and the tab that was to its right becomes active with its own focused pane focused
+
+#### Scenario: Close the rightmost active tab
+- **WHEN** the active tab is the last tab in the strip and another tab is open, and the user closes it
+- **THEN** the tab to its left becomes active with its own focused pane focused
+
+#### Scenario: Close a tab that is not active
+- **WHEN** tab 1 is active and the user closes tab 2
+- **THEN** tab 2 and its panes are gone, and tab 1 stays active with the same focused pane
 
 #### Scenario: A terminal close cannot be confirmed
-- **WHEN** the user confirms closing a terminal pane and the host reports that its cleanup could not be confirmed
+- **WHEN** the user confirms closing a single terminal pane and the host reports that its cleanup could not be confirmed
 - **THEN** the pane stays in place showing the error, and its split and sibling are unchanged
 
 ### Requirement: Panes and tabs move without changing their views
@@ -89,12 +120,20 @@ The user SHALL be able to move a pane to a new tab, and to move a whole tab into
 - **WHEN** a pane is the only pane of its tab, or a tab is the active tab
 - **THEN** **Move to new tab** on that pane, or **Move into split** on that tab, is shown disabled
 
+#### Scenario: Focus after moving a pane out
+- **WHEN** a tab holds pane A beside a split of B above C, A is focused, and the user moves A to a new tab
+- **THEN** the new tab holding A is active with A focused, and in the source tab B, the first pane of A's sibling in tree order, is focused
+
+#### Scenario: Move a terminal that is starting or closing
+- **WHEN** the user moves a terminal pane whose shell is still starting, or whose confirmed close is in progress, to a new tab
+- **THEN** the starting terminal attaches in its new place, or the closing terminal finishes closing and its pane is removed, as if it had not moved
+
 #### Scenario: Move at the pane limit
 - **WHEN** moving tab 2 into a split of tab 1 would put more than the maximum number of panes per tab in tab 1
 - **THEN** the move is refused with the limit stated, and both tabs are unchanged
 
 ### Requirement: The launcher opens terminals
-The + menu and the empty-area launcher SHALL offer **Terminal**, which opens a new tab holding one terminal pane with the default shell profile, bound to the workspace selected in the sidebar, or to none in Personal, and a way to choose another profile. Every Terminal launch SHALL open a new terminal; it SHALL NOT focus an existing one.
+The + menu SHALL offer **Terminal**, which opens a new tab holding one terminal pane with the default shell profile, bound to the workspace selected in the sidebar, or to none in Personal, and a way to choose another profile. Every Terminal launch SHALL open a new terminal; it SHALL NOT focus an existing one.
 
 #### Scenario: Open a terminal from the launcher
 - **WHEN** workspace A is selected in the sidebar and the user chooses **Terminal** from the + menu
@@ -124,7 +163,7 @@ A terminal pane SHALL be saved in the layout with its workspace binding and prof
 - **THEN** the terminal panes are kept in place as *unsupported view* and are not dropped on the next save
 
 ### Requirement: Closing a pane or tab checks for live work
-Closing a pane or a tab SHALL first collect every view in it that warns before closing, and SHALL show one confirmation naming all of them. Cancel SHALL leave the pane or tab, its panes and their arrangement unchanged.
+Closing a pane or a tab SHALL first collect every view in it that warns before closing, and SHALL show one confirmation naming all of them. Cancel SHALL leave the pane or tab, its panes and their arrangement unchanged. When some closes of a confirmed tab close fail, the closes that succeeded SHALL stay done, each failed pane SHALL stay with its identity and error, and the tab SHALL stay while any pane remains.
 
 #### Scenario: Close a tab holding live terminals
 - **WHEN** the user closes a tab whose panes hold two terminals with live shells and a Workspace overview
@@ -142,16 +181,24 @@ Closing a pane or a tab SHALL first collect every view in it that warns before c
 - **WHEN** the user closes a tab whose panes hold a Workspace overview and an ended terminal
 - **THEN** the tab closes without a confirmation
 
+#### Scenario: Part of a tab close fails
+- **WHEN** the user confirms closing a tab holding a Workspace overview and two live terminals, and the host cannot confirm the cleanup of one terminal
+- **THEN** the overview and the other terminal close and their space goes to the remaining pane, the failed terminal pane stays with the same identity and its error, and the tab stays open
+
 ### Requirement: A saved layout of the earlier format is discarded on upgrade
 The first start of this build on a store holding a layout of the earlier tab-group format SHALL discard that layout once and open the first-launch layout. The saved workspaces and every other stored record SHALL be kept. There are no released builds or users of the earlier format (user decision 2026-10-30), so no conversion and no notice is given.
 
 #### Scenario: Earlier layout discarded on upgrade
 - **WHEN** the store holds a format 1 layout with two split groups and three tabs, and the user starts this build
-- **THEN** the workbench shows Personal with no tabs and the launcher, as on first launch, with no restore notice, and the saved workspaces are still listed
+- **THEN** the workbench shows Personal with no tabs and the empty state, as on first launch, with no restore notice, and the saved workspaces are still listed
 
 #### Scenario: An earlier build meets the upgraded store
 - **WHEN** a host that supports only the earlier store version starts on the upgraded store
 - **THEN** it refuses the store as newer than supported without modifying it, and the desktop shows that error
+
+#### Scenario: Upgrade interrupted
+- **WHEN** the upgrade step fails before it completes, for example on a store write error
+- **THEN** the store keeps its earlier version and content, the desktop shows the store error, and the next start runs the upgrade again
 
 ### Requirement: The tab strip has a labeled click launcher
 The tab strip SHALL show a visible + control that opens, on click, a labeled menu of the view kinds this build supports. A view chosen there SHALL open in a new tab, bound to the workspace selected in the sidebar, or to no workspace in Personal. Source: direction "The tab strip provides a labeled click launcher" (amended from "Each tab group provides a labeled click launcher", user decision 2026-10-30), D30.
@@ -182,18 +229,18 @@ Opening an item that already has a pane in the working set SHALL focus that pane
 ## MODIFIED Requirements
 
 ### Requirement: First launch opens Personal without prompts
-On a profile with no saved layout, Kumiko SHALL open the Personal working set with no tabs and the launcher. It MUST NOT ask for an account, project, repository, server or network connection first. Source: direction "Personal work does not require a project", D30, D41.
+On a profile with no saved layout, Kumiko SHALL open the Personal working set with no tabs and the empty state. It MUST NOT ask for an account, project, repository, server or network connection first. Source: direction "Personal work does not require a project", D30, D41.
 
 #### Scenario: Fresh profile
 - **WHEN** the desktop starts on a profile with no store and the host connects
-- **THEN** the workbench shows Personal with no tabs, the launcher with **New terminal** and its + menu, and an Open folder action, and no dialog or prompt is shown
+- **THEN** the workbench shows Personal with no tabs, the empty state with **New terminal**, the tab strip's + menu, and an Open folder action, and no dialog or prompt is shown
 
 #### Scenario: Host still reconciling
 - **WHEN** the host reports that it is reconciling earlier processes at startup
 - **THEN** the Personal workbench and its saved layout are shown at once, and the reconciliation state is shown without blocking the workbench
 
 ### Requirement: Workspace selection focuses existing work without retargeting
-Selecting a workspace in the sidebar SHALL make it the selection that new tabs bind to, and SHALL focus that workspace's most recently focused pane, activating its tab, when it has one. It MUST NOT change the workspace binding of any existing view. Source: direction "Direct workspace navigation activates its parent context", D28, ADR 0004.
+Selecting a workspace in the sidebar SHALL make it the selection that new tabs bind to, and SHALL focus that workspace's most recently focused pane, or its first pane in tab and tree order when none was focused, activating its tab, when it has one. It MUST NOT change the workspace binding of any existing view. Source: direction "Direct workspace navigation activates its parent context", D28, ADR 0004.
 
 #### Scenario: Workspace with open tabs
 - **WHEN** the user selects workspace B in the sidebar while a pane bound to B is open in a background tab
@@ -202,6 +249,10 @@ Selecting a workspace in the sidebar SHALL make it the selection that new tabs b
 #### Scenario: Workspace with no tabs
 - **WHEN** the user selects workspace C, which has no open pane, while a tab holding panes bound to workspace A is active
 - **THEN** C becomes the sidebar selection, the active tab and focused pane are unchanged, and the panes bound to A remain bound to A
+
+#### Scenario: Workspace panes never focused
+- **WHEN** the restored layout's focus history names none of workspace B's panes, B has panes in tabs 2 and 3, and the user selects B
+- **THEN** tab 2 becomes active with its first pane bound to B in tree order focused
 
 ### Requirement: A view's workspace binding never changes
 A view's workspace binding SHALL be set when the view is created and kept for the view's whole life, including across save and restore. Focus changes, sidebar selection, splits, pane and tab closes, moves of panes and tabs, and sidebar collapse MUST NOT change it. A pane opened by a split SHALL take the split pane's binding. Source: ADR 0004 decision 3, D28.
@@ -249,11 +300,15 @@ The desktop SHALL send each layout change to the host, which stores it in the lo
 - **THEN** the next launch restores a layout no older than the maximum save age before the kill, not the layout from before the drag began
 
 ### Requirement: A layout that cannot be restored is reported, not hidden
-When the saved layout fails validation, the workbench SHALL open Personal with no tabs and the launcher, and say the saved layout could not be restored and why. A pane holding a view of a kind this build does not know SHALL be kept in place as an *unsupported view*, and saved back unchanged.
+When the saved layout fails validation, the workbench SHALL open Personal with no tabs and the empty state, and say the saved layout could not be restored and why. A pane holding a view of a kind this build does not know SHALL be kept in place as an *unsupported view*, and saved back unchanged.
 
 #### Scenario: Invalid saved layout
 - **WHEN** the stored Personal layout fails validation at load
-- **THEN** the workbench shows Personal with no tabs and the launcher, with a notice that the saved layout could not be restored and the validation reason, and the saved workspaces are still listed
+- **THEN** the workbench shows Personal with no tabs and the empty state, with a notice that the saved layout could not be restored and the validation reason, and the saved workspaces are still listed
+
+#### Scenario: Focus names a missing tab or pane
+- **WHEN** the stored layout's active tab names no tab, a tab's focused pane is not in that tab, or the focus history names an unknown pane
+- **THEN** the layout fails validation with that reason and is reported as a layout that cannot be restored
 
 #### Scenario: Unknown view kind
 - **WHEN** the saved layout holds a pane whose view kind this build does not support
@@ -271,8 +326,8 @@ When the saved layout fails validation, the workbench SHALL open Personal with n
 **Migration**: Splitting is "Splitting a pane opens a shell beside it", closing is "Closing a pane gives its space to its sibling", moving is "Panes and tabs move without changing their views", and the limit is the pane limit. Stored format 1 layouts are discarded by "A saved layout of the earlier format is discarded on upgrade".
 
 ### Requirement: Each tab group has a labeled click launcher
-**Reason**: User decision 2026-10-30: there are no tab groups. The launcher belongs to the tab strip and to the empty central area.
-**Migration**: See "The tab strip has a labeled click launcher" and "With no tabs, the central area shows the launcher". A new view binds to the sidebar selection instead of a group's context.
+**Reason**: User decision 2026-10-30: there are no tab groups. The + launcher belongs to the tab strip; with no tabs the central area shows an empty state with **New terminal**.
+**Migration**: See "The tab strip has a labeled click launcher" and "With no tabs, the central area shows an empty state". A new view binds to the sidebar selection instead of a group's context.
 
 ### Requirement: Opening an open item focuses it
 **Reason**: User decision 2026-10-30: items open in panes inside tabs, not in group tabs.

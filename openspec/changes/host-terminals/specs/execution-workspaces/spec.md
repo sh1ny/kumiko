@@ -1,5 +1,26 @@
 # Spec Delta
 
+## ADDED Requirements
+
+### Requirement: A workspace without bound views can be removed
+The user SHALL be able to remove a workspace from Personal when no view is bound to it. Removal SHALL delete only Kumiko's workspace record, never the directory or its files. A workspace that still has bound views SHALL NOT be removable until the panes holding them are closed.
+
+#### Scenario: Remove an unused workspace
+- **WHEN** the user removes workspace C, which has no open pane bound to it
+- **THEN** C is no longer listed after the change and after a reopen, and its directory and files are unchanged
+
+#### Scenario: Removed workspace was the sidebar selection
+- **WHEN** workspace C is the sidebar selection, no view is bound to it, and the user removes C
+- **THEN** Personal becomes the selection, the launcher offers Open folder for views that need a workspace, and after a reopen the layout does not refer to C
+
+#### Scenario: Removal during a check
+- **WHEN** the user removes workspace C while a check of C is still running
+- **THEN** C stays removed, and the check's result is not shown
+
+#### Scenario: Workspace still has bound panes
+- **WHEN** the user tries to remove workspace A while a pane is bound to it
+- **THEN** A is not removed, and the action states that the panes bound to A must be closed first
+
 ## MODIFIED Requirements
 
 ### Requirement: A local directory opens as a workspace
@@ -36,26 +57,8 @@ At each load the host SHALL resolve every saved workspace again. A workspace who
 - **WHEN** the missing directory of workspace A is restored and the user chooses Check again on A
 - **THEN** A shows as available and its Workspace overview panes show the workspace overview again
 
-### Requirement: A workspace without bound views can be removed
-The user SHALL be able to remove a workspace from Personal when no view is bound to it. Removal SHALL delete only Kumiko's workspace record, never the directory or its files. A workspace that still has bound views SHALL NOT be removable until the panes holding them are closed.
+## REMOVED Requirements
 
-#### Scenario: Remove an unused workspace
-- **WHEN** the user removes workspace C, which has no open pane bound to it
-- **THEN** C is no longer listed after the change and after a reopen, and its directory and files are unchanged
-
-#### Scenario: Removed workspace was a group's context
-- **WHEN** workspace C is the sidebar selection, no view is bound to it, and the user removes C
-- **THEN** Personal becomes the selection, the launcher offers Open folder for views that need a workspace, and after a reopen the layout does not refer to C
-
-#### Scenario: Removal during a check
-- **WHEN** the user removes workspace C while a check of C is still running
-- **THEN** C stays removed, and the check's result is not shown
-
-#### Scenario: Workspace still has tabs
-- **WHEN** the user tries to remove workspace A while a pane is bound to it
-- **THEN** A is not removed, and the action states that the panes bound to A must be closed first
-
-## RENAMED Requirements
-
-- FROM: `### Requirement: A workspace without open tabs can be removed`
-- TO: `### Requirement: A workspace without bound views can be removed`
+### Requirement: A workspace without open tabs can be removed
+**Reason**: User decision 2026-10-30: views live in panes and there are no tab groups, so removal is gated by bound panes and clears the sidebar selection instead of a group context.
+**Migration**: See "A workspace without bound views can be removed", which keeps the same rules for panes: removal deletes only Kumiko's record, is refused while a pane is bound, and survives a check in flight.
