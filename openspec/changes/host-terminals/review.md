@@ -5,7 +5,7 @@
 - **Round:** 4
 - **Prior round:** Round 3 codex APPROVE_WITH_CHANGES; all three required changes applied and accepted, with CHANGES_APPLIED recorded as yes; verdict voided by amendments `8a727d2` and `d2da4dc`.
 - **Reviewer:** cross-model CLI (codex)
-- **Reviewed:** Both amendment diffs; round-3 review, re-check and rebuttals at `d2da4dc`; `git log main..HEAD`; host-terminals proposal, design, tasks, spike results and all four delta specs; roadmap and architecture; ADRs 0001, 0002, 0003, 0006, 0009 and proposed 0010; specified containment and host terminal sources; `terminal_test.dart`, `pty_windows_test.dart`, and the terminal byte fixture; supplied Flutter test-architecture skill as data; Microsoft pseudo-console and standard-handle documentation and Linux termios documentation. Read-only planning review; no tests executed.
+- **Reviewed:** Re-check of Required Changes 1–2 only: round-4 review and author Rebuttals; `git show e784c03`; current terminal-sessions raw-byte requirement; tasks’ Binary-safe output and Windows re-rendering rows and tasks 5.1, 5.3 and 5.6. Consulted `terminal_test.dart`, fixture `blob()` and `terminal_service.dart` as evidence, and the supplied Flutter test-architecture skill as data. Read-only planning re-check; no new full review, file edits or tests executed.
 
 ## Findings
 
@@ -37,6 +37,16 @@ ConPTY’s re-rendering makes comparison with the program’s original blob inap
 
 None.
 
+### Re-check
+
+The findings above are retained from round 4; their dispositions against the current planning files follow.
+
+1. **Required Change 1 — Applied as required.** “Binary-safe output” now defines equality at the pseudo-terminal read boundary, preserving order and forbidding host modification. The retained POSIX program-byte comparison is conditional on default output processing and explicitly accounts for LF becoming CR LF. The test-map row and unchecked task 5.6 require every byte value, including LF, with that expected transformation. This supplies the assertable output-processing case missing from the original plan. Task 5.6 carries the amendment to completed task 5.3; accepting this placement does not imply the new test exists. The existing fixture still excludes LF, and the row correctly remains red.
+
+2. **Required Change 2 — Applied as required.** The Windows re-rendering row now covers only the real-ConPTY surrounding-text ordering check, consistent with the existing test’s ordered `BEGIN;` and `END;` assertions. The separate Binary-safe output row requires equality between a scripted PTY-reader sequence and the complete desktop-received sequence on every OS, including escape sequences, NUL and malformed UTF-8 across chunk boundaries. Unchecked task 5.6 carries this additional work after completed tasks 5.1/5.3 and explicitly gates turning the row green on verification across all three OSes. Its planned injection through the reader path exercises the service relay boundary evidenced by `PtyReaderIsolate.start` forwarding chunks to `_onChunk`, which writes them to the output channel. The existing marker/nonempty test is no longer credited as fidelity proof.
+
+Both required planning changes are applied. The added fidelity and POSIX LF tests remain implementation work explicitly tracked by task 5.6 and the red coverage row.
+
 ## Verdict
 
 VERDICT: APPROVE_WITH_CHANGES
@@ -46,17 +56,18 @@ VERDICT: APPROVE_WITH_CHANGES
 1. **Correct the POSIX output claim.** In “Binary-safe output,” remove the unconditional statement that POSIX PTY output equals the program’s writes. State that the desktop receives exactly the bytes read from the PTY output endpoint, in order and unchanged by the host. If retaining a program-byte comparison, condition it on a fixture-controlled output mode. Update its test-map description and task 5.3 accordingly; include an assertable POSIX case with output processing enabled that preserves the resulting PTY bytes.
 
 2. **Separate Windows re-rendering coverage from relay fidelity.** Update both amended test-map rows and tasks 5.1/5.3 to require:
+
    - a real-ConPTY test asserting the surrounding printable text remains in order despite NUL/invalid-UTF-8 input;
    - a deterministic test at the terminal-service relay boundary comparing a known PTY-reader byte sequence with the complete desktop-received sequence, including escape sequences, NUL and malformed UTF-8 across chunk boundaries.
 
    Keep the fidelity coverage pending until that equality assertion exists; marker order and nonempty contents alone must not mark it green.
 
-CHANGES_APPLIED: no
+CHANGES_APPLIED: yes
 
 ## Rebuttals
 
-- **Required Change 1 (POSIX output claim): fixed.** specs/terminal-sessions/spec.md "Binary-safe output" now promises exactly the bytes read from the pseudo-terminal, unmodified by the host; the program-byte comparison is conditioned on the default output processing and states the LF to CR LF translation, so it is assertable. tasks.md test-map row "Binary-safe output" describes the POSIX case with every byte value, LF included, expected as CR LF.
-- **Required Change 2 (Windows relay fidelity): fixed.** The "Binary-safe output" row is back to red and now requires a scripted PTY-reader sequence (escape sequences, NUL, malformed UTF-8 split across chunk boundaries) compared with the complete desktop-received sequence on all OSes. The "Windows pseudo-console re-renders output" row covers only the real-ConPTY check that the printable text around the NUL and invalid UTF-8 bytes arrives in order, and points to the Binary-safe row for fidelity. Tasks 5.1 and 5.3 are already done and committed, so the added work is the new task 5.6 rather than an edit to their text; 5.6 keeps the row red until the equality assertion passes on all three OSes.
+- **Required Change 1 (POSIX output claim): fixed — accepted by reviewer.** specs/terminal-sessions/spec.md "Binary-safe output" now promises exactly the bytes read from the pseudo-terminal, unmodified by the host; the program-byte comparison is conditioned on the default output processing and states the LF to CR LF translation, so it is assertable. tasks.md test-map row "Binary-safe output" describes the POSIX case with every byte value, LF included, expected as CR LF.
+- **Required Change 2 (Windows relay fidelity): fixed — accepted by reviewer.** The "Binary-safe output" row is back to red and now requires a scripted PTY-reader sequence (escape sequences, NUL, malformed UTF-8 split across chunk boundaries) compared with the complete desktop-received sequence on all OSes. The "Windows pseudo-console re-renders output" row covers only the real-ConPTY check that the printable text around the NUL and invalid UTF-8 bytes arrives in order, and points to the Binary-safe row for fidelity. Tasks 5.1 and 5.3 are already done and committed, so the added work is the new task 5.6 rather than an edit to their text; 5.6 keeps the row red until the equality assertion passes on all three OSes.
 
 Round-3 findings remain resolved as recorded in its accepted re-check.
 
