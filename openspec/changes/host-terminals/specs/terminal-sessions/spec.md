@@ -84,20 +84,32 @@ The desktop SHALL report the terminal view's size in columns and rows, and the h
 - **WHEN** the view is resized many times within one second while a TUI runs
 - **THEN** the pseudo-terminal ends at the final view size, and the shell and TUI remain responsive
 
-### Requirement: Shell exit is shown, not hidden
-When a terminal's shell exits on its own, the terminal SHALL stay open showing that the shell ended and its exit status, and SHALL NOT start a new shell automatically.
+### Requirement: A clean shell exit closes its pane; any other exit is shown
+A shell that exits on its own with status 0 SHALL close its pane as if the user had closed it, without a warning and without starting a new shell. Any other end SHALL leave the terminal open, showing the exit status and offering **Start shell**.
 
 #### Scenario: User types exit
-- **WHEN** the user types `exit` in a bash terminal
-- **THEN** the terminal shows that the shell ended with exit status 0 and offers **Start shell**, and no new shell runs until the user chooses it
+- **WHEN** the user types `exit` in a terminal pane that has a sibling pane, or presses Ctrl+D at an empty prompt, and the shell exits with status 0
+- **THEN** the pane closes with no dialog, its sibling takes the space and keyboard focus, and no new shell runs
+
+#### Scenario: The last pane closes its tab
+- **WHEN** a shell exits with status 0 in the only pane of a tab
+- **THEN** the tab closes, and when it was the last tab the central area shows the empty state
+
+#### Scenario: Non-zero exit keeps the pane
+- **WHEN** the user types `exit 3` in a terminal pane
+- **THEN** the pane stays open with the earlier output visible, shows that the shell ended with exit status 3 and offers **Start shell**, and no new shell runs until the user chooses it
 
 #### Scenario: Shell crashes
 - **WHEN** the shell process is killed by a signal or an external tool
 - **THEN** the terminal shows that the shell ended with the observed status, and the earlier output stays visible
 
 #### Scenario: Final output before exit
-- **WHEN** a program prints an error message as its last output and the shell exits immediately
-- **THEN** the error message is shown in the terminal before the ended state, or the terminal states that output may be incomplete
+- **WHEN** a program prints an error message as its last output and the shell exits with a non-zero status
+- **THEN** the error message is shown in the kept pane before the ended state, or the terminal states that output may be incomplete
+
+#### Scenario: Ended grid fills the pane
+- **WHEN** a terminal pane shows the ended state
+- **THEN** the terminal grid fills the pane's full height below the ended banner, with no blank area
 
 ### Requirement: The adopted terminal engine meets the daily-driver bar
 The terminal SHALL use an engine adopted only when, on every OS, each daily-driver bar item is recorded as pass, or (a user-verified item on Linux or macOS only) as unproven. An engine that fails any item SHALL NOT be adopted (ADR 0006). An unproven item SHALL stay listed and SHALL NOT count as passed.
