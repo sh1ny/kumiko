@@ -1,9 +1,11 @@
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:host_protocol/host_protocol.dart';
 import 'package:test/test.dart';
 
 import 'support/harness.dart';
+import 'support/terminal_support.dart';
 
 /// The probe order of the platform the test runs on (design D6).
 List<String> get probeOrder => switch (Platform.operatingSystem) {
@@ -205,6 +207,25 @@ void main() {
       expect(list.profiles.single.args, isEmpty);
     });
 
+    test('Add a profile for an unknown shell: survives a restart and opens '
+        'as a basic terminal', () async {
+      final home = tempDir('prof_home_');
+      addTearDown(() => deleteTree(home));
+      final desktop = await start();
+      await desktop.saveFixtureProfile(id: 'u-unknown', cwd: home.path);
+      await restart(desktop);
+
+      final listed = (await desktop.listProfiles()).profiles.single;
+      final t = await desktop.openTerminal('u-unknown');
+      await t.waitForText('READY;');
+
+      expect(listed.id, 'u-unknown');
+      expect(listed.executable, terminalFixtureExecutable());
+      expect(tokenOf(t.text, 'TTY'), '1:1:1');
+      await t.send('echo basic');
+      await t.waitForText('ECHO:basic;');
+    });
+
     test('Profile with an empty executable: refused, nothing stored', () async {
       final desktop = await start();
 
@@ -259,6 +280,31 @@ void main() {
         expect(row['created_at'], created);
       },
     );
+
+    test('Edit a profile while a terminal uses it: the running terminal '
+        'keeps its argv and the next open uses the edited args', () async {
+      final home = tempDir('prof_home_');
+      addTearDown(() => deleteTree(home));
+      final desktop = await start();
+      await desktop.saveFixtureProfile(
+        fixtureArgs: ['shell', 'first'],
+        cwd: home.path,
+      );
+      final running = await desktop.openTerminal('fixture');
+      await running.waitForText('READY;');
+
+      await desktop.saveFixtureProfile(
+        fixtureArgs: ['shell', 'second'],
+        cwd: home.path,
+      );
+      final next = await desktop.openTerminal('fixture');
+      await next.waitForText('READY;');
+      await running.send('args');
+      await running.waitForText('ARGV:');
+
+      expect(jsonDecode(decodedToken(running.text, 'ARGV')!), ['first']);
+      expect(jsonDecode(decodedToken(next.text, 'ARGS')!), ['second']);
+    });
 
     test('Try to edit a built-in profile: refused', () async {
       final name = probeOrder.first;

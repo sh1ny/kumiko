@@ -36,6 +36,12 @@ class HostFaults {
   /// Saving the Personal layout never finishes while this stays on.
   bool get layoutSaveHangs => _active.contains(TestFault.layoutSaveHangs);
 
+  /// Windows: a pseudo-console close never returns.
+  bool get consoleCloseHangs => _active.contains(TestFault.consoleCloseHangs);
+
+  /// A terminal's output never reaches end of file once read to its end.
+  bool get ptyNoEof => _active.contains(TestFault.ptyNoEof);
+
   final Map<String, ResolveFault> _resolve = {};
   final Map<String, List<SendPort>> _hung = {};
 

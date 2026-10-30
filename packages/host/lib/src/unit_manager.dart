@@ -70,10 +70,19 @@ class UnitManager {
   ///
   /// Order (design D4): refusals that need no I/O, identity resolution, the
   /// gate, the pending row committed, the spawn, pid and start time recorded.
+  ///
+  /// [target] is the directory the unit is attributed to (the cleanup gate and
+  /// the ledger); the unit runs in [workingDirectory] when given, else in
+  /// [target]. [environment] overrides variables for this unit only. With
+  /// [pty] the unit runs on a pseudo-terminal (its handles are in the live
+  /// unit); a [SpawnFailed] is rethrown once the unit has been settled.
   Future<String> launch({
     required String target,
     required String kind,
     required List<String> argv,
+    String? workingDirectory,
+    Map<String, String>? environment,
+    PtyOptions? pty,
   }) async {
     if (shuttingDown) {
       throw RpcException(ErrorCode.shuttingDown, 'the host is shutting down');
@@ -132,10 +141,17 @@ class UnitManager {
 
       final ContainedUnit unit;
       try {
-        unit = await _spawn(id, argv, identity.realPath);
+        unit = await _spawn(
+          id,
+          argv,
+          workingDirectory ?? identity.realPath,
+          environment,
+          pty,
+        );
         if (faults.identityReadFails) await _failIdentity(unit);
       } on Object catch (e) {
         await _settleFailedSpawn(id, e);
+        if (e is SpawnFailed || e is ProcessException) rethrow;
         throw RpcException(ErrorCode.internalError, 'spawn failed: $e');
       }
       if (faults.crashAfterSpawnBeforePid) _crash();
@@ -187,6 +203,8 @@ class UnitManager {
     String id,
     List<String> argv,
     String workingDirectory,
+    Map<String, String>? environment,
+    PtyOptions? pty,
   ) async {
     if (Platform.isWindows) {
       return spawnWindowsUnit(
@@ -194,6 +212,8 @@ class UnitManager {
         args: argv.sublist(1),
         containmentId: id,
         workingDirectory: workingDirectory,
+        environment: environment,
+        pty: pty,
       );
     }
     final unit = await spawnPosixUnit(
@@ -201,10 +221,15 @@ class UnitManager {
       containmentId: id,
       argv: argv,
       workingDirectory: workingDirectory,
+      environment: environment,
+      pty: pty,
     );
-    // Nobody reads the unit's stdio in this change; keep its pipes empty.
-    unit.process.stdout.drain<void>();
-    unit.process.stderr.drain<void>();
+    // A PTY unit's stdio is the terminal, and its pipes were consumed by the
+    // spawn. Otherwise nobody reads the unit's stdio; keep its pipes empty.
+    if (pty == null) {
+      unit.process.stdout.drain<void>();
+      unit.process.stderr.drain<void>();
+    }
     return unit;
   }
 

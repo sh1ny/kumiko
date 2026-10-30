@@ -10,6 +10,10 @@ class HostOptions {
     this.resolveTimeout = defaultResolveTimeout,
     this.shellSearchPath,
     this.shellWellKnownDirs,
+    this.attachTimeout = defaultAttachTimeout,
+    this.settleDeadline = defaultSettleDeadline,
+    this.consoleCloseTimeout = defaultConsoleCloseTimeout,
+    this.postExitReadDeadline = defaultPostExitReadDeadline,
   });
 
   /// Concurrent units per host (design D4, Resource Bounds).
@@ -23,6 +27,20 @@ class HostOptions {
 
   /// How long a folder resolution may take (design D5).
   static const Duration defaultResolveTimeout = Duration(seconds: 5);
+
+  /// A terminal not attached within this is closed (design D4).
+  static const Duration defaultAttachTimeout = Duration(seconds: 10);
+
+  /// The overall settlement deadline of a terminal's end (Resource Bounds).
+  static const Duration defaultSettleDeadline = Duration(seconds: 30);
+
+  /// How long `ClosePseudoConsole` may take before it becomes a pending
+  /// console cleanup (design D3).
+  static const Duration defaultConsoleCloseTimeout = Duration(seconds: 5);
+
+  /// Active reading time a PTY gets to reach end of output after its shell
+  /// exited (design D5).
+  static const Duration defaultPostExitReadDeadline = Duration(seconds: 1);
 
   /// Folder resolutions that may run at once (design D5).
   static const int resolveSlots = 4;
@@ -38,6 +56,11 @@ class HostOptions {
   /// The install locations shell detection searches after the path; empty
   /// disables them (tests only).
   final List<String>? shellWellKnownDirs;
+
+  final Duration attachTimeout;
+  final Duration settleDeadline;
+  final Duration consoleCloseTimeout;
+  final Duration postExitReadDeadline;
 
   /// Extra wait at the start of reconciliation (tests only).
   final Duration reconcileDelay;

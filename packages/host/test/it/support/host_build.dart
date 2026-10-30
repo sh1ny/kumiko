@@ -24,14 +24,18 @@ String get _releaseExeName =>
 String? _built;
 String? _releaseBuilt;
 String? _standin;
-
-String get _standinName =>
-    Platform.isWindows ? 'desktop_standin.exe' : 'desktop_standin';
+String? _terminalFixture;
 
 /// The compiled desktop stand-in (`dart run` would rebuild the native assets
 /// the test process has loaded). Call `buildTestHost` first.
 String desktopStandinExecutable() =>
     _standin ?? (throw StateError('call buildTestHost() in setUpAll first'));
+
+/// The compiled fixture shell of the terminal tests
+/// (`test/it/fixtures/term_fixture.dart`). Call `buildTestHost` first.
+String terminalFixtureExecutable() =>
+    _terminalFixture ??
+    (throw StateError('call buildTestHost() in setUpAll first'));
 
 /// The built test host executable. Call it from `setUpAll`.
 String testHostExecutable() =>
@@ -55,7 +59,18 @@ Future<void> buildTestHost() async {
         'tool/kumiko_host_test.dart',
       ]);
     }
-    await _buildStandin(packageDir);
+    _standin = await _compile(
+      packageDir,
+      'test/it/support/desktop_standin.dart',
+      'build/standin',
+      'desktop_standin',
+    );
+    _terminalFixture = await _compile(
+      packageDir,
+      'test/it/fixtures/term_fixture.dart',
+      'build/term-fixture',
+      'term_fixture',
+    );
   } finally {
     lock.deleteSync();
   }
@@ -92,24 +107,32 @@ File _lockFile(Directory packageDir, String name) => File(
   '${packageDir.path}/build/$name.lock'.replaceAll('/', Platform.pathSeparator),
 );
 
-Future<void> _buildStandin(Directory packageDir) async {
+/// Compiles [sourcePath] (relative to the package) to `<outDir>/<name>` with
+/// `dart compile exe` unless that is newer than the source and every
+/// package it can depend on (`dart run` would rebuild the native assets the
+/// test process has loaded). Returns the executable's path.
+Future<String> _compile(
+  Directory packageDir,
+  String sourcePath,
+  String outDir,
+  String name,
+) async {
+  final sep = Platform.pathSeparator;
   final exe = File(
-    '${packageDir.path}/build/standin/$_standinName'.replaceAll(
-      '/',
-      Platform.pathSeparator,
-    ),
+    '${packageDir.path}/$outDir/${Platform.isWindows ? '$name.exe' : name}'
+        .replaceAll('/', sep),
   );
-  final source = File(
-    '${packageDir.path}/test/it/support/desktop_standin.dart',
-  );
+  final source = File('${packageDir.path}/$sourcePath'.replaceAll('/', sep));
   var stale = !exe.existsSync();
   if (!stale) {
     final built = exe.lastModifiedSync();
     stale = source.lastModifiedSync().isAfter(built);
-    for (final e in Directory(
-      '${packageDir.path}/../host_protocol/lib',
-    ).listSync(recursive: true)) {
-      if (e is File && e.lastModifiedSync().isAfter(built)) stale = true;
+    for (final root in ['host_protocol', 'process_containment']) {
+      for (final e in Directory(
+        '${packageDir.path}/../$root/lib',
+      ).listSync(recursive: true)) {
+        if (e is File && e.lastModifiedSync().isAfter(built)) stale = true;
+      }
     }
   }
   if (stale) {
@@ -128,7 +151,7 @@ Future<void> _buildStandin(Directory packageDir) async {
       );
     }
   }
-  _standin = exe.path;
+  return exe.path;
 }
 
 /// Builds into a directory of its own and moves it into place, so a build

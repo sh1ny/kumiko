@@ -163,6 +163,22 @@ class ProfileService {
     );
   }
 
+  /// The profile with [id], built-in or user; null when there is none.
+  Future<ShellProfile?> find(String id) async {
+    final builtins = await _detected;
+    for (final p in builtins) {
+      if (p.id == id) return p;
+    }
+    try {
+      for (final p in _userProfiles()) {
+        if (p.id == id) return p;
+      }
+    } on SqliteException catch (e) {
+      throw _storeFailed(e);
+    }
+    return null;
+  }
+
   /// `profile/save`: creates or edits a user profile. Built-ins are refused.
   Future<ProfileSaveResult> save(ProfileSaveParams params) async {
     await _detected;

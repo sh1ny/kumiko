@@ -118,6 +118,9 @@ abstract final class ErrorCode {
   static const String notAttached = 'not-attached';
   static const String consoleCleanupPending = 'console-cleanup-pending';
 
+  /// A terminal was opened for a workspace whose directory is unavailable.
+  static const String workspaceUnavailable = 'workspace-unavailable';
+
   /// The JSON-RPC numeric code for [reason].
   static int numeric(String reason) => switch (reason) {
     protocolError => -32600,
@@ -1322,6 +1325,8 @@ class TerminalCloseFailed {
 enum TestFixture { tree, escaper, sleeper, stubborn }
 
 enum TestFault {
+  /// Windows: the pseudo-console close never returns (a stuck closer).
+  consoleCloseHangs,
   crashAfterPendingWrite,
   crashAfterSpawnBeforePid,
   identityReadFails,
@@ -1330,6 +1335,8 @@ enum TestFault {
   layoutSaveHangs,
   pendingWriteFails,
   profileWriteFails,
+  /// A terminal's output never reaches end of file after its shell exits.
+  ptyNoEof,
   runningWriteFails,
   terminateHangs,
 }

@@ -15,6 +15,7 @@ import 'profile_lock.dart';
 import 'settler.dart';
 import 'store/store.dart';
 import 'store/store_error.dart';
+import 'terminal/terminal_service.dart';
 import 'unit_manager.dart';
 import 'workbench_service.dart';
 import 'workspace_resolver.dart';
@@ -76,6 +77,7 @@ class Host {
   WorkspaceService? _workspaces;
   WorkbenchService? _workbench;
   ProfileService? _profiles;
+  TerminalService? _terminals;
   bool _stopping = false;
 
   /// Runs until the desktop goes away; returns the exit code.
@@ -220,11 +222,20 @@ class Host {
       ),
       notify: _connection.notify,
     );
-    _profiles = ProfileService(
+    final profiles = _profiles = ProfileService(
       store: store,
       log: log,
       faults: faults,
       options: options,
+    );
+    _terminals = TerminalService(
+      connection: _connection,
+      units: units,
+      profiles: profiles,
+      workspaces: workspaces,
+      faults: faults,
+      options: options,
+      log: log,
     );
     _workbench = WorkbenchService(
       store: store,
@@ -298,6 +309,23 @@ class Host {
         await _profiles!.setDefault(ProfileSetDefaultParams.fromJson(params));
         return <String, Object?>{};
     }
+    switch (method) {
+      case Method.terminalOpen:
+        final p = TerminalOpenParams.fromJson(params);
+        return (await _terminals!.open(p)).toJson();
+      case Method.terminalAttach:
+        await _terminals!.attach(TerminalAttachParams.fromJson(params));
+        return <String, Object?>{};
+      case Method.terminalResize:
+        _terminals!.resize(TerminalResizeParams.fromJson(params));
+        return <String, Object?>{};
+      case Method.terminalClose:
+        _terminals!.close(TerminalCloseParams.fromJson(params));
+        return <String, Object?>{};
+      case Method.terminalRelease:
+        _terminals!.release(TerminalReleaseParams.fromJson(params));
+        return <String, Object?>{};
+    }
     if (method.startsWith('test/') && extension != null) {
       return extension!.handle(
         HostServices(units: _units!, faults: faults, connection: _connection),
@@ -323,6 +351,7 @@ class Host {
     await _startup;
     if (_stopping) return;
     final units = _units;
+    _terminals?.dispose();
     if (units != null) {
       _log?.event('shutdown', code: reason.kind);
       await _cleanup?.reconciliation?.timeout(
