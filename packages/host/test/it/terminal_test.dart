@@ -387,6 +387,39 @@ void main() {
       expect(editor(a), 'hx');
       expect(editor(b), 'nano', reason: "the host's own value, not hx");
     });
+
+    test('POSIX terminal gets TERM=xterm-256color and COLORTERM=truecolor, not '
+        "the host's own TERM", () async {
+      final desktop = await start(
+        environment: {'TERM': 'xterm-kitty', 'COLORTERM': '24bit'},
+      );
+      await desktop.saveFixtureProfile(cwd: work.path);
+      final t = await shell(desktop);
+
+      await t.send('env TERM');
+      await t.send('env COLORTERM');
+      await t.waitForText('ENV:COLORTERM=');
+
+      String? value(String name) {
+        final m = RegExp('ENV:$name=([^;]*);').firstMatch(t.text);
+        return m == null ? null : utf8.decode(base64.decode(m.group(1)!));
+      }
+
+      expect(value('TERM'), 'xterm-256color');
+      expect(value('COLORTERM'), 'truecolor');
+    }, skip: Platform.isWindows ? 'ConPTY does not use TERM' : null);
+
+    test('a profile TERM override wins over the POSIX default', () async {
+      final desktop = await start(environment: {'TERM': 'xterm-kitty'});
+      await desktop.saveFixtureProfile(cwd: work.path, env: {'TERM': 'screen'});
+      final t = await shell(desktop);
+
+      await t.send('env TERM');
+      await t.waitForText('ENV:TERM=');
+
+      final m = RegExp('ENV:TERM=([^;]*);').firstMatch(t.text);
+      expect(utf8.decode(base64.decode(m!.group(1)!)), 'screen');
+    }, skip: Platform.isWindows ? 'ConPTY does not use TERM' : null);
   });
 
   group('relay', () {
@@ -662,6 +695,30 @@ void main() {
         plainText(t.bytes.sublist(0, t.events.outputAtExit[t.id])),
         contains('LASTLINE;'),
         reason: 'the bytes read were delivered before the notification',
+      );
+    });
+
+    test('input write failing after the shell exited: exited{reason exited, '
+        'status 0, outputComplete true} and the final output arrives', () async {
+      final desktop = await start();
+      await desktop.saveFixtureProfile(cwd: work.path);
+      // The fault holds the terminal in its exiting phase for 600 ms and fails
+      // every input write made in it, as a closed pseudo-console does.
+      await desktop.setFault(TestFault.ptyExitWindow);
+      final t = await shell(desktop);
+
+      await t.send('bye 0');
+      await t.waitForText('LASTLINE;');
+      await Future<void>.delayed(const Duration(milliseconds: 200));
+      await t.send('x', enter: false);
+      final exited = await t.waitExited();
+
+      expect(exited.reason, TerminalExitReason.exited);
+      expect(exited.status, 0);
+      expect(exited.outputComplete, isTrue);
+      expect(
+        plainText(t.bytes.sublist(0, t.events.outputAtExit[t.id])),
+        contains('LASTLINE;'),
       );
     });
 

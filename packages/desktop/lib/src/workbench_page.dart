@@ -66,6 +66,10 @@ class _WorkbenchPageState extends State<WorkbenchPage> {
               !keyboard.isAltPressed &&
               !keyboard.isMetaPressed;
     if (!matches || controller.layout == null) return KeyEventResult.ignored;
+    // A dialog or other modal route above the workbench keeps the chord.
+    if (ModalRoute.of(context)?.isCurrent == false) {
+      return KeyEventResult.ignored;
+    }
     unawaited(launchTerminalFlow(context, controller));
     return KeyEventResult.handled;
   }

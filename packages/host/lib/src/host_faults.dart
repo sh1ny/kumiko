@@ -65,6 +65,10 @@ class HostFaults {
   /// A terminal's output never reaches end of file once read to its end.
   bool get ptyNoEof => _active.contains(TestFault.ptyNoEof);
 
+  /// A terminal's exit report is held back 600 ms, and input written meanwhile
+  /// fails.
+  bool get ptyExitWindow => _active.contains(TestFault.ptyExitWindow);
+
   /// A terminal's reader yields [scriptedPtyOutput] before the PTY's own
   /// output.
   bool get ptyScriptedOutput => _active.contains(TestFault.ptyScriptedOutput);

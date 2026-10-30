@@ -328,6 +328,34 @@ void main() {
       expect(rig.linkOf(first.id)!.status, TerminalStatus.live);
     });
 
+    uiTest('while the close warning is open the shortcut opens no terminal; '
+        'after it closes the shortcut works again', (tester) async {
+      final rig = await pumpEmpty(tester);
+      await launch(tester);
+      final first = rig.terminalPanes.single;
+      await tester.tap(key('split-right-${first.id}'));
+      await flush(tester);
+      await tester.pumpAndSettle();
+      await tapClosePane(tester, rig.layout.focusedPane!);
+      expect(key('close-warning'), findsOneWidget);
+      final panes = rig.terminalPanes.length;
+      final calls = hostCalls(rig);
+
+      await sendShortcut(tester);
+
+      expect(rig.terminalPanes, hasLength(panes));
+      expect(rig.link.opened, hasLength(2));
+      expect(hostCalls(rig), calls);
+
+      await tester.tap(key('close-warning-cancel'));
+      await tester.pumpAndSettle();
+      expect(key('close-warning'), findsNothing);
+      await sendShortcut(tester);
+
+      expect(rig.terminalPanes, hasLength(panes + 1));
+      expect(rig.link.opened, hasLength(3));
+    });
+
     uiTest('without the terminal capability the shortcut opens no tab and '
         'shows the reason', (tester) async {
       final rig = await pumpTerminals(

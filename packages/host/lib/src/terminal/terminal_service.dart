@@ -13,6 +13,7 @@ import '../profiles/profile_service.dart';
 import '../settler.dart';
 import '../unit_manager.dart';
 import '../workspace_service.dart';
+import 'terminal_environment.dart';
 import 'terminal_io.dart';
 
 /// The lifecycle of a host terminal (design T2).
@@ -208,7 +209,10 @@ class TerminalService {
           kind: 'terminal',
           argv: [profile.executable, ...profile.args],
           workingDirectory: profile.cwd ?? target,
-          environment: profile.env.isEmpty ? null : profile.env,
+          environment: terminalEnvironment(
+            posix: !Platform.isWindows,
+            profileEnv: profile.env,
+          ),
           pty: PtyOptions(size: PtySize(params.cols, params.rows)),
         );
       } on SpawnFailed catch (e) {
@@ -336,18 +340,23 @@ class TerminalService {
   void _onInput(_Terminal t, Uint8List bytes) {
     final subscription = t.input;
     if (subscription == null || t.status == TerminalStatus.closing) return;
+    // Once the shell has exited its input goes nowhere (on Windows the console
+    // is closing): drop it. A write failing now is not an I/O failure.
+    if (t.processExited || t.status == TerminalStatus.exiting) return;
     // One chunk is with the writer at a time. While it is there the
     // subscription is paused, so credit stops returning (design D3).
     subscription.pause();
-    t.writer.write(bytes).then<void>(
+    final write = faults.ptyExitWindow && t.processExited
+        ? Future<void>.error(const PtyIoException('write', 232))
+        : t.writer.write(bytes);
+    write.then<void>(
       (_) {
         if (t.input != null && t.status != TerminalStatus.closing) {
           subscription.resume();
         }
       },
       onError: (Object e) {
-        if (t.status == TerminalStatus.live ||
-            t.status == TerminalStatus.exiting) {
+        if (t.status == TerminalStatus.live && !t.processExited) {
           _ioFailure(t, 'input: $e');
         }
       },
@@ -458,6 +467,9 @@ class TerminalService {
       // Messages of the reader are handled in order, so every chunk read has
       // been flushed by now.
       await t.queue;
+      if (faults.ptyExitWindow) {
+        await Future<void>.delayed(const Duration(milliseconds: 600));
+      }
       if (t.status != TerminalStatus.exiting) return;
       final outcome = await _end(t);
       if (t.status != TerminalStatus.exiting || _disposed) return;

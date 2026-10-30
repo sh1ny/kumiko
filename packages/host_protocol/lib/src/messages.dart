@@ -1339,6 +1339,10 @@ enum TestFault {
   /// A terminal's output never reaches end of file after its shell exits.
   ptyNoEof,
 
+  /// The window between a shell's exit and its report is held open for
+  /// 600 ms, and input written in it fails as on a closed pseudo-console.
+  ptyExitWindow,
+
   /// A terminal's reader yields a fixed byte sequence before the PTY's own
   /// output (the relay fidelity check).
   ptyScriptedOutput,
