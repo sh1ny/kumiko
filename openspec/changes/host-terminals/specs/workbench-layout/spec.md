@@ -116,6 +116,10 @@ The user SHALL be able to move a pane to a new tab, and to move a whole tab into
 - **WHEN** tab 1 is active with two panes and the user chooses **Move into split below** on tab 2, which holds a Workspace overview bound to B
 - **THEN** tab 1's area is split, its two panes above and the overview below, tab 2 is gone from the strip, the overview pane is focused and stays bound to B
 
+#### Scenario: A shell exits cleanly around a move
+- **WHEN** a terminal's shell exits with status 0 just before or just after its pane is moved
+- **THEN** that pane is removed once, by its pane id, from wherever it then is, and no other pane is closed or moved
+
 #### Scenario: Nothing to move
 - **WHEN** a pane is the only pane of its tab, or a tab is the active tab
 - **THEN** **Move to new tab** on that pane, or **Move into split** on that tab, is shown disabled
@@ -163,7 +167,7 @@ A terminal pane SHALL be saved in the layout with its workspace binding and prof
 - **THEN** the terminal panes are kept in place as *unsupported view* and are not dropped on the next save
 
 ### Requirement: Closing a pane or tab checks for live work
-Closing a pane or a tab SHALL first collect every view in it that warns before closing, and SHALL show one confirmation naming all of them. Cancel SHALL leave the pane or tab, its panes and their arrangement unchanged. When some closes of a confirmed tab close fail, the closes that succeeded SHALL stay done, each failed pane SHALL stay with its identity and error, and the tab SHALL stay while any pane remains.
+Closing a pane or a tab SHALL first show one confirmation naming every view in it that warns. Cancel SHALL leave the pane or tab and its arrangement unchanged, except a pane whose shell exits on its own meanwhile. When some closes of a confirmed tab close fail, the closes that succeeded SHALL stay done, each failed pane SHALL stay with its error, and the tab SHALL stay while any pane remains.
 
 #### Scenario: Close a tab holding live terminals
 - **WHEN** the user closes a tab whose panes hold two terminals with live shells and a Workspace overview

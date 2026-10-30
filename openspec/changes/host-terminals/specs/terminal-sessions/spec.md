@@ -85,11 +85,27 @@ The desktop SHALL report the terminal view's size in columns and rows, and the h
 - **THEN** the pseudo-terminal ends at the final view size, and the shell and TUI remain responsive
 
 ### Requirement: A clean shell exit closes its pane; any other exit is shown
-A shell that exits on its own with status 0 SHALL close its pane as if the user had closed it, without a warning and without starting a new shell. Any other end SHALL leave the terminal open, showing the exit status and offering **Start shell**.
+A shell that exits on its own with status 0 and complete output (`outputComplete` true) SHALL close its pane as if the user had closed it, without a warning and without starting a new shell. Output the desktop has not yet consumed is dropped with the pane; the pane does not wait for the engine. Any other end, including status 0 with incomplete output, SHALL leave the terminal open, showing the exit status (and that output may be incomplete) and offering **Start shell**.
 
 #### Scenario: User types exit
-- **WHEN** the user types `exit` in a terminal pane that has a sibling pane, or presses Ctrl+D at an empty prompt, and the shell exits with status 0
+- **WHEN** the user types `exit` in the focused terminal pane, which has a sibling pane, or presses Ctrl+D at an empty prompt, and the shell exits with status 0
 - **THEN** the pane closes with no dialog, its sibling takes the space and keyboard focus, and no new shell runs
+
+#### Scenario: An unfocused pane exits
+- **WHEN** a shell exits cleanly in a pane of the active tab that is not the focused pane
+- **THEN** the pane closes, the tab's focused pane, the window's keyboard focus and the focus history are unchanged
+
+#### Scenario: A background tab's shell exits
+- **WHEN** a shell exits cleanly in a pane of an inactive tab, including the only pane of that tab
+- **THEN** the pane closes (and its tab with it when it was the only pane), and the active tab, the keyboard focus and the focus history are unchanged
+
+#### Scenario: Clean exit with incomplete output keeps the pane
+- **WHEN** a shell exits with status 0 and the host reports that the output may be incomplete
+- **THEN** the pane stays open, ended, with the earlier output, the note that the output may be incomplete and **Start shell**
+
+#### Scenario: A clean exit drops unconsumed output
+- **WHEN** a shell exits cleanly while the engine has not yet taken the last bytes of its output
+- **THEN** the pane closes at once with that output dropped, and the host's release and channel cleanup complete as for any closed terminal
 
 #### Scenario: The last pane closes its tab
 - **WHEN** a shell exits with status 0 in the only pane of a tab
@@ -165,7 +181,7 @@ The user SHALL be able to run an installed coding-agent CLI such as Claude Code,
 - **THEN** the shell's own not-found error is shown in the terminal, and the terminal stays usable
 
 ### Requirement: Closing live terminals warns about process loss
-Closing a pane or a tab that holds terminals whose shell is alive SHALL first warn that their running processes will end, naming every affected terminal. Cancel SHALL keep them open and running; confirm SHALL terminate their process trees and close the views. Terminals whose shell has ended close without a warning. Moving a pane or a tab SHALL NOT warn or end any process.
+Closing a pane or a tab that holds live terminals SHALL first warn that their running processes will end, naming every affected terminal. Cancel SHALL keep them running, apart from a shell that exits on its own meanwhile; confirm SHALL end the terminals still alive. Terminals whose shell has ended close without a warning. Moving SHALL NOT warn or end any process.
 
 #### Scenario: Close a terminal running vim
 - **WHEN** the user closes a terminal pane running vim and confirms the warning
@@ -182,6 +198,14 @@ Closing a pane or a tab that holds terminals whose shell is alive SHALL first wa
 #### Scenario: Move a live terminal
 - **WHEN** the user moves a pane whose terminal runs vim to a new tab, then moves that tab into a split of another tab
 - **THEN** no warning is shown, and vim keeps running with the same shell, scrollback and binding
+
+#### Scenario: A shell exits cleanly while the warning is open
+- **WHEN** the warning for two live terminals is open and one shell exits with status 0
+- **THEN** that pane closes at once, and confirming closes only the other terminal while cancelling leaves it running
+
+#### Scenario: A shell ends otherwise while the warning is open
+- **WHEN** the warning is open and a shell ends with a non-zero status
+- **THEN** that pane stays, ended, and confirming removes it without sending another close
 
 #### Scenario: Close an ended terminal
 - **WHEN** the user closes a terminal pane whose shell has already exited
@@ -201,6 +225,10 @@ Quit and reopen SHALL restore each terminal pane in its tab and its place in the
 #### Scenario: Reopen a four-pane terminal arrangement
 - **WHEN** the user quits with one tab split into four terminal panes running vim and lazygit, then reopens Kumiko
 - **THEN** the tab and its four panes are restored in the same arrangement and ratios, each shown as *ended, not restored*, and no shell, vim or lazygit process is started
+
+#### Scenario: A restored pane is unaffected by exits elsewhere
+- **WHEN** a restored pane is shown as *ended, not restored* and another pane's shell exits cleanly
+- **THEN** the restored pane stays, with its profile name and **Start shell**, and a shell started in it closes its pane on a clean exit
 
 #### Scenario: Start a shell in a restored pane
 - **WHEN** the user chooses **Start shell** in a restored terminal pane
