@@ -1,4 +1,5 @@
-/// JSON codec and validation for the working-set document (design D2, D10).
+/// JSON codec and validation for the working-set document, format 2
+/// (design D11).
 library;
 
 import 'dart:convert';
@@ -19,19 +20,26 @@ int _bytes(String s) => utf8.encode(s).length;
 
 Map<String, Object?> layoutToJson(LayoutDocument d) => {
   'format': layoutFormat,
-  'root': _nodeToJson(d.root),
-  'focusedGroup': d.focusedGroup,
+  'tabs': [for (final t in d.tabs) _tabToJson(t)],
+  'activeTab': d.activeTab,
   'recent': d.recent,
-  'sidebar': {'collapsed': d.sidebarCollapsed},
+  'sidebar': {'collapsed': d.sidebarCollapsed, 'selected': d.selectedWorkspace},
+};
+
+Map<String, Object?> _tabToJson(LayoutTabNode t) => {
+  'id': t.id,
+  'focusedPane': t.focusedPane,
+  'root': _nodeToJson(t.root),
 };
 
 Map<String, Object?> _nodeToJson(LayoutNode n) => switch (n) {
-  TabGroup() => {
-    'type': 'group',
+  PaneNode() => {
+    'type': 'pane',
     'id': n.id,
-    'context': n.context,
-    'tabs': [for (final t in n.tabs) _tabToJson(t)],
-    'active': n.active,
+    'kind': n.kind,
+    'workspace': n.workspace,
+    'item': n.item,
+    'state': n.state,
   },
   SplitNode() => {
     'type': 'split',
@@ -41,14 +49,6 @@ Map<String, Object?> _nodeToJson(LayoutNode n) => switch (n) {
     'first': _nodeToJson(n.first),
     'second': _nodeToJson(n.second),
   },
-};
-
-Map<String, Object?> _tabToJson(LayoutTab t) => {
-  'id': t.id,
-  'kind': t.kind,
-  'workspace': t.workspace,
-  'item': t.item,
-  'state': t.state,
 };
 
 String encodeLayout(LayoutDocument d) => jsonEncode(layoutToJson(d));
@@ -71,11 +71,12 @@ LayoutDocument decodeLayout(String source) {
 LayoutDocument layoutFromJson(Object? json) => _Decoder().document(json);
 
 final class _Decoder {
+  /// Ids of tabs, splits and panes share one namespace.
   final ids = <String>{};
-  final tabIds = <String>{};
-  final groupIds = <String>{};
-  var nodes = 0;
-  var tabCount = 0;
+  final paneIds = <String>{};
+  var currentTab = '';
+  var panesInTab = 0;
+  var totalPanes = 0;
 
   Never fail(String reason) => throw LayoutInvalid(reason);
 
@@ -102,69 +103,71 @@ final class _Decoder {
     final m = obj(json, 'layout');
     final format = m['format'];
     if (format != layoutFormat) fail('unsupported layout format $format');
-    final root = node(m['root']);
-    final focused = id(m['focusedGroup'], 'focusedGroup');
-    if (!groupIds.contains(focused)) {
-      fail('focusedGroup "$focused" is not a group');
+    final tabsRaw = m['tabs'];
+    if (tabsRaw is! List) fail('tabs must be a list');
+    if (tabsRaw.length > maxTabs) fail('layout has more than $maxTabs tabs');
+    final tabs = [for (final t in tabsRaw) tab(t)];
+    final active = optId(m['activeTab'], 'activeTab');
+    if (tabs.isEmpty) {
+      if (active != null) {
+        fail('activeTab must be null when there are no tabs');
+      }
+    } else {
+      if (active == null) {
+        fail('activeTab must name a tab when there are tabs');
+      }
+      if (!tabs.any((t) => t.id == active)) {
+        fail('activeTab "$active" is not a tab');
+      }
     }
     final recentRaw = m['recent'];
     if (recentRaw is! List) fail('recent must be a list');
     final recent = <String>[];
     final seen = <String>{};
     for (final r in recentRaw) {
-      if (r is! String || !tabIds.contains(r)) {
-        fail('recent names an unknown tab: $r');
+      if (r is! String || !paneIds.contains(r)) {
+        fail('recent names an unknown pane: $r');
       }
-      if (!seen.add(r)) fail('recent contains duplicate tab "$r"');
+      if (!seen.add(r)) fail('recent contains duplicate pane "$r"');
       recent.add(r);
     }
     final sidebar = obj(m['sidebar'], 'sidebar');
     final collapsed = sidebar['collapsed'];
     if (collapsed is! bool) fail('sidebar.collapsed must be a boolean');
+    final selected = optId(sidebar['selected'], 'sidebar.selected');
     return LayoutDocument(
-      root: root,
-      focusedGroup: focused,
+      tabs: List.unmodifiable(tabs),
+      activeTab: active,
       recent: List.unmodifiable(recent),
       sidebarCollapsed: collapsed,
+      selectedWorkspace: selected,
     );
   }
 
-  LayoutNode node(Object? v) {
-    if (++nodes > 2 * maxTabGroups - 1) {
-      fail('layout has more than $maxTabGroups tab groups');
+  LayoutTabNode tab(Object? v) {
+    final m = obj(v, 'tab');
+    final tid = id(m['id'], 'tab id');
+    unique(tid, 'tab');
+    currentTab = tid;
+    panesInTab = 0;
+    final root = node(m['root']);
+    final focused = id(m['focusedPane'], 'focusedPane');
+    if (!root.panes.any((p) => p.id == focused)) {
+      fail('focusedPane "$focused" is not a pane of tab "$tid"');
     }
+    return LayoutTabNode(id: tid, root: root, focusedPane: focused);
+  }
+
+  LayoutNode node(Object? v) {
     final m = obj(v, 'node');
     switch (m['type']) {
-      case 'group':
-        return group(m);
+      case 'pane':
+        return pane(m);
       case 'split':
         return split(m);
       default:
         fail('unknown node type "${m['type']}"');
     }
-  }
-
-  TabGroup group(Map<String, Object?> m) {
-    final gid = id(m['id'], 'group id');
-    unique(gid, 'group');
-    groupIds.add(gid);
-    if (groupIds.length > maxTabGroups) {
-      fail('layout has more than $maxTabGroups tab groups');
-    }
-    final context = optId(m['context'], 'group context');
-    final tabsRaw = m['tabs'];
-    if (tabsRaw is! List) fail('group tabs must be a list');
-    final tabs = [for (final t in tabsRaw) tab(t)];
-    final active = optId(m['active'], 'group active');
-    if (tabs.isEmpty ? active != null : !tabs.any((t) => t.id == active)) {
-      fail('group "$gid" active must be null iff empty, else one of its tabs');
-    }
-    return TabGroup(
-      id: gid,
-      context: context,
-      tabs: List.unmodifiable(tabs),
-      active: active,
-    );
   }
 
   SplitNode split(Map<String, Object?> m) {
@@ -179,6 +182,9 @@ final class _Decoder {
     if (!(ratio >= minSplitRatio && ratio <= maxSplitRatio)) {
       fail('split ratio $ratio is outside $minSplitRatio..$maxSplitRatio');
     }
+    if (m['first'] == null || m['second'] == null) {
+      fail('split "$sid" needs two children');
+    }
     final first = node(m['first']);
     final second = node(m['second']);
     return SplitNode(
@@ -190,28 +196,30 @@ final class _Decoder {
     );
   }
 
-  LayoutTab tab(Object? v) {
-    final m = obj(v, 'tab');
-    if (++tabCount > maxTabs) fail('layout has more than $maxTabs tabs');
-    final tid = id(m['id'], 'tab id');
-    unique(tid, 'tab');
-    tabIds.add(tid);
-    final kind = id(m['kind'], 'tab kind');
-    final workspace = optId(m['workspace'], 'tab workspace');
+  PaneNode pane(Map<String, Object?> m) {
+    final pid = id(m['id'], 'pane id');
+    unique(pid, 'pane');
+    paneIds.add(pid);
+    if (++totalPanes > maxPanes) fail('layout has more than $maxPanes panes');
+    if (++panesInTab > maxPanesPerTab) {
+      fail('tab "$currentTab" has more than $maxPanesPerTab panes');
+    }
+    final kind = id(m['kind'], 'pane kind');
+    final workspace = optId(m['workspace'], 'pane workspace');
     final item = m['item'];
     if (item != null) {
-      if (item is! String) fail('tab item must be a string or null');
+      if (item is! String) fail('pane item must be a string or null');
       if (_bytes(item) > maxItemBytes) {
-        fail('tab item exceeds $maxItemBytes bytes');
+        fail('pane item exceeds $maxItemBytes bytes');
       }
     }
     final state = m['state'];
-    if (state is! Map) fail('tab state must be a JSON object');
+    if (state is! Map) fail('pane state must be a JSON object');
     if (_bytes(jsonEncode(state)) > maxTabStateBytes) {
-      fail('tab state exceeds $maxTabStateBytes bytes');
+      fail('pane state exceeds $maxTabStateBytes bytes');
     }
-    return LayoutTab(
-      id: tid,
+    return PaneNode(
+      id: pid,
       kind: kind,
       workspace: workspace,
       item: item as String?,

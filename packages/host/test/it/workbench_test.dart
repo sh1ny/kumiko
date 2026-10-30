@@ -3,6 +3,8 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:domain/domain.dart';
+import 'package:host/src/profile_lock.dart';
+import 'package:host/src/store/store.dart';
 import 'package:host_protocol/host_protocol.dart';
 import 'package:test/test.dart';
 
@@ -40,30 +42,40 @@ void main() {
     return (await desktop.openWorkspace(dir.path)).workspace.id;
   }
 
-  /// One group with a tab per entry of [bindings] (tab id `t<i>`), the group
-  /// context [context].
-  LayoutDocument layout({List<String?> bindings = const [], String? context}) {
-    final tabs = [
-      for (var i = 0; i < bindings.length; i++)
-        LayoutTab(
-          id: 't$i',
-          kind: 'terminal',
-          workspace: bindings[i],
-          item: null,
-        ),
-    ];
-    return LayoutDocument(
-      root: TabGroup(
-        id: 'g1',
-        context: context,
-        tabs: tabs,
-        active: tabs.isEmpty ? null : tabs.first.id,
-      ),
-      focusedGroup: 'g1',
-      recent: [for (final t in tabs) t.id],
-      sidebarCollapsed: false,
-    );
+  LayoutDocument ok(LayoutResult r) => r.document!;
+
+  PaneNode pane(
+    String id, {
+    String kind = 'terminal',
+    String? workspace,
+    String? item,
+    Map<String, Object?> state = const {},
+  }) => PaneNode(
+    id: id,
+    kind: kind,
+    workspace: workspace,
+    item: item,
+    state: state,
+  );
+
+  /// One one-pane tab per entry of [bindings] (tab `t<i>`, pane `p<i>`).
+  LayoutDocument layout({List<String?> bindings = const [], String? selected}) {
+    var d = const LayoutDocument.initial();
+    for (var i = 0; i < bindings.length; i++) {
+      d = ok(d.openTab(pane('p$i', workspace: bindings[i]), tabId: 't$i'));
+    }
+    return d.copyWith(selectedWorkspace: selected);
   }
+
+  /// Writes a layout straight into the stopped host's store.
+  Future<void> storeLayout(String layout, int format, int revision) =>
+      withStore(profile, (store) {
+        store.execute(
+          'UPDATE working_set SET layout = ?, layout_format = ?, '
+          "revision = ? WHERE id = 'personal'",
+          [layout, format, revision],
+        );
+      });
 
   Json json(LayoutDocument d) => layoutToJson(d);
 
@@ -76,12 +88,12 @@ void main() {
     fail('expected an RpcException');
   }
 
-  test('binding survives save, host restart and load', () async {
+  test('binding and selection survive save, host restart and load', () async {
     final desktop = await start();
     final id = await open(desktop, 'one');
 
     final saved = await desktop.saveWorkbench(
-      json(layout(bindings: [id], context: id)),
+      json(layout(bindings: [id], selected: id)),
       1,
     );
     await restart(desktop);
@@ -91,22 +103,115 @@ void main() {
     expect(load.revision, 1);
     expect(load.restoreError, isNull);
     final back = layoutFromJson(load.layout);
-    expect(back.tabs.single.workspace, id);
-    expect(back.groups.single.context, id);
+    expect(back.panes.single.workspace, id);
+    expect(back.selectedWorkspace, id);
     expect(load.workspaces.map((w) => w.id), [id]);
   });
+
+  test('a one-pane terminal tab keeps its profile across restart', () async {
+    final desktop = await start();
+    const state = {'profileId': 'builtin:bash', 'profileName': 'bash'};
+    final doc = ok(
+      const LayoutDocument.initial().openTab(
+        pane('p0', item: '0b6b7d8e-2f5a-4c1e-9d3a-6f1b2c3d4e5f', state: state),
+        tabId: 't0',
+      ),
+    );
+
+    await desktop.saveWorkbench(json(doc), 1);
+    await restart(desktop);
+    final load = await desktop.loadWorkbench();
+
+    expect(load.restoreError, isNull);
+    final p = layoutFromJson(load.layout).panes.single;
+    expect(p.kind, 'terminal');
+    expect(p.item, '0b6b7d8e-2f5a-4c1e-9d3a-6f1b2c3d4e5f');
+    expect(p.state, state);
+    expect(LedgerView(profile).units(), isEmpty, reason: 'no unit started');
+  });
+
+  test(
+    'a terminal beside an overview and an unknown kind survive restart',
+    () async {
+      final desktop = await start();
+      final id = await open(desktop, 'one');
+      var d = ok(
+        const LayoutDocument.initial().openTab(
+          pane(
+            'term',
+            workspace: id,
+            item: 'uuid-1',
+            state: {'profileId': 'builtin:bash', 'profileName': 'bash'},
+          ),
+          tabId: 't0',
+        ),
+      );
+      d = ok(
+        d.splitPane(
+          'term',
+          SplitDirection.horizontal,
+          pane('ov', kind: 'workspace-overview', workspace: id, item: id),
+          splitId: 's0',
+        ),
+      );
+      d = ok(
+        d.splitPane(
+          'ov',
+          SplitDirection.vertical,
+          pane(
+            'odd',
+            kind: 'chat-over-acp',
+            state: {
+              'n': [1, 2],
+            },
+          ),
+          splitId: 's1',
+        ),
+      );
+      d = ok(d.setRatio('s0', 0.3));
+
+      await desktop.saveWorkbench(json(d), 1);
+      await restart(desktop);
+      final load = await desktop.loadWorkbench();
+
+      expect(load.restoreError, isNull);
+      expect(load.layout, json(d));
+      expect(LedgerView(profile).units(), isEmpty);
+    },
+  );
 
   test('a closed tab is absent after save, host restart and load', () async {
     final desktop = await start();
     final id = await open(desktop, 'one');
-    await desktop.saveWorkbench(json(layout(bindings: [id, id])), 1);
+    final two = layout(bindings: [id, id]);
+    await desktop.saveWorkbench(json(two), 1);
 
-    await desktop.saveWorkbench(json(layout(bindings: [id])), 2);
+    await desktop.saveWorkbench(json(ok(two.closeTab('t1'))), 2);
     await restart(desktop);
     final load = await desktop.loadWorkbench();
 
     expect(load.revision, 2);
-    expect(layoutFromJson(load.layout).tabs.map((t) => t.id), ['t0']);
+    final back = layoutFromJson(load.layout);
+    expect(back.tabs.map((t) => t.id), ['t0']);
+    expect(back.panes.map((p) => p.id), ['p0']);
+  });
+
+  test('a closed pane is absent and its sibling holds its place', () async {
+    final desktop = await start();
+    var d = ok(const LayoutDocument.initial().openTab(pane('a'), tabId: 't0'));
+    d = ok(
+      d.splitPane('a', SplitDirection.horizontal, pane('b'), splitId: 's0'),
+    );
+    await desktop.saveWorkbench(json(d), 1);
+
+    await desktop.saveWorkbench(json(ok(d.closePane('b'))), 2);
+    await restart(desktop);
+    final load = await desktop.loadWorkbench();
+
+    final back = layoutFromJson(load.layout);
+    expect(back.tabs.single.root, isA<PaneNode>());
+    expect(back.panes.map((p) => p.id), ['a']);
+    expect(back.tabs.single.focusedPane, 'a');
   });
 
   // Kills the host after a save: the stored layout is durable. Desktop loss
@@ -126,7 +231,7 @@ void main() {
     final load = await desktop.loadWorkbench();
 
     expect(load.revision, 1);
-    expect(layoutFromJson(load.layout).tabs.single.workspace, id);
+    expect(layoutFromJson(load.layout).panes.single.workspace, id);
   });
 
   test(
@@ -199,12 +304,7 @@ void main() {
     final desktop = await start();
     final id = await open(desktop, 'one');
     await desktop.session.quit();
-    await withStore(profile, (store) {
-      store.execute(
-        "UPDATE working_set SET layout = '{\"format\":1,\"root\":42}', "
-        "layout_format = 1, revision = 4 WHERE id = 'personal'",
-      );
-    });
+    await storeLayout('{"format":2,"tabs":42}', 2, 4);
     await desktop.restart();
     await desktop.waitState();
 
@@ -219,45 +319,108 @@ void main() {
     expect((await desktop.loadWorkbench()).restoreError, isNull);
   });
 
-  test('a dangling context is repaired at load without an error', () async {
-    final desktop = await start();
-    final id = await open(desktop, 'one');
-    await desktop.session.quit();
-    await withStore(profile, (store) {
-      store.execute(
-        "UPDATE working_set SET layout = ?, layout_format = 1, revision = 2 "
-        "WHERE id = 'personal'",
-        [encodeLayout(layout(context: 'gone-workspace'))],
-      );
-    });
-    await desktop.restart();
-    await desktop.waitState();
+  test(
+    'a stored layout whose activeTab names no tab is a restoreError',
+    () async {
+      final desktop = await start();
+      await desktop.session.quit();
+      final bad = layoutToJson(layout(bindings: [null]))
+        ..['activeTab'] = 'gone';
+      await storeLayout(jsonEncode(bad), 2, 3);
+      await desktop.restart();
+      await desktop.waitState();
 
+      final load = await desktop.loadWorkbench();
+
+      expect(load.layout, isNull);
+      expect(load.restoreError, contains('activeTab'));
+      expect(load.revision, 3);
+    },
+  );
+
+  test('a store upgraded from v3 with a format 1 layout loads no layout and '
+      'no restoreError', () async {
+    final lock = (await ProfileLock.tryAcquire(profile))!;
+    Store.open(profile, lock, migrations: schemaMigrations.take(3).toList())
+      ..execute(
+        'UPDATE working_set SET layout = \'{"format":1,"root":{}}\', '
+        'layout_format = 1, revision = 6',
+      )
+      ..close();
+    await lock.release();
+
+    final desktop = await start();
     final load = await desktop.loadWorkbench();
 
+    expect(load.layout, isNull);
     expect(load.restoreError, isNull);
-    expect(layoutFromJson(load.layout).groups.single.context, isNull);
-    expect(load.workspaces.map((w) => w.id), [id]);
+    expect(load.revision, 6);
+    // The kept revision still guards saves.
+    final e = await failure(desktop.saveWorkbench(json(layout()), 6));
+    expect(e.reason, ErrorCode.staleRevision);
+    expect((await desktop.saveWorkbench(json(layout()), 7)).revision, 7);
   });
 
-  test('a binding to an unknown workspace is refused layout-invalid', () async {
+  test('a format 1 save is refused layout-invalid', () async {
     final desktop = await start();
+    final old = {
+      'format': 1,
+      'root': {
+        'type': 'group',
+        'id': 'g1',
+        'context': null,
+        'tabs': <Object?>[],
+        'active': null,
+      },
+      'focusedGroup': 'g1',
+      'recent': <Object?>[],
+      'sidebar': {'collapsed': false},
+    };
 
-    final e = await failure(
-      desktop.saveWorkbench(json(layout(bindings: ['nope'])), 1),
-    );
+    final e = await failure(desktop.saveWorkbench(old, 1));
 
     expect(e.reason, ErrorCode.layoutInvalid);
-    expect(e.message, contains(ErrorCode.unknownWorkspace));
+    expect(e.message, contains('unsupported layout format 1'));
     expect((await desktop.loadWorkbench()).revision, 0);
   });
 
+  test(
+    'a missing selected workspace is repaired at load without an error',
+    () async {
+      final desktop = await start();
+      final id = await open(desktop, 'one');
+      await desktop.session.quit();
+      await storeLayout(encodeLayout(layout(selected: 'gone-workspace')), 2, 2);
+      await desktop.restart();
+      await desktop.waitState();
+
+      final load = await desktop.loadWorkbench();
+
+      expect(load.restoreError, isNull);
+      expect(layoutFromJson(load.layout).selectedWorkspace, isNull);
+      expect(load.workspaces.map((w) => w.id), [id]);
+    },
+  );
+
+  test(
+    'a pane bound to an unknown workspace is refused layout-invalid',
+    () async {
+      final desktop = await start();
+
+      final e = await failure(
+        desktop.saveWorkbench(json(layout(bindings: ['nope'])), 1),
+      );
+
+      expect(e.reason, ErrorCode.layoutInvalid);
+      expect(e.message, contains(ErrorCode.unknownWorkspace));
+      expect((await desktop.loadWorkbench()).revision, 0);
+    },
+  );
+
   test('an oversized document is refused layout-invalid', () async {
     final desktop = await start();
-    // Within every field bound, over the document bound: many tabs with
-    // large state would be refused by their own bounds, so a wide `recent`
-    // is not an option either; one big unknown key is dropped by the decoder
-    // but counts toward the received size.
+    // Within every field bound, over the document bound: one big unknown key
+    // is dropped by the decoder but counts toward the received size.
     final big = json(layout())..['padding'] = 'x' * (300 * 1024);
     expect(utf8.encode(jsonEncode(big)).length, greaterThan(maxDocumentBytes));
 

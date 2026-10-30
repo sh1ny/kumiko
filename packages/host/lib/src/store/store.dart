@@ -9,7 +9,8 @@ import 'store_error.dart';
 /// with the `user_version` bump.
 typedef MigrationStep = void Function(Database db);
 
-/// Schema v1 (design D4), v2 (design D3) and v3 (host-terminals design D6).
+/// Schema v1 (design D4), v2 (design D3), v3 (host-terminals design D6) and
+/// v4 (host-terminals design D11).
 final List<MigrationStep> schemaMigrations = <MigrationStep>[
   (db) {
     db.execute('''
@@ -84,6 +85,13 @@ CREATE TABLE setting(
   key TEXT PRIMARY KEY,
   value TEXT NOT NULL
 )''');
+  },
+  // v4 (host-terminals D11, ADR 0011): tabs contain panes, layout format 2.
+  // A stored format 1 layout is discarded by user decision, not converted and
+  // not decoded. The working_set row and its revision stay, so later saves
+  // remain revision-guarded; nothing else is touched.
+  (db) {
+    db.execute('UPDATE working_set SET layout = NULL, layout_format = NULL');
   },
 ];
 

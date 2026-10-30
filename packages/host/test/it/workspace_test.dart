@@ -122,32 +122,35 @@ void main() {
     },
   );
 
-  test('opening a renamed directory moves its workspace to the new path', () async {
-    final dir = folder('before');
-    final desktop = await start();
-    final first = (await desktop.openWorkspace(dir.path)).workspace;
-    final moved = Directory(joinPath(root.path, 'after'));
-    dir.renameSync(moved.path);
+  test(
+    'opening a renamed directory moves its workspace to the new path',
+    () async {
+      final dir = folder('before');
+      final desktop = await start();
+      final first = (await desktop.openWorkspace(dir.path)).workspace;
+      final moved = Directory(joinPath(root.path, 'after'));
+      dir.renameSync(moved.path);
 
-    final again = await desktop.openWorkspace(moved.path);
+      final again = await desktop.openWorkspace(moved.path);
 
-    final expected = resolved(moved);
-    expect(expected.id, first.identity, reason: 'a rename keeps identity');
-    expect(again.existing, isTrue);
-    expect(again.workspace.id, first.id);
-    expect(again.workspace.path, expected.realPath);
-    expect(again.workspace.label, 'after');
-    expect(again.workspace.availability, Availability.available);
-    final rows = LedgerView(profile).workspaces();
-    expect(rows, hasLength(1));
-    expect(rows.single['path'], expected.realPath);
-    expect(rows.single['label'], 'after');
+      final expected = resolved(moved);
+      expect(expected.id, first.identity, reason: 'a rename keeps identity');
+      expect(again.existing, isTrue);
+      expect(again.workspace.id, first.id);
+      expect(again.workspace.path, expected.realPath);
+      expect(again.workspace.label, 'after');
+      expect(again.workspace.availability, Availability.available);
+      final rows = LedgerView(profile).workspaces();
+      expect(rows, hasLength(1));
+      expect(rows.single['path'], expected.realPath);
+      expect(rows.single['label'], 'after');
 
-    // Still available on the next check, at the new path.
-    final checked = await desktop.checkWorkspace(first.id);
-    expect(checked.workspace.availability, Availability.available);
-    expect(checked.workspace.path, expected.realPath);
-  });
+      // Still available on the next check, at the new path.
+      final checked = await desktop.checkWorkspace(first.id);
+      expect(checked.workspace.availability, Availability.available);
+      expect(checked.workspace.path, expected.realPath);
+    },
+  );
 
   test('a workspace removed while its old path is checked is opened '
       'as a new one', () async {
@@ -546,21 +549,30 @@ void main() {
     expect((await desktop.loadWorkbench()).workspaces, isEmpty);
   });
 
-  test('remove clears stored contexts at the next revision', () async {
+  test('remove leaves a selection naming another workspace and the '
+      'revision', () async {
+    final desktop = await start();
+    final a = (await desktop.openWorkspace(folder('sa').path)).workspace;
+    final b = (await desktop.openWorkspace(folder('sb').path)).workspace;
+    final doc = const LayoutDocument.initial().copyWith(
+      selectedWorkspace: b.id,
+    );
+    await desktop.saveWorkbench(layoutToJson(doc), 3);
+
+    final removed = await desktop.removeWorkspace(a.id);
+
+    expect(removed.revision, 3);
+    final load = await desktop.loadWorkbench();
+    expect(layoutFromJson(load.layout).selectedWorkspace, b.id);
+  });
+
+  test('remove clears a stored selection at the next revision', () async {
     final desktop = await start();
     final opened = (await desktop.openWorkspace(folder('ctx').path)).workspace;
-    LayoutDocument withContext() => LayoutDocument(
-      root: TabGroup(
-        id: 'g1',
-        context: opened.id,
-        tabs: const [],
-        active: null,
-      ),
-      focusedGroup: 'g1',
-      recent: const [],
-      sidebarCollapsed: false,
+    final doc = const LayoutDocument.initial().copyWith(
+      selectedWorkspace: opened.id,
     );
-    await desktop.saveWorkbench(layoutToJson(withContext()), 3);
+    await desktop.saveWorkbench(layoutToJson(doc), 3);
 
     final removed = await desktop.removeWorkspace(opened.id);
 
@@ -575,7 +587,7 @@ void main() {
           .single;
       expect(row['revision'], 4);
       final stored = decodeLayout(row['layout'] as String);
-      expect(stored.groups.single.context, isNull);
+      expect(stored.selectedWorkspace, isNull);
     });
     await restart(desktop);
     final load = await desktop.loadWorkbench();
@@ -605,27 +617,20 @@ void main() {
     final desktop = await start();
     final opened = (await desktop.openWorkspace(dir.path)).workspace;
     await stopHost(desktop);
-    final layout = LayoutDocument(
-      root: TabGroup(
-        id: 'g1',
-        context: opened.id,
-        tabs: [
-          LayoutTab(
-            id: 't1',
+    final layout = const LayoutDocument.initial()
+        .openTab(
+          PaneNode(
+            id: 'p1',
             kind: 'terminal',
             workspace: opened.id,
             item: null,
           ),
-        ],
-        active: 't1',
-      ),
-      focusedGroup: 'g1',
-      recent: const ['t1'],
-      sidebarCollapsed: false,
-    );
+          tabId: 't1',
+        )
+        .document!;
     await withStore(profile, (store) {
       store.execute(
-        "UPDATE working_set SET layout = ?, layout_format = 1, revision = 3 "
+        "UPDATE working_set SET layout = ?, layout_format = 2, revision = 3 "
         "WHERE id = 'personal'",
         [encodeLayout(layout)],
       );
