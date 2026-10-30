@@ -120,7 +120,7 @@ The terminal SHALL use an engine adopted only when, on every OS, each daily-driv
 
 #### Scenario: Conformance subset
 - **WHEN** the named vttest subset (cursor movement, screen features, character sets) runs
-- **THEN** every item in the subset passes
+- **THEN** every screen of the subset renders as vttest describes, except the screens the subset names as outside the bar (those that depend on 132-column mode, reverse-screen mode, or a character set other than US ASCII and DEC Special Graphics), which are listed in the results
 
 #### Scenario: A candidate fails an item
 - **WHEN** a candidate engine fails any bar item on any OS

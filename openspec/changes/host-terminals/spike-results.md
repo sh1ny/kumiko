@@ -19,7 +19,11 @@ Run from the vttest main menu, every screen of each item, no skipping:
 2. main menu item 2, "Test of screen features";
 3. main menu item 3, "Test of character sets".
 
-The conformance row passes only when every screen reached through those three items renders as vttest describes. The agent records the vttest version and the sub-screens it ran in Notes. Other main menu items (for example keyboard, terminal reports, VT52, non-VT100 tests) are outside the subset.
+The conformance row passes only when every screen reached through those three items renders as vttest describes, apart from the screens outside the bar below. The agent records the vttest version, the sub-screens it ran and the screens it excluded in Notes. Other main menu items (for example keyboard, terminal reports, VT52, non-VT100 tests) are outside the subset.
+
+Outside the bar (user decision 2026-10-30): screens whose check depends on 132-column mode (DECCOLM), reverse-screen mode (DECSCNM), or a character set other than US ASCII and DEC Special Graphics (national replacement sets such as UK, alternate ROM). They still run, so they cannot hide a crash or a corrupted later screen, but their own rendering is not judged. Modern terminals (Alacritty, Windows Terminal, kitty) leave these out by design.
+
+How it runs (user decision 2026-10-30): on Linux and macOS, vttest runs live through the host's pseudo-terminal with scripted keystrokes at 80x24. Each screen's output is also recorded as a byte transcript on Linux and committed; on Windows, which has no native vttest, the transcripts are replayed into the engine (Notes say "replayed, not through ConPTY"). Every screen is compared with a hand-written expected grid.
 
 ## windows
 
