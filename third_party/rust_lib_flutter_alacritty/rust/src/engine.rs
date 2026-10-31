@@ -624,10 +624,10 @@ impl TerminalEngine {
         {
             self.scroll_fraction = 0.0;
         }
-        let after = self.term.grid().display_offset();
-        let line_delta = after as i32 - before as i32;
+        // After the snap, which can move the viewport too.
         self.snap_history_edge_after_pixels(delta_px);
-        self.after_scroll_refresh(line_delta)
+        let after = self.term.grid().display_offset();
+        self.after_scroll_refresh(after as i32 - before as i32)
     }
 
     /// When pan/fling coasts within one line of a hard edge, snap flush so drag
@@ -1671,6 +1671,23 @@ mod tests {
         let u = e.full_snapshot();
         assert_eq!(line(&u, 0).cell(0).fg & 0x00FF_FFFF, 0x0000_FF00);
         assert_eq!(line(&u, 0).cell(1).bg & 0x00FF_FFFF, 0x0012_3456);
+    }
+
+    #[test]
+    fn a_pixel_scroll_snapped_to_the_history_top_reports_the_snap() {
+        let mut e = engine(10, 3);
+        e.set_cell_pixels(8, 16);
+        for i in 0..13 {
+            e.advance(format!("{:02}
+", i).into_bytes());
+        }
+        let history = e.term.grid().history_size() as i32;
+        e.scroll_lines(history - 1);
+        // Half a cell up, within a line of the top: snapped to the top.
+        let u = e.scroll_pixels(8.0);
+        assert_eq!(e.term.grid().display_offset() as i32, history);
+        assert_eq!(u.scroll_line_delta, 1);
+        assert!(u.lines.iter().any(|l| l.line == 0), "the revealed row ships");
     }
 
     #[test]

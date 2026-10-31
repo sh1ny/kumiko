@@ -39,8 +39,10 @@ The native half of `flutter_alacritty`, version 0.2.2 from pub.dev (MIT,
   (`rust/src/engine.rs`, `xterm256`). The engine consulted the runtime OSC 4
   table only for entries 0-15, so a redefined entry from 16 to 255 still drew
   its standard color. Test: `osc4_overrides_every_indexed_color`.
-- A line scroll reports how far the viewport moved (`rust/src/engine.rs`,
-  `scroll_lines`), not the delta asked for. alacritty clamps the display
-  offset to the history, so a scroll with no history reported movement the
-  view never made, and the Dart mirror rotated its rows anyway. Test:
-  `a_clamped_scroll_reports_no_movement`.
+- A scroll reports how far the viewport moved (`rust/src/engine.rs`,
+  `scroll_lines`, `scroll_pixels`), not the delta asked for. alacritty
+  clamps the display offset to the history, so a scroll with no history
+  reported movement the view never made, and the Dart mirror rotated its rows
+  anyway; a pixel scroll that snapped to the history's edge reported the
+  movement before the snap. Tests: `a_clamped_scroll_reports_no_movement`,
+  `a_pixel_scroll_snapped_to_the_history_top_reports_the_snap`.
