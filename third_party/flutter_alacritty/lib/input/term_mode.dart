@@ -8,6 +8,9 @@ const int kModeMouseMotion = 1 << 6;
 const int kModeFocusInOut = 1 << 11;
 const int kModeAltScreen = 1 << 12;
 const int kModeMouseDrag = 1 << 13;
+
+/// DEC 1005 — UTF-8 mouse coordinates (Alacritty `TermMode::UTF8_MOUSE`).
+const int kModeUtf8Mouse = 1 << 14;
 /// DEC 1007 — wheel in alt-screen maps to cursor up/down (Alacritty
 /// `TermMode::ALTERNATE_SCROLL`, on by default in native alacritty).
 const int kModeAlternateScroll = 1 << 15;

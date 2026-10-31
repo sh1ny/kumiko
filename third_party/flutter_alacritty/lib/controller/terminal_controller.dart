@@ -121,7 +121,16 @@ class TerminalController extends ChangeNotifier {
   }) {
     _searchPattern = pattern;
     _searchOptions = options;
-    final ok = _engine?.searchSet(pattern, options: options) ?? false;
+    // An empty pattern clears the engine's search: the engine compiles an
+    // empty regex as an active search, which keeps every update a full
+    // snapshot even after the search bar closes.
+    final bool ok;
+    if (pattern.isEmpty) {
+      _engine?.searchClear();
+      ok = true;
+    } else {
+      ok = _engine?.searchSet(pattern, options: options) ?? false;
+    }
     _searchValid = ok || pattern.isEmpty;
     notifyListeners();
     return ok;

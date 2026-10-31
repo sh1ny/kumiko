@@ -153,7 +153,11 @@ class ImeSession implements TextInputClient {
     }
 
     if (value.text.length > baseline.length) {
-      final delta = value.text.substring(baseline.length);
+      // Strip the sentinel only when it is there: an IME that commits
+      // without it would lose the text's first characters.
+      final delta = value.text.startsWith(baseline)
+          ? value.text.substring(baseline.length)
+          : value.text;
       if (delta.isNotEmpty) onCommit(delta);
       _resetEditing(notify: false);
       return;

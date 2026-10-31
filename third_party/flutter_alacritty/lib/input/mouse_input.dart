@@ -54,6 +54,17 @@ Uint8List? encodeMouse(
   }
   if (action == MouseAction.move) xb += 32;
   xb += mods;
-  int byte(int v) => (v + 32).clamp(0, 255);
-  return Uint8List.fromList([0x1b, 0x5b, 0x4d, byte(xb), byte(col), byte(row)]);
+  // DEC 1005 sends each value + 32 as a UTF-8 character (at most 2047);
+  // the legacy encoding has one byte for it (at most 255).
+  final utf8Mouse = modeFlags & kModeUtf8Mouse != 0;
+  List<int> value(int v) {
+    final c = v + 32;
+    if (!utf8Mouse) return [c.clamp(0, 255)];
+    if (c < 0x80) return [c];
+    final u = c.clamp(0x80, 0x7ff);
+    return [0xc0 | (u >> 6), 0x80 | (u & 0x3f)];
+  }
+
+  return Uint8List.fromList(
+      [0x1b, 0x5b, 0x4d, ...value(xb), ...value(col), ...value(row)]);
 }

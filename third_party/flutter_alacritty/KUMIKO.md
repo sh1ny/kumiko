@@ -79,5 +79,22 @@ rotated the rows; rows marked for repaint before a scroll kept their old
 index. The delta now accumulates until the painter takes it, and the marked
 rows move with the content. Test: `packages/desktop/test/mirror_grid_test.dart`.
 
+**UTF-8 mouse coordinates** (`lib/input/mouse_input.dart`,
+`lib/input/term_mode.dart`). A program that turned on DEC 1005 got the
+one-byte legacy encoding, so a column or row past 95 arrived as a malformed
+byte and one past 223 at the wrong position. In that mode each value is now
+sent as a UTF-8 character. Test: `packages/desktop/test/vendored_input_test.dart`.
+
+**An emptied search clears the engine's** (`lib/controller/terminal_controller.dart`).
+The engine compiles an empty pattern as an active search, and closing the bar
+then found nothing to clear, so every later update stayed a full, searched
+snapshot. An empty pattern now clears the engine's search. Test:
+`packages/desktop/test/vendored_input_test.dart`.
+
+**An IME commit without the sentinel is sent whole** (`lib/input/ime_session.dart`).
+A commit longer than the two-space sentinel lost its first two characters
+even when the IME had not kept the sentinel. They are now dropped only when
+the text starts with it. Test: `packages/desktop/test/vendored_input_test.dart`.
+
 To move to a newer upstream version, copy its `lib/`, `pubspec.yaml` and
 licence again and re-apply the patch until upstream carries the fix.
