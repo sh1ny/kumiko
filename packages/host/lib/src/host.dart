@@ -4,6 +4,7 @@ import 'dart:io';
 import 'package:host_protocol/host_protocol.dart';
 import 'package:process_containment/process_containment.dart';
 
+import 'agent/runtime_profile_service.dart';
 import 'cleanup_service.dart';
 import 'host_extension.dart';
 import 'host_faults.dart';
@@ -77,6 +78,7 @@ class Host {
   WorkspaceService? _workspaces;
   WorkbenchService? _workbench;
   ProfileService? _profiles;
+  RuntimeProfileService? _runtimeProfiles;
   TerminalService? _terminals;
   bool _stopping = false;
 
@@ -91,6 +93,7 @@ class Host {
       capabilities: {
         Capability.workbench,
         Capability.terminal,
+        Capability.agent,
         ...?extension?.capabilities,
       },
       onHello: _onHello,
@@ -260,6 +263,12 @@ class Host {
       faults: faults,
       options: options,
     );
+    _runtimeProfiles = RuntimeProfileService(
+      store: store,
+      log: log,
+      faults: faults,
+      options: options,
+    );
     _terminals = TerminalService(
       connection: _connection,
       units: units,
@@ -340,6 +349,23 @@ class Host {
       case Method.profileSetDefault:
         await _profiles!.setDefault(ProfileSetDefaultParams.fromJson(params));
         return <String, Object?>{};
+    }
+    switch (method) {
+      case Method.runtimeList:
+        EmptyParams.fromJson(params);
+        return (await _runtimeProfiles!.list()).toJson();
+      case Method.runtimeSave:
+        return (await _runtimeProfiles!.save(
+          RuntimeSaveParams.fromJson(params),
+        )).toJson();
+      case Method.runtimeRemove:
+        return (await _runtimeProfiles!.remove(
+          RuntimeRemoveParams.fromJson(params),
+        )).toJson();
+      case Method.runtimeSetDefault:
+        return (await _runtimeProfiles!.setDefault(
+          RuntimeSetDefaultParams.fromJson(params),
+        )).toJson();
     }
     switch (method) {
       case Method.terminalOpen:

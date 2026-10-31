@@ -148,6 +148,7 @@ abstract final class ErrorCode {
   static const String unknownTerminal = 'unknown-terminal';
   static const String invalidSize = 'invalid-size';
   static const String executableNotFound = 'executable-not-found';
+  static const String notExecutable = 'not-executable';
   static const String spawnFailed = 'spawn-failed';
   static const String notAttached = 'not-attached';
   static const String consoleCleanupPending = 'console-cleanup-pending';

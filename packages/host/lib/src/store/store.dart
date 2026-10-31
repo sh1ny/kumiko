@@ -10,7 +10,7 @@ import 'store_error.dart';
 typedef MigrationStep = void Function(Database db);
 
 /// Schema v1 (design D4), v2 (design D3), v3 (host-terminals design D6) and
-/// v4 (host-terminals design D11).
+/// v4 (host-terminals design D11), and v5 (agent sessions design D7).
 final List<MigrationStep> schemaMigrations = <MigrationStep>[
   (db) {
     db.execute('''
@@ -92,6 +92,38 @@ CREATE TABLE setting(
   // remain revision-guarded; nothing else is touched.
   (db) {
     db.execute('UPDATE working_set SET layout = NULL, layout_format = NULL');
+  },
+  // v5 (agent sessions D7): argv profiles and native session references only.
+  // Deliberately no profile/workspace foreign keys: removing either must not
+  // mutate the immutable native session record. Built-ins remain memory-only.
+  (db) {
+    db.execute('''
+CREATE TABLE runtime_profile(
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  runtime_kind TEXT NOT NULL,
+  executable TEXT NOT NULL,
+  args_json TEXT NOT NULL,
+  env_json TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+)''');
+    db.execute('''
+CREATE TABLE agent_session(
+  id TEXT PRIMARY KEY,
+  runtime_kind TEXT NOT NULL,
+  runtime_profile_id TEXT,
+  adapter_name TEXT NOT NULL,
+  adapter_version TEXT NOT NULL,
+  native_session_id TEXT NOT NULL,
+  role TEXT NOT NULL CHECK (role = 'coding'),
+  target_host TEXT NOT NULL,
+  target_path TEXT NOT NULL,
+  target_identity TEXT NOT NULL,
+  workspace_id TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+)''');
   },
 ];
 

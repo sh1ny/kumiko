@@ -1,5 +1,5 @@
-/// The pure shell-profile model and its validation (design D6). The host
-/// validates every save again with the same code.
+/// Pure argv shell and runtime profiles and shared validation (design D6, D11).
+/// The host validates every save again with the same code.
 library;
 
 import 'dart:convert';
@@ -95,77 +95,160 @@ class ProfileDefinition {
 
   /// Every reason this profile cannot be saved; empty when it is valid.
   List<ProfileIssue> validate() {
-    final issues = <ProfileIssue>[];
-    if (id.isEmpty) {
-      issues.add(const ProfileIssue('id', 'The id is required.'));
-    } else if (utf8.encode(id).length > maxProfileIdBytes) {
-      issues.add(
-        const ProfileIssue(
-          'id',
-          'The id is longer than $maxProfileIdBytes bytes.',
-        ),
-      );
-    }
-    if (name.trim().isEmpty) {
-      issues.add(const ProfileIssue('name', 'The name is required.'));
-    } else if (utf8.encode(name).length > maxProfileNameBytes) {
-      issues.add(
-        const ProfileIssue(
-          'name',
-          'The name is longer than $maxProfileNameBytes bytes.',
-        ),
-      );
-    }
-    if (executable.trim().isEmpty) {
-      issues.add(
-        const ProfileIssue('executable', 'The executable is required.'),
-      );
-    }
-    if (args.length > maxProfileArgs) {
-      issues.add(
-        const ProfileIssue(
-          'args',
-          'At most $maxProfileArgs arguments are allowed.',
-        ),
-      );
-    }
-    for (var i = 0; i < args.length; i++) {
-      if (utf8.encode(args[i]).length > maxProfileArgBytes) {
-        issues.add(
-          ProfileIssue(
-            'args',
-            'Argument ${i + 1} is longer than $maxProfileArgBytes bytes.',
-          ),
-        );
-        break;
-      }
-    }
-    if (env.length > maxProfileEnv) {
-      issues.add(
-        const ProfileIssue(
-          'env',
-          'At most $maxProfileEnv environment entries are allowed.',
-        ),
-      );
-    }
-    for (final name in env.keys) {
-      if (name.isEmpty || name.contains('=')) {
-        issues.add(
-          ProfileIssue(
-            'env',
-            'The environment variable name "$name" is invalid: it must not '
-                'be empty or contain "=".',
-          ),
-        );
-      }
-    }
-    if (issues.isEmpty &&
-        utf8.encode(jsonEncode(toJson())).length > maxProfileBytes) {
-      issues.add(
-        const ProfileIssue('profile', 'A profile may be at most 12 KiB.'),
-      );
-    }
+    final issues = _validateProfileFields(
+      id: id,
+      name: name,
+      executable: executable,
+      args: args,
+      env: env,
+    );
+    if (issues.isEmpty) _validateProfileSize(issues, toJson());
     return issues;
+  }
+}
+
+/// An ACP adapter launch description. Arguments are never command text; the
+/// working directory belongs to the session target, not the runtime profile.
+class RuntimeProfileDefinition {
+  const RuntimeProfileDefinition({
+    required this.id,
+    required this.name,
+    required this.runtimeKind,
+    required this.executable,
+    this.args = const [],
+    this.env = const {},
+  });
+
+  factory RuntimeProfileDefinition.fromJson(Map<String, Object?> json) =>
+      RuntimeProfileDefinition(
+        id: json['id']! as String,
+        name: json['name']! as String,
+        runtimeKind: json['runtimeKind']! as String,
+        executable: json['executable']! as String,
+        args: [
+          for (final arg in (json['args'] as List? ?? const [])) arg as String,
+        ],
+        env: {
+          for (final entry in (json['env'] as Map? ?? const {}).entries)
+            entry.key as String: entry.value as String,
+        },
+      );
+
+  final String id;
+  final String name;
+  final String runtimeKind;
+  final String executable;
+  final List<String> args;
+  final Map<String, String> env;
+  bool get isBuiltin => isBuiltinProfileId(id);
+
+  Map<String, Object?> toJson() => {
+    'id': id,
+    'name': name,
+    'runtimeKind': runtimeKind,
+    'executable': executable,
+    'args': args,
+    'env': env,
+  };
+
+  List<ProfileIssue> validate() {
+    final issues = _validateProfileFields(
+      id: id,
+      name: name,
+      executable: executable,
+      args: args,
+      env: env,
+    );
+    if (runtimeKind.trim().isEmpty) {
+      issues.add(
+        const ProfileIssue('runtimeKind', 'The runtime kind is required.'),
+      );
+    }
+    if (issues.isEmpty) _validateProfileSize(issues, toJson());
+    return issues;
+  }
+}
+
+List<ProfileIssue> _validateProfileFields({
+  required String id,
+  required String name,
+  required String executable,
+  required List<String> args,
+  required Map<String, String> env,
+}) {
+  final issues = <ProfileIssue>[];
+  if (id.isEmpty) {
+    issues.add(const ProfileIssue('id', 'The id is required.'));
+  } else if (utf8.encode(id).length > maxProfileIdBytes) {
+    issues.add(
+      const ProfileIssue(
+        'id',
+        'The id is longer than $maxProfileIdBytes bytes.',
+      ),
+    );
+  }
+  if (name.trim().isEmpty) {
+    issues.add(const ProfileIssue('name', 'The name is required.'));
+  } else if (utf8.encode(name).length > maxProfileNameBytes) {
+    issues.add(
+      const ProfileIssue(
+        'name',
+        'The name is longer than $maxProfileNameBytes bytes.',
+      ),
+    );
+  }
+  if (executable.trim().isEmpty) {
+    issues.add(const ProfileIssue('executable', 'The executable is required.'));
+  }
+  if (args.length > maxProfileArgs) {
+    issues.add(
+      const ProfileIssue(
+        'args',
+        'At most $maxProfileArgs arguments are allowed.',
+      ),
+    );
+  }
+  for (var i = 0; i < args.length; i++) {
+    if (utf8.encode(args[i]).length > maxProfileArgBytes) {
+      issues.add(
+        ProfileIssue(
+          'args',
+          'Argument ${i + 1} is longer than $maxProfileArgBytes bytes.',
+        ),
+      );
+      break;
+    }
+  }
+  if (env.length > maxProfileEnv) {
+    issues.add(
+      const ProfileIssue(
+        'env',
+        'At most $maxProfileEnv environment entries are allowed.',
+      ),
+    );
+  }
+  for (final name in env.keys) {
+    if (name.isEmpty || name.contains('=')) {
+      issues.add(
+        ProfileIssue(
+          'env',
+          'The environment variable name "$name" is invalid: it must not '
+              'be empty or contain "=".',
+        ),
+      );
+    }
+  }
+  return issues;
+}
+
+void _validateProfileSize(
+  List<ProfileIssue> issues,
+  Map<String, Object?> json,
+) {
+  if (utf8.encode(jsonEncode(json)).length > maxProfileBytes) {
+    issues.add(
+      const ProfileIssue('profile', 'A profile may be at most 12 KiB.'),
+    );
   }
 }
 

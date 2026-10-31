@@ -4,6 +4,8 @@
 
 Verification sequencing (user-approved): groups 2-10 verify locally on Windows, plus Linux through WSL when available and runnable. Task 11.3 owns the full Windows/Linux/macOS CI run. Complete tasks on local evidence without claiming unrun OS results. Flip a test-map row green only when its test has passed locally; platform-only tests not run locally remain red with `pending 11.3 CI` until CI proves them. Real-adapter user qualification and the stop at 10.2 are unchanged.
 
+Component sequencing (user-approved): when a scenario needs a component built in a later group, assign its full test to that group in this task file and keep its test-map row red until it passes. A row spanning multiple test files or host/desktop parts turns green only when every part passes. Earlier groups complete their own layer without substituting a forwarding/mock execution path. These task-only ordering corrections must preserve all specified behavior and test strength; behavior changes or weakened tests still require a user decision.
+
 Test locations:
 - `process_containment`:
   - `packages/process_containment/test/pipes_test.dart`: piped units on all OSes (D2).
@@ -40,20 +42,20 @@ Test locations:
 | agent-runtimes → A runtime profile is an argv launch description for an ACP adapter | Launch from an npx profile | packages/host/test/it/runtime_profiles_test.dart | a profile's executable and args reach the adapter unchanged (fixture agent reports its argv) | red |
 | agent-runtimes → A runtime profile is an argv launch description for an ACP adapter | Argument with spaces and quotes | packages/process_containment/test/pipes_test.dart | pipes preserve exact argv spaces quotes and empty arguments | green (Windows; other OSes pending 11.3 CI) |
 | agent-runtimes → A runtime profile is an argv launch description for an ACP adapter | Override does not leak | packages/host/test/it/runtime_profiles_test.dart | profile env override reaches only its own sessions, not a terminal or another profile's session | red |
-| agent-runtimes → An installed adapter is detected as a built-in profile | Adapter installed with npm on Windows | packages/host/test/agent/adapter_detector_test.dart | Windows npm layout (fixture dir with claude-agent-acp.cmd, node_modules/.../dist/index.js, node.exe) yields node.exe + absolute index.js | red |
-| agent-runtimes → An installed adapter is detected as a built-in profile | Adapter on PATH on macOS | packages/host/test/agent/adapter_detector_test.dart | POSIX npm layout (bin symlink to dist/index.js, node beside it) yields absolute node + absolute index.js | red |
-| agent-runtimes → An installed adapter is detected as a built-in profile | Desktop started from the Dock | packages/host/test/agent/adapter_detector_test.dart; tool/check_qualification.dart | PATH without the install dir still finds the adapter in a well-known directory (fixture home); qualification check > the macOS Finder/Dock item is recorded pass or unproven (user-verified) | red (qualification check green; detector pending) |
-| agent-runtimes → An installed adapter is detected as a built-in profile | Adapter not installed | packages/host/test/it/runtime_profiles_test.dart; packages/desktop/test/agent_test.dart | runtime/list with no adapter returns no built-in and the reason; launcher with no runtime profile offers Add profile naming the package and Node ≥ 22 | red |
-| agent-runtimes → An installed adapter is detected as a built-in profile | Built-in profile cannot be edited | packages/host/test/it/runtime_profiles_test.dart | save or remove of a built-in is refused read-only-profile and nothing changes | red |
-| agent-runtimes → The user can define, edit and remove runtime profiles | Add a profile | packages/host/test/it/runtime_profiles_test.dart | saved profile survives a host restart unchanged | red |
-| agent-runtimes → The user can define, edit and remove runtime profiles | Invalid profile refused | packages/domain/test/runtime_profile_test.dart; packages/host/test/it/runtime_profiles_test.dart | empty executable and env name with = are invalid; save refused invalid-profile leaves the store unchanged | red |
+| agent-runtimes → An installed adapter is detected as a built-in profile | Adapter installed with npm on Windows | packages/host/test/agent/adapter_detector_test.dart | Windows npm layout (fixture dir with claude-agent-acp.cmd, node_modules/.../dist/index.js, node.exe) yields node.exe + absolute index.js | green (Windows fixture; other OSes pending 11.3 CI) |
+| agent-runtimes → An installed adapter is detected as a built-in profile | Adapter on PATH on macOS | packages/host/test/agent/adapter_detector_test.dart | POSIX npm layout (bin symlink to dist/index.js, node beside it) yields absolute node + absolute index.js | red (POSIX-only test skipped on Windows; pending 11.3 CI) |
+| agent-runtimes → An installed adapter is detected as a built-in profile | Desktop started from the Dock | packages/host/test/agent/adapter_detector_test.dart; tool/check_qualification.dart | PATH without the install dir still finds the adapter in a well-known directory (fixture home); qualification check > the macOS Finder/Dock item is recorded pass or unproven (user-verified) | red (Windows minimal-PATH fixture and qualification checker green; native POSIX fixture pending 11.3 CI; real Dock observation belongs to 10.2) |
+| agent-runtimes → An installed adapter is detected as a built-in profile | Adapter not installed | packages/host/test/it/runtime_profiles_test.dart; packages/desktop/test/agent_test.dart | runtime/list with no adapter returns no built-in and the reason; launcher with no runtime profile offers Add profile naming the package and Node ≥ 22 | red (host green on Windows; desktop pending) |
+| agent-runtimes → An installed adapter is detected as a built-in profile | Built-in profile cannot be edited | packages/host/test/it/runtime_profiles_test.dart | save or remove of a built-in is refused read-only-profile and nothing changes | green (Windows; other OSes pending 11.3 CI) |
+| agent-runtimes → The user can define, edit and remove runtime profiles | Add a profile | packages/host/test/it/runtime_profiles_test.dart | saved profile survives a host restart unchanged | green (Windows; other OSes pending 11.3 CI) |
+| agent-runtimes → The user can define, edit and remove runtime profiles | Invalid profile refused | packages/domain/test/runtime_profile_test.dart; packages/host/test/it/runtime_profiles_test.dart | empty executable and env name with = are invalid; save refused invalid-profile leaves the store unchanged | green (Windows; other OSes pending 11.3 CI) |
 | agent-runtimes → The user can define, edit and remove runtime profiles | Remove a profile in use | packages/host/test/it/agent_continue_test.dart | removing a running session's profile keeps it running and its record; a later Continue uses the default profile | red |
-| agent-runtimes → One runtime profile is the default | First start with the adapter installed | packages/host/test/it/runtime_profiles_test.dart | with no stored default the detected built-in is the default | red |
-| agent-runtimes → One runtime profile is the default | Default profile removed from PATH | packages/host/test/it/runtime_profiles_test.dart; packages/desktop/test/agent_test.dart | stored built-in default not detected reports defaultAvailable false with the reason; launcher asks to choose or add a profile | red |
+| agent-runtimes → One runtime profile is the default | First start with the adapter installed | packages/host/test/it/runtime_profiles_test.dart | with no stored default the detected built-in is the default | green (Windows; other OSes pending 11.3 CI) |
+| agent-runtimes → One runtime profile is the default | Default profile removed from PATH | packages/host/test/it/runtime_profiles_test.dart; packages/desktop/test/agent_test.dart | stored built-in default not detected reports defaultAvailable false with the reason; launcher asks to choose or add a profile | red (host green on Windows; desktop pending) |
 | agent-runtimes → An unusable adapter executable is reported, never substituted | Missing executable | packages/host/test/it/agent_test.dart | agent/start with a missing executable fails executable-not-found naming the path, no unit in the ledger, no record | red |
-| agent-runtimes → An unusable adapter executable is reported, never substituted | Batch file refused | packages/host/test/agent/executable_resolver_test.dart | an absolute .cmd or .bat executable is refused with the batch-file reason and the node.exe form | red |
-| agent-runtimes → An unusable adapter executable is reported, never substituted | Bare name on Windows | packages/host/test/agent/executable_resolver_test.dart | bare node resolves through PATH and PATHEXT to the .exe | red |
-| agent-runtimes → An unusable adapter executable is reported, never substituted | Bare name resolving to a batch file on Windows | packages/host/test/agent/executable_resolver_test.dart | bare npx whose first match is npx.cmd is refused, naming npx.cmd and the npx-cli.js form, and a later .exe is not used | red |
+| agent-runtimes → An unusable adapter executable is reported, never substituted | Batch file refused | packages/host/test/agent/executable_resolver_test.dart | an absolute .cmd or .bat executable is refused with the batch-file reason and the node.exe form | green (Windows; other OSes pending 11.3 CI) |
+| agent-runtimes → An unusable adapter executable is reported, never substituted | Bare name on Windows | packages/host/test/agent/executable_resolver_test.dart | bare node resolves through PATH and PATHEXT to the .exe | green (Windows; other OSes pending 11.3 CI) |
+| agent-runtimes → An unusable adapter executable is reported, never substituted | Bare name resolving to a batch file on Windows | packages/host/test/agent/executable_resolver_test.dart | bare npx whose first match is npx.cmd is refused, naming npx.cmd and the npx-cli.js form, and a later .exe is not used | green (Windows; other OSes pending 11.3 CI) |
 | agent-runtimes → An unusable adapter executable is reported, never substituted | Node too old | packages/host/test/it/agent_test.dart | fixture adapter exiting 1 before initialize with an engine error: start fails with the exit status and stderr tail, no record | red |
 | agent-runtimes → Runtime capabilities are claimed only from evidence | Qualified version | packages/host/test/agent/qualification_test.dart; packages/host/test/it/agent_continue_test.dart | listed (name, version) advertising loadSession claims load; Continue with a qualified fixture version loads | red |
 | agent-runtimes → Runtime capabilities are claimed only from evidence | Unqualified version | packages/host/test/it/agent_continue_test.dart | Continue whose adapter reports an unlisted version answers resume-unavailable{not-qualified} with the version, terminates the unit, record unchanged | red |
@@ -211,7 +213,7 @@ Test locations:
 
 ## 4. Runtime profiles: domain model, store v5, resolution and detection (D7, D11)
 
-- [ ] 4.1 Write failing `runtime_profile_test.dart`:
+- [x] 4.1 Write failing `runtime_profile_test.dart`:
   - args round-trip;
   - empty executable invalid;
   - env names with `=` invalid;
@@ -219,14 +221,14 @@ Test locations:
   - the shell-profile bounds (64 profiles, 256 args of ≤ 4 KiB, 128 env, 12 KiB).
 
   Implement the pure model in `domain`, reusing the shell profile validators. Verify it passes and flip its domain rows green.
-- [ ] 4.2 Write failing v5 tests in `migrations_test.dart`:
+- [x] 4.2 Write failing v5 tests in `migrations_test.dart`:
   - a v4 store migrates to v5 with `runtime_profile`, `agent_session` (`role` CHECK `coding`) and nothing else changed;
   - a fault inside the step rolls back to v4;
   - a v4-only step list refuses the v5 store with its bytes unchanged;
   - `currentSchemaVersion == 5`.
 
   Add the v5 step in `store.dart` (one transaction). Verify they pass.
-- [ ] 4.3 Write failing `executable_resolver_test.dart`:
+- [x] 4.3 Write failing `executable_resolver_test.dart`:
   - absolute paths;
   - PATH then the well-known directories per OS (D11);
   - Windows PATHEXT where the first match must be `.exe`, and a `.cmd`/`.bat` first match is refused without going on to a later `.exe`;
@@ -242,7 +244,7 @@ Test locations:
   - the 2 s cap.
 
   Implement `ExecutableResolver` and `AdapterDetector` in `host/lib/src/agent/`. The built-in profile is absolute `node` plus the script, with `node`'s directory prepended to `PATH`. Verify they pass and flip the resolver and detector rows green.
-- [ ] 4.4 Write failing `runtime_profiles_test.dart` for every runtime-profile row mapped there. Implement `RuntimeProfileService` (built-ins in memory, user profiles in v5, `default_runtime`, refusal of built-in edits) and wire `runtime/*` in `Host._onRequest` under `Capability.agent`; advertise `agent` in `host.dart`. Verify locally and flip observed passing rows green; three-OS CI is task 11.3.
+- [x] 4.4 Write failing `runtime_profiles_test.dart` for the mapped runtime-profile CRUD, default, detection, refusal and built-in read-only rows that need no adapter process. Exclude "Launch from an npx profile" and "Override does not leak": their execution tests belong to 6.1/6.2 and stay red until then. Implement `RuntimeProfileService` (built-ins in memory, user profiles in v5, `default_runtime`, refusal of built-in edits) and wire `runtime/*` in `Host._onRequest` under `Capability.agent`; advertise `agent` in `host.dart`. Verify locally and flip observed passing parts green; multi-part rows wait for their remaining parts, and three-OS CI is task 11.3.
 
 ## 5. ACP client, fake agent, normalizer and session state machine (D3, D6, D8, D10, D13, D14)
 
@@ -272,7 +274,7 @@ Test locations:
   - the Stop outcomes `stopped`, `finishedFirst`, `endedWithError`, `notConfirmed` (fake clock) and exactly one late result;
   - a prompt while running → `turn-running`;
   - refusal and error turn ends;
-  - auth-required classification on prompt;
+  - preserve the adapter's code and message on an unmatched prompt error; exact native auth-required matching and its regression belong to 10.2, after the required real observation exists;
   - `seq` increasing on every state change;
   - more than 16 pending requests → the extra answered cancelled with a notice.
 
@@ -294,7 +296,7 @@ Test locations:
 
 ## 6. Host agent service: start, stream, permissions, Stop, close, records (D1, D2, D4, D7, D8)
 
-- [ ] 6.1 Write failing tests in `agent_test.dart` and `agent_close_test.dart` for every host row mapped there except Continue and the qualification rows. Verify they fail for the missing service.
+- [ ] 6.1 Write failing tests in `agent_test.dart` and `agent_close_test.dart` for every host row mapped there except Continue, the qualification rows and the exact native-auth matching scenarios assigned to 10.2. Also write "Launch from an npx profile" and "Override does not leak" in `runtime_profiles_test.dart`, using the real `AgentService` and the ACP fixture's argv/environment reports. Verify they fail for the missing service.
 - [ ] 6.2 Implement `AgentService.start` per D7:
   - workspace required and available;
   - profile and executable resolution and checks;
@@ -306,7 +308,7 @@ Test locations:
   - insert the record;
   - answer.
 
-  On failure, terminate, release and write no record, with the stderr tail ≤ 4 KiB. Map exit 127 before `initialize` to `executable-not-found` and 126 to `not-executable` **only when the stderr tail starts with the shim's `unit-exec:` prefix**, otherwise `adapter-start-failed` with the status (review round 1 re-check suggestion 1). Keep stderr in a 64 KiB memory ring, never in `host.log`. Verify the start, refusal, protocol-version, auth, Node-too-old and record rows pass.
+  On failure, terminate, release and write no record, with the stderr tail ≤ 4 KiB. Map exit 127 before `initialize` to `executable-not-found` and 126 to `not-executable` **only when the stderr tail starts with the shim's `unit-exec:` prefix**, otherwise `adapter-start-failed` with the status (review round 1 re-check suggestion 1). Keep stderr in a 64 KiB memory ring, never in `host.log`. Verify the start, refusal, protocol-version, Node-too-old and record rows pass. Until qualification supplies the exact native auth match in 10.2, preserve and show the adapter's own error message as D14 specifies; do not invent a classifier constant. With 6.3, make "Launch from an npx profile" and "Override does not leak" pass through actual agent starts (not a test forwarding saved profile fields into a substitute spawn), then flip those rows green.
 - [ ] 6.3 Implement attach (10 s timeout), the event relay (normalized events through the channel writer, the 1 MiB queue bound pausing adapter stdout, overshoot ≤ 1 MiB) and the control notifications in the D4 order (`turnEnded` and `state idle` after the turn's events are enqueued). Wire `agent/*` in `Host._onRequest`. Verify the streaming, permission, Stop, unknown-session, canary and "Desktop never attaches" rows pass, and flip them green.
 - [ ] 6.4 Implement close: ack on entering `closing`; when running, cancel, answer pending requests cancelled, then a 2 s grace; terminate through the existing settle path within 30 s; send `exited{closed}` or `closeFailed`; keep the record. Implement `agent/release`. Verify locally, including desktop kill and host kill with a fixture grandchild, and flip observed passing `agent_close_test.dart` rows green; three-OS CI is task 11.3.
 
@@ -375,7 +377,7 @@ Test locations:
 ## 10. Real adapter qualification (pauses for the user's per-OS runs)
 
 - [ ] 10.1 Write `tool/qualify_claude_acp.dart`. It drives the real adapter through the host with the user's built-in or chosen profile and walks the D13 items. It asks the user for the interactive confirmations (permission answered, Stop observed, close confirmation, Dock launch on macOS), and writes the results and the observed auth-required code and message into `docs/qualification/claude-agent-acp.md`. Verify it runs end to end against the fake agent (`--dry-run`).
-- [ ] 10.2 Ask the user to run the qualification on Windows with `@agentclientprotocol/claude-agent-acp` 0.99.1 (or the then-current version) and record the results. Record Linux and macOS items `unproven` unless the user runs them (precedent of 2026-10-29). Never record a user-verified item as passed on the user's behalf. Stop here until the Windows results are recorded. Use the recorded auth-required code and message as the D14 classifier constant, with a unit test in `agent_session_test.dart`.
+- [ ] 10.2 Ask the user to run the qualification on Windows with `@agentclientprotocol/claude-agent-acp` 0.99.1 (or the then-current version) and record the results. Record Linux and macOS items `unproven` unless the user runs them (precedent of 2026-10-29). Never record a user-verified item as passed on the user's behalf. Stop here until the Windows results are recorded. Use the recorded auth-required code and message as the D14 classifier constant, with a unit test in `agent_session_test.dart`. Implement and verify the deferred host parts of "Not signed in" (`agent_test.dart`: auth-required, no record) and "Sign-in expires mid-session" (`agent_session_test.dart`: idle with turnEnded{auth-required}); verify the corresponding desktop parts still pass before flipping these multi-part rows green. Generic remote-error propagation is implemented earlier; no native auth value may be fabricated from a fixture.
 - [ ] 10.3 Add the qualified pairs to `qualified_adapters.dart` only for capabilities with recorded `pass` results. Run `dart run tool/check_qualification.dart` and verify it prints ACCEPTED or QUALIFIED. If load or resume failed on Windows, leave it out of the list (Continue then shows *resume unavailable: not qualified*) and tell the user.
 
 ## 11. Integration checks and planning files

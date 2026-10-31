@@ -26,6 +26,8 @@ class TestHostExtension implements HostExtension {
   /// `KUMIKO_TEST_SHELL_PATH` replaces `PATH` for shell detection (entries
   /// split by the platform's path separator) and switches the well-known
   /// install locations off; `KUMIKO_TEST_SHELL_DIRS` lists them instead.
+  /// `KUMIKO_TEST_RUNTIME_PATH` / `KUMIKO_TEST_RUNTIME_DIRS` independently
+  /// override adapter detection using the same convention.
   factory TestHostExtension.fromEnvironment(Map<String, String> env) {
     int? number(String name) => int.tryParse(env['KUMIKO_TEST_$name'] ?? '');
     Duration? millis(String name) {
@@ -35,8 +37,15 @@ class TestHostExtension implements HostExtension {
 
     final separator = Platform.isWindows ? ';' : ':';
     final shellPath = env['KUMIKO_TEST_SHELL_PATH'];
+    final runtimePath = env['KUMIKO_TEST_RUNTIME_PATH'];
     return TestHostExtension(
       options: HostOptions(
+        runtimeSearchPath: runtimePath == null
+            ? null
+            : splitSearchPath(runtimePath, separator),
+        runtimeWellKnownDirs: runtimePath == null
+            ? null
+            : splitSearchPath(env['KUMIKO_TEST_RUNTIME_DIRS'] ?? '', separator),
         shellSearchPath: shellPath == null
             ? null
             : splitSearchPath(shellPath, separator),
