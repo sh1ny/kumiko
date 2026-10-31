@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 import 'dart:math' as math;
 import 'dart:typed_data';
@@ -16,7 +17,10 @@ import 'fixtures.dart';
 /// `tool/kumiko_host_test.dart` imports this library, so only the test
 /// executable contains it.
 class TestHostExtension implements HostExtension {
-  TestHostExtension({this.options = const HostOptions()});
+  TestHostExtension({
+    this.options = const HostOptions(),
+    this.qualifiedAdaptersOverride,
+  });
 
   /// Options from `KUMIKO_TEST_*` variables, which make timing deterministic:
   /// `UNIT_CAP`, `RECONCILE_DELAY_MS`, `RETRY_DELAY_MS`,
@@ -38,7 +42,18 @@ class TestHostExtension implements HostExtension {
     final separator = Platform.isWindows ? ';' : ':';
     final shellPath = env['KUMIKO_TEST_SHELL_PATH'];
     final runtimePath = env['KUMIKO_TEST_RUNTIME_PATH'];
+    final candidates = env['KUMIKO_TEST_QUALIFIED_ADAPTERS'];
     return TestHostExtension(
+      qualifiedAdaptersOverride: candidates == null
+          ? null
+          : [
+              for (final triple in jsonDecode(candidates) as List)
+                (
+                  (triple as List)[0] as String,
+                  triple[1] as String,
+                  (triple[2] as List).cast<String>(),
+                ),
+            ],
       options: HostOptions(
         runtimeSearchPath: runtimePath == null
             ? null
@@ -78,6 +93,9 @@ class TestHostExtension implements HostExtension {
 
   @override
   final HostOptions options;
+
+  @override
+  final List<(String, String, List<String>)>? qualifiedAdaptersOverride;
 
   @override
   Set<String> get capabilities => const {

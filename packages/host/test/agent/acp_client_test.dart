@@ -7,6 +7,26 @@ import 'package:test/test.dart';
 
 import 'support/acp_peer.dart';
 
+/// Virtual timer scheduling only. Zero-duration event-loop barriers still use
+/// the parent zone, so ACP framing/consumption is not replaced by a mock.
+class _DeadlineTimer implements Timer {
+  _DeadlineTimer(this.duration, this.callback);
+  final Duration duration;
+  final void Function() callback;
+  bool _active = true;
+  @override
+  bool get isActive => _active;
+  @override
+  int get tick => _active ? 0 : 1;
+  @override
+  void cancel() => _active = false;
+  void fire() {
+    if (!_active) return;
+    _active = false;
+    callback();
+  }
+}
+
 void main() {
   late AcpPeer p;
   setUp(() => p = AcpPeer());
@@ -30,6 +50,83 @@ void main() {
     expect(await b, {'text': '猫'});
     expect(await a, {'a': true});
   });
+  for (final mode in ['load', 'resume']) {
+    test(
+      'session/$mode deadline is 60 active seconds and excludes bounded event consumption pauses',
+      () async {
+        final timers = <_DeadlineTimer>[];
+        await runZoned(
+          () async {
+            final peer = AcpPeer();
+            final consuming = Completer<void>();
+            final credit = Completer<void>();
+            peer.client.normalizeNotification = (_, params) => params;
+            peer.client.consumeNotification = (_) {
+              consuming.complete();
+              return credit.future;
+            };
+            var completed = false;
+            final request = mode == 'load'
+                ? peer.client.loadSession('native', '/target')
+                : peer.client.resumeSession('native', '/target');
+            final outcome = request.then<Object?>(
+              (_) {
+                completed = true;
+                return null;
+              },
+              onError: (Object error) {
+                completed = true;
+                return error;
+              },
+            );
+            try {
+              expect(
+                timers.where((t) => t.isActive).single.duration,
+                const Duration(seconds: 60),
+              );
+              peer.update({'sessionUpdate': 'agent_message_chunk'});
+              await consuming.future;
+              expect(
+                timers.where((t) => t.isActive),
+                isEmpty,
+                reason: 'credit-blocked event consumption must suspend the deadline',
+              );
+              // Arbitrarily many virtual minutes can pass while no timer is armed.
+              for (final timer in timers.toList()) {
+                timer.fire();
+              }
+              await pumpAcp();
+              expect(completed, isFalse);
+              credit.complete();
+              await pumpAcp();
+              final active = timers.where((t) => t.isActive).single;
+              expect(
+                active.duration,
+                lessThanOrEqualTo(const Duration(seconds: 60)),
+              );
+              active.fire();
+              expect(await outcome, isA<TimeoutException>());
+            } finally {
+              if (!credit.isCompleted) credit.complete();
+              await peer.dispose();
+              await outcome;
+            }
+          },
+          zoneSpecification: ZoneSpecification(
+            createTimer: (self, parent, zone, duration, callback) {
+              if (duration == Duration.zero) {
+                return parent.createTimer(zone, duration, callback);
+              }
+              final timer = _DeadlineTimer(duration, callback);
+              timers.add(timer);
+              return timer;
+            },
+          ),
+        );
+      },
+    );
+  }
+
   test('initialize advertises only reviewed v1 client capabilities', () async {
     final response = p.client.initialize();
     expect(p.writes.single['params'], {

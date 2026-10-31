@@ -110,6 +110,7 @@ class AcpClient {
   int _nextId = 1;
   int _writingBytes = 0;
   bool _closed = false;
+  bool _consuming = false;
   Object? failure;
   Future<void> get done => _done.future;
   bool get isClosed => _closed;
@@ -121,16 +122,14 @@ class AcpClient {
   Future<Json> request(String method, Json params, {Duration? timeout}) {
     if (_closed) return Future.error(failure ?? const AcpClosedException());
     final id = _nextId++;
-    final pending = _Pending();
+    final pending = _Pending(timeout, () {
+      final expired = _pending.remove(id);
+      expired?.completeError(
+        TimeoutException('ACP $method timed out', timeout),
+      );
+    });
     _pending[id] = pending;
-    if (timeout != null) {
-      pending.timer = Timer(timeout, () {
-        _pending.remove(id);
-        pending.completeError(
-          TimeoutException('ACP $method timed out', timeout),
-        );
-      });
-    }
+    if (!_consuming) pending.resume();
     _send({
       'jsonrpc': '2.0',
       'id': id,
@@ -188,15 +187,17 @@ class AcpClient {
     return result['sessionId']! as String;
   }
 
-  // Load deadlines are owned by the service: only unpaused time counts.
+  // Replay can block on the bounded event consumer. Count active time only,
+  // never desktop credit starvation, against the same 60-second bound.
   Future<Json> loadSession(String id, String cwd) => request('session/load', {
     'sessionId': id,
     'cwd': cwd,
     'mcpServers': <Object>[],
-  });
+  }, timeout: const Duration(seconds: 60));
   Future<Json> resumeSession(String id, String cwd) => request(
     'session/resume',
     {'sessionId': id, 'cwd': cwd, 'mcpServers': <Object>[]},
+    timeout: const Duration(seconds: 60),
   );
   Future<String> prompt(String id, String text) async {
     final result = await request('session/prompt', {
@@ -325,9 +326,24 @@ class AcpClient {
               buffer = Uint8List(65536);
             }
             if (normalized != null && !_closed) {
-              await _untilClosed<void>(
-                Future<void>.sync(() => consumeNotification?.call(normalized!)),
-              );
+              _consuming = true;
+              for (final pending in _pending.values) {
+                pending.pause();
+              }
+              try {
+                await _untilClosed<void>(
+                  Future<void>.sync(
+                    () => consumeNotification?.call(normalized!),
+                  ),
+                );
+              } finally {
+                _consuming = false;
+                if (!_closed) {
+                  for (final pending in _pending.values) {
+                    pending.resume();
+                  }
+                }
+              }
             }
             start = end + 1;
           }
@@ -416,7 +432,7 @@ class AcpClient {
     if (pending == null) {
       return null; // Unknown/late response cannot finish a turn twice.
     }
-    pending.timer?.cancel();
+    pending.pause();
     if (message.containsKey('error')) {
       if (error is! Json) throw AcpProtocolException('invalid error response');
       pending.completeError(
@@ -484,10 +500,44 @@ class AcpClient {
 }
 
 class _Pending {
+  _Pending(Duration? timeout, this._expired)
+    : _remaining = timeout,
+      _active = timeout == null ? null : Stopwatch();
   final completer = Completer<Json>();
-  Timer? timer;
+  Duration? _remaining;
+  final void Function() _expired;
+  final Stopwatch? _active;
+  Timer? _timer;
+
+  void pause() {
+    final active = _active;
+    if (active == null || !active.isRunning) return;
+    active.stop();
+    _remaining = _remaining! - active.elapsed;
+    _timer?.cancel();
+    _timer = null;
+  }
+
+  void resume() {
+    final remaining = _remaining;
+    final active = _active;
+    if (remaining == null ||
+        active == null ||
+        active.isRunning ||
+        completer.isCompleted) {
+      return;
+    }
+    active
+      ..reset()
+      ..start();
+    _timer = Timer(
+      remaining > Duration.zero ? remaining : Duration.zero,
+      _expired,
+    );
+  }
+
   void completeError(Object error, [StackTrace? stack]) {
-    timer?.cancel();
+    pause();
     if (!completer.isCompleted) completer.completeError(error, stack);
   }
 }

@@ -287,6 +287,7 @@ class Host {
       profiles: _runtimeProfiles!,
       store: store,
       options: options,
+      qualifiedAdaptersOverride: extension?.qualifiedAdaptersOverride,
     );
     _workbench = WorkbenchService(
       store: store,
@@ -397,9 +398,19 @@ class Host {
     switch (method) {
       case Method.agentStart:
         if (params['workspaceId'] == null || params['workspaceId'] == '') {
-          throw RpcException(ErrorCode.workspaceRequired, 'an agent needs a workspace');
+          throw RpcException(
+            ErrorCode.workspaceRequired,
+            'an agent needs a workspace',
+          );
         }
-        return (await _agents!.start(AgentStartParams.fromJson(params))).toJson();
+        return (await _agents!.start(AgentStartParams.fromJson(params)))
+            .toJson();
+      case Method.agentContinue:
+        return (await _agents!.continueSession(
+          AgentSessionParams.fromJson(params),
+        )).toJson();
+      case Method.agentRecords:
+        return _agents!.records(AgentRecordsParams.fromJson(params)).toJson();
       case Method.agentAttach:
         _agents!.attach(AgentSessionParams.fromJson(params));
         return <String, Object?>{};
@@ -421,11 +432,7 @@ class Host {
     }
     if (method.startsWith('test/') && extension != null) {
       return extension!.handle(
-        HostServices(
-          units: _units!,
-          faults: faults,
-          connection: _connection,
-        ),
+        HostServices(units: _units!, faults: faults, connection: _connection),
         method,
         params,
       );

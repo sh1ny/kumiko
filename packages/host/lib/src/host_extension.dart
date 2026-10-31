@@ -15,6 +15,9 @@ abstract interface class HostExtension {
   /// Settings that make timing deterministic in tests.
   HostOptions get options;
 
+  /// Exact qualification candidates, available only in a test build.
+  List<(String, String, List<String>)>? get qualifiedAdaptersOverride;
+
   /// Runs a `--test-fixture` mode: [args] are the mode and its arguments.
   /// Returns the process exit code.
   Future<int> runFixture(List<String> args);

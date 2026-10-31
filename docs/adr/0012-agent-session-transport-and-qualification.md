@@ -45,6 +45,14 @@ Attach publishes the current sequenced state after the acknowledgement. The boun
 
 Unknown native errors retain their bounded code and message in ordinary start/prompt results. Native authentication classification remains unverified until task 10.2 records the real adapter's exact error; fixture errors do not establish that match.
 
+## Continue and saved-record implementation
+
+`agent/records` reads the immutable native references without launching an adapter. Continue checks the recorded target's identity and cleanup gate before resolving a profile or spawning, and reserves a pending record synchronously so simultaneous requests cannot create two owners. If its original profile was removed, it uses the current default without rewriting the saved row.
+
+The adapter initialized by the Continue run determines availability. A qualified, advertised load takes precedence over resume; neither path sends a prompt or falls back to `session/new`. Restoration starts only after attach and uses the ordinary bounded event relay. Load brackets the ordered history with replay markers; resume emits the earlier-messages-not-shown notice. Both deadlines count 60 active seconds, excluding bounded event-consumption pauses.
+
+Only the test-host extension accepts candidate qualification overrides. The release entry point ignores that environment and refuses test fixtures; the production qualified list remains unchanged until real observations are recorded.
+
 ## Protocol implementation
 
 `host_protocol` owns the runtime/agent control DTOs and `AgentEvent` codec. Events are UTF-8 newline-delimited JSON; use `encodeAgentEvent` to apply encoded-size bounds, and one `AgentEventDecoder` per received channel. Register the inbound channel before sending `agent/attach`, and grant its initial credit only after attach succeeds. Existing reservation and credit primitives provide the handshake without another transport abstraction.

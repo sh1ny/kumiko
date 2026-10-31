@@ -142,7 +142,8 @@ Future<int> runAcpAgentScript({
       if (action['update'] case final Json value) await update(value);
       if (action['stderr'] case final String value) writeError(value);
       if (action['writeFile'] case final Json value) {
-        File(value['path'] as String).writeAsStringSync(value['text'] as String);
+        File(value['path'] as String)
+            .writeAsStringSync(value['text'] as String);
       }
       if (action['report'] == true) report(launchReport());
       if (action['spawnTree'] == true) {
@@ -232,6 +233,7 @@ Future<int> runAcpAgentScript({
     switch (method) {
       case 'initialize':
         if (script['reportLaunch'] == true) report(launchReport());
+        await actions(script['initialize']);
         await result(id, {
           'protocolVersion': script['protocolVersion'] ?? 1,
           'agentInfo':
@@ -245,7 +247,7 @@ Future<int> runAcpAgentScript({
         await result(id, {'sessionId': native});
       case 'session/load' || 'session/resume':
         native = params['sessionId'] as String;
-        report({'method': method, 'sessionId': native});
+        report({'method': method, ...params});
         await actions(script[method == 'session/load' ? 'load' : 'resume']);
         await result(id, {});
       case 'session/prompt':
@@ -261,7 +263,7 @@ Future<int> runAcpAgentScript({
         native = params['sessionId'] as String;
         cancelled = Completer<void>();
         cancelledTurn = false;
-        report({'prompt': params['prompt']});
+        report({'prompt': params['prompt'], 'sessionId': native});
         final reason = await actions(script['prompt']);
         if (script['holdPrompt'] == true && !cancelledTurn) {
           await cancelled!.future;

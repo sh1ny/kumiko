@@ -17,12 +17,18 @@ import 'acp/acp_client.dart';
 import 'agent_session.dart';
 import 'executable_resolver.dart';
 import 'qualification.dart';
+import 'qualified_adapters.dart';
 import 'runtime_profile_service.dart';
 
 /// The captured execution target is never derived again from desktop focus or
 /// a mutable workspace row. Continue will compare this durable identity.
 class AgentTarget {
-  const AgentTarget({required this.workspaceId, required this.path, required this.identity, this.host = 'local'});
+  const AgentTarget({
+    required this.workspaceId,
+    required this.path,
+    required this.identity,
+    this.host = 'local',
+  });
   final String? workspaceId;
   final String path;
   final String identity;
@@ -31,9 +37,16 @@ class AgentTarget {
 
 /// One native reference only; conversation data never crosses the Store seam.
 class AgentSessionRecord {
-  const AgentSessionRecord({required this.id, required this.runtimeKind, required this.runtimeProfileId,
-    required this.adapter, required this.nativeSessionId, required this.target,
-    required this.createdAt, required this.updatedAt});
+  const AgentSessionRecord({
+    required this.id,
+    required this.runtimeKind,
+    required this.runtimeProfileId,
+    required this.adapter,
+    required this.nativeSessionId,
+    required this.target,
+    required this.createdAt,
+    required this.updatedAt,
+  });
   final String id;
   final String runtimeKind;
   final String? runtimeProfileId;
@@ -58,6 +71,7 @@ class _StderrRing {
       from += n;
     }
   }
+
   String tail() {
     final count = min(_length, 4096);
     final bytes = Uint8List(count);
@@ -71,7 +85,10 @@ class _StderrRing {
     while (boundary < count && (bytes[boundary] & 0xc0) == 0x80) {
       boundary++;
     }
-    return clampUtf8(utf8.decode(Uint8List.sublistView(bytes, boundary), allowMalformed: true), 4096);
+    return clampUtf8(
+      utf8.decode(Uint8List.sublistView(bytes, boundary), allowMalformed: true),
+      4096,
+    );
   }
 }
 
@@ -80,11 +97,15 @@ class _StderrRing {
 /// the leader really exits (for example after the existing cleanup retry).
 class _AgentIO {
   _AgentIO(this.launch) : client = AcpClient.pipes(launch.pipes!) {
-    errors = launch.pipes!.stderr.listen(stderr.add, onDone: () {
-      if (!errorsDone.isCompleted) errorsDone.complete();
-    }, onError: (Object _) {
-      if (!errorsDone.isCompleted) errorsDone.complete();
-    });
+    errors = launch.pipes!.stderr.listen(
+      stderr.add,
+      onDone: () {
+        if (!errorsDone.isCompleted) errorsDone.complete();
+      },
+      onError: (Object _) {
+        if (!errorsDone.isCompleted) errorsDone.complete();
+      },
+    );
     launch.unit.exitCode.then((value) => status = value).ignore();
   }
   final UnitLaunch launch;
@@ -121,6 +142,7 @@ class AgentEventRelay {
     _paused = value;
     onPauseChanged?.call(value);
   }
+
   Future<void> _admit() async {
     while (!_closed && _bytes >= 1024 * 1024) {
       _pause(true);
@@ -128,6 +150,7 @@ class AgentEventRelay {
     }
     _pause(false);
   }
+
   Future<void> enqueue(Iterable<Uint8List> lines) async {
     if (_closed) return;
     for (final line in lines) {
@@ -141,13 +164,24 @@ class AgentEventRelay {
     // while this queue is full, even if the current line had just one event.
     await _admit();
   }
-  void attach(ChannelWriter writer) { _writer = writer; _pump(); }
-  void _wake() { final space = _space; _space = null; space?.complete(); }
+
+  void attach(ChannelWriter writer) {
+    _writer = writer;
+    _pump();
+  }
+
+  void _wake() {
+    final space = _space;
+    _space = null;
+    space?.complete();
+  }
+
   void _pump() {
     if (_closed || _pumping || _writer == null || _queue.isEmpty) return;
     _pumping = true;
     unawaited(_run());
   }
+
   Future<void> _run() async {
     final writer = _writer!;
     try {
@@ -158,18 +192,29 @@ class AgentEventRelay {
         final count = min(writer.room, line.length - _offset);
         // This fits the writer's window now: no waiting write retains an
         // additional event buffer outside our byte accounting.
-        writer.write(Uint8List.sublistView(line, _offset, _offset + count)).then<void>(
-          (_) {}, onError: (Object error, StackTrace stack) { if (!_closed) onFailure?.call(error); },
-        );
+        writer
+            .write(Uint8List.sublistView(line, _offset, _offset + count))
+            .then<void>(
+              (_) {},
+              onError: (Object error, StackTrace stack) {
+                if (!_closed) onFailure?.call(error);
+              },
+            );
         _offset += count;
         _bytes -= count;
-        if (_offset == line.length) { _queue.removeFirst(); _offset = 0; }
+        if (_offset == line.length) {
+          _queue.removeFirst();
+          _offset = 0;
+        }
         if (_bytes < 1024 * 1024) _wake();
       }
     } on Object catch (error) {
       if (!_closed) onFailure?.call(error);
-    } finally { _pumping = false; }
+    } finally {
+      _pumping = false;
+    }
   }
+
   void close() {
     _closed = true;
     _queue.clear();
@@ -181,10 +226,17 @@ class AgentEventRelay {
 }
 
 class _Agent {
-  _Agent({required this.record, required this.io, required this.reservation});
+  _Agent({
+    required this.record,
+    required this.io,
+    required this.reservation,
+    this.mode,
+  }) : restoring = mode != null;
   final AgentSessionRecord record;
   final _AgentIO io;
   final ChannelReservation reservation;
+  final AgentContinueMode? mode;
+  bool restoring;
   final relay = AgentEventRelay();
   late final AgentSession session;
   Timer? attachTimer;
@@ -201,14 +253,23 @@ class _Agent {
 /// turn/permission/Stop state writer. Cleanup and launch gating remain wholly
 /// in the existing UnitManager/Settler/ledger, shared with terminals.
 class AgentService {
-  AgentService({required this.connection, required this.units, required this.workspaces,
-    required this.profiles, required this.store, required this.options});
+  AgentService({
+    required this.connection,
+    required this.units,
+    required this.workspaces,
+    required this.profiles,
+    required this.store,
+    required this.options,
+    this.qualifiedAdaptersOverride,
+  });
   final Connection connection;
   final UnitManager units;
   final WorkspaceService workspaces;
   final RuntimeProfileService profiles;
   final Store store;
   final HostOptions options;
+  final List<(String, String, List<String>)>? qualifiedAdaptersOverride;
+  final _continuing = <String>{};
   final _agents = <String, _Agent>{};
   final _io = <_AgentIO>{};
   final _random = Random.secure();
@@ -221,30 +282,57 @@ class AgentService {
     final hex = bytes.map((b) => b.toRadixString(16).padLeft(2, '0')).join();
     return '${hex.substring(0, 8)}-${hex.substring(8, 12)}-${hex.substring(12, 16)}-${hex.substring(16, 20)}-${hex.substring(20)}';
   }
+
   void _available() {
-    if (_disposed) throw RpcException(ErrorCode.shuttingDown, 'the host is shutting down');
+    if (_disposed) {
+      throw RpcException(ErrorCode.shuttingDown, 'the host is shutting down');
+    }
   }
+
   _Agent _require(String id, {bool allowExited = false}) {
     final a = _agents[id];
     if (a == null || (!allowExited && (a.exited || a.closeFailed))) {
-      throw RpcException(ErrorCode.unknownSession, 'there is no live agent session $id', {'sessionId': id});
+      throw RpcException(
+        ErrorCode.unknownSession,
+        'there is no live agent session $id',
+        {'sessionId': id},
+      );
     }
     return a;
   }
-  bool _current(_Agent a) => !_disposed && a.callbacks && identical(_agents[a.record.id], a);
+
+  bool _current(_Agent a) =>
+      !_disposed && a.callbacks && identical(_agents[a.record.id], a);
   void _notify(_Agent a, String method, Json params) {
     if (_current(a)) connection.notify(method, params);
   }
 
   Future<AgentStartResult> start(AgentStartParams params) async {
     _available();
-    if (params.workspaceId.isEmpty) throw RpcException(ErrorCode.workspaceRequired, 'an agent needs a workspace');
-    final workspace = workspaces.row(params.workspaceId);
-    final resolved = workspace == null ? null : directoryIdentity(workspace.path);
-    if (workspace == null || workspaces.record(workspace).availability == Availability.unavailable || resolved is! ResolvedDirectory) {
-      throw RpcException(ErrorCode.workspaceUnavailable, 'the selected workspace is unavailable', {'workspaceId': params.workspaceId});
+    if (params.workspaceId.isEmpty) {
+      throw RpcException(
+        ErrorCode.workspaceRequired,
+        'an agent needs a workspace',
+      );
     }
-    final target = AgentTarget(workspaceId: workspace.id, path: resolved.realPath, identity: resolved.id);
+    final workspace = workspaces.row(params.workspaceId);
+    final resolved = workspace == null
+        ? null
+        : directoryIdentity(workspace.path);
+    if (workspace == null ||
+        workspaces.record(workspace).availability == Availability.unavailable ||
+        resolved is! ResolvedDirectory) {
+      throw RpcException(
+        ErrorCode.workspaceUnavailable,
+        'the selected workspace is unavailable',
+        {'workspaceId': params.workspaceId},
+      );
+    }
+    final target = AgentTarget(
+      workspaceId: workspace.id,
+      path: resolved.realPath,
+      identity: resolved.id,
+    );
     final String? profileId;
     if (params.runtimeProfileId != null) {
       profileId = params.runtimeProfileId;
@@ -253,54 +341,280 @@ class AgentService {
       profileId = listed.defaultId;
     }
     final profile = profileId == null ? null : await profiles.find(profileId);
-    if (profile == null) throw RpcException(ErrorCode.noRuntimeProfile, 'Runtime profile "${profileId ?? params.runtimeProfileId ?? 'default'}" is unavailable. Choose or add a runtime profile.');
+    if (profile == null) {
+      throw RpcException(
+        ErrorCode.noRuntimeProfile,
+        'Runtime profile "${profileId ?? params.runtimeProfileId ?? 'default'}" is unavailable. Choose or add a runtime profile.',
+      );
+    }
+    final (a, adapter, claims) = await _open(target, profile);
+    return AgentStartResult(
+      sessionId: a.record.id,
+      eventChannel: a.channel,
+      adapter: adapter,
+      capabilities: claims.capabilities,
+    );
+  }
+
+  RpcException _resumeUnavailable(String reason, String message) =>
+      RpcException(ErrorCode.resumeUnavailable, message, {
+        'resumeReason': reason,
+      });
+
+  AgentSessionRecord? _record(String id) {
+    try {
+      final rows = store.select('SELECT * FROM agent_session WHERE id = ?', [
+        id,
+      ]);
+      if (rows.isEmpty) return null;
+      final r = rows.single;
+      return AgentSessionRecord(
+        id: r['id'] as String,
+        runtimeKind: r['runtime_kind'] as String,
+        runtimeProfileId: r['runtime_profile_id'] as String?,
+        adapter: AgentAdapter(
+          name: r['adapter_name'] as String,
+          version: r['adapter_version'] as String,
+        ),
+        nativeSessionId: r['native_session_id'] as String,
+        target: AgentTarget(
+          workspaceId: r['workspace_id'] as String?,
+          host: r['target_host'] as String,
+          path: r['target_path'] as String,
+          identity: r['target_identity'] as String,
+        ),
+        createdAt: r['created_at'] as String,
+        updatedAt: r['updated_at'] as String,
+      );
+    } on SqliteException {
+      throw RpcException(
+        ErrorCode.storeError,
+        'could not read the saved agent session reference',
+      );
+    }
+  }
+
+  AgentRecordsResult records(AgentRecordsParams params) {
+    _available();
+    if (params.sessionIds.length > maxAgentRecordIds) {
+      throw RpcException(
+        ErrorCode.invalidParams,
+        'at most $maxAgentRecordIds session ids',
+      );
+    }
+    final records = <String, AgentRecord>{};
+    for (final id in params.sessionIds) {
+      final record = _record(id);
+      final target = record == null
+          ? null
+          : directoryIdentity(record.target.path);
+      records[id] = AgentRecord(
+        known: record != null,
+        targetPath: record?.target.path,
+        adapterVersion: record?.adapter.version,
+        workspaceAvailable:
+            target is ResolvedDirectory && target.id == record!.target.identity,
+      );
+    }
+    return AgentRecordsResult(records);
+  }
+
+  void _checkContinueTarget(AgentTarget saved) {
+    final target = directoryIdentity(saved.path);
+    if (target is! ResolvedDirectory) {
+      throw _resumeUnavailable(
+        'target-missing',
+        'the saved session target is missing',
+      );
+    }
+    if (target.id != saved.identity) {
+      throw _resumeUnavailable(
+        'target-changed',
+        'the saved session target has changed',
+      );
+    }
+    if (units.ledger.isUnresolved(identity: saved.identity, path: saved.path)) {
+      throw _resumeUnavailable(
+        'cleanup-unresolved',
+        'cleanup of the saved session target is unresolved',
+      );
+    }
+  }
+
+  Future<AgentContinueResult> continueSession(AgentSessionParams params) async {
+    _available();
+    final record = _record(params.sessionId);
+    if (record == null) {
+      throw _resumeUnavailable(
+        'unknown-record',
+        'the saved session is unknown',
+      );
+    }
+    _checkContinueTarget(record.target);
+    final previous = _agents[record.id];
+    if (_continuing.contains(record.id) ||
+        (previous != null && !previous.exited)) {
+      throw RpcException(
+        ErrorCode.turnRunning,
+        'the saved session is already open',
+        {'sessionId': record.id},
+      );
+    }
+    // Synchronous, before profile lookup's first await. A second request cannot
+    // spawn while this record is being initialized.
+    _continuing.add(record.id);
+    try {
+      if (previous != null) _forget(previous);
+      var profile = record.runtimeProfileId == null
+          ? null
+          : await profiles.find(record.runtimeProfileId!);
+      if (profile == null) {
+        final listed = await profiles.list();
+        profile = listed.defaultId == null
+            ? null
+            : await profiles.find(listed.defaultId!);
+      }
+      if (profile == null) {
+        throw RpcException(
+          ErrorCode.noRuntimeProfile,
+          'The saved session runtime profile and current default are unavailable. Choose or add a runtime profile.',
+        );
+      }
+      _available();
+      final (a, adapter, claims) = await _open(
+        record.target,
+        profile,
+        saved: record,
+      );
+      return AgentContinueResult(
+        eventChannel: a.channel,
+        adapter: adapter,
+        capabilities: claims.capabilities,
+        mode: a.mode!,
+      );
+    } finally {
+      _continuing.remove(record.id);
+    }
+  }
+
+  /// Start and Continue share exactly the contained launch, initialization,
+  /// reservation, callback ownership and failed-attempt cleanup path.
+  Future<(_Agent, AgentAdapter, AdapterClaims)> _open(
+    AgentTarget target,
+    RuntimeProfile profile, {
+    AgentSessionRecord? saved,
+  }) async {
+    // Profile detection may have awaited. Recheck synchronously immediately
+    // before the shared launch path can spawn in the captured directory.
+    if (saved != null) _checkContinueTarget(target);
     final executable = ExecutableResolver().resolve(profile.executable);
     _available();
     final reservation = connection.reserveChannels(1);
     _AgentIO? io;
     var stage = 'spawn';
     try {
-      final launch = await units.launch(target: target.path, kind: 'agent',
-        argv: [executable, ...profile.args], workingDirectory: target.path,
-        environment: profile.env, pipes: true);
+      final launch = await units.launch(
+        target: target.path,
+        kind: 'agent',
+        argv: [executable, ...profile.args],
+        workingDirectory: target.path,
+        environment: profile.env,
+        pipes: true,
+      );
       io = _AgentIO(launch);
       _io.add(io);
       _available();
-      if (launch.target.id != target.identity || launch.target.realPath != target.path) {
-        throw RpcException(ErrorCode.workspaceUnavailable, 'the workspace target changed while the adapter was starting');
+      if (launch.target.id != target.identity ||
+          launch.target.realPath != target.path) {
+        if (saved != null) {
+          throw _resumeUnavailable(
+            'target-changed',
+            'the saved session target changed while the adapter was starting',
+          );
+        }
+        throw RpcException(
+          ErrorCode.workspaceUnavailable,
+          'the workspace target changed while the adapter was starting',
+        );
       }
       stage = 'initialize';
       final initialization = await io.client.initialize();
       _available();
-      final claims = qualifyAdapter(initialization);
-      stage = 'session/new';
-      final native = await io.client.newSession(target.path);
-      _available();
-      final now = DateTime.now().toUtc().toIso8601String();
-      final record = AgentSessionRecord(id: _newId(), runtimeKind: profile.runtimeKind,
-        runtimeProfileId: profile.id, adapter: AgentAdapter(name: initialization.adapterName,
-          version: initialization.adapterVersion ?? ''), nativeSessionId: native,
-        target: target, createdAt: now, updatedAt: now);
-      stage = 'record';
-      _insert(record);
-      final a = _Agent(record: record, io: io, reservation: reservation);
+      final claims = qualifyAdapter(
+        initialization,
+        qualified: qualifiedAdaptersOverride ?? qualifiedAdapters,
+      );
+      final adapter = AgentAdapter(
+        name: initialization.adapterName,
+        version: initialization.adapterVersion ?? '',
+      );
+      final AgentContinueMode? mode;
+      final AgentSessionRecord record;
+      if (saved == null) {
+        mode = null;
+        stage = 'session/new';
+        final native = await io.client.newSession(target.path);
+        _available();
+        final now = DateTime.now().toUtc().toIso8601String();
+        record = AgentSessionRecord(
+          id: _newId(),
+          runtimeKind: profile.runtimeKind,
+          runtimeProfileId: profile.id,
+          adapter: adapter,
+          nativeSessionId: native,
+          target: target,
+          createdAt: now,
+          updatedAt: now,
+        );
+        stage = 'record';
+        _insert(record);
+      } else {
+        if (!claims.canLoad && !claims.canResume) {
+          throw _resumeUnavailable(
+            claims.unavailableReason!,
+            'Adapter ${adapter.name} version ${adapter.version} cannot continue this session: ${claims.unavailableReason}.',
+          );
+        }
+        mode = claims.canLoad
+            ? AgentContinueMode.load
+            : AgentContinueMode.resume;
+        record = saved;
+      }
+      final a = _Agent(
+        record: record,
+        io: io,
+        reservation: reservation,
+        mode: mode,
+      );
       _agents[record.id] = a;
       a.relay.onFailure = (error) => _fail(a, error);
-      a.session = AgentSession(sessionId: record.id, client: io.client, claims: claims,
+      a.session = AgentSession(
+        sessionId: record.id,
+        client: io.client,
+        claims: claims,
+        nativeSessionId: record.nativeSessionId,
         enqueueEvents: a.relay.enqueue,
         onState: (p) {
           _notify(a, Method.agentState, p.toJson());
           if (p.state == AgentState.failed) {
             // The constructor publishes starting before its assignment.
-            unawaited(Future<void>(() => _fail(a, a.session.failure ?? const AcpClosedException())));
+            unawaited(
+              Future<void>(
+                () => _fail(a, a.session.failure ?? const AcpClosedException()),
+              ),
+            );
           }
         },
-        onPermissionRequested: (p) => _notify(a, Method.agentPermissionRequested, p.toJson()),
-        onPermissionResolved: (p) => _notify(a, Method.agentPermissionResolved, p.toJson()),
+        onPermissionRequested: (p) =>
+            _notify(a, Method.agentPermissionRequested, p.toJson()),
+        onPermissionResolved: (p) =>
+            _notify(a, Method.agentPermissionResolved, p.toJson()),
         onStopResult: (p) => _notify(a, Method.agentStopResult, p.toJson()),
         onTurnEnded: (p) => _notify(a, Method.agentTurnEnded, p.toJson()),
       );
-      a.session.ready(nativeSessionId: native);
+      if (mode == null) {
+        a.session.ready(nativeSessionId: record.nativeSessionId);
+      }
       a.attachTimer = Timer(options.attachTimeout, () {
         if (!_current(a) || a.attached) return;
         if (a.exited || a.closeFailed) {
@@ -310,14 +624,15 @@ class AgentService {
         }
       });
       unawaited(_watchExit(a));
-      return AgentStartResult(sessionId: record.id, eventChannel: a.channel,
-        adapter: record.adapter, capabilities: claims.capabilities);
+      return (a, adapter, claims);
     } on Object catch (error) {
       if (io != null) {
         final outcome = await _end(io);
         await io.client.close();
         if (outcome.cleaned) {
-          try { await _disposeIo(io); } on Object {
+          try {
+            await _disposeIo(io);
+          } on Object {
             // Containment is already settled. Preserve the actual start
             // failure rather than replacing it with an endpoint-close error.
           }
@@ -326,23 +641,48 @@ class AgentService {
         }
       }
       reservation.release();
+      if (saved != null &&
+          error is RpcException &&
+          error.reason == ErrorCode.cleanupUnresolved) {
+        throw _resumeUnavailable('cleanup-unresolved', error.message);
+      }
       if (error is RpcException) rethrow;
-      if (error is AcpProtocolException) throw RpcException(ErrorCode.adapterProtocol, error.message, {'stage': stage});
+      if (error is AcpProtocolException) {
+        throw RpcException(ErrorCode.adapterProtocol, error.message, {
+          'stage': stage,
+        });
+      }
       final tail = io?.stderr.tail() ?? '';
       final status = io?.status;
       final reason = stage == 'initialize' && tail.startsWith('unit-exec:')
-          ? status == 127 ? ErrorCode.executableNotFound : status == 126 ? ErrorCode.notExecutable : ErrorCode.adapterStartFailed
+          ? status == 127
+                ? ErrorCode.executableNotFound
+                : status == 126
+                ? ErrorCode.notExecutable
+                : ErrorCode.adapterStartFailed
           : ErrorCode.adapterStartFailed;
-      final message = error is AcpRemoteException ? error.message : error.toString();
-      final nativeMessage = error is AcpRemoteException ? clampUtf8(error.message, 4096) : null;
-      throw RpcException(reason, clampUtf8('$message${status == null ? '' : ' (exit status $status)'}${tail.isEmpty ? '' : '\n$tail'}', 4096), {
-        'stage': stage, 'detail': tail.isEmpty ? clampUtf8(message, 4096) : tail,
-        'status': ?status,
-        if (error is AcpRemoteException) 'nativeCode': error.code,
-        'nativeMessage': ?nativeMessage,
-        if (error is AcpRemoteException && nativeMessage != error.message)
-          'nativeMessageTruncated': true,
-      });
+      final message = error is AcpRemoteException
+          ? error.message
+          : error.toString();
+      final nativeMessage = error is AcpRemoteException
+          ? clampUtf8(error.message, 4096)
+          : null;
+      throw RpcException(
+        reason,
+        clampUtf8(
+          '$message${status == null ? '' : ' (exit status $status)'}${tail.isEmpty ? '' : '\n$tail'}',
+          4096,
+        ),
+        {
+          'stage': stage,
+          'detail': tail.isEmpty ? clampUtf8(message, 4096) : tail,
+          'status': ?status,
+          if (error is AcpRemoteException) 'nativeCode': error.code,
+          'nativeMessage': ?nativeMessage,
+          if (error is AcpRemoteException && nativeMessage != error.message)
+            'nativeMessageTruncated': true,
+        },
+      );
     }
   }
 
@@ -350,64 +690,130 @@ class AgentService {
     try {
       store.execute('BEGIN IMMEDIATE');
       try {
-        store.execute('INSERT INTO agent_session(id, runtime_kind, runtime_profile_id, adapter_name, adapter_version, native_session_id, role, target_host, target_path, target_identity, workspace_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
-          [r.id, r.runtimeKind, r.runtimeProfileId, r.adapter.name, r.adapter.version, r.nativeSessionId, 'coding', r.target.host, r.target.path, r.target.identity, r.target.workspaceId, r.createdAt, r.updatedAt]);
+        store.execute(
+          'INSERT INTO agent_session(id, runtime_kind, runtime_profile_id, adapter_name, adapter_version, native_session_id, role, target_host, target_path, target_identity, workspace_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+          [
+            r.id,
+            r.runtimeKind,
+            r.runtimeProfileId,
+            r.adapter.name,
+            r.adapter.version,
+            r.nativeSessionId,
+            'coding',
+            r.target.host,
+            r.target.path,
+            r.target.identity,
+            r.target.workspaceId,
+            r.createdAt,
+            r.updatedAt,
+          ],
+        );
         store.execute('COMMIT');
       } on Object {
         store.execute('ROLLBACK');
         rethrow;
       }
     } on SqliteException {
-      throw RpcException(ErrorCode.storeError, 'could not save the native agent session reference');
+      throw RpcException(
+        ErrorCode.storeError,
+        'could not save the native agent session reference',
+      );
     }
   }
 
   void attach(AgentSessionParams params) {
     final a = _require(params.sessionId, allowExited: true);
-    final earlyExit = !a.attached && a.exitNotification?.reason == AgentExitReason.failed;
-    if (a.ending && !earlyExit) throw RpcException(ErrorCode.unknownSession, 'session is closing');
-    if (a.attached) throw RpcException(ErrorCode.invalidParams, 'session already attached');
+    final earlyExit =
+        !a.attached && a.exitNotification?.reason == AgentExitReason.failed;
+    if (a.ending && !earlyExit) {
+      throw RpcException(ErrorCode.unknownSession, 'session is closing');
+    }
+    if (a.attached) {
+      throw RpcException(ErrorCode.invalidParams, 'session already attached');
+    }
     a.attached = true;
     a.attachTimer?.cancel();
     a.relay.attach(connection.attachOutbound(a.channel));
-    unawaited(Future<void>(() {
-      if (!_current(a)) return;
-      a.session.publishState();
-      final exit = a.exitNotification;
-      if (earlyExit && exit != null) {
-        _notify(a, Method.agentExited, exit.toJson());
-        a.callbacks = false;
-        a.session.dispose();
-      }
-    }));
+    unawaited(
+      Future<void>(() {
+        if (!_current(a)) return;
+        a.session.publishState();
+        if (a.mode != null && !a.ending && !a.exited) unawaited(_restore(a));
+        final exit = a.exitNotification;
+        if (earlyExit && exit != null) {
+          _notify(a, Method.agentExited, exit.toJson());
+          a.callbacks = false;
+          a.session.dispose();
+        }
+      }),
+    );
   }
+
+  Future<void> _restore(_Agent a) async {
+    try {
+      if (a.mode == AgentContinueMode.load) {
+        await a.session.replayStarted();
+        if (!_current(a) || a.ending) return;
+        await a.io.client.loadSession(
+          a.record.nativeSessionId,
+          a.record.target.path,
+        );
+        if (!_current(a) || a.ending) return;
+        await a.session.replayEnded();
+      } else {
+        await a.session.notice('earlier messages not shown');
+        if (!_current(a) || a.ending) return;
+        await a.io.client.resumeSession(
+          a.record.nativeSessionId,
+          a.record.target.path,
+        );
+      }
+      if (_current(a) && !a.ending) {
+        a.session.ready(nativeSessionId: a.record.nativeSessionId);
+        a.restoring = false;
+      }
+    } on Object catch (error) {
+      if (_current(a) && !a.ending) await _finishFailure(a, error);
+    }
+  }
+
   void prompt(AgentPromptParams params) {
     final a = _require(params.sessionId);
     a.session.acceptPrompt(params.text);
   }
+
   void stop(AgentSessionParams params) {
     final a = _require(params.sessionId);
-    if (a.ending) throw RpcException(ErrorCode.unknownSession, 'session is closing');
+    if (a.ending) {
+      throw RpcException(ErrorCode.unknownSession, 'session is closing');
+    }
     a.session.stop();
   }
+
   void permissionReply(AgentPermissionReplyParams params) {
     final a = _require(params.sessionId);
     a.session.permissionReply(params.requestId, params.optionId);
   }
+
   void close(AgentSessionParams params) {
     final a = _require(params.sessionId);
     if (!a.ending) _beginClose(a);
   }
+
   void release(AgentSessionParams params) {
     final a = _require(params.sessionId, allowExited: true);
-    if (!a.exited) throw RpcException(ErrorCode.invalidParams, 'session has not exited');
+    if (!a.exited) {
+      throw RpcException(ErrorCode.invalidParams, 'session has not exited');
+    }
     _forget(a);
   }
 
   void _beginClose(_Agent a, {bool attachTimeout = false}) {
     if (!_current(a) || a.ending || a.exited) return;
     final running = switch (a.session.state) {
-      AgentState.running || AgentState.waitingApproval || AgentState.stopping => true,
+      AgentState.running ||
+      AgentState.waitingApproval ||
+      AgentState.stopping => true,
       _ => false,
     };
     a.ending = true;
@@ -416,46 +822,70 @@ class AgentService {
     a.relay.close();
     // Schedule on the event queue, not a microtask: the close result is
     // written before an idle unit can settle and publish its exit.
-    unawaited(Future<void>(() async {
-      if (!_current(a)) return;
-      if (running && !attachTimeout) await Future<void>.delayed(const Duration(seconds: 2));
-      if (!_current(a)) return;
-      final outcome = await _end(a.io);
-      await a.io.client.close();
-      if (outcome.cleaned) {
-        await _disposeIo(a.io);
-      } else {
-        _disposeAfterExit(a.io);
-      }
-      if (!_current(a)) return;
-      if (outcome.cleaned) {
-        a.exited = true;
-        a.session.ended();
-        _notify(a, Method.agentExited, AgentExitedParams(sessionId: a.record.id,
-          reason: AgentExitReason.closed, status: a.io.status).toJson());
-        if (attachTimeout) _forget(a);
-      } else {
-        a.closeFailed = true;
-        _notify(a, Method.agentCloseFailed, AgentCloseFailedParams(sessionId: a.record.id,
-          reason: outcome.reason ?? 'cleanup-unresolved').toJson());
-        _forget(a);
-      }
-    }).catchError((Object error) {
-      if (_current(a)) {
-        a.closeFailed = true;
-        _notify(a, Method.agentCloseFailed, AgentCloseFailedParams(
-          sessionId: a.record.id, reason: 'agent-io-close-failed',
-        ).toJson());
-        _forget(a);
-      }
-    }));
+    unawaited(
+      Future<void>(() async {
+        if (!_current(a)) return;
+        if (running && !attachTimeout) {
+          await Future<void>.delayed(const Duration(seconds: 2));
+        }
+        if (!_current(a)) return;
+        final outcome = await _end(a.io);
+        await a.io.client.close();
+        if (outcome.cleaned) {
+          await _disposeIo(a.io);
+        } else {
+          _disposeAfterExit(a.io);
+        }
+        if (!_current(a)) return;
+        if (outcome.cleaned) {
+          a.exited = true;
+          a.session.ended();
+          _notify(
+            a,
+            Method.agentExited,
+            AgentExitedParams(
+              sessionId: a.record.id,
+              reason: AgentExitReason.closed,
+              status: a.io.status,
+            ).toJson(),
+          );
+          if (attachTimeout) _forget(a);
+        } else {
+          a.closeFailed = true;
+          _notify(
+            a,
+            Method.agentCloseFailed,
+            AgentCloseFailedParams(
+              sessionId: a.record.id,
+              reason: outcome.reason ?? 'cleanup-unresolved',
+            ).toJson(),
+          );
+          _forget(a);
+        }
+      }).catchError((Object error) {
+        if (_current(a)) {
+          a.closeFailed = true;
+          _notify(
+            a,
+            Method.agentCloseFailed,
+            AgentCloseFailedParams(
+              sessionId: a.record.id,
+              reason: 'agent-io-close-failed',
+            ).toJson(),
+          );
+          _forget(a);
+        }
+      }),
+    );
   }
 
   Future<UnitOutcome> _end(_AgentIO io) => io.ending ??= () async {
     final id = io.launch.id;
     if (!units.live.containsKey(id)) {
       final row = units.ledger.unit(id);
-      return row == null ? const UnitOutcome.cleaned() : UnitOutcome.unresolved(row.reason ?? 'cleanup-unresolved');
+      return row == null
+          ? const UnitOutcome.cleaned()
+          : UnitOutcome.unresolved(row.reason ?? 'cleanup-unresolved');
     }
     try {
       return await units.end(id).timeout(options.settleDeadline);
@@ -484,6 +914,7 @@ class AgentService {
     if (!_current(a) || a.ending) return;
     await _finishFailure(a, a.io.client.failure ?? const AcpClosedException());
   }
+
   void _fail(_Agent a, Object error) {
     if (!_current(a) || a.ending || a.exited || a.closeFailed) return;
     // EOF can precede process.exitCode by a scheduler turn. Its watcher owns
@@ -491,8 +922,10 @@ class AgentService {
     if (error is AcpClosedException) return;
     unawaited(_finishFailure(a, error));
   }
+
   Future<void> _finishFailure(_Agent a, Object error) async {
     if (!_current(a) || a.ending) return;
+    final restoring = a.restoring;
     a.ending = true;
     if (a.attached) a.attachTimer?.cancel();
     a.session.fail(error);
@@ -510,15 +943,36 @@ class AgentService {
     if (!_current(a)) return;
     if (!outcome.cleaned) {
       a.closeFailed = true;
-      _notify(a, Method.agentCloseFailed, AgentCloseFailedParams(sessionId: a.record.id,
-        reason: outcome.reason ?? 'cleanup-unresolved').toJson());
+      _notify(
+        a,
+        Method.agentCloseFailed,
+        AgentCloseFailedParams(
+          sessionId: a.record.id,
+          reason: outcome.reason ?? 'cleanup-unresolved',
+        ).toJson(),
+      );
       _forget(a);
     } else {
       a.exited = true;
-      final exited = a.exitNotification = AgentExitedParams(sessionId: a.record.id,
-        reason: AgentExitReason.failed, status: a.io.status,
-        error: error is AcpProtocolException ? ErrorCode.adapterProtocol : 'adapter-exited',
-        message: error is AcpProtocolException ? error.message : null);
+      final exited = a.exitNotification = AgentExitedParams(
+        sessionId: a.record.id,
+        reason: AgentExitReason.failed,
+        status: a.io.status,
+        error: restoring
+            ? ErrorCode.resumeUnavailable
+            : error is AcpProtocolException
+            ? ErrorCode.adapterProtocol
+            : 'adapter-exited',
+        resumeReason: restoring ? 'adapter-error' : null,
+        message: restoring
+            ? clampUtf8(
+                error is AcpRemoteException ? error.message : error.toString(),
+                4096,
+              )
+            : error is AcpProtocolException
+            ? error.message
+            : null,
+      );
       _notify(a, Method.agentExited, exited.toJson());
     }
     if (a.attached) {
@@ -526,11 +980,15 @@ class AgentService {
       a.session.dispose();
     }
   }
+
   Future<void> _disposeIo(_AgentIO io) => io.disposal ??= () async {
     await io.client.close();
     // Settlement precedes this operation. Drain stderr through EOF before
     // capturing a start-error tail; close() also unblocks paused stdout.
-    await io.errorsDone.future.timeout(options.postExitReadDeadline, onTimeout: () {});
+    await io.errorsDone.future.timeout(
+      options.postExitReadDeadline,
+      onTimeout: () {},
+    );
     await io.launch.pipes!.close();
     await io.errors.cancel();
     _io.remove(io);
@@ -540,6 +998,7 @@ class AgentService {
       await _disposeIo(io);
     }).ignore();
   }
+
   void _forget(_Agent a) {
     a.callbacks = false;
     a.attachTimer?.cancel();
@@ -562,14 +1021,19 @@ class AgentService {
       a.relay.close();
       a.reservation.release();
     }
-    for (final io in _io) { io.client.close().ignore(); }
+    for (final io in _io) {
+      io.client.close().ignore();
+    }
   }
+
   /// After shared shutdown, join only I/O whose containment actually ended.
   /// An unresolved live unit keeps its ledger and native ownership until the
   /// host exits; never hang shutdown joining its still-blocked native read.
   Future<void> finishShutdown() async {
-    await Future.wait([for (final io in _io.toList())
-      if (io.status != null || !units.live.containsKey(io.launch.id)) _disposeIo(io),
+    await Future.wait([
+      for (final io in _io.toList())
+        if (io.status != null || !units.live.containsKey(io.launch.id))
+          _disposeIo(io),
     ]);
   }
 }
