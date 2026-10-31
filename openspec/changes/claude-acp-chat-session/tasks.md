@@ -40,7 +40,7 @@ Test locations:
 | agent-runtimes → A runtime profile is an argv launch description for an ACP adapter | Override does not leak | packages/host/test/it/runtime_profiles_test.dart | profile env override reaches only its own sessions, not a terminal or another profile's session | red |
 | agent-runtimes → An installed adapter is detected as a built-in profile | Adapter installed with npm on Windows | packages/host/test/agent/adapter_detector_test.dart | Windows npm layout (fixture dir with claude-agent-acp.cmd, node_modules/.../dist/index.js, node.exe) yields node.exe + absolute index.js | red |
 | agent-runtimes → An installed adapter is detected as a built-in profile | Adapter on PATH on macOS | packages/host/test/agent/adapter_detector_test.dart | POSIX npm layout (bin symlink to dist/index.js, node beside it) yields absolute node + absolute index.js | red |
-| agent-runtimes → An installed adapter is detected as a built-in profile | Desktop started from the Dock | packages/host/test/agent/adapter_detector_test.dart; tool/check_qualification.dart | PATH without the install dir still finds the adapter in a well-known directory (fixture home); qualification check > the macOS Finder/Dock item is recorded pass or unproven (user-verified) | red |
+| agent-runtimes → An installed adapter is detected as a built-in profile | Desktop started from the Dock | packages/host/test/agent/adapter_detector_test.dart; tool/check_qualification.dart | PATH without the install dir still finds the adapter in a well-known directory (fixture home); qualification check > the macOS Finder/Dock item is recorded pass or unproven (user-verified) | red (qualification check green; detector pending) |
 | agent-runtimes → An installed adapter is detected as a built-in profile | Adapter not installed | packages/host/test/it/runtime_profiles_test.dart; packages/desktop/test/agent_test.dart | runtime/list with no adapter returns no built-in and the reason; launcher with no runtime profile offers Add profile naming the package and Node ≥ 22 | red |
 | agent-runtimes → An installed adapter is detected as a built-in profile | Built-in profile cannot be edited | packages/host/test/it/runtime_profiles_test.dart | save or remove of a built-in is refused read-only-profile and nothing changes | red |
 | agent-runtimes → The user can define, edit and remove runtime profiles | Add a profile | packages/host/test/it/runtime_profiles_test.dart | saved profile survives a host restart unchanged | red |
@@ -125,7 +125,7 @@ Test locations:
 
 ## 1. ADR draft and qualification scaffolding
 
-- [ ] 1.1 Write `docs/adr/0012-agent-session-transport-and-qualification.md` with `Status: proposed` (MADR-short, as ADRs 0001-0011). It covers:
+- [x] 1.1 Write `docs/adr/0012-agent-session-transport-and-qualification.md` with `Status: proposed` (MADR-short, as ADRs 0001-0011). It covers:
   - one adapter process per session (D1);
   - transcript events on a per-session data channel, with state, requests and results on control (D4, D5);
   - runtime profiles as argv with no bundled adapter, and the resolution rules (D11, user decision 2026-10-31);
@@ -133,7 +133,7 @@ Test locations:
   - rejected alternatives and reversal cost from the design.
 
   Add its row to `openspec/architecture.md` marked proposed. Verify the fields match ADRs 0001-0011.
-- [ ] 1.2 Create `docs/qualification/claude-agent-acp.md`: one section per adapter version, one table per OS (windows, linux, macos) listing the D13 items, each with `pass`/`fail`/`unproven` and notes:
+- [x] 1.2 Create `docs/qualification/claude-agent-acp.md` as the format template only, with no observed adapter version section. Explain that `tool/qualify_claude_acp.dart` plus the user write version sections from real runs in 10.1/10.2. Include the status legend (`pass`/`fail`/`unproven` and notes) and a version-section template listing the D13 items per OS (windows, linux, macos):
   - launch;
   - streaming;
   - tool activity;
@@ -145,11 +145,15 @@ Test locations:
   - auth-required observed (code and message);
   - on macOS, launch from Finder or the Dock.
 
-  `unproven` is allowed only for Linux and macOS user items. Verify every D13 item appears once per OS.
-- [ ] 1.3 Write `tool/test/check_qualification_test.dart` (red), then `tool/check_qualification.dart`. It parses the results file and `packages/host/lib/src/agent/qualified_adapters.dart` and fails, naming the version, OS and item, unless every capability claimed for a listed pair is `pass` on Windows and `pass` or `unproven` on Linux and macOS. It prints ACCEPTED or QUALIFIED as in the test map. Verify the fixture cases:
-  - all `pass` prints QUALIFIED;
+  `unproven` is allowed only for Linux and macOS user items. Do not introduce `pending` or invent observations. Verify the template lists every D13 item once per OS; the file contains no version section.
+- [x] 1.3 Write `tool/test/check_qualification_test.dart` (red), then `tool/check_qualification.dart`. Create `packages/host/lib/src/agent/qualified_adapters.dart` with an empty qualified list here; 5.3 adds claim tests and logic, and 10.3 fills the list from recorded results. The checker parses that source and the results file. Missing or unparseable source fails. An empty list exits 0 and prints NO CLAIMS (no adapter qualified), never ACCEPTED or QUALIFIED. For listed pairs, check the baseline, authentication observation and macOS Finder/Dock items, plus load/resume only when claimed. Every checked item must be `pass` on Windows and `pass` or `unproven` on Linux and macOS; authentication `pass` needs its observed code and message. Reject blank results, Windows `unproven`, unknown items or OSes, and duplicate sections, naming the version, OS and item. Unclaimed load/resume may fail or remain unproven. Nonempty accepted claims print ACCEPTED or QUALIFIED as in the test map. Verify the fixture cases:
+  - an empty list prints NO CLAIMS; missing or unparseable source fails;
+  - all checked items `pass` prints QUALIFIED;
   - Linux and macOS user items `unproven` prints ACCEPTED and lists them;
-  - a `fail`, a blank, a Windows `unproven`, or a listed pair with no section each fails, naming the item.
+  - a checked `fail`, a blank, a Windows `unproven`, or a listed pair with no section each fails, naming the item;
+  - unclaimed load/resume failures do not block claims for the other capabilities.
+
+  Keep checker logic in a pure function and cover its cases there, with one CLI subprocess smoke test.
 
   Add the check to the CI audit step on every OS. Flip the qualification part of "Desktop started from the Dock" to the check's state.
 
@@ -257,7 +261,7 @@ Test locations:
   - bounds applied through the 3.2 codec.
 
   Implement. Verify it passes and flip "Unknown update kind" (normalizer part) and "Tool call progresses" (normalizer part) green.
-- [ ] 5.3 Write failing `qualification_test.dart` for the D10 claims: listed exact pair plus advertised → claimed; unlisted version → baseline only; no `agentInfo.version` → unqualified; listed but not advertised → not claimed. Create `qualified_adapters.dart` with an empty list for now; it is filled in 10.3. Verify it passes.
+- [ ] 5.3 Write failing `qualification_test.dart` for the D10 claims: listed exact pair plus advertised → claimed; unlisted version → baseline only; no `agentInfo.version` → unqualified; listed but not advertised → not claimed. Use the empty `qualified_adapters.dart` list created in 1.3; it is filled in 10.3. Implement the claim logic and verify it passes.
 - [ ] 5.4 Write failing `agent_session_test.dart` over the in-memory transport, covering the D6 state machine and every combination D8 defines:
   - prompt → running → idle;
   - a permission request → waitingApproval → reply → running;

@@ -58,7 +58,9 @@ jobs:
         run: flutter pub get
 
       - name: Audit dependencies
-        run: dart run tool/audit_dependencies.dart
+        run: |
+          dart run tool/audit_dependencies.dart
+          dart run tool/check_qualification.dart
 
       - name: Analyze Dart packages
         run: dart analyze --fatal-infos
