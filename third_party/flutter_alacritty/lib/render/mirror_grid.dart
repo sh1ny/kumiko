@@ -320,8 +320,8 @@ class MirrorGrid extends ChangeNotifier implements TerminalGridView {
     return out;
   }
 
-  /// Net line scroll from the last [apply] (0 if none). Cleared on take so a
-  /// same-generation re-paint does not blit twice.
+  /// Net line scroll of the applies since the last take (0 if none). Cleared
+  /// on take so a same-generation re-paint does not blit twice.
   int takeScrollLineDelta() {
     final d = _scrollLineDeltaForPaint;
     _scrollLineDeltaForPaint = 0;
@@ -363,7 +363,17 @@ class MirrorGrid extends ChangeNotifier implements TerminalGridView {
     final delta = u.scrollLineDelta;
     if (delta != 0 && _rows > 0) {
       _rotateRows(delta);
-      _scrollLineDeltaForPaint = delta;
+      // Rows not yet painted move with the content, and the painter shifts
+      // its retained frame by every scroll since it last painted, not just
+      // the last one.
+      final moved = [
+        for (final r in _dirtyRows)
+          if (r + delta >= 0 && r + delta < _rows) r + delta,
+      ];
+      _dirtyRows
+        ..clear()
+        ..addAll(moved);
+      _scrollLineDeltaForPaint += delta;
       // Only the rows revealed by the scroll need a fresh paint when the
       // painter can blit the retained frame; if retain is unavailable the
       // painter falls back to paintAll.

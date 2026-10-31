@@ -658,7 +658,12 @@ class TerminalPainter extends CustomPainter {
         final flags = grid.flagsAt(row, col);
         if (flags & kFlagWideSpacer != 0) continue; // covered by the wide glyph at col-1
         final cp = grid.codepointAt(row, col);
-        if (cp == 32 || cp == 0) continue;
+        // A blank draws no glyph, but still its underline or strikeout.
+        final blank = cp == 32 || cp == 0;
+        if (blank &&
+            flags & (kFlagUnderline | kFlagStrikeout | kFlagHyperlink) == 0) {
+          continue;
+        }
         final bool overlayLink = linkOverlay.isLinkCell(row, col);
         final int effFlags = overlayLink ? (flags | kFlagHyperlink) : flags;
         final ec = applyMatchOrHint(
@@ -672,7 +677,9 @@ class TerminalPainter extends CustomPainter {
         final italic = effFlags & kFlagItalic != 0;
         final wide = effFlags & kFlagWide != 0;
         final cellRect = Rect.fromLTWH(col * cellWidth, y, cellWidth, cellHeight);
-        if (isBoxDrawing(cp) && paintBoxGlyph(canvas, cellRect, cp, fg, lineWidth)) {
+        if (blank) {
+          // Decorations only, below.
+        } else if (isBoxDrawing(cp) && paintBoxGlyph(canvas, cellRect, cp, fg, lineWidth)) {
           // Box-drawing stays a direct vector draw (not atlased); fall through
           // for underline/strikeout decorations.
         } else if (atlas != null) {

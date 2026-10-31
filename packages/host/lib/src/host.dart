@@ -143,7 +143,8 @@ class Host {
 
   /// Why the POSIX profile directory is not owner-only, or null when it is
   /// now: it is not a symbolic link, chmod to 0700 succeeded (only the owner
-  /// or root may chmod), and its mode reads back as 0700.
+  /// or root may chmod), its mode reads back as 0700, and every entry in it
+  /// is no symbolic link and could be made owner-only too.
   String? _notOwnerOnly() {
     if (FileSystemEntity.isLinkSync(profile.path)) {
       return 'it is a symbolic link';
@@ -153,6 +154,14 @@ class Host {
     }
     if (FileStat.statSync(profile.path).mode & 0x1ff != 0x1c0) {
       return 'its mode does not stay owner-only (0700)';
+    }
+    // What was put there while it was open to others: no link, and nothing
+    // another account owns. Now that it is 0700, nothing new can appear.
+    for (final entry in profile.listSync(recursive: true, followLinks: false)) {
+      if (entry is Link) return '${entry.path} is a symbolic link';
+      if (!chmodPath(entry.path, entry is Directory ? 0x1c0 : 0x180)) {
+        return '${entry.path} cannot be made owner-only';
+      }
     }
     return null;
   }

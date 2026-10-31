@@ -64,5 +64,20 @@ motion too, as a move with no button does. Test:
 `packages/desktop/integration_test/terminal_surface_test.dart` (moving with
 no button held is reported under all-motion mode).
 
+**Underlined and struck-through blanks keep their lines**
+(`lib/render/terminal_painter.dart`). The painter skipped a space or empty
+cell before it reached the decorations, so underlined spaces drew no
+underline and an underlined phrase had gaps between its words. A blank now
+skips only the glyph. Test:
+`packages/desktop/integration_test/terminal_surface_test.dart` (underlined
+spaces draw their underline).
+
+**Scrolls applied before a paint add up** (`lib/render/mirror_grid.dart`).
+The mirror kept only the last scroll's delta for the painter, which shifts
+its retained frame by it, though every scroll since the last paint had
+rotated the rows; rows marked for repaint before a scroll kept their old
+index. The delta now accumulates until the painter takes it, and the marked
+rows move with the content. Test: `packages/desktop/test/mirror_grid_test.dart`.
+
 To move to a newer upstream version, copy its `lib/`, `pubspec.yaml` and
 licence again and re-apply the patch until upstream carries the fix.

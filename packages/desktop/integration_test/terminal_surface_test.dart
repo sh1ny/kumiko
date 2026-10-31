@@ -263,4 +263,28 @@ void main() {
       expect(seams, isEmpty, reason: 'pixel ratio $ratio');
     }
   });
+
+  testWidgets('underlined spaces draw their underline', (tester) async {
+    final (surface, key) = await show(tester);
+    // Red underlined spaces, nothing else on the screen.
+    surface.feed(
+      utf8.encode('\x1b[2J\x1b[H\x1b[38;2;255;0;0m\x1b[4m          \x1b[0m'),
+    );
+    await settle(tester);
+
+    final boundary =
+        key.currentContext!.findRenderObject()! as RenderRepaintBoundary;
+    final image = await boundary.toImage();
+    final rgba = (await image.toByteData(format: ui.ImageByteFormat.rawRgba))!;
+    var red = 0;
+    for (var i = 0; i < rgba.lengthInBytes; i += 4) {
+      if (rgba.getUint8(i) > 200 &&
+          rgba.getUint8(i + 1) < 60 &&
+          rgba.getUint8(i + 2) < 60) {
+        red++;
+      }
+    }
+    image.dispose();
+    expect(red, greaterThan(0));
+  });
 }

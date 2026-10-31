@@ -115,6 +115,39 @@ void main() {
     expect(target.listSync(), isEmpty, reason: 'nothing written through it');
   }, skip: Platform.isWindows ? 'POSIX permissions' : false);
 
+  test('a store entry that is a symbolic link is refused', () async {
+    // Left there while the directory was open to others: the store would
+    // follow it to a database another account controls.
+    final elsewhere = Directory.systemTemp.createTempSync('kumiko_db_');
+    addTearDown(() => elsewhere.deleteSync(recursive: true));
+    final db = File(joinPath(elsewhere.path, 'kumiko.db'))..createSync();
+    Link(joinPath(profile.path, 'kumiko.db')).createSync(db.path);
+    final host = await RawHost.start(profile);
+    addTearDown(host.dispose);
+
+    final error = await host.hello().then<RpcException?>(
+      (_) => null,
+      onError: (Object e) => e as RpcException,
+    );
+
+    expect(error?.reason, ErrorCode.profileUnavailable);
+    expect(error?.message, contains('kumiko.db is a symbolic link'));
+    expect(await host.exitCode.timeout(const Duration(seconds: 20)), isNot(0));
+    expect(db.lengthSync(), 0, reason: 'nothing written through it');
+  }, skip: Platform.isWindows ? 'POSIX permissions' : false);
+
+  test('the entries already in the profile are made owner-only', () async {
+    final logs = Directory(joinPath(profile.path, 'logs'))..createSync();
+    final old = File(joinPath(logs.path, 'old.log'))..createSync();
+    await Process.run('chmod', ['755', logs.path]);
+    await Process.run('chmod', ['644', old.path]);
+    final desktop = await Desktop.start(profile);
+    addTearDown(desktop.dispose);
+
+    expect(FileStat.statSync(logs.path).mode & 0x1ff, 0x1c0);
+    expect(FileStat.statSync(old.path).mode & 0x1ff, 0x180);
+  }, skip: Platform.isWindows ? 'POSIX permissions' : false);
+
   test('killed owner releases lock to next launch', () async {
     final desktop = await Desktop.start(profile);
     addTearDown(desktop.dispose);
