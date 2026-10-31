@@ -31,11 +31,19 @@ The user installs Node (at least version 22 for the Claude adapter) and the adap
 
 `RuntimeProfileService` owns `runtime/*` and `default_runtime`. A missing stored default remains selected but unavailable, with `defaultReason`; detection never silently replaces that choice. Only an unset default may select the detected built-in. Detection has one overall two-second deadline and runs outside the host event loop. `ExecutableResolver` preserves Windows first-match refusal and uses the shared native `access(X_OK)` helper on POSIX.
 
+## ACP client and turn implementation
+
+`AcpClient` speaks ACP v1 over contained standard I/O. Its shared `LargeLinePermit` serializes parsing and normalization of lines larger than 1 MiB, with a 16 MiB line ceiling. Normalization finishes before the permit is released; the separate consumption callback then applies event-queue backpressure. Closing or failing a client also releases its permit or cancels its wait without waiting for native I/O disposal. The service still owns containment termination and pipe cleanup.
+
+`AgentSession` owns the state sequence, pending permission choices and Stop outcome. Prompt acceptance does not await the native turn result. Stop queues cancelled permission outcomes before `session/cancel`, never kills the process, and retains `stopping` after an unconfirmed deadline until the one permitted late result. Unknown native errors retain their code and message; the exact authentication classifier is added only after real qualification observes it. The scripted ACP fixture is test support, not qualification evidence, and reports only explicitly selected environment values.
+
 ## Protocol implementation
 
 `host_protocol` owns the runtime/agent control DTOs and `AgentEvent` codec. Events are UTF-8 newline-delimited JSON; use `encodeAgentEvent` to apply encoded-size bounds, and one `AgentEventDecoder` per received channel. Register the inbound channel before sending `agent/attach`, and grant its initial credit only after attach succeeds. Existing reservation and credit primitives provide the handshake without another transport abstraction.
 
 `RpcException.data.reason` remains the outer protocol error reason. Continuation failures carry their separate subreason as `resumeReason`. Permission display fields are clamped within the 64 KiB encoded notification bound without changing opaque option identifiers. Metadata that cannot fit even after display clamping is refused as `invalid-params`; the host must surface unusable adapter input as a visible session failure, not silently drop or automatically answer the request.
+
+Qualification drives the ordinary agent service through the test-host extension with one exact candidate adapter/version override. This exercises Continue without pre-populating the production qualified list. The release entry point has no extension and cannot receive that override; only recorded passes may update the production list.
 
 ## Rejected alternatives
 

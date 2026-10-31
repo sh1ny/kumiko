@@ -1,5 +1,6 @@
 import 'package:host_protocol/host_protocol.dart';
 
+import 'agent/runtime_profile_service.dart';
 import 'host_faults.dart';
 import 'host_options.dart';
 import 'unit_manager.dart';
@@ -29,9 +30,11 @@ class HostServices {
     required this.units,
     required this.faults,
     required this.connection,
+    required this.runtimeProfiles,
   });
 
   final UnitManager units;
   final HostFaults faults;
   final Connection connection;
+  final RuntimeProfileService runtimeProfiles;
 }

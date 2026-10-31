@@ -1,0 +1,417 @@
+import 'dart:async';
+import 'dart:convert';
+import 'dart:typed_data';
+
+import 'package:host_protocol/host_protocol.dart';
+
+import 'acp/acp_client.dart';
+import 'normalizer.dart';
+import 'qualification.dart';
+
+abstract interface class AgentDeadline {
+  void cancel();
+}
+
+typedef AgentDeadlineFactory = AgentDeadline Function(
+  Duration duration,
+  void Function() callback,
+);
+
+class _TimerDeadline implements AgentDeadline {
+  _TimerDeadline(Duration duration, void Function() callback)
+    : _timer = Timer(duration, callback);
+  final Timer _timer;
+  @override
+  void cancel() => _timer.cancel();
+}
+
+/// Sole owner of live turn state. Does not own a process, record, event channel
+/// or stderr. Callbacks send existing control DTOs directly. [enqueueEvents]
+/// MUST complete at bounded enqueue, not desktop delivery. Its backpressure
+/// gates ACP's next line; Stop/close do not await it or native stdin.
+class AgentSession {
+  AgentSession({
+    required this.sessionId,
+    required this.client,
+    required this.onState,
+    required this.onPermissionRequested,
+    required this.onPermissionResolved,
+    required this.onStopResult,
+    required this.onTurnEnded,
+    required this.enqueueEvents,
+    AgentDeadlineFactory? deadlineFactory,
+    this.claims,
+    this._nativeSessionId,
+  }) : _deadlineFactory = deadlineFactory ?? _TimerDeadline.new {
+    client.normalizeNotification = _normalize;
+    client.consumeNotification = _consume;
+    client.onPermissionRequest = _permission;
+    client.onFailure = fail;
+    _publish();
+  }
+  final String sessionId;
+  final AcpClient client;
+  final AdapterClaims? claims;
+  final void Function(AgentStateParams) onState;
+  final void Function(AgentPermissionRequestedParams) onPermissionRequested;
+  final void Function(AgentPermissionResolvedParams) onPermissionResolved;
+  final void Function(AgentStopResultParams) onStopResult;
+  final void Function(AgentTurnEndedParams) onTurnEnded;
+  final FutureOr<void> Function(List<Uint8List>) enqueueEvents;
+  final AgentDeadlineFactory _deadlineFactory;
+  AgentState _state = AgentState.starting;
+  AgentState get state => _state;
+  int _seq = 0;
+  int get seq => _seq;
+  String? _nativeSessionId;
+  String? get nativeSessionId => _nativeSessionId;
+  Object? failure;
+  Object? lastTurnError;
+  final _permissions = <String, _Permission>{};
+  int get pendingPermissionCount => _permissions.length;
+  int _requestId = 0;
+  int _turn = 0;
+  bool _hasTurn = false;
+  bool _stopped = false;
+  bool _notConfirmed = false;
+  bool _disposed = false;
+  AgentDeadline? _deadline;
+  Future<void> _events = Future.value();
+
+  void _publish() => onState(
+    AgentStateParams(sessionId: sessionId, seq: ++_seq, state: _state),
+  );
+  void _set(AgentState state) {
+    if (_state == state || _disposed) return;
+    _state = state;
+    _publish();
+  }
+
+  void ready({required String nativeSessionId}) {
+    if (_state != AgentState.starting) {
+      throw StateError('session is not starting');
+    }
+    _nativeSessionId = nativeSessionId;
+    _set(AgentState.idle);
+  }
+
+  /// Continue owns the actual load/resume requests; these hooks frame replay
+  /// on the same ordered, bounded event path before transitioning to idle.
+  Future<void> replayStarted() => _enqueue(
+    encodeAgentEvent(AgentEvent.replay(AgentReplayPhase.start)).toList(),
+  );
+  Future<void> replayEnded() => _enqueue(
+    encodeAgentEvent(AgentEvent.replay(AgentReplayPhase.end)).toList(),
+  );
+  Future<void> notice(String text) =>
+      _enqueue(encodeAgentEvent(AgentEvent.notice(text)).toList());
+
+  /// Acceptance only: the host ACK must not wait for the adapter's result.
+  /// One turn is active; completion is reported through control callbacks.
+  void acceptPrompt(String text) {
+    if (_state != AgentState.idle || _disposed) {
+      throw RpcException(
+        ErrorCode.turnRunning,
+        'a turn is already running or the session is unavailable',
+      );
+    }
+    if (utf8.encode(text).length > 256 * 1024) {
+      throw RpcException(ErrorCode.invalidParams, 'prompt exceeds 256 KiB');
+    }
+    final turn = ++_turn;
+    _hasTurn = true;
+    _stopped = false;
+    _notConfirmed = false;
+    lastTurnError = null;
+    _set(AgentState.running);
+    _enqueue(
+      encodeAgentEvent(AgentEvent.text(AgentEventKind.user, text)).toList(),
+    ).ignore();
+    client
+        .prompt(_nativeSessionId!, text)
+        .then<void>(
+          (reason) => _finish(turn, reason, null),
+          onError: (Object error, StackTrace stack) =>
+              _finish(turn, null, error),
+        )
+        .ignore();
+  }
+
+  Object? _normalize(String method, Json params) {
+    if (params['sessionId'] != _nativeSessionId) return null;
+    final update = params['update'];
+    if (update is! Json) throw AcpProtocolException('invalid session/update');
+    return normalizeAcpUpdate(update);
+  }
+
+  Future<void> _consume(Object value) => _enqueue(value as List<Uint8List>);
+  Future<void> _enqueue(List<Uint8List> lines) {
+    if (_disposed || lines.isEmpty) return Future.value();
+    final queued = _events.then<void>((_) {
+      if (!_disposed) return enqueueEvents(lines);
+    });
+    _events = queued;
+    // Do not swallow the error for the caller/ACP reader; also fail visibly
+    // when a locally generated event has no awaiting transport consumer.
+    queued.then<void>(
+      (_) {},
+      onError: (Object error, StackTrace stack) {
+        fail(error);
+      },
+    );
+    return queued;
+  }
+
+  Future<void> _finish(int turn, String? reason, Object? error) async {
+    if (!_hasTurn || turn != _turn || _disposed || _terminal) return;
+    lastTurnError = error;
+    if (error != null && client.isClosed) {
+      fail(error);
+      return;
+    }
+    await _enqueue(
+      encodeAgentEvent(
+        reason != null
+            ? AgentEvent.turn(reason)
+            : AgentEvent.notice(error.toString()),
+      ).toList(),
+    );
+    if (!_hasTurn || turn != _turn || _disposed || _terminal) return;
+    _deadline?.cancel();
+    _deadline = null;
+    if (_stopped) {
+      onStopResult(
+        AgentStopResultParams(
+          sessionId: sessionId,
+          outcome: error != null
+              ? AgentStopOutcome.endedWithError
+              : reason == 'cancelled'
+              ? AgentStopOutcome.stopped
+              : AgentStopOutcome.finishedFirst,
+          stopReason: reason,
+          message: error == null ? null : _message(error),
+          late: _notConfirmed,
+        ),
+      );
+    }
+    _cancelPermissions();
+    _hasTurn = false;
+    onTurnEnded(
+      AgentTurnEndedParams(
+        sessionId: sessionId,
+        stopReason: reason,
+        error: error == null ? null : 'adapter-error',
+        message: error == null ? null : _message(error),
+      ),
+    );
+    _set(AgentState.idle);
+  }
+
+  String _message(Object error) =>
+      error is AcpRemoteException ? error.message : error.toString();
+  bool get _terminal =>
+      _state == AgentState.closing ||
+      _state == AgentState.ended ||
+      _state == AgentState.failed;
+
+  Object? _permission(Object rpcId, Json params) {
+    if (params['sessionId'] != _nativeSessionId) {
+      throw AcpProtocolException('permission for unknown native session');
+    }
+    if (_terminal || _stopped || !_hasTurn) {
+      _answerCancelled(rpcId);
+      return null;
+    }
+    if (_permissions.length == 16) {
+      _answerCancelled(rpcId);
+      return encodeAgentEvent(
+        AgentEvent.notice(
+          'Too many pending permission requests; the extra request was cancelled.',
+        ),
+      ).toList();
+    }
+    final tool = params['toolCall'];
+    final options = params['options'];
+    if (tool is! Json || options is! List) {
+      throw AcpProtocolException('invalid permission request');
+    }
+    // Opaque adapter ids never become desktop ids (numeric/string ids may
+    // stringify identically). Keep the original JSON-RPC id for the answer.
+    final id = 'permission-${++_requestId}';
+    final dto = AgentPermissionRequestedParams(
+      sessionId: sessionId,
+      requestId: id,
+      title:
+          tool['title'] as String? ??
+          tool['toolCallId'] as String? ??
+          'Permission requested',
+      preview: _permissionPreview(tool),
+      options: [
+        for (final option in options)
+          if (option is Json) AgentPermissionOption.fromJson(option),
+      ],
+    );
+    _permissions[id] = _Permission(
+      rpcId,
+      dto.options.map((o) => o.optionId).toSet(),
+    );
+    _set(AgentState.waitingApproval);
+    onPermissionRequested(dto);
+    return null;
+  }
+
+  String? _permissionPreview(Json tool) {
+    final content = tool['content'];
+    if (content is! List) return null;
+    for (final item in content) {
+      if (item is! Json) continue;
+      final block = item['content'];
+      if (block is Json && block['type'] == 'text' && block['text'] is String) {
+        return block['text']! as String;
+      }
+      if (item['type'] == 'diff' && item['newText'] is String) {
+        return item['newText']! as String;
+      }
+    }
+    return null;
+  }
+
+  void permissionReply(String requestId, String optionId) {
+    final permission = _permissions[requestId];
+    if (permission == null) {
+      throw RpcException(
+        ErrorCode.unknownRequest,
+        'permission request is no longer pending',
+      );
+    }
+    if (!permission.options.contains(optionId)) {
+      throw RpcException(
+        ErrorCode.invalidParams,
+        'option was not offered by this request',
+      );
+    }
+    _permissions.remove(requestId);
+    _observeWrite(
+      client.reply(permission.rpcId, {
+        'outcome': {'outcome': 'selected', 'optionId': optionId},
+      }),
+    );
+    onPermissionResolved(
+      AgentPermissionResolvedParams(
+        sessionId: sessionId,
+        requestId: requestId,
+        outcome: AgentPermissionOutcome.selected,
+        optionId: optionId,
+      ),
+    );
+    if (_permissions.isEmpty && _state == AgentState.waitingApproval) {
+      _set(AgentState.running);
+    }
+  }
+
+  void _observeWrite(Future<void> write) {
+    write.then<void>(
+      (_) {},
+      onError: (Object error, StackTrace stack) {
+        if (!_disposed && !_terminal) fail(error);
+      },
+    );
+  }
+
+  void _answerCancelled(Object rpcId) => _observeWrite(
+    client.reply(rpcId, {
+      'outcome': {'outcome': 'cancelled'},
+    }),
+  );
+  void _cancelPermissions() {
+    final pending = Map<String, _Permission>.of(_permissions);
+    _permissions.clear();
+    for (final entry in pending.entries) {
+      _answerCancelled(entry.value.rpcId);
+      onPermissionResolved(
+        AgentPermissionResolvedParams(
+          sessionId: sessionId,
+          requestId: entry.key,
+          outcome: AgentPermissionOutcome.cancelled,
+        ),
+      );
+    }
+  }
+
+  /// Synchronous ACK seam: enqueues all permission answers before cancel in
+  /// stdin call order, without awaiting native write, prompt result or credit.
+  void stop() {
+    if (_disposed || _terminal) return;
+    if (!_hasTurn) {
+      onStopResult(
+        AgentStopResultParams(
+          sessionId: sessionId,
+          outcome: AgentStopOutcome.notRunning,
+        ),
+      );
+      return;
+    }
+    if (_stopped) return;
+    _stopped = true;
+    _cancelPermissions();
+    _set(AgentState.stopping);
+    _deadline = _deadlineFactory(const Duration(seconds: 10), () {
+      if (!_hasTurn || _terminal || _disposed || _notConfirmed) return;
+      _notConfirmed = true;
+      onStopResult(
+        AgentStopResultParams(
+          sessionId: sessionId,
+          outcome: AgentStopOutcome.notConfirmed,
+        ),
+      );
+    });
+    _observeWrite(client.cancel(_nativeSessionId!));
+  }
+
+  /// Immediate close transition; the service owns cancel grace and settlement.
+  void beginClosing() {
+    if (_disposed || _state == AgentState.ended) return;
+    final running = _hasTurn;
+    _set(AgentState.closing);
+    _deadline?.cancel();
+    _cancelPermissions();
+    if (running && _nativeSessionId != null) {
+      _observeWrite(client.cancel(_nativeSessionId!));
+    }
+  }
+
+  void ended() {
+    _deadline?.cancel();
+    _hasTurn = false;
+    _cancelPermissions();
+    _set(AgentState.ended);
+  }
+
+  void fail(Object error) {
+    if (_disposed || _terminal) return;
+    failure = error;
+    _deadline?.cancel();
+    _hasTurn = false;
+    _cancelPermissions();
+    _set(AgentState.failed);
+  }
+
+  /// Detaches callbacks and timers only. The owner closes the ACP transport
+  /// separately and settles containment before disposing UnitPipes.
+  void dispose() {
+    if (_disposed) return;
+    _cancelPermissions();
+    _disposed = true;
+    _deadline?.cancel();
+    client.normalizeNotification = null;
+    client.consumeNotification = null;
+    client.onPermissionRequest = null;
+    client.onFailure = null;
+  }
+}
+
+class _Permission {
+  _Permission(this.rpcId, this.options);
+  final Object rpcId;
+  final Set<String> options;
+}

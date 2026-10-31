@@ -9,6 +9,7 @@ import '../host_extension.dart';
 import '../host_faults.dart';
 import '../host_options.dart';
 import '../profiles/shell_detector.dart' show splitSearchPath;
+import 'acp_initialize_probe.dart';
 import 'fixtures.dart';
 
 /// The test build's registrations (design D10): the `test.*` capabilities,
@@ -93,6 +94,9 @@ class TestHostExtension implements HostExtension {
   Future<Object?> handle(HostServices host, String method, Json params) async {
     switch (method) {
       case Method.testUnitLaunch:
+        if (params['acpProfileInitialize'] is String) {
+          return probeAcpInitialize(host, params);
+        }
         final p = TestUnitLaunchParams.fromJson(params);
         final launched = await host.units.launch(
           target: p.target,
