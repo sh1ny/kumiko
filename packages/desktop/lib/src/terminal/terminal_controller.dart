@@ -286,7 +286,12 @@ class TerminalController extends ChangeNotifier {
       }
       if (link._abandoned) {
         // The pane was closed while the open was out: close, never attach.
-        _closeOrphan(host, channels.terminalId);
+        // A shell that already ended is only released.
+        if (_unclaimed.remove(channels.terminalId) != null) {
+          _release(host, channels.terminalId);
+        } else {
+          _closeOrphan(host, channels.terminalId);
+        }
         return;
       }
       link

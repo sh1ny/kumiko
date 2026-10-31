@@ -1411,8 +1411,10 @@ void main() {
       expect(rig.layout.tabs, isEmpty);
     });
 
-    uiTest('a missing profile is named and Start shell offers the default '
-        'without opening', (tester) async {
+    uiTest('a missing profile is named, Start shell offers the default '
+        'without opening, and the pane keeps the default it started', (
+      tester,
+    ) async {
       final rig = await pumpTerminals(
         tester,
         layout: docOf([
@@ -1441,6 +1443,13 @@ void main() {
       await tester.tap(key('start-shell-p9'));
       await flush(tester);
       expect(rig.link.opened.single.profileId, 'builtin:pwsh');
+
+      // The replacement is what the pane restores next time.
+      await tester.pump(const Duration(seconds: 1));
+      await flush(tester);
+      final saved = layoutFromJson(rig.link.saves.last.layout).pane('p9')!;
+      expect(saved.state['profileId'], 'builtin:pwsh');
+      expect(saved.state['profileName'], isNot('Old shell'));
     });
   });
 
@@ -1981,6 +1990,24 @@ void main() {
       expect(rig.link.closed, ['t1']);
       expect(rig.link.lastTerminal.listening, isFalse);
       expect(rig.surfaces.last.fed, isEmpty);
+    });
+
+    uiTest('a closed pane whose shell exited before its open returned '
+        'has its ended terminal released', (tester) async {
+      final rig = await pumpEmpty(tester);
+      rig.link.terminalOpenGate = Completer<void>();
+      await launch(tester);
+      final pane = rig.terminalPanes.single;
+      await tapClosePane(tester, pane.id);
+      await confirm(tester);
+      expect(rig.layout.tabs, isEmpty);
+
+      // The exit races the open's answer.
+      rig.link.emitExit('t1', status: 0);
+      rig.link.terminalOpenGate!.complete();
+      await flush(tester);
+      expect(rig.link.released, ['t1']);
+      expect(rig.link.closed, isEmpty, reason: 'an ended terminal is released');
     });
   });
 

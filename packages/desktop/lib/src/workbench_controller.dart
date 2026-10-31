@@ -824,6 +824,18 @@ class WorkbenchController extends ChangeNotifier {
       notifyListeners();
       return;
     }
+    // A replacement (the offered default) is what the pane restores next.
+    final current = _layout?.pane(paneId);
+    if (current != null &&
+        (current.state['profileId'] != profile.id ||
+            current.state['profileName'] != profile.name)) {
+      final state = {
+        ...current.state,
+        'profileId': profile.id,
+        'profileName': profile.name,
+      };
+      if (!_commit(_layout!.setPaneState(paneId, state))) return;
+    }
     await terminals.start(
       paneId,
       profileId: profile.id,

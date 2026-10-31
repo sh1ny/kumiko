@@ -159,7 +159,9 @@ extension _TerminalViewPointer on TerminalViewState {
           pasteBytes(_controller.primary, modeFlags: _grid.modeFlags));
       return;
     }
-    if (e.buttons & kSecondaryButton != 0 && !hw.isShiftPressed) {
+    // A program that asked for mouse reports gets the right click; Shift
+    // still opens the local menu then, as it forces a local selection.
+    if (e.buttons & kSecondaryButton != 0 && localSelect) {
       // Track this as a pending secondary tap so [_onPointerUp] can fire
       // `onSecondaryTapUp` on real release — fixes the press-time double-fire
       // caught in review. `onSecondaryTapDown` still fires immediately on

@@ -16,6 +16,20 @@ use alacritty_terminal::term::search::{BuildError, Match, RegexIter, RegexSearch
 use alacritty_terminal::term::{point_to_viewport, viewport_to_point, Config, Term, TermDamage, TermMode};
 use alacritty_terminal::vte::ansi::{Color, CursorShape, NamedColor, Processor, Rgb};
 
+/// The cell's character with its combining marks (alacritty keeps them in
+/// `zerowidth`) composed into it where Unicode has a composed form, since a
+/// cell carries one codepoint across the FFI. A mark with no composed form is
+/// left out.
+fn composed_codepoint(cell: &Cell) -> u32 {
+    let mut c = cell.c;
+    for &mark in cell.zerowidth().unwrap_or(&[]) {
+        if let Some(composed) = unicode_normalization::char::compose(c, mark) {
+            c = composed;
+        }
+    }
+    c as u32
+}
+
 /// Smallest grid the VT model can actually represent.
 ///
 /// `Term::input` writes a fullwidth glyph and then unconditionally advances the
@@ -368,8 +382,13 @@ pub struct TerminalEngine {
     /// When false, `search_step` rejects wrap-around hits (GNOME "wrap off").
     search_wrap: bool,
     current_match: Option<Match>,
-    hyperlinks: Vec<String>,
+    /// Interned OSC 8 URLs by id, with when each was last rendered. At most
+    /// [`TerminalEngine::MAX_HYPERLINKS`]; ids are never reused, so an evicted
+    /// id resolves to nothing rather than to another URL.
+    hyperlinks: HashMap<u32, (String, u64)>,
     hyperlink_ids: HashMap<String, u32>,
+    next_hyperlink_id: u32,
+    hyperlink_clock: u64,
     /// Sub-cell scroll accumulator in cell-height fractions, kept in [0.0, 1.0).
     /// See [`RenderUpdate::scroll_fraction`].
     scroll_fraction: f64,
@@ -423,8 +442,10 @@ impl TerminalEngine {
             search: None,
             search_wrap: true,
             current_match: None,
-            hyperlinks: Vec::new(),
+            hyperlinks: HashMap::new(),
             hyperlink_ids: HashMap::new(),
+            next_hyperlink_id: 1,
+            hyperlink_clock: 0,
             scroll_fraction: 0.0,
             csi_mode_scanner: CsiModeScanner::new(),
             color_scheme_subscribed: false,
@@ -767,21 +788,47 @@ impl TerminalEngine {
         self.current_match = None;
     }
 
+    /// Most interned hyperlink URLs kept. Cells are interned as they are
+    /// rendered, so a link on screen is used again at every snapshot; the
+    /// least recently rendered quarter goes when the table is full.
+    pub const MAX_HYPERLINKS: usize = 4096;
+
     fn intern_hyperlink(&mut self, uri: &str) -> u32 {
+        self.hyperlink_clock += 1;
+        let now = self.hyperlink_clock;
         if let Some(&id) = self.hyperlink_ids.get(uri) {
+            if let Some(entry) = self.hyperlinks.get_mut(&id) {
+                entry.1 = now;
+            }
             return id;
         }
-        let id = self.hyperlinks.len() as u32 + 1;
-        self.hyperlinks.push(uri.to_owned());
+        let id = self.next_hyperlink_id;
+        // 0 means "no hyperlink"; after 2^32 ids, wrap past it.
+        self.next_hyperlink_id = self.next_hyperlink_id.checked_add(1).unwrap_or(1);
+        if self.hyperlinks.len() >= Self::MAX_HYPERLINKS {
+            self.evict_hyperlinks();
+        }
+        self.hyperlinks.insert(id, (uri.to_owned(), now));
         self.hyperlink_ids.insert(uri.to_owned(), id);
         id
     }
 
-    pub fn resolve_hyperlink(&self, id: u32) -> Option<String> {
-        if id == 0 {
-            return None;
+    fn evict_hyperlinks(&mut self) {
+        let mut by_use: Vec<(u64, u32)> = self
+            .hyperlinks
+            .iter()
+            .map(|(&id, (_, used))| (*used, id))
+            .collect();
+        by_use.sort_unstable();
+        for &(_, id) in &by_use[..Self::MAX_HYPERLINKS / 4] {
+            if let Some((uri, _)) = self.hyperlinks.remove(&id) {
+                self.hyperlink_ids.remove(&uri);
+            }
         }
-        self.hyperlinks.get((id - 1) as usize).cloned()
+    }
+
+    pub fn resolve_hyperlink(&self, id: u32) -> Option<String> {
+        self.hyperlinks.get(&id).map(|(uri, _)| uri.clone())
     }
 
     fn search_step(&mut self, direction: Direction) -> bool {
@@ -1015,7 +1062,7 @@ impl TerminalEngine {
             None => (0, 0),
         };
         CellData {
-            codepoint: cell.c as u32,
+            codepoint: composed_codepoint(cell),
             fg: self.resolve_color(cell.fg, true),
             bg: self.resolve_color(cell.bg, false),
             flags: map_flags(cell.flags) | hyperlink_flag,
@@ -2150,6 +2197,50 @@ mod tests {
         assert_eq!(
             e.resolve_hyperlink(cell.hyperlink_id).as_deref(),
             Some("https://example.com")
+        );
+    }
+
+    #[test]
+    fn hyperlink_table_stays_bounded_and_never_reuses_an_id() {
+        let mut e = engine(10, 3);
+        let first = e.intern_hyperlink("https://example.com/0");
+        let total = TerminalEngine::MAX_HYPERLINKS * 3;
+        let mut last = first;
+        for i in 1..total {
+            if i % 100 == 0 {
+                // A link still on screen is rendered again and stays.
+                assert_eq!(e.intern_hyperlink("https://example.com/0"), first);
+            }
+            last = e.intern_hyperlink(&format!("https://example.com/{i}"));
+            assert!(e.hyperlinks.len() <= TerminalEngine::MAX_HYPERLINKS);
+            assert_eq!(e.hyperlinks.len(), e.hyperlink_ids.len());
+        }
+        assert_eq!(
+            e.resolve_hyperlink(first).as_deref(),
+            Some("https://example.com/0")
+        );
+        assert_eq!(
+            e.resolve_hyperlink(last).as_deref(),
+            Some(format!("https://example.com/{}", total - 1).as_str())
+        );
+        // An evicted link no longer resolves; its id is never given to
+        // another URL.
+        assert!(e.resolve_hyperlink(first + 1).is_none());
+        let again = e.intern_hyperlink("https://example.com/1");
+        assert!(again > last);
+    }
+
+    #[test]
+    fn combining_marks_are_composed_into_the_base_cell() {
+        let mut e = engine(10, 3);
+        // e + U+0301 (acute), a + U+0308 (diaeresis), and a mark with no
+        // composed form, which keeps the base.
+        e.advance("e\u{301}a\u{308}q\u{301}".as_bytes().to_vec());
+        let snapshot = e.full_snapshot();
+        let line = snapshot.lines.iter().find(|l| l.line == 0).unwrap();
+        assert_eq!(
+            &line.codepoints[..3],
+            &['é' as u32, 'ä' as u32, 'q' as u32]
         );
     }
 

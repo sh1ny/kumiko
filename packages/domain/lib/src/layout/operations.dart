@@ -340,6 +340,32 @@ extension LayoutOperations on LayoutDocument {
     return LayoutResult.ok(_focus(this, paneId), tabId: t.id, paneId: paneId);
   }
 
+  /// Replaces pane [paneId]'s kind-owned state. Focus, `recent` and the
+  /// tree are unchanged.
+  LayoutResult setPaneState(String paneId, Map<String, Object?> state) {
+    final t = tabOf(paneId);
+    final old = pane(paneId);
+    if (t == null || old == null) {
+      return const LayoutResult.refused(LayoutRefusal.unknownPane);
+    }
+    final updated = PaneNode(
+      id: old.id,
+      kind: old.kind,
+      workspace: old.workspace,
+      item: old.item,
+      state: state,
+    );
+    if (_stateTooLarge(updated)) {
+      return const LayoutResult.refused(LayoutRefusal.stateTooLarge);
+    }
+    final root = _replaceNode(t.root, paneId, updated);
+    return LayoutResult.ok(
+      copyWith(tabs: _replaceTab(tabs, t.withRoot(root, t.focusedPane))),
+      tabId: t.id,
+      paneId: paneId,
+    );
+  }
+
   /// Sets a split's ratio, clamped to the allowed range. `recent` is
   /// unchanged.
   LayoutResult setRatio(String splitId, double ratio) {

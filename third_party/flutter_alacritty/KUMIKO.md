@@ -45,5 +45,13 @@ that died mid-update does not leave the view frozen until more output
 arrives. Test: `packages/desktop/integration_test/terminal_surface_test.dart`
 (output held by synchronized output that never ends is shown).
 
+**A right click goes to a program that asked for mouse reports**
+(`lib/ui/terminal_view_pointer.dart`). The view kept every right click for
+its local menu, even when the program had turned on mouse reporting, so a
+TUI never saw button 2. It now reports the press and release, as it does for
+the other buttons; Shift still opens the local menu, as Shift still selects
+locally. Test: `packages/desktop/integration_test/terminal_surface_test.dart`
+(a right click goes to a program that asked for mouse reports).
+
 To move to a newer upstream version, copy its `lib/`, `pubspec.yaml` and
 licence again and re-apply the patch until upstream carries the fix.

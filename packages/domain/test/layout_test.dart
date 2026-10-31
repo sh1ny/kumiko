@@ -947,6 +947,33 @@ void main() {
     });
   });
 
+  group('pane state', () {
+    test("setPaneState replaces only that pane's state; focus, recent and "
+        'the tree are unchanged', () {
+      final d = abc();
+      final after = ok(d.setPaneState('B', {'profileId': 'p2'}));
+      expect(after.pane('B')!.state, {'profileId': 'p2'});
+      expect(after.pane('B')!.workspace, d.pane('B')!.workspace);
+      expect(after.pane('A')!.state, d.pane('A')!.state);
+      expect(after.focusedPane, d.focusedPane);
+      expect(after.recent, d.recent);
+      expect(paneIds(after.tab('t1')!.root), paneIds(d.tab('t1')!.root));
+      expectValid(after);
+    });
+
+    test('setPaneState refuses an unknown pane and an oversized state', () {
+      final d = abc();
+      expect(
+        d.setPaneState('missing', const {}).refusal,
+        LayoutRefusal.unknownPane,
+      );
+      expect(
+        d.setPaneState('B', {'pad': 'x' * maxTabStateBytes}).refusal,
+        LayoutRefusal.stateTooLarge,
+      );
+    });
+  });
+
   group('close', () {
     for (final kind in kinds) {
       test('closing one of two panes gives its space to the sibling '

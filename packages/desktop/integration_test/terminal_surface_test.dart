@@ -119,6 +119,34 @@ void main() {
     expect(surface.engine.selectionText(), 'hello');
   });
 
+  testWidgets('a right click goes to a program that asked for mouse reports', (
+    tester,
+  ) async {
+    final (surface, key) = await show(tester);
+    final sent = <int>[];
+    final sub = surface.input.listen(sent.addAll);
+    addTearDown(sub.cancel);
+    // Click reporting in SGR encoding, as a TUI turns it on.
+    surface.feed(utf8.encode('\x1b[2J\x1b[H\x1b[?1000h\x1b[?1006h'));
+    await settle(tester);
+
+    final box = key.currentContext!.findRenderObject()! as RenderBox;
+    final click = await tester.startGesture(
+      box.localToGlobal(const Offset(40, 40)),
+      kind: PointerDeviceKind.mouse,
+      buttons: kSecondaryButton,
+    );
+    await tester.pump(const Duration(milliseconds: 16));
+    await click.up();
+    await settle(tester);
+
+    // Button 2 pressed, then released, at the same cell.
+    expect(
+      latin1.decode(sent),
+      matches(RegExp(r'^\x1b\[<2;(\d+;\d+)M\x1b\[<2;\1m$')),
+    );
+  });
+
   testWidgets('Ctrl+Shift+F opens a search that marks the matches', (
     tester,
   ) async {
