@@ -1171,7 +1171,7 @@ class TerminalViewState extends State<TerminalView>
                 cursor: _hoverCursor,
                 onEnter: _onGridMouseEnter,
                 onExit: _onGridMouseExit,
-                onHover: (e) => _updateHoverCursor(e.localPosition),
+                onHover: _onPointerHover,
                 child: Stack(
               children: [
                 Positioned(
@@ -1325,6 +1325,7 @@ class TerminalViewState extends State<TerminalView>
   // resolved as instance members for private-name references in this class.
   void _onPointerDown(PointerDownEvent e) => __pointerOnDown(e);
   void _onPointerMove(PointerMoveEvent e) => __pointerOnMove(e);
+  void _onPointerHover(PointerHoverEvent e) => __pointerOnHover(e);
   void _onPointerUp(PointerUpEvent e) => __pointerOnUp(e);
   void _onPointerSignal(PointerSignalEvent e) => __pointerOnSignal(e);
   void _onTouchTap() => __pointerOnTouchTap();

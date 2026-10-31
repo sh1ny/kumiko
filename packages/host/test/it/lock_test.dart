@@ -96,6 +96,25 @@ void main() {
     expect(bits(fresh.path), 0x1c0);
   }, skip: Platform.isWindows ? 'POSIX permissions' : false);
 
+  test('a profile directory that is a symbolic link is refused', () async {
+    // Another account could own what the link points to.
+    final target = Directory(joinPath(profile.path, 'elsewhere'))..createSync();
+    final link = Link(joinPath(profile.path, 'linked'))
+      ..createSync(target.path);
+    final host = await RawHost.start(Directory(link.path));
+    addTearDown(host.dispose);
+
+    final error = await host.hello().then<RpcException?>(
+      (_) => null,
+      onError: (Object e) => e as RpcException,
+    );
+
+    expect(error?.reason, ErrorCode.profileUnavailable);
+    expect(error?.message, contains('symbolic link'));
+    expect(await host.exitCode.timeout(const Duration(seconds: 20)), isNot(0));
+    expect(target.listSync(), isEmpty, reason: 'nothing written through it');
+  }, skip: Platform.isWindows ? 'POSIX permissions' : false);
+
   test('killed owner releases lock to next launch', () async {
     final desktop = await Desktop.start(profile);
     addTearDown(desktop.dispose);

@@ -202,6 +202,15 @@ extension _TerminalViewPointer on TerminalViewState {
     }
   }
 
+  /// A move with no button held arrives as a hover, not a move: report it
+  /// too while the program asked for all motion (DEC 1003).
+  void __pointerOnHover(PointerHoverEvent e) {
+    _updateHoverCursor(e.localPosition);
+    if (e.kind != PointerDeviceKind.mouse) return;
+    if ((_grid.modeFlags & kModeMouseMotion) == 0) return;
+    _reportMouse(e.localPosition, 3, MouseAction.move);
+  }
+
   void __pointerOnUp(PointerUpEvent e) {
     if (e.kind != PointerDeviceKind.mouse) return;
     // The press activated a link and was not reported to the program; swallow

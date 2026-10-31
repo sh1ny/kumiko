@@ -56,5 +56,13 @@ the other buttons; Shift still opens the local menu, as Shift still selects
 locally. Test: `packages/desktop/integration_test/terminal_surface_test.dart`
 (a right click goes to a program that asked for mouse reports).
 
+**A move with no button held is reported under all-motion mode**
+(`lib/ui/terminal_view.dart`, `lib/ui/terminal_view_pointer.dart`). Flutter
+delivers such a move as a hover, which the view used only for its cursor, so
+a program that turned on DEC 1003 never saw one. The hover now reports the
+motion too, as a move with no button does. Test:
+`packages/desktop/integration_test/terminal_surface_test.dart` (moving with
+no button held is reported under all-motion mode).
+
 To move to a newer upstream version, copy its `lib/`, `pubspec.yaml` and
 licence again and re-apply the patch until upstream carries the fix.

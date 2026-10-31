@@ -164,6 +164,28 @@ void main() {
     );
   });
 
+  testWidgets('moving with no button held is reported under all-motion mode', (
+    tester,
+  ) async {
+    final (surface, key) = await show(tester);
+    final sent = <int>[];
+    final sub = surface.input.listen(sent.addAll);
+    addTearDown(sub.cancel);
+    // All-motion reporting (DEC 1003) in SGR encoding.
+    surface.feed(utf8.encode('\x1b[2J\x1b[H\x1b[?1003h\x1b[?1006h'));
+    await settle(tester);
+
+    final box = key.currentContext!.findRenderObject()! as RenderBox;
+    final mouse = await tester.createGesture(kind: PointerDeviceKind.mouse);
+    addTearDown(mouse.removePointer);
+    await mouse.addPointer(location: box.localToGlobal(const Offset(40, 40)));
+    await mouse.moveTo(box.localToGlobal(const Offset(120, 80)));
+    await settle(tester);
+
+    // Motion with no button: 32 + 3.
+    expect(latin1.decode(sent), matches(RegExp(r'\x1b\[<35;\d+;\d+M')));
+  });
+
   testWidgets('Ctrl+Shift+F opens a search that marks the matches', (
     tester,
   ) async {

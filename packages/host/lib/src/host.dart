@@ -110,8 +110,11 @@ class Host {
     }
     // The store holds profile environments, which can carry secrets: only
     // the owner may enter the profile (the files in it then need no mode of
-    // their own). Best effort: a file system without modes keeps its own.
-    if (!Platform.isWindows) chmodPath(profile.path, 0x1c0); // 0700
+    // their own), so a profile that cannot be made so is not used.
+    if (!Platform.isWindows) {
+      final refused = _notOwnerOnly();
+      if (refused != null) return _unavailable(FileSystemException(refused));
+    }
     try {
       _lock = await ProfileLock.tryAcquire(profile);
     } on FileSystemException catch (e) {
@@ -135,6 +138,22 @@ class Host {
       return _StartFailure(_storeError(e), HostExit.startFailed);
     }
     log.event('host-start', ids: {'pid': pid});
+    return null;
+  }
+
+  /// Why the POSIX profile directory is not owner-only, or null when it is
+  /// now: it is not a symbolic link, chmod to 0700 succeeded (only the owner
+  /// or root may chmod), and its mode reads back as 0700.
+  String? _notOwnerOnly() {
+    if (FileSystemEntity.isLinkSync(profile.path)) {
+      return 'it is a symbolic link';
+    }
+    if (!chmodPath(profile.path, 0x1c0)) {
+      return 'it cannot be made owner-only (another account owns it?)';
+    }
+    if (FileStat.statSync(profile.path).mode & 0x1ff != 0x1c0) {
+      return 'its mode does not stay owner-only (0700)';
+    }
     return null;
   }
 

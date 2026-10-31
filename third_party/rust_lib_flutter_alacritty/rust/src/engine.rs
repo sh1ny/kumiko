@@ -569,8 +569,11 @@ impl TerminalEngine {
         // Discrete scrolls (keyboard, wheel notches without pixel deltas) snap to
         // a line boundary — drop any accumulated sub-cell offset.
         self.scroll_fraction = 0.0;
+        // The viewport's actual movement: scroll_display clamps to the history.
+        let before = self.term.grid().display_offset();
         self.term.scroll_display(Scroll::Delta(delta));
-        self.after_scroll_refresh(delta)
+        let after = self.term.grid().display_offset();
+        self.after_scroll_refresh(after as i32 - before as i32)
     }
 
     /// Scroll by a pixel delta with sub-cell precision. Positive `delta_px`
@@ -910,20 +913,21 @@ impl TerminalEngine {
         self.live(i as usize, self.palette[i as usize])
     }
 
+    /// An indexed color, honoring a runtime OSC 4 override of any entry.
     fn xterm256(&self, i: u8) -> u32 {
         match i {
             0..=15 => self.ansi16(i),
             16..=231 => {
-                let i = i - 16;
-                let r = i / 36;
-                let g = (i % 36) / 6;
-                let b = i % 6;
+                let c = i - 16;
+                let r = c / 36;
+                let g = (c % 36) / 6;
+                let b = c % 6;
                 let step = |v: u8| if v == 0 { 0u8 } else { 55 + v * 40 };
-                pack(step(r), step(g), step(b))
+                self.live(i as usize, pack(step(r), step(g), step(b)))
             }
             232..=255 => {
                 let v = 8 + (i - 232) * 10;
-                pack(v, v, v)
+                self.live(i as usize, pack(v, v, v))
             }
         }
     }
@@ -1657,6 +1661,26 @@ mod tests {
         assert_eq!(ch(&u, 0, 0), 'h');
         assert_eq!(ch(&u, 0, 1), 'i');
         assert!(u.full);
+    }
+
+    #[test]
+    fn osc4_overrides_every_indexed_color() {
+        let mut e = engine(20, 5);
+        e.advance(b"\x1b]4;196;rgb:00/ff/00\x1b\\\x1b]4;240;rgb:12/34/56\x1b\\".to_vec());
+        e.advance(b"\x1b[38;5;196mG\x1b[48;5;240mB".to_vec());
+        let u = e.full_snapshot();
+        assert_eq!(line(&u, 0).cell(0).fg & 0x00FF_FFFF, 0x0000_FF00);
+        assert_eq!(line(&u, 0).cell(1).bg & 0x00FF_FFFF, 0x0012_3456);
+    }
+
+    #[test]
+    fn a_clamped_scroll_reports_no_movement() {
+        // No scrollback yet: the viewport cannot move up.
+        let mut e = engine(10, 5);
+        e.advance(b"a\r\nb".to_vec());
+        let u = e.scroll_lines(3);
+        assert_eq!(u.scroll_line_delta, 0);
+        assert!(u.lines.iter().all(|l| l.line == OVERSCAN_LINE_TAG) || u.lines.is_empty());
     }
 
     #[test]
