@@ -202,9 +202,10 @@ class TerminalService {
     final reservation = connection.reserveChannels(2);
     _opening++;
     String? unitId;
+    late final ContainedUnit unit;
     try {
       try {
-        unitId = await units.launch(
+        final launched = await units.launch(
           target: target,
           kind: 'terminal',
           argv: [profile.executable, ...profile.args],
@@ -215,13 +216,13 @@ class TerminalService {
           ),
           pty: PtyOptions(size: PtySize(params.cols, params.rows)),
         );
+        unitId = launched.id;
+        unit = launched.unit;
       } on SpawnFailed catch (e) {
         throw _spawnRefusal(e, profile.executable);
       } on ProcessException catch (e) {
         throw spawnFailed('start', e.errorCode, e.message);
       }
-      final live = units.live[unitId]!;
-      final unit = live.unit;
       final handles = unit is PosixUnit
           ? unit.pty
           : unit is WindowsUnit

@@ -85,12 +85,12 @@ class TestHostExtension implements HostExtension {
     switch (method) {
       case Method.testUnitLaunch:
         final p = TestUnitLaunchParams.fromJson(params);
-        final id = await host.units.launch(
+        final launched = await host.units.launch(
           target: p.target,
           kind: 'test',
           argv: [Platform.resolvedExecutable, '--test-fixture', p.fixture.name],
         );
-        return TestUnitLaunchResult(id).toJson();
+        return TestUnitLaunchResult(launched.id).toJson();
       case Method.testUnitEnd:
         final p = TestUnitEndParams.fromJson(params);
         final outcome = await host.units.end(p.containmentId);

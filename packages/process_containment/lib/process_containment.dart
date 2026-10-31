@@ -15,5 +15,6 @@ export 'src/pty_io.dart';
 export 'src/process_identity.dart';
 export 'src/process_table.dart';
 export 'src/unit_exec.dart' show runUnitExec, unitMarkerVariable;
+export 'src/unit_pipes.dart';
 export 'src/windows_jobs.dart';
 export 'src/windows_unit.dart';

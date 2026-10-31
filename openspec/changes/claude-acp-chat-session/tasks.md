@@ -2,6 +2,8 @@
 
 ## Test map
 
+Verification sequencing (user-approved): groups 2-10 verify locally on Windows, plus Linux through WSL when available and runnable. Task 11.3 owns the full Windows/Linux/macOS CI run. Complete tasks on local evidence without claiming unrun OS results. Flip a test-map row green only when its test has passed locally; platform-only tests not run locally remain red with `pending 11.3 CI` until CI proves them. Real-adapter user qualification and the stop at 10.2 are unchanged.
+
 Test locations:
 - `process_containment`:
   - `packages/process_containment/test/pipes_test.dart`: piped units on all OSes (D2).
@@ -36,7 +38,7 @@ Test locations:
 | Requirement | Scenario | Test file | Test name | State |
 |---|---|---|---|---|
 | agent-runtimes → A runtime profile is an argv launch description for an ACP adapter | Launch from an npx profile | packages/host/test/it/runtime_profiles_test.dart | a profile's executable and args reach the adapter unchanged (fixture agent reports its argv) | red |
-| agent-runtimes → A runtime profile is an argv launch description for an ACP adapter | Argument with spaces and quotes | packages/process_containment/test/pipes_test.dart | piped unit: arguments with spaces and quotes arrive unchanged | red |
+| agent-runtimes → A runtime profile is an argv launch description for an ACP adapter | Argument with spaces and quotes | packages/process_containment/test/pipes_test.dart | pipes preserve exact argv spaces quotes and empty arguments | green (Windows; other OSes pending 11.3 CI) |
 | agent-runtimes → A runtime profile is an argv launch description for an ACP adapter | Override does not leak | packages/host/test/it/runtime_profiles_test.dart | profile env override reaches only its own sessions, not a terminal or another profile's session | red |
 | agent-runtimes → An installed adapter is detected as a built-in profile | Adapter installed with npm on Windows | packages/host/test/agent/adapter_detector_test.dart | Windows npm layout (fixture dir with claude-agent-acp.cmd, node_modules/.../dist/index.js, node.exe) yields node.exe + absolute index.js | red |
 | agent-runtimes → An installed adapter is detected as a built-in profile | Adapter on PATH on macOS | packages/host/test/agent/adapter_detector_test.dart | POSIX npm layout (bin symlink to dist/index.js, node beside it) yields absolute node + absolute index.js | red |
@@ -159,7 +161,7 @@ Test locations:
 
 ## 2. Piped standard I/O in process_containment (D2)
 
-- [ ] 2.1 Write failing `pipes_test.dart` cases:
+- [x] 2.1 Write failing `pipes_test.dart` cases:
   - a piped unit echoes stdin to stdout;
   - stderr is separate;
   - arguments with spaces and quotes arrive unchanged;
@@ -173,14 +175,14 @@ Test locations:
   - `CREATE_NO_WINDOW` holds, so no console window is created.
 
   Verify they fail because `pipes` is missing.
-- [ ] 2.2 Windows: add `CreatePipe` bindings and the `pipes` option to `spawnWindowsUnit`:
+- [x] 2.2 Windows: add `CreatePipe` bindings and the `pipes` option to `spawnWindowsUnit`:
   - the child ends are inheritable and are the only entries in `PROC_THREAD_ATTRIBUTE_HANDLE_LIST`, with `STARTF_USESTDHANDLES`;
   - the parent closes the child ends after creation;
   - job-then-resume is kept;
   - reader and writer isolates follow `PtyReaderIsolate` and `PtyWriterIsolate` (one chunk in flight).
 
   Verify the Windows rows of 2.1 pass.
-- [ ] 2.3 POSIX: pass `pipes` through `spawnPosixUnit` and make `UnitManager.launch` hand the stdin, stdout and stderr streams to the caller instead of draining them (`unit_manager.dart:231-236`), with no change for PTY or plain units. Verify the POSIX rows of 2.1 pass, the existing `pty_test.dart` and unit tests still pass on all three OSes in CI, and flip "Argument with spaces and quotes" green.
+- [x] 2.3 POSIX: pass `pipes` through `spawnPosixUnit` and make `UnitManager.launch` hand the stdin, stdout and stderr streams to the caller instead of draining them (`unit_manager.dart:231-236`), with no change for PTY or plain units. Verify locally: the runnable rows of 2.1, existing `pty_test.dart` and unit tests pass; three-OS CI is task 11.3. Flip "Argument with spaces and quotes" green only on observed local evidence.
 
 ## 3. Protocol: agent capability, messages and events (D4, D5)
 
@@ -240,7 +242,7 @@ Test locations:
   - the 2 s cap.
 
   Implement `ExecutableResolver` and `AdapterDetector` in `host/lib/src/agent/`. The built-in profile is absolute `node` plus the script, with `node`'s directory prepended to `PATH`. Verify they pass and flip the resolver and detector rows green.
-- [ ] 4.4 Write failing `runtime_profiles_test.dart` for every runtime-profile row mapped there. Implement `RuntimeProfileService` (built-ins in memory, user profiles in v5, `default_runtime`, refusal of built-in edits) and wire `runtime/*` in `Host._onRequest` under `Capability.agent`; advertise `agent` in `host.dart`. Verify the rows pass on all three OSes in CI and flip them green.
+- [ ] 4.4 Write failing `runtime_profiles_test.dart` for every runtime-profile row mapped there. Implement `RuntimeProfileService` (built-ins in memory, user profiles in v5, `default_runtime`, refusal of built-in edits) and wire `runtime/*` in `Host._onRequest` under `Capability.agent`; advertise `agent` in `host.dart`. Verify locally and flip observed passing rows green; three-OS CI is task 11.3.
 
 ## 5. ACP client, fake agent, normalizer and session state machine (D3, D6, D8, D10, D13, D14)
 
@@ -288,7 +290,7 @@ Test locations:
   - a long-lived child process;
   - a canary text in its reply and stderr.
 
-  Write a smoke test in `packages/host/test/it/agent_test.dart` that the fixture runs as a profile and answers `initialize`. Verify it passes on all three OSes.
+  Write a smoke test in `packages/host/test/it/agent_test.dart` that the fixture runs as a profile and answers `initialize`. Verify locally; three-OS CI is task 11.3.
 
 ## 6. Host agent service: start, stream, permissions, Stop, close, records (D1, D2, D4, D7, D8)
 
@@ -306,7 +308,7 @@ Test locations:
 
   On failure, terminate, release and write no record, with the stderr tail ≤ 4 KiB. Map exit 127 before `initialize` to `executable-not-found` and 126 to `not-executable` **only when the stderr tail starts with the shim's `unit-exec:` prefix**, otherwise `adapter-start-failed` with the status (review round 1 re-check suggestion 1). Keep stderr in a 64 KiB memory ring, never in `host.log`. Verify the start, refusal, protocol-version, auth, Node-too-old and record rows pass.
 - [ ] 6.3 Implement attach (10 s timeout), the event relay (normalized events through the channel writer, the 1 MiB queue bound pausing adapter stdout, overshoot ≤ 1 MiB) and the control notifications in the D4 order (`turnEnded` and `state idle` after the turn's events are enqueued). Wire `agent/*` in `Host._onRequest`. Verify the streaming, permission, Stop, unknown-session, canary and "Desktop never attaches" rows pass, and flip them green.
-- [ ] 6.4 Implement close: ack on entering `closing`; when running, cancel, answer pending requests cancelled, then a 2 s grace; terminate through the existing settle path within 30 s; send `exited{closed}` or `closeFailed`; keep the record. Implement `agent/release`. Verify every `agent_close_test.dart` row passes on all three OSes in CI, including desktop kill and host kill with a fixture grandchild, and flip them green.
+- [ ] 6.4 Implement close: ack on entering `closing`; when running, cancel, answer pending requests cancelled, then a 2 s grace; terminate through the existing settle path within 30 s; send `exited{closed}` or `closeFailed`; keep the record. Implement `agent/release`. Verify locally, including desktop kill and host kill with a fixture grandchild, and flip observed passing `agent_close_test.dart` rows green; three-OS CI is task 11.3.
 
 ## 7. Continue: load, resume and resume unavailable (D9)
 
@@ -320,7 +322,7 @@ Test locations:
   - Continue after the profile was removed uses the default.
 
   Use `agent/records` for restored panes. Verify they fail.
-- [ ] 7.2 Implement `agent/continue` and `agent/records` per D9 (checks before spawn, decision by the Continue run, load or resume after attach, replay through the normal relay under backpressure, no prompt sent). Verify the rows pass on all three OSes and flip them green.
+- [ ] 7.2 Implement `agent/continue` and `agent/records` per D9 (checks before spawn, decision by the Continue run, load or resume after attach, replay through the normal relay under backpressure, no prompt sent). Verify locally and flip observed passing rows green; three-OS CI is task 11.3.
 
 ## 8. Host qualification under load (ADR 0002, Resource Bounds)
 
@@ -331,7 +333,7 @@ Test locations:
   - a 17 MiB line fails the session;
   - two sessions emitting 8 MiB lines at once: the second waits for the permit, both complete, and host memory stays within the stated worst case.
 
-  Verify on all three OSes in CI, flip the rows green, and print `measured:` lines for the ack latencies.
+  Verify locally, flip observed passing rows green, and print `measured:` lines for the ack latencies; three-OS CI is task 11.3.
 
 ## 9. Desktop chat panes (D6, D12)
 
@@ -368,7 +370,7 @@ Test locations:
   - no agent unit in the ledger;
   - Continue loads the history.
 
-  Verify both pass on all three OSes in CI and flip their rows green.
+  Verify both locally and flip observed passing rows green; three-OS CI is task 11.3.
 
 ## 10. Real adapter qualification (pauses for the user's per-OS runs)
 

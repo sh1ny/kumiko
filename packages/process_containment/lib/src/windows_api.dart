@@ -228,6 +228,13 @@ createPipeNative = _kernel32
       int Function(Pointer<IntPtr>, Pointer<IntPtr>, Pointer<Void>, int)
     >('CreatePipe');
 
+/// Clears inheritance on parent pipe ends before any child is created.
+final int Function(int, int, int) setHandleInformation = _kernel32
+    .lookupFunction<
+      Int32 Function(IntPtr, Uint32, Uint32),
+      int Function(int, int, int)
+    >('SetHandleInformation');
+
 final int Function(int, Pointer<Uint8>, int, Pointer<Uint32>, Pointer<Void>)
 readFileNative = _kernel32
     .lookupFunction<

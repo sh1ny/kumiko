@@ -9,6 +9,7 @@ import 'contained_unit.dart';
 import 'pty.dart';
 import 'pty_io.dart' show ConsoleCloser;
 import 'unit_exec.dart';
+import 'unit_pipes.dart';
 import 'windows_api.dart';
 import 'windows_jobs.dart';
 
@@ -56,12 +57,24 @@ class WindowsUnit implements ContainedUnit {
     this._processHandle,
     this._job, [
     this.pty,
+    (int, int, int)? pipeHandles,
   ]) {
-    exitCode = Isolate.run(() => _waitForExit(_processHandle)).whenComplete(() {
+    exitCode = _exitCodeFor(_processHandle).whenComplete(() {
       _exited = true;
       _closeProcessIfDone();
     });
+    pipes = pipeHandles == null
+        ? null
+        : UnitPipes.windows(
+            pipeHandles.$1,
+            pipeHandles.$2,
+            pipeHandles.$3,
+            exitCode,
+          );
   }
+
+  @override
+  late final UnitPipes? pipes;
 
   @override
   final int pid;
@@ -117,8 +130,9 @@ class WindowsUnit implements ContainedUnit {
     _job = 0;
   }
 
-  /// Releases the handles. The process handle stays open until the exit wait
-  /// finished, because the helper isolate waits on it.
+  /// Releases the job/process handles. The process handle stays open until
+  /// the exit wait finished, because the helper isolate waits on it.
+  /// Caller-owned [pipes] and [pty] remain open independently for output EOF.
   void close() {
     closeJob();
     _closeRequested = true;
@@ -132,6 +146,11 @@ class WindowsUnit implements ContainedUnit {
     }
   }
 }
+
+// Keep the wait closure's context separate from WindowsUnit: a piped unit
+// also owns controllers and ports, which must never be copied into a worker.
+Future<int> _exitCodeFor(int processHandle) =>
+    Isolate.run(() => _waitForExit(processHandle));
 
 int _waitForExit(int processHandle) {
   waitForSingleObject(processHandle, infinite);
@@ -169,6 +188,13 @@ const int _openExisting = 3;
 /// [WindowsUnit.pty]; the caller closes them (the console through a
 /// [ConsoleCloser]). A failure then throws [SpawnFailed] with the failing
 /// call as the stage.
+///
+/// With [pipes], stdin/stdout/stderr use three separate anonymous pipes.
+/// Exactly the three child ends are inheritable and in the handle list;
+/// parent ends are non-inheritable and owned by [WindowsUnit.pipes]. Creation
+/// remains suspended, job-first, then resumed, with CREATE_NO_WINDOW. The
+/// caller owns the endpoints through EOF and must close them after use.
+/// [pipes] and [pty] are mutually exclusive.
 WindowsUnit spawnWindowsUnit({
   required String executable,
   List<String> args = const [],
@@ -176,7 +202,11 @@ WindowsUnit spawnWindowsUnit({
   Map<String, String>? environment,
   String? workingDirectory,
   PtyOptions? pty,
+  bool pipes = false,
 }) {
+  if (pipes && pty != null) {
+    throw ArgumentError('pipes and pty are mutually exclusive');
+  }
   getLastError(); // bind it now: its first use clobbers the last error
   final job = createJob();
   final toFree = <Pointer<NativeType>>[];
@@ -185,13 +215,42 @@ WindowsUnit spawnWindowsUnit({
   var inWrite = 0;
   var outRead = 0;
   var outWrite = 0;
+  var errRead = 0;
+  var errWrite = 0;
   var hpcon = 0;
-  var ptyOwnedByUnit = false;
+  var ioOwnedByUnit = false;
   var attributeList = nullptr.cast<Void>();
   var processHandle = 0;
   var threadHandle = 0;
   try {
-    if (pty == null) {
+    if (pipes) {
+      final sa = calloc<Uint8>(24);
+      toFree.add(sa);
+      sa.cast<Uint32>().value = 24;
+      (sa + 16).cast<Int32>().value = 1;
+      final ends = calloc<IntPtr>(6);
+      toFree.add(ends);
+      if (createPipeNative(ends, ends + 1, sa.cast<Void>(), 0) == 0) {
+        throw WindowsApiException('CreatePipe(stdin)', getLastError());
+      }
+      inRead = ends[0];
+      inWrite = ends[1];
+      if (createPipeNative(ends + 2, ends + 3, sa.cast<Void>(), 0) == 0) {
+        throw WindowsApiException('CreatePipe(stdout)', getLastError());
+      }
+      outRead = ends[2];
+      outWrite = ends[3];
+      if (createPipeNative(ends + 4, ends + 5, sa.cast<Void>(), 0) == 0) {
+        throw WindowsApiException('CreatePipe(stderr)', getLastError());
+      }
+      errRead = ends[4];
+      errWrite = ends[5];
+      for (final parent in [inWrite, outRead, errRead]) {
+        if (setHandleInformation(parent, 1, 0) == 0) {
+          throw WindowsApiException('SetHandleInformation', getLastError());
+        }
+      }
+    } else if (pty == null) {
       // SECURITY_ATTRIBUTES (24 bytes, bInheritHandle at 16) for an
       // inheritable NUL handle.
       final sa = calloc<Uint8>(24);
@@ -247,8 +306,8 @@ WindowsUnit spawnWindowsUnit({
       outWrite = 0;
     }
 
-    // Only one handle is inherited: the NUL handle for plain units, none at
-    // all for a pseudo-console unit, whose std handles the console provides.
+    // Plain units inherit only NUL; piped units inherit exactly their three
+    // child pipe ends. A pseudo-console unit inherits nothing.
     final listSize = calloc<Size>();
     toFree.add(listSize);
     initializeProcThreadAttributeList(nullptr, 1, 0, listSize);
@@ -261,15 +320,22 @@ WindowsUnit spawnWindowsUnit({
       );
     }
     if (pty == null) {
-      final handles = calloc<IntPtr>(1);
+      final count = pipes ? 3 : 1;
+      final handles = calloc<IntPtr>(count);
       toFree.add(handles);
-      handles.value = nul;
+      if (pipes) {
+        handles[0] = inRead;
+        handles[1] = outWrite;
+        handles[2] = errWrite;
+      } else {
+        handles.value = nul;
+      }
       if (updateProcThreadAttribute(
             attributeList,
             0,
             _procThreadAttributeHandleList,
             handles.cast<Void>(),
-            sizeOf<IntPtr>(),
+            sizeOf<IntPtr>() * count,
             nullptr,
             nullptr,
           ) ==
@@ -298,9 +364,9 @@ WindowsUnit spawnWindowsUnit({
     // INVALID_HANDLE_VALUE makes the console supply them.
     final stdHandle = pty == null ? nul : -1;
     (startup + 60).cast<Uint32>().value = _startfUseStdHandles;
-    (startup + 80).cast<IntPtr>().value = stdHandle;
-    (startup + 88).cast<IntPtr>().value = stdHandle;
-    (startup + 96).cast<IntPtr>().value = stdHandle;
+    (startup + 80).cast<IntPtr>().value = pipes ? inRead : stdHandle;
+    (startup + 88).cast<IntPtr>().value = pipes ? outWrite : stdHandle;
+    (startup + 96).cast<IntPtr>().value = pipes ? errWrite : stdHandle;
     (startup + 104).cast<Pointer<Void>>().value = attributeList;
 
     final info = calloc<Uint8>(24); // PROCESS_INFORMATION
@@ -346,6 +412,17 @@ WindowsUnit spawnWindowsUnit({
     threadHandle = (info + 8).cast<IntPtr>().value;
     final pid = (info + 16).cast<Uint32>().value;
 
+    if (pipes) {
+      // Only the child now holds these ends. Retaining a parent copy would
+      // prevent output EOF or hide stdin's broken pipe after process exit.
+      closeHandleNative(inRead);
+      inRead = 0;
+      closeHandleNative(outWrite);
+      outWrite = 0;
+      closeHandleNative(errWrite);
+      errWrite = 0;
+    }
+
     try {
       assignProcessToJob(job, processHandle);
     } on WindowsApiException {
@@ -375,26 +452,29 @@ WindowsUnit spawnWindowsUnit({
               writeHandle: inWrite,
               console: hpcon,
             ),
+      pipes ? (inWrite, outRead, errRead) : null,
     );
     processHandle = 0; // now owned by the unit
-    ptyOwnedByUnit = true;
+    ioOwnedByUnit = true;
     return unit;
   } on WindowsApiException catch (e) {
     closeHandleNative(job);
     if (processHandle != 0) closeHandleNative(processHandle);
-    if (pty != null) throw SpawnFailed(e.call, e.code);
+    if (pty != null || pipes) throw SpawnFailed(e.call, e.code);
     rethrow;
   } catch (_) {
     closeHandleNative(job);
     if (processHandle != 0) closeHandleNative(processHandle);
     rethrow;
   } finally {
-    if (pty != null && !ptyOwnedByUnit) {
+    if ((pty != null || pipes) && !ioOwnedByUnit) {
       // Closing the pipe ends first lets ClosePseudoConsole return at once.
       if (outRead != 0) closeHandleNative(outRead);
       if (inWrite != 0) closeHandleNative(inWrite);
       if (inRead != 0) closeHandleNative(inRead);
       if (outWrite != 0) closeHandleNative(outWrite);
+      if (errRead != 0) closeHandleNative(errRead);
+      if (errWrite != 0) closeHandleNative(errWrite);
       if (hpcon != 0) closePseudoConsole(hpcon);
     }
     if (threadHandle != 0) closeHandleNative(threadHandle);
