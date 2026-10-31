@@ -155,6 +155,10 @@ class TerminalController extends ChangeNotifier {
 
   /// `terminal/exited` that came before the open that names it returned.
   final Map<String, TerminalExited> _unclaimed = {};
+
+  /// `terminal/closeFailed` that came before the open that names it
+  /// returned. The host has already forgotten those terminals.
+  final Map<String, TerminalCloseFailed> _unclaimedCloseFailures = {};
   int _opening = 0;
 
   /// The link of [paneId], or null for a pane that has none (status `none`).
@@ -204,6 +208,7 @@ class TerminalController extends ChangeNotifier {
     _byTerminal.clear();
     _orphans.clear();
     _unclaimed.clear();
+    _unclaimedCloseFailures.clear();
   }
 
   bool _stale(int generation) => _disposed || generation != _generation;
@@ -286,8 +291,11 @@ class TerminalController extends ChangeNotifier {
       }
       if (link._abandoned) {
         // The pane was closed while the open was out: close, never attach.
-        // A shell that already ended is only released.
-        if (_unclaimed.remove(channels.terminalId) != null) {
+        // A shell that already ended is only released, and one the host
+        // already forgot (closeFailed) gets nothing.
+        if (_unclaimedCloseFailures.remove(channels.terminalId) != null) {
+          _unclaimed.remove(channels.terminalId);
+        } else if (_unclaimed.remove(channels.terminalId) != null) {
           _release(host, channels.terminalId);
         } else {
           _closeOrphan(host, channels.terminalId);
@@ -309,12 +317,19 @@ class TerminalController extends ChangeNotifier {
       // The view may have resized while the open was out.
       _requestResize(link);
       _pumpInput(link);
-      if (_unclaimed.remove(channels.terminalId) case final early?) {
+      if (_unclaimedCloseFailures.remove(channels.terminalId)
+          case final early?) {
+        _unclaimed.remove(channels.terminalId);
+        _onCloseFailed(early);
+      } else if (_unclaimed.remove(channels.terminalId) case final early?) {
         _handleExit(link, early);
       }
     } finally {
-      // Only exits that raced an open in flight are kept.
-      if (_opening == 0) _unclaimed.clear();
+      // Only exits and close failures that raced an open in flight are kept.
+      if (_opening == 0) {
+        _unclaimed.clear();
+        _unclaimedCloseFailures.clear();
+      }
     }
   }
 
@@ -399,7 +414,14 @@ class TerminalController extends ChangeNotifier {
 
   void _onCloseFailed(TerminalCloseFailed f) {
     final link = _byTerminal[f.terminalId];
-    if (link == null) return;
+    if (link == null) {
+      // An orphan the host forgot needs no release; one whose open is still
+      // out is applied when the open returns.
+      if (!_orphans.remove(f.terminalId) && _opening > 0) {
+        _unclaimedCloseFailures[f.terminalId] = f;
+      }
+      return;
+    }
     // The host closes the channels of a terminal it could not confirm.
     link._released = true;
     _stopIo(link);

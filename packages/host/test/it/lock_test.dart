@@ -80,6 +80,22 @@ void main() {
     );
   });
 
+  test('the profile directory is owner-only, new or already there', () async {
+    int bits(String path) => FileStat.statSync(path).mode & 0x1ff;
+    // An existing directory others can read.
+    await Process.run('chmod', ['755', profile.path]);
+    expect(bits(profile.path), 0x1ed);
+    final desktop = await Desktop.start(profile);
+    addTearDown(desktop.dispose);
+    expect(bits(profile.path), 0x1c0, reason: 'rwx------');
+
+    // One the host creates.
+    final fresh = Directory(joinPath(profile.path, 'nested'));
+    final second = await Desktop.start(fresh);
+    addTearDown(second.dispose);
+    expect(bits(fresh.path), 0x1c0);
+  }, skip: Platform.isWindows ? 'POSIX permissions' : false);
+
   test('killed owner releases lock to next launch', () async {
     final desktop = await Desktop.start(profile);
     addTearDown(desktop.dispose);

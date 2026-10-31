@@ -7,6 +7,12 @@ import 'dart:convert';
 /// Profiles a user may keep.
 const int maxUserProfiles = 64;
 
+/// UTF-8 size of a profile id and of its name. A terminal pane names the
+/// profile it runs in its state (`{profileId, profileName}`), which is at
+/// most 4 KiB (`maxTabStateBytes`); these keep it within that.
+const int maxProfileIdBytes = 128;
+const int maxProfileNameBytes = 256;
+
 /// Arguments in one profile.
 const int maxProfileArgs = 256;
 
@@ -90,9 +96,25 @@ class ProfileDefinition {
   /// Every reason this profile cannot be saved; empty when it is valid.
   List<ProfileIssue> validate() {
     final issues = <ProfileIssue>[];
-    if (id.isEmpty) issues.add(const ProfileIssue('id', 'The id is required.'));
+    if (id.isEmpty) {
+      issues.add(const ProfileIssue('id', 'The id is required.'));
+    } else if (utf8.encode(id).length > maxProfileIdBytes) {
+      issues.add(
+        const ProfileIssue(
+          'id',
+          'The id is longer than $maxProfileIdBytes bytes.',
+        ),
+      );
+    }
     if (name.trim().isEmpty) {
       issues.add(const ProfileIssue('name', 'The name is required.'));
+    } else if (utf8.encode(name).length > maxProfileNameBytes) {
+      issues.add(
+        const ProfileIssue(
+          'name',
+          'The name is longer than $maxProfileNameBytes bytes.',
+        ),
+      );
     }
     if (executable.trim().isEmpty) {
       issues.add(

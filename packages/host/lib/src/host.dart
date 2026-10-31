@@ -108,6 +108,10 @@ class Host {
     } on FileSystemException catch (e) {
       return _unavailable(e);
     }
+    // The store holds profile environments, which can carry secrets: only
+    // the owner may enter the profile (the files in it then need no mode of
+    // their own). Best effort: a file system without modes keeps its own.
+    if (!Platform.isWindows) chmodPath(profile.path, 0x1c0); // 0700
     try {
       _lock = await ProfileLock.tryAcquire(profile);
     } on FileSystemException catch (e) {

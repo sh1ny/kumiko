@@ -2009,6 +2009,40 @@ void main() {
       expect(rig.link.released, ['t1']);
       expect(rig.link.closed, isEmpty, reason: 'an ended terminal is released');
     });
+
+    uiTest('a closeFailed that arrives before its open returned ends the '
+        'pane with the error once the open returns', (tester) async {
+      final rig = await pumpEmpty(tester);
+      rig.link.terminalOpenGate = Completer<void>();
+      await launch(tester);
+      final pane = rig.terminalPanes.single;
+
+      // The host could not confirm the shell's end and forgot the terminal
+      // before the open's answer arrived.
+      rig.link.emitCloseFailed('t1', 'scan-unreadable');
+      rig.link.terminalOpenGate!.complete();
+      await flush(tester);
+      final link = rig.linkOf(pane.id)!;
+      expect(link.status, TerminalStatus.ended);
+      expect(link.error, contains('scan-unreadable'));
+      expect(rig.link.released, isEmpty, reason: 'the host forgot it');
+    });
+
+    uiTest('a closed pane whose closeFailed arrived before its open returned '
+        'sends nothing for the forgotten terminal', (tester) async {
+      final rig = await pumpEmpty(tester);
+      rig.link.terminalOpenGate = Completer<void>();
+      await launch(tester);
+      final pane = rig.terminalPanes.single;
+      await tapClosePane(tester, pane.id);
+      await confirm(tester);
+
+      rig.link.emitCloseFailed('t1', 'scan-unreadable');
+      rig.link.terminalOpenGate!.complete();
+      await flush(tester);
+      expect(rig.link.closed, isEmpty);
+      expect(rig.link.released, isEmpty);
+    });
   });
 
   group('move', () {

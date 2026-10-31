@@ -107,6 +107,27 @@ void main() {
       );
     });
 
+    test('no profile directory when the home it would use is not absolute', () {
+      expect(
+        defaultProfileDir(os: HostOs.linux, env: {}, home: 'evil'),
+        isNull,
+      );
+      expect(defaultProfileDir(os: HostOs.macos, env: {}, home: ''), isNull);
+      expect(
+        defaultProfileDir(os: HostOs.windows, env: {}, home: r'Users\a'),
+        isNull,
+      );
+      // An absolute base directory does not need the home.
+      expect(
+        defaultProfileDir(
+          os: HostOs.linux,
+          env: {'XDG_DATA_HOME': '/data'},
+          home: '',
+        ),
+        '/data/kumiko',
+      );
+    });
+
     test('macOS uses Application Support', () {
       expect(
         defaultProfileDir(os: HostOs.macos, env: {}, home: '/Users/a'),

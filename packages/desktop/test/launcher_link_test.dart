@@ -23,6 +23,19 @@ class _Pipe implements ByteSink {
 }
 
 void main() {
+  test('with no profile directory the connector fails to start, naming the '
+      'variable to set', () async {
+    final error = await noProfileDirConnector(
+      'HOME',
+    )().then<Object?>((_) => null, onError: (Object e) => e);
+    expect(
+      error,
+      isA<HostStartException>()
+          .having((e) => e.kind, 'kind', HostStartFailure.spawnFailed)
+          .having((e) => e.message, 'message', contains('HOME')),
+    );
+  });
+
   test('a refused terminal/attach closes both channels and asks the host to '
       'close the terminal', () async {
     final toHost = _Pipe();

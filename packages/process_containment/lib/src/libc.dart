@@ -29,6 +29,28 @@ const int eacces = 13;
 final int Function() setsid = libc
     .lookupFunction<Int32 Function(), int Function()>('setsid');
 
+// mode_t is 16 bits on macOS, 32 on Linux.
+final int Function(Pointer<Utf8>, int) _chmod = Platform.isMacOS
+    ? libc.lookupFunction<
+        Int32 Function(Pointer<Utf8>, Uint16),
+        int Function(Pointer<Utf8>, int)
+      >('chmod')
+    : libc.lookupFunction<
+        Int32 Function(Pointer<Utf8>, Uint32),
+        int Function(Pointer<Utf8>, int)
+      >('chmod');
+
+/// Sets the permission bits of [path] to [mode]; false when it could not
+/// (not the owner, a file system without them). POSIX only.
+bool chmodPath(String path, int mode) {
+  final native = path.toNativeUtf8();
+  try {
+    return _chmod(native, mode) == 0;
+  } finally {
+    malloc.free(native);
+  }
+}
+
 final int Function(int) _getsid = libc
     .lookupFunction<Int32 Function(Int32), int Function(int)>('getsid');
 

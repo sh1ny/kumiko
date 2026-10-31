@@ -24,24 +24,28 @@ Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
   await RustLib.init();
   final os = HostOs.current;
-  final home =
-      Platform.environment[os == HostOs.windows ? 'USERPROFILE' : 'HOME'] ?? '';
-  final launcher = HostLauncher(
-    executable: resolveHostExecutable(
-      override: _hostOverride,
-      appExecutable: Platform.resolvedExecutable,
-      os: os,
-    ),
-    profileDir: defaultProfileDir(
-      os: os,
-      env: Platform.environment,
-      home: home,
-    ),
-    capabilities: const {Capability.workbench, Capability.terminal},
+  final homeVariable = os == HostOs.windows ? 'USERPROFILE' : 'HOME';
+  final profileDir = defaultProfileDir(
+    os: os,
+    env: Platform.environment,
+    home: Platform.environment[homeVariable] ?? '',
   );
+  final connector = profileDir == null
+      ? noProfileDirConnector(homeVariable)
+      : launcherConnector(
+          HostLauncher(
+            executable: resolveHostExecutable(
+              override: _hostOverride,
+              appExecutable: Platform.resolvedExecutable,
+              os: os,
+            ),
+            profileDir: profileDir,
+            capabilities: const {Capability.workbench, Capability.terminal},
+          ),
+        );
   runApp(
     TerminalSpikeApp(
-      connector: launcherConnector(launcher),
+      connector: connector,
       surfaceFactory: AlacrittySurface.new,
     ),
   );

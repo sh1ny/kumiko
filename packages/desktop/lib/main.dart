@@ -35,23 +35,27 @@ Future<void> main() async {
     appExecutable: Platform.resolvedExecutable,
     os: os,
   );
-  final home =
-      Platform.environment[os == HostOs.windows ? 'USERPROFILE' : 'HOME'] ?? '';
-  final launcher = HostLauncher(
-    executable: hostPath,
-    profileDir: defaultProfileDir(
-      os: os,
-      env: Platform.environment,
-      home: home,
-    ),
-    capabilities: {
-      Capability.workbench,
-      if (surfaceFactory != null) Capability.terminal,
-    },
+  final homeVariable = os == HostOs.windows ? 'USERPROFILE' : 'HOME';
+  final profileDir = defaultProfileDir(
+    os: os,
+    env: Platform.environment,
+    home: Platform.environment[homeVariable] ?? '',
   );
+  final connector = profileDir == null
+      ? noProfileDirConnector(homeVariable)
+      : launcherConnector(
+          HostLauncher(
+            executable: hostPath,
+            profileDir: profileDir,
+            capabilities: {
+              Capability.workbench,
+              if (surfaceFactory != null) Capability.terminal,
+            },
+          ),
+        );
   runApp(
     KumikoApp(
-      connector: launcherConnector(launcher),
+      connector: connector,
       hostPath: hostPath,
       onExit: () => exit(0),
       surfaceFactory: surfaceFactory,

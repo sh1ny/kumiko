@@ -108,6 +108,27 @@ void main() {
       expect(profile(env: env(129)).validate(), isNotEmpty);
     });
 
+    test('a name of 256 bytes is valid, one byte more is not, so a pane '
+        'that names its profile stays within the pane-state bound', () {
+      expect(profile(name: 'a' * 256).validate(), isEmpty);
+      final long = profile(name: 'a' * 257).validate();
+      expect(long.single.field, 'name');
+      expect(profile(name: 'é' * 129).validate(), isNotEmpty);
+    });
+
+    test('an id of 128 bytes is valid, one byte more is not', () {
+      expect(profile(id: 'a' * 128).validate(), isEmpty);
+      expect(profile(id: 'a' * 129).validate().single.field, 'id');
+    });
+
+    test('the largest name and id fit a pane state that names them', () {
+      final state = {'profileId': 'é' * 64, 'profileName': 'é' * 128};
+      expect(
+        utf8.encode(jsonEncode(state)).length,
+        lessThanOrEqualTo(maxTabStateBytes),
+      );
+    });
+
     test('a profile over 12 KiB is invalid even within the other bounds', () {
       // Three arguments of 4 KiB are just over 12 KiB.
       final big = profile(args: List.filled(3, 'a' * 4096));

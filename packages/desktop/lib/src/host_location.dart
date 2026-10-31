@@ -33,12 +33,13 @@ String resolveHostExecutable({
   ].join(sep);
 }
 
-/// The per-OS default profile directory. The desktop never creates it: the
-/// host that holds the profile lock does, so a refused second launch writes
-/// nothing there. A base directory variable that is not an absolute path is
-/// ignored, as the XDG spec asks: it would resolve against the working
-/// directory, and a profile found there decides what a new terminal runs.
-String defaultProfileDir({
+/// The per-OS default profile directory, or null when there is no absolute
+/// one. The desktop never creates it: the host that holds the profile lock
+/// does, so a refused second launch writes nothing there. A base directory
+/// variable or a [home] that is not an absolute path is not used, as the XDG
+/// spec asks: it would resolve against the working directory, and a profile
+/// found there decides what a new terminal runs.
+String? defaultProfileDir({
   required HostOs os,
   required Map<String, String> env,
   required String home,
@@ -51,14 +52,21 @@ String defaultProfileDir({
     return v == null || !absolute.hasMatch(v) ? null : v;
   }
 
+  final homeDir = absolute.hasMatch(home) ? home : null;
   switch (os) {
     case HostOs.windows:
-      final base = set('LOCALAPPDATA') ?? '$home\\AppData\\Local';
-      return '$base\\Kumiko';
+      final base =
+          set('LOCALAPPDATA') ??
+          (homeDir == null ? null : '$homeDir\\AppData\\Local');
+      return base == null ? null : '$base\\Kumiko';
     case HostOs.macos:
-      return '$home/Library/Application Support/Kumiko';
+      return homeDir == null
+          ? null
+          : '$homeDir/Library/Application Support/Kumiko';
     case HostOs.linux:
-      final base = set('XDG_DATA_HOME') ?? '$home/.local/share';
-      return '$base/kumiko';
+      final base =
+          set('XDG_DATA_HOME') ??
+          (homeDir == null ? null : '$homeDir/.local/share');
+      return base == null ? null : '$base/kumiko';
   }
 }

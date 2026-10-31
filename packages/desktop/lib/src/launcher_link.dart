@@ -269,3 +269,12 @@ class SessionLink implements HostLink {
 /// A connector that starts [launcher]'s host.
 HostConnector launcherConnector(HostLauncher launcher) =>
     () async => SessionLink(await launcher.start());
+
+/// A connector for when there is no absolute profile directory to start the
+/// host with (`defaultProfileDir` returned null): every start fails, naming
+/// [homeVariable], so the status window shows why.
+HostConnector noProfileDirConnector(String homeVariable) =>
+    () async => throw HostStartException(
+      HostStartFailure.spawnFailed,
+      'no absolute profile directory: set $homeVariable to an absolute path',
+    );
