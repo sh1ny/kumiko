@@ -1,6 +1,29 @@
 import 'dart:isolate';
+import 'dart:typed_data';
 
 import 'package:host_protocol/host_protocol.dart';
+
+/// The chunks a reader yields with [TestFault.ptyScriptedOutput], in order:
+/// escape sequences, NUL bytes and malformed UTF-8, with an escape sequence
+/// and a multi-byte character split across chunk boundaries.
+final List<Uint8List> scriptedPtyOutput = [
+  Uint8List.fromList([...'SCRIPT;'.codeUnits, 0x1B, 0x5B, 0x33]),
+  Uint8List.fromList([
+    0x31,
+    0x6D,
+    ...'red'.codeUnits,
+    0x1B,
+    0x5B,
+    0x30,
+    0x6D,
+    0x00,
+    0xE2,
+    0x82,
+  ]),
+  Uint8List.fromList([0xAC, 0xFF, 0xFE, 0xC3]),
+  Uint8List.fromList([0x28, 0x00, 0x00, 0x1B, 0x5D, 0x30, 0x3B, 0x74, 0x07]),
+  Uint8List.fromList([0x80, 0xBF, ...'ENDSCRIPT;'.codeUnits]),
+];
 
 /// Faults a test build can inject (`test/fault.set`). A release host has no
 /// way to set one, so every flag stays off.
@@ -27,11 +50,28 @@ class HostFaults {
   /// deadline.
   bool get terminateHangs => _active.contains(TestFault.terminateHangs);
 
+  /// Writing a profile or the default profile fails.
+  bool get profileWriteFails => _active.contains(TestFault.profileWriteFails);
+
   /// Saving the Personal layout fails.
   bool get layoutSaveFails => _active.contains(TestFault.layoutSaveFails);
 
   /// Saving the Personal layout never finishes while this stays on.
   bool get layoutSaveHangs => _active.contains(TestFault.layoutSaveHangs);
+
+  /// Windows: a pseudo-console close never returns.
+  bool get consoleCloseHangs => _active.contains(TestFault.consoleCloseHangs);
+
+  /// A terminal's output never reaches end of file once read to its end.
+  bool get ptyNoEof => _active.contains(TestFault.ptyNoEof);
+
+  /// A terminal's exit report is held back 600 ms, and input written meanwhile
+  /// fails.
+  bool get ptyExitWindow => _active.contains(TestFault.ptyExitWindow);
+
+  /// A terminal's reader yields [scriptedPtyOutput] before the PTY's own
+  /// output.
+  bool get ptyScriptedOutput => _active.contains(TestFault.ptyScriptedOutput);
 
   final Map<String, ResolveFault> _resolve = {};
   final Map<String, List<SendPort>> _hung = {};

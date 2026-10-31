@@ -374,41 +374,49 @@ Enabling a feature MUST NOT grant access to its project, records, sessions, or o
 - **WHEN** an authorized configurator enables a planning feature containing restricted records
 - **THEN** only users already entitled to access those records can use them, and the switch grants no membership, record access, or operational authority.
 
-### Requirement: Tab groups and splits remain independent
-Kumiko SHALL support independent central tab groups, horizontal and vertical splits, and movable tabs between groups. Moving a view or changing the split arrangement MUST preserve its associated session, workspace, and host rather than starting a replacement or retargeting it.
+### Requirement: Tabs contain panes and rearranging preserves sessions
+Kumiko SHALL show central tabs between the sidebars. Each tab SHALL hold a horizontal and vertical split arrangement of panes, each hosting one view of any supported type; a one-pane tab gives its view the whole central area. Panes SHALL move into their own tabs and tabs into splits. Moving a view or changing the split arrangement MUST preserve its associated session, workspace, and host rather than starting a replacement or retargeting it. Source: user decision 2026-10-30.
 
-#### Scenario: Move a tab between independent groups
-- **WHEN** a user moves an existing chat or terminal tab to another split group
-- **THEN** that same view appears in the destination group with its existing session, workspace, and host unchanged.
+#### Scenario: Move a pane into its own tab
+- **WHEN** a user moves an existing chat or terminal pane out of a split into its own tab
+- **THEN** that same view fills the new tab with its existing session, workspace, and host unchanged.
+
+#### Scenario: Mix view types in one tab
+- **WHEN** a user places a chat view in a pane beside a terminal in one tab
+- **THEN** both views share the tab, each keeps its own session, workspace, and host, and either can later fill a tab of its own.
 
 #### Scenario: Rearrange a running terminal
-- **WHEN** a terminal has a running process while its tab or split is rearranged
+- **WHEN** a terminal has a running process while its pane, tab, or split is rearranged
 - **THEN** the process remains attached to the same terminal session without being stopped or relaunched.
 
-### Requirement: Each tab group provides a labeled click launcher
-Every tab group SHALL provide a visible + control opening a readable, labeled click menu of supported view types. A new view SHALL open in the group whose + was used, inheriting that group's applicable project, workspace, and host context. Hover MUST NOT be required to discover or activate the menu.
+#### Scenario: Close one pane of a split
+- **WHEN** a user closes one pane of a split
+- **THEN** its sibling takes the freed space, and no empty pane remains.
 
-#### Scenario: Open a new view in a focused split
-- **WHEN** a user focuses a workspace pane, clicks its + control, and selects a supported new terminal or chat view
-- **THEN** the labeled menu opens by click and the new view opens in that pane with the applicable project, workspace, and host inherited.
+### Requirement: The tab strip provides a labeled click launcher
+The central tab strip SHALL provide a visible + control, also with no tab open, opening a readable, labeled click menu of supported view types. With no tab open, the central area SHALL show a short empty state with a prominent New terminal action. A new view SHALL open in a new tab, inheriting the project, workspace, and host context selected in navigation. Hover MUST NOT be required to discover or activate the menu. Source: user decisions 2026-10-30, replacing the per-group launcher.
 
-#### Scenario: Launcher belongs to an unfocused group
-- **WHEN** the user clicks + in a different group from the previously focused pane and creates a view
-- **THEN** the new view opens in the clicked group using its context rather than the previously focused group's context.
+#### Scenario: Open a new view in a new tab
+- **WHEN** a user with a workspace selected clicks the tab strip's + control and selects a supported new terminal or chat view
+- **THEN** the labeled menu opens by click and the new view opens in a new tab with the applicable project, workspace, and host inherited.
+
+#### Scenario: No tab is open
+- **WHEN** the user has closed every tab
+- **THEN** the central area shows a short empty state with a prominent New terminal action and its shortcut, the tab strip's + control still offers the labeled choices, and no empty pane is shown.
 
 #### Scenario: Launcher is used without hovering
-- **WHEN** a user clicks a tab group's + control without first hovering over it
+- **WHEN** a user clicks the tab strip's + control without first hovering over it
 - **THEN** the same labeled choices are available without requiring a hover-only submenu or discovery step.
 
 ### Requirement: Opening an existing item focuses it by default
-Kumiko SHALL focus an already-open item rather than create another view of the same item by default, including when it is in another tab group. This focus operation MUST NOT launch duplicate sessions or processes.
+Kumiko SHALL focus an already-open item rather than create another view of the same item by default, including when it is in a pane of another tab. This focus operation MUST NOT launch duplicate sessions or processes.
 
 #### Scenario: Reopen an existing task
-- **WHEN** a user selects a task already open in another central tab group
+- **WHEN** a user selects a task already open in a pane of another central tab
 - **THEN** Kumiko focuses that task's existing view by default.
 
 #### Scenario: Select a running session again
-- **WHEN** a user selects a chat or terminal session already represented by an open tab
+- **WHEN** a user selects a chat or terminal session already represented by an open pane
 - **THEN** Kumiko focuses the existing session view without launching another agent or terminal process.
 
 ### Requirement: Direct project navigation restores its personal working set
@@ -515,7 +523,7 @@ Kumiko SHALL allow the left and right sidebars to collapse completely and indepe
 Kumiko's first functional release SHALL exclude embedded browser and mobile emulator views from the workbench and launcher, including disabled or coming-soon launch choices. Neither surface SHALL be required for supported working views or terminal-native development tools.
 
 #### Scenario: Use the release launcher for supported work
-- **WHEN** a user opens the first release's tab-group launcher
+- **WHEN** a user opens the first release's tab-strip launcher
 - **THEN** its supported view choices provide workbench access without requiring a browser or mobile emulator surface.
 
 #### Scenario: Look for an excluded view type

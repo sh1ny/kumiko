@@ -10,7 +10,7 @@ The user SHALL be able to open a local directory as a workspace in Personal thro
 
 #### Scenario: Open a checkout
 - **WHEN** the user chooses Open folder and picks an existing directory
-- **THEN** the sidebar lists a new workspace with the directory's folder name and canonical path, and the focused group's context becomes that workspace
+- **THEN** the sidebar lists a new workspace with the directory's folder name and canonical path, and that workspace becomes the sidebar selection, so new tabs bind to it
 
 #### Scenario: Directory is not a repository
 - **WHEN** the picked directory has no version control metadata
@@ -47,11 +47,11 @@ When the picked path cannot be resolved as a directory, does not answer within t
 - **THEN** the open is refused with the limit stated and no workspace is added
 
 ### Requirement: Saved workspaces are checked again on every start
-At each load the host SHALL resolve every saved workspace again. A workspace whose path no longer resolves to a directory, or does not answer within the resolution timeout, SHALL be shown as *unavailable* with the reason, and kept with its tabs. It SHALL show as available again once a later check resolves it.
+At each load the host SHALL resolve every saved workspace again. A workspace whose path no longer resolves to a directory, or does not answer within the resolution timeout, SHALL be shown as *unavailable* with the reason, and kept with the views bound to it. It SHALL show as available again once a later check resolves it.
 
 #### Scenario: Directory missing at reopen
 - **WHEN** workspace A's directory was moved away while Kumiko was closed and the app reopens
-- **THEN** the sidebar shows A as unavailable with its path, its tabs are restored in place, and other workspaces are available
+- **THEN** the sidebar shows A as unavailable with its path, the panes bound to A are restored in place, and other workspaces are available
 
 #### Scenario: Older check finishes after a newer one
 - **WHEN** a startup check of workspace A is slow, the user chooses Check again on A, the second check finishes first, and the first finishes afterwards with a different result
@@ -63,7 +63,7 @@ At each load the host SHALL resolve every saved workspace again. A workspace who
 
 #### Scenario: Directory back
 - **WHEN** the missing directory of workspace A is restored and the user chooses Check again on A
-- **THEN** A shows as available and its tabs show the workspace overview again
+- **THEN** A shows as available and its Workspace overview panes show the workspace overview again
 
 ### Requirement: Cleanup-unresolved state is shown on the workspace
 A workspace whose directory is under *cleanup unresolved* (see `host-process-cleanup`) SHALL show that state in the sidebar and in its Workspace overview, linking to the cleanup list. The state SHALL clear when the cleanup is retried successfully or confirmed.
@@ -80,21 +80,21 @@ A workspace whose directory is under *cleanup unresolved* (see `host-process-cle
 - **WHEN** the user confirms the processes of workspace A's directory are gone
 - **THEN** the *cleanup unresolved* state on workspace A is cleared without restarting the app
 
-### Requirement: A workspace without open tabs can be removed
-The user SHALL be able to remove a workspace from Personal when no tab is bound to it. Removal SHALL delete only Kumiko's workspace record, never the directory or its files. A workspace that still has bound tabs SHALL NOT be removable until those tabs are closed.
+### Requirement: A workspace without bound views can be removed
+The user SHALL be able to remove a workspace from Personal when no view is bound to it. Removal SHALL delete only Kumiko's workspace record, never the directory or its files. A workspace that still has bound views SHALL NOT be removable until the panes holding them are closed.
 
 #### Scenario: Remove an unused workspace
-- **WHEN** the user removes workspace C, which has no open tab
+- **WHEN** the user removes workspace C, which has no open pane bound to it
 - **THEN** C is no longer listed after the change and after a reopen, and its directory and files are unchanged
 
-#### Scenario: Removed workspace was a group's context
-- **WHEN** workspace C is the context of a tab group with no tabs, and the user removes C
-- **THEN** that group has no workspace context, its launcher offers Open folder for views that need a workspace, and after a reopen no group refers to C
+#### Scenario: Removed workspace was the sidebar selection
+- **WHEN** workspace C is the sidebar selection, no view is bound to it, and the user removes C
+- **THEN** Personal becomes the selection, the launcher offers Open folder for views that need a workspace, and after a reopen the layout does not refer to C
 
 #### Scenario: Removal during a check
 - **WHEN** the user removes workspace C while a check of C is still running
 - **THEN** C stays removed, and the check's result is not shown
 
-#### Scenario: Workspace still has tabs
-- **WHEN** the user tries to remove workspace A while a tab is bound to it
-- **THEN** A is not removed, and the action states that A's tabs must be closed first
+#### Scenario: Workspace still has bound panes
+- **WHEN** the user tries to remove workspace A while a pane is bound to it
+- **THEN** A is not removed, and the action states that the panes bound to A must be closed first

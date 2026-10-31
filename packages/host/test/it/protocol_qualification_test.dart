@@ -356,16 +356,16 @@ void main() {
     expect((await stats()).queuedBytes, lessThanOrEqualTo(_window));
   });
 
-  test('33rd open refused with channel-cap; total buffering ≤ 8 MiB', () async {
+  test('open past maxChannels refused with channel-cap; total buffering ≤ 40 MiB', () async {
     final r = rig = await Rig.start(profile);
     final channels = [
       for (var i = 0; i < maxChannels; i++) await r.open(paused: true),
     ];
     await expectStallAt(r, channels, _window);
     expect(r.wire.totalSent, maxChannels * _window);
-    expect(r.wire.totalSent, lessThanOrEqualTo(8 * 1024 * 1024));
+    expect(r.wire.totalSent, lessThanOrEqualTo(40 * 1024 * 1024));
 
-    // The 33rd is refused, the host starts nothing for it, and the
+    // The open past the cap is refused, the host starts nothing for it, and the
     // connection and the other channels are unaffected.
     expect(
       await failureReason(
@@ -378,12 +378,12 @@ void main() {
     );
     await r.control();
     await Future<void>.delayed(const Duration(milliseconds: 300));
-    expect(r.wire.sent.length, maxChannels, reason: 'no 33rd channel streamed');
+    expect(r.wire.sent.length, maxChannels, reason: 'no channel past the cap streamed');
     expect(r.wire.totalSent, maxChannels * _window);
     expect(r.connection.isClosed, isFalse);
 
     // Closing one frees a slot; the replacement stalls at its own window, and
-    // the open channels together still hold at most 8 MiB.
+    // the open channels together still hold at most 40 MiB.
     final gone = channels.removeLast();
     await gone.subscription.cancel();
     Consumer? replacement;
@@ -404,7 +404,7 @@ void main() {
     await Future<void>.delayed(const Duration(milliseconds: 600));
     final held = channels.fold<int>(0, (a, c) => a + r.wire.outstanding(c.id));
     expect(held, maxChannels * _window);
-    expect(held, lessThanOrEqualTo(8 * 1024 * 1024));
+    expect(held, lessThanOrEqualTo(40 * 1024 * 1024));
     for (final c in channels) {
       expect(
         r.wire.peak[c.id],

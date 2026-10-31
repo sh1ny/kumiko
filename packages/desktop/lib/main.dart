@@ -10,6 +10,8 @@ import 'src/host_link.dart';
 import 'src/host_location.dart';
 import 'src/host_status_page.dart';
 import 'src/launcher_link.dart';
+import 'src/terminal/alacritty_surface.dart';
+import 'src/terminal/terminal_surface.dart';
 import 'src/workbench_controller.dart';
 import 'src/workbench_page.dart';
 
@@ -17,29 +19,46 @@ import 'src/workbench_page.dart';
 /// host path.
 const String _hostOverride = String.fromEnvironment('KUMIKO_HOST');
 
-void main() {
+Future<void> main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+  // Without the engine the app still runs; terminals are disabled.
+  TerminalSurfaceFactory? surfaceFactory;
+  try {
+    await AlacrittySurface.init();
+    surfaceFactory = AlacrittySurface.new;
+  } on Object catch (e) {
+    debugPrint('The terminal engine did not load: $e');
+  }
   final os = HostOs.current;
   final hostPath = resolveHostExecutable(
     override: _hostOverride,
     appExecutable: Platform.resolvedExecutable,
     os: os,
   );
-  final home =
-      Platform.environment[os == HostOs.windows ? 'USERPROFILE' : 'HOME'] ?? '';
-  final launcher = HostLauncher(
-    executable: hostPath,
-    profileDir: defaultProfileDir(
-      os: os,
-      env: Platform.environment,
-      home: home,
-    ),
-    capabilities: const {Capability.workbench},
+  final homeVariable = os == HostOs.windows ? 'USERPROFILE' : 'HOME';
+  final profileDir = defaultProfileDir(
+    os: os,
+    env: Platform.environment,
+    home: Platform.environment[homeVariable] ?? '',
   );
+  final connector = profileDir == null
+      ? noProfileDirConnector(homeVariable)
+      : launcherConnector(
+          HostLauncher(
+            executable: hostPath,
+            profileDir: profileDir,
+            capabilities: {
+              Capability.workbench,
+              if (surfaceFactory != null) Capability.terminal,
+            },
+          ),
+        );
   runApp(
     KumikoApp(
-      connector: launcherConnector(launcher),
+      connector: connector,
       hostPath: hostPath,
       onExit: () => exit(0),
+      surfaceFactory: surfaceFactory,
     ),
   );
 }
@@ -52,12 +71,16 @@ class KumikoApp extends StatefulWidget {
     required this.hostPath,
     required this.onExit,
     this.folderPicker = const FileSelectorFolderPicker(),
+    this.surfaceFactory,
   });
 
   final HostConnector connector;
   final String hostPath;
   final VoidCallback onExit;
   final FolderPicker folderPicker;
+
+  /// Makes a terminal's surface; null when the engine is not available.
+  final TerminalSurfaceFactory? surfaceFactory;
 
   @override
   State<KumikoApp> createState() => _KumikoAppState();
@@ -70,6 +93,7 @@ class _KumikoAppState extends State<KumikoApp> {
   );
   late final WorkbenchController _workbench = WorkbenchController(
     picker: widget.folderPicker,
+    surfaceFactory: widget.surfaceFactory,
   );
   late final AppLifecycleListener _lifecycle;
   HostLink? _attached;

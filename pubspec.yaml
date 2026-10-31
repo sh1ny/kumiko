@@ -12,6 +12,15 @@ workspace:
   - packages/host
   - packages/desktop
 
+# The terminal engine's native crate, built from the vendored, patched
+# Alacritty core (ADR 0010; third_party/alacritty_terminal/KUMIKO.md), and
+# its Dart package with a patched painter (third_party/flutter_alacritty).
+dependency_overrides:
+  flutter_alacritty:
+    path: third_party/flutter_alacritty
+  rust_lib_flutter_alacritty:
+    path: third_party/rust_lib_flutter_alacritty
+
 dev_dependencies:
   lints: ^6.0.0
   path: ^1.9.1

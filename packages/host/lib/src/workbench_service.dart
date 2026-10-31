@@ -64,15 +64,18 @@ class WorkbenchService {
   );
 
   /// Returns at once with every workspace *checking*; the checks run on and
-  /// each ends in a `workspace/changed`. A group context naming a workspace
-  /// that no longer exists is dropped from the returned layout; the stored
-  /// document is left as it is (the next save replaces it).
+  /// each ends in a `workspace/changed`. A sidebar selection naming a
+  /// workspace that no longer exists is dropped from the returned layout; the
+  /// stored document is left as it is (the next save replaces it). Only format
+  /// 2 is decoded; anything else is a restore error.
   WorkbenchLoadResult load() {
     final stored = _personal();
     final decoded = _decodeStored(stored.layout);
     var layout = decoded.layout;
     if (layout != null) {
-      layout = layout.repairContexts({for (final w in workspaces.rows()) w.id});
+      layout = layout.repairSelection({
+        for (final w in workspaces.rows()) w.id,
+      });
     }
     return WorkbenchLoadResult(
       layout: layout == null ? null : layoutToJson(layout),
@@ -99,7 +102,7 @@ class WorkbenchService {
     if (unknown.isNotEmpty) {
       throw RpcException(
         ErrorCode.layoutInvalid,
-        'unknown-workspace: a tab is bound to ${unknown.first}',
+        'unknown-workspace: a pane is bound to ${unknown.first}',
         {'detail': ErrorCode.unknownWorkspace, 'workspace': unknown.first},
       );
     }
@@ -125,11 +128,12 @@ class WorkbenchService {
     return WorkbenchSaveResult(params.revision);
   }
 
-  /// Removes workspace [id] unless a tab of the stored layout is bound to it.
-  /// When a valid layout is stored, its contexts naming [id] are cleared and
-  /// the result is stored at the next revision, in the same transaction as
-  /// the row deletion. A missing or undecodable layout is left as it is and
-  /// the revision stays. Returns the layout revision.
+  /// Removes workspace [id] unless a pane of the stored layout is bound to
+  /// it. When a valid layout is stored whose sidebar selection names [id],
+  /// the selection is cleared and the result stored at the next revision, in
+  /// the same transaction as the row deletion. Otherwise, and for a missing
+  /// or undecodable layout, the stored layout and revision stay. Returns the
+  /// layout revision.
   WorkspaceRemoveResult removeWorkspace(String id) {
     workspaces.requireRow(id);
     final revision = ledger.inTransaction(() {
@@ -140,11 +144,13 @@ class WorkbenchService {
         if (layout.boundWorkspaces.contains(id)) {
           throw RpcException(
             ErrorCode.workspaceInUse,
-            'a tab is bound to this workspace',
+            'a pane is bound to this workspace',
           );
         }
-        revision = stored.revision + 1;
-        _write(encodeLayout(layout.clearContext(id)), revision);
+        if (layout.selectedWorkspace == id) {
+          revision = stored.revision + 1;
+          _write(encodeLayout(layout.clearSelection(id)), revision);
+        }
       }
       workspaces.deleteRow(id);
       return revision;

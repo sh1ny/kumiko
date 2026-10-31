@@ -1,776 +1,1395 @@
 import 'dart:convert';
+import 'dart:math';
 
 import 'package:domain/domain.dart';
 import 'package:test/test.dart';
 
-LayoutDocument ok(LayoutResult r) =>
-    r.document ?? (throw StateError('refused: ${r.refusal}'));
+typedef Json = Map<String, Object?>;
 
-LayoutDocument open(
-  LayoutDocument d,
-  String group,
-  String tabId, {
+// ---- format 2 JSON builders (the codec tests use raw documents) ----
+
+Json paneJson(
+  String id, {
   String kind = 'terminal',
+  String? workspace,
   String? item,
-  bool needs = false,
-}) => ok(
-  d.openOrFocus(
-    group,
-    kind,
-    item ?? tabId,
-    needsWorkspace: needs,
-    newTabId: tabId,
-  ),
-);
-
-Map<String, String?> bindings(LayoutDocument d) => {
-  for (final t in d.tabs) t.id: t.workspace,
+  Json state = const {},
+}) => {
+  'type': 'pane',
+  'id': id,
+  'kind': kind,
+  'workspace': workspace,
+  'item': item ?? id,
+  'state': state,
 };
 
-String enc(LayoutDocument d) => encodeLayout(d);
+Json splitJson(
+  String id,
+  Json first,
+  Json second, {
+  String direction = 'horizontal',
+  double ratio = 0.5,
+}) => {
+  'type': 'split',
+  'id': id,
+  'direction': direction,
+  'ratio': ratio,
+  'first': first,
+  'second': second,
+};
 
-/// Grows a document to [n] groups by repeatedly splitting `g1`.
-LayoutDocument withGroups(int n) {
-  var d = LayoutDocument.initial('g1');
-  for (var i = 2; i <= n; i++) {
-    d = ok(d.split('g1', SplitDirection.horizontal, 'g$i', 's$i'));
+Json tabJson(String id, Json root, String focused) => {
+  'id': id,
+  'focusedPane': focused,
+  'root': root,
+};
+
+Json docJson({
+  List<Json> tabs = const [],
+  String? activeTab,
+  List<String> recent = const [],
+  bool collapsed = false,
+  String? selected,
+}) => {
+  'format': 2,
+  'tabs': tabs,
+  'activeTab': activeTab,
+  'recent': recent,
+  'sidebar': {'collapsed': collapsed, 'selected': selected},
+};
+
+/// A tab of [n] panes `<prefix>0..`, chained by splits.
+Json chainTab(String tab, String prefix, int n) {
+  var root = paneJson('${prefix}0');
+  for (var i = 1; i < n; i++) {
+    root = splitJson('${prefix}s$i', root, paneJson('$prefix$i'));
   }
-  return d;
+  return tabJson(tab, root, '${prefix}0');
 }
 
-Map<String, Object?> baseJson() {
-  var d = LayoutDocument.initial('g1');
-  d = ok(d.setGroupContext('g1', 'w1'));
-  d = open(d, 'g1', 't1', kind: 'editor', item: 'file:a');
-  return jsonDecode(enc(d)) as Map<String, Object?>;
-}
+/// A valid one-tab document to mutate.
+Json base() => docJson(
+  tabs: [
+    tabJson(
+      't1',
+      splitJson(
+        's1',
+        paneJson('p1', workspace: 'w1'),
+        paneJson('p2', kind: 'workspace-overview', workspace: 'w1'),
+      ),
+      'p2',
+    ),
+  ],
+  activeTab: 't1',
+  recent: ['p2', 'p1'],
+  selected: 'w1',
+);
 
-Map<String, Object?> firstGroup(Map<String, Object?> doc) =>
-    doc['root'] as Map<String, Object?>;
+Json rootOf(Json doc, [int tab = 0]) =>
+    (doc['tabs']! as List)[tab].cast<String, Object?>()['root']! as Json;
 
-Map<String, Object?> firstTab(Map<String, Object?> doc) =>
-    (firstGroup(doc)['tabs'] as List).first as Map<String, Object?>;
-
-void expectInvalid(Object? json, [Pattern? reason]) {
+void expectInvalid(Object? json, Pattern reason) {
   expect(
     () => layoutFromJson(json),
     throwsA(
-      isA<LayoutInvalid>().having(
-        (e) => e.reason,
-        'reason',
-        reason == null ? isNotEmpty : contains(reason),
-      ),
+      isA<LayoutInvalid>().having((e) => e.reason, 'reason', contains(reason)),
     ),
   );
 }
 
+void expectRoundTrip(Json json) {
+  final decoded = layoutFromJson(json);
+  expect(jsonDecode(encodeLayout(decoded)), json);
+  expect(jsonDecode(encodeLayout(decodeLayout(jsonEncode(json)))), json);
+}
+
+// ---- operations ----
+
+/// Kinds every operation is run over: a terminal, a Workspace overview and a
+/// kind this build knows nothing about.
+const kinds = ['terminal', 'workspace-overview', 'mystery-kind'];
+
+LayoutDocument ok(LayoutResult r) =>
+    r.document ?? (throw StateError('refused: ${r.refusal}'));
+
+PaneNode view(
+  String id, {
+  String kind = 'terminal',
+  String? workspace,
+  String? item,
+  Map<String, Object?> state = const {},
+}) => PaneNode(
+  id: id,
+  kind: kind,
+  workspace: workspace,
+  item: item ?? id,
+  state: state,
+);
+
+LayoutDocument addTab(
+  LayoutDocument d,
+  String tab,
+  String pane, {
+  String kind = 'terminal',
+  String? workspace,
+}) => ok(
+  d.openTab(
+    view(pane, kind: kind, workspace: workspace),
+    tabId: tab,
+  ),
+);
+
+LayoutDocument split(
+  LayoutDocument d,
+  String pane,
+  String newPane, {
+  String? splitId,
+  String kind = 'terminal',
+  SplitDirection direction = SplitDirection.horizontal,
+  String? workspace,
+}) => ok(
+  d.splitPane(
+    pane,
+    direction,
+    view(newPane, kind: kind, workspace: workspace),
+    splitId: splitId ?? 's_$newPane',
+  ),
+);
+
+List<String> tabIds(LayoutDocument d) => [for (final t in d.tabs) t.id];
+
+List<String> paneIds(LayoutNode n) => [for (final p in n.panes) p.id];
+
+/// A tab `t1` holding A beside (B above C), all of [kind], with A focused.
+/// recent: A, C, B.
+LayoutDocument abc({String kind = 'terminal'}) {
+  var d = addTab(const LayoutDocument.initial(), 't1', 'A', kind: kind);
+  d = split(d, 'A', 'B', kind: kind, splitId: 's1');
+  d = split(
+    d,
+    'B',
+    'C',
+    kind: kind,
+    splitId: 's2',
+    direction: SplitDirection.vertical,
+  );
+  return ok(d.focusPane('A'));
+}
+
+/// Three one-pane tabs t1..t3 (panes p1..p3), the middle one active.
+LayoutDocument threeTabs({String kind = 'terminal'}) {
+  var d = const LayoutDocument.initial();
+  for (var i = 1; i <= 3; i++) {
+    d = addTab(d, 't$i', 'p$i', kind: kind);
+  }
+  return ok(d.activateTab('t2'));
+}
+
+/// [tabs] tabs of [panes] panes each, tab `t<i>` with panes `t<i>p<j>`.
+LayoutDocument grid(int tabs, int panes) => layoutFromJson(
+  docJson(
+    tabs: [for (var i = 0; i < tabs; i++) chainTab('t$i', 't${i}p', panes)],
+    activeTab: tabs == 0 ? null : 't0',
+  ),
+);
+
+Map<String, String?> bindings(LayoutDocument d) => {
+  for (final p in d.panes) p.id: p.workspace,
+};
+
+String enc(LayoutDocument d) => encodeLayout(d);
+
+/// Checks [d] against the validator through its own JSON, and the bounds.
+void expectValid(LayoutDocument d, [String? after]) {
+  final reason = after == null ? '' : 'after $after';
+  final back = layoutFromJson(jsonDecode(enc(d)));
+  expect(enc(back), enc(d), reason: reason);
+  expect(d.tabCount, lessThanOrEqualTo(d.paneCount), reason: reason);
+  expect(d.paneCount, lessThanOrEqualTo(maxPanes), reason: reason);
+}
+
+/// Applies random operations over panes of every kind and checks, after each,
+/// that no binding or unknown-kind pane changed and the result is valid.
+void _randomWalk(int seed) {
+  final rnd = Random(seed);
+  var d = const LayoutDocument.initial();
+  var n = 0;
+  String fresh(String prefix) => '$prefix${n++}';
+  T pick<T>(List<T> xs) => xs[rnd.nextInt(xs.length)];
+  PaneNode newView() => PaneNode(
+    id: fresh('p'),
+    kind: pick(kinds),
+    workspace: pick(<String?>[null, 'w1', 'w2']),
+    item: rnd.nextBool() ? fresh('i') : null,
+    state: {
+      'n': rnd.nextInt(100),
+      'deep': {
+        'k': [1, 2],
+      },
+    },
+  );
+  final bound = <String, String?>{};
+  final unknownJson = <String, String>{};
+
+  for (var step = 0; step < 250; step++) {
+    final op = rnd.nextInt(18);
+    final tabs = d.tabs;
+    final panes = d.panes;
+    final needsPane = op >= 5 && op <= 13;
+    LayoutResult? r;
+    LayoutDocument? direct;
+    if (panes.isEmpty && needsPane || op <= 2) {
+      r = d.openTab(newView(), tabId: fresh('t'));
+    } else if (op <= 4) {
+      final existing = panes.isEmpty ? null : pick(panes);
+      final v = existing != null && rnd.nextBool()
+          ? PaneNode(
+              id: fresh('p'),
+              kind: existing.kind,
+              workspace: existing.workspace,
+              item: existing.item,
+            )
+          : newView();
+      r = d.openOrFocus(v, tabId: fresh('t'));
+    } else if (op <= 7) {
+      r = d.splitPane(
+        pick(panes).id,
+        pick(SplitDirection.values),
+        newView(),
+        splitId: fresh('s'),
+      );
+    } else if (op == 8) {
+      r = d.closePane(pick(panes).id);
+    } else if (op == 9) {
+      r = d.closeTab(pick(tabs).id);
+    } else if (op == 10) {
+      r = d.movePaneToNewTab(pick(panes).id, newTabId: fresh('t'));
+    } else if (op == 11) {
+      r = d.moveTabIntoSplit(
+        pick(tabs).id,
+        pick(SplitDirection.values),
+        splitId: fresh('s'),
+      );
+    } else if (op == 12) {
+      r = d.focusPane(pick(panes).id);
+    } else if (op == 13) {
+      r = d.activateTab(pick(tabs).id);
+    } else if (op == 14) {
+      final id = d.splitNode(pick(['s0', 's1', 's2', 's3', 's4']));
+      r = id == null
+          ? d.setRatio('missing', 0.5)
+          : d.setRatio(id.id, rnd.nextDouble());
+    } else if (op == 15) {
+      direct = d.selectWorkspace(pick(['w1', 'w2', 'w3']));
+    } else if (op == 16) {
+      direct = d.clearSelection(pick(['w1', 'w2']));
+    } else {
+      direct = d.repairSelection({'w1'});
+    }
+
+    final next = direct ?? r!.document ?? d;
+    if (r != null && !r.isOk) {
+      expect(next, same(d), reason: 'a refusal changes nothing');
+    }
+    for (final p in next.panes) {
+      if (bound.containsKey(p.id)) {
+        expect(p.workspace, bound[p.id], reason: 'binding of ${p.id}');
+      } else {
+        bound[p.id] = p.workspace;
+      }
+      if (p.kind == 'mystery-kind') {
+        final mine = jsonEncode({
+          'kind': p.kind,
+          'workspace': p.workspace,
+          'item': p.item,
+          'state': p.state,
+        });
+        expect(unknownJson.putIfAbsent(p.id, () => mine), mine);
+      }
+    }
+    expectValid(next, 'seed $seed step $step op $op');
+    d = next;
+  }
+}
+
 void main() {
-  group('split', () {
-    test('creates a focused empty group beside it with the same context', () {
-      var d = ok(LayoutDocument.initial('g1').setGroupContext('g1', 'w1'));
-      d = ok(d.split('g1', SplitDirection.vertical, 'g2', 's1'));
-      expect(d.groupCount, 2);
-      final root = d.root as SplitNode;
-      expect(root.direction, SplitDirection.vertical);
-      expect(root.ratio, 0.5);
-      expect(d.focusedGroup, 'g2');
-      expect(d.group('g2')!.context, 'w1');
-      expect(d.group('g2')!.tabs, isEmpty);
-    });
-
-    test('split refused at 16 groups', () {
-      final d = withGroups(16);
-      expect(d.groupCount, 16);
-      final r = d.split('g1', SplitDirection.horizontal, 'g17', 's17');
-      expect(r.document, isNull);
-      expect(r.refusal, LayoutRefusal.groupLimit);
-      expect(enc(d), enc(withGroups(16)));
-    });
-
-    test('unknown group is refused', () {
-      final r = LayoutDocument.initial(
-        'g1',
-      ).split('nope', SplitDirection.horizontal, 'g2', 's1');
-      expect(r.refusal, LayoutRefusal.unknownGroup);
-    });
-  });
-
-  group('move and close', () {
-    LayoutDocument twoGroups() {
-      var d = ok(LayoutDocument.initial('g1').setGroupContext('g1', 'w1'));
-      d = open(d, 'g1', 't1');
-      d = open(d, 'g1', 't2');
-      d = ok(d.split('g1', SplitDirection.horizontal, 'g2', 's1'));
-      return ok(d.setGroupContext('g2', 'w2'));
-    }
-
-    test('move keeps tab id and workspace binding', () {
-      final d = twoGroups();
-      final before = bindings(d);
-      final moved = ok(d.moveTab('t1', 'g2'));
-      expect(bindings(moved), before);
-      expect(moved.group('g2')!.tabs.map((t) => t.id), ['t1']);
-      expect(moved.group('g2')!.active, 't1');
-      expect(moved.group('g1')!.tabs.map((t) => t.id), ['t2']);
-      expect(moved.group('g1')!.active, 't2');
-      expect(moved.tab('t1')!.workspace, 'w1');
-      expect(moved.focusedGroup, 'g2');
-      expect(moved.recent.first, 't1');
-    });
-
-    test('moving the only tab out removes the emptied group', () {
-      var d = LayoutDocument.initial('g1');
-      d = open(d, 'g1', 't1');
-      d = ok(d.split('g1', SplitDirection.horizontal, 'g2', 's1'));
-      d = ok(d.moveTab('t1', 'g2'));
-      expect(d.groupCount, 1);
-      expect(d.root, isA<TabGroup>());
-      expect(d.focusedGroup, 'g2');
-    });
-
-    test('closing the last tab of a split group removes the group and its '
-        'split', () {
-      var d = LayoutDocument.initial('g1');
-      d = open(d, 'g1', 't1');
-      d = ok(d.split('g1', SplitDirection.horizontal, 'g2', 's1'));
-      d = open(d, 'g2', 't2');
-      d = ok(d.closeTab('t2'));
-      expect(d.groupCount, 1);
-      expect(d.root, isA<TabGroup>());
-      expect((d.root as TabGroup).id, 'g1');
-      expect(d.focusedGroup, 'g1');
-      expect(d.recent, ['t1']);
-    });
-
-    test('closing the last tab of the only group keeps the group', () {
-      var d = open(LayoutDocument.initial('g1'), 'g1', 't1');
-      d = ok(d.closeTab('t1'));
-      expect(d.groupCount, 1);
-      expect(d.group('g1')!.active, isNull);
-    });
-
-    /// g1 holds t1 bound to w1 and t2 bound to w2; t2 is active, context w2.
-    LayoutDocument mixedBindings() {
-      var d = ok(LayoutDocument.initial('g1').setGroupContext('g1', 'w1'));
-      d = open(d, 'g1', 't1', needs: true);
-      d = ok(d.setGroupContext('g1', 'w2'));
-      d = open(d, 'g1', 't2', needs: true);
-      expect(d.tab('t1')!.workspace, 'w1');
-      expect(d.tab('t2')!.workspace, 'w2');
-      expect(d.group('g1')!.active, 't2');
-      expect(d.group('g1')!.context, 'w2');
-      return d;
-    }
-
-    test('closing the active tab takes the context of the next active', () {
-      final d = ok(mixedBindings().closeTab('t2'));
-      expect(d.group('g1')!.active, 't1');
-      expect(d.group('g1')!.context, 'w1');
-    });
-
-    test('moving the active tab away gives the source the context of its '
-        'next active', () {
-      var d = ok(mixedBindings().split(
-        'g1',
-        SplitDirection.horizontal,
-        'g2',
-        's1',
-      ));
-      d = ok(d.moveTab('t2', 'g2'));
-      expect(d.group('g1')!.active, 't1');
-      expect(d.group('g1')!.context, 'w1');
-      expect(d.group('g2')!.context, 'w2');
-    });
-
-    test('an unbound next active tab keeps the context', () {
-      var d = open(LayoutDocument.initial('g1'), 'g1', 't1');
-      d = ok(d.setGroupContext('g1', 'w1'));
-      d = open(d, 'g1', 't2', needs: true);
-      d = ok(d.closeTab('t2'));
-      expect(d.tab('t1')!.workspace, isNull);
-      expect(d.group('g1')!.context, 'w1');
-    });
-
-    test('closing the active tab activates the most recent remaining', () {
-      var d = open(LayoutDocument.initial('g1'), 'g1', 't1');
-      d = open(d, 'g1', 't2');
-      d = open(d, 'g1', 't3');
-      d = ok(d.activateTab('t1'));
-      d = ok(d.activateTab('t3'));
-      d = ok(d.closeTab('t3'));
-      expect(d.group('g1')!.active, 't1');
-      expect(d.recent, ['t1', 't2']);
-    });
-
-    test('unknown tab is refused', () {
-      expect(
-        LayoutDocument.initial('g1').closeTab('x').refusal,
-        LayoutRefusal.unknownTab,
-      );
-      expect(
-        LayoutDocument.initial('g1').moveTab('x', 'g1').refusal,
-        LayoutRefusal.unknownTab,
-      );
-    });
-  });
-
-  group('open or focus', () {
-    test('binds to the group context and focuses the group', () {
-      var d = ok(LayoutDocument.initial('g1').setGroupContext('g1', 'w1'));
-      d = open(d, 'g1', 't1', needs: true);
-      expect(d.tab('t1')!.workspace, 'w1');
-      expect(d.group('g1')!.active, 't1');
-      expect(d.focusedGroup, 'g1');
-      expect(d.recent, ['t1']);
-    });
-
-    test('a kind needing a workspace is refused in a group without one', () {
-      final d = LayoutDocument.initial('g1');
-      final r = d.openOrFocus(
-        'g1',
-        'editor',
-        'a',
-        needsWorkspace: true,
-        newTabId: 't1',
-      );
-      expect(r.refusal, LayoutRefusal.needsWorkspace);
-      expect(d.tabCount, 0);
-    });
-
-    test('a kind not needing a workspace opens unbound', () {
-      final d = open(LayoutDocument.initial('g1'), 'g1', 't1');
-      expect(d.tab('t1')!.workspace, isNull);
-    });
-
-    test('open refused at 128 tabs', () {
-      var d = ok(LayoutDocument.initial('g1').setGroupContext('g1', 'w1'));
-      for (var i = 0; i < 128; i++) {
-        d = open(d, 'g1', 't$i');
-      }
-      expect(d.tabCount, 128);
-      final r = d.openOrFocus(
-        'g1',
-        'terminal',
-        'extra',
-        needsWorkspace: false,
-        newTabId: 'tx',
-      );
-      expect(r.refusal, LayoutRefusal.tabLimit);
-      expect(r.document, isNull);
-    });
-
-    test('open-or-focus focuses the existing item tab in another group', () {
-      var d = ok(LayoutDocument.initial('g1').setGroupContext('g1', 'w1'));
-      d = open(d, 'g1', 't1', kind: 'editor', item: 'file:a');
-      d = ok(d.split('g1', SplitDirection.horizontal, 'g2', 's1'));
-      expect(d.focusedGroup, 'g2');
-      final r = d.openOrFocus(
-        'g2',
-        'editor',
-        'file:a',
-        needsWorkspace: true,
-        newTabId: 'tNew',
-      );
-      final after = ok(r);
-      expect(r.tabId, 't1');
-      expect(after.tabCount, 1);
-      expect(after.focusedGroup, 'g1');
-      expect(after.group('g1')!.active, 't1');
-    });
-
-    test('focusing an existing tab still works at the tab limit', () {
-      var d = ok(LayoutDocument.initial('g1').setGroupContext('g1', 'w1'));
-      for (var i = 0; i < 128; i++) {
-        d = open(d, 'g1', 't$i');
-      }
-      final r = d.openOrFocus(
-        'g1',
-        'terminal',
-        't5',
-        needsWorkspace: false,
-        newTabId: 'tx',
-      );
-      expect(r.tabId, 't5');
-      expect(ok(r).recent.first, 't5');
-    });
-
-    test('open-or-focus after close creates a tab in the launcher\'s group', () {
-      var d = ok(LayoutDocument.initial('g1').setGroupContext('g1', 'w1'));
-      d = open(d, 'g1', 't1', kind: 'editor', item: 'file:a');
-      d = ok(d.split('g1', SplitDirection.horizontal, 'g2', 's1'));
-      d = ok(d.closeTab('t1'));
-      d = ok(
-        d.openOrFocus(
-          'g2',
-          'editor',
-          'file:a',
-          needsWorkspace: true,
-          newTabId: 't2',
+  group('format 2 codec', () {
+    test('round-trips a document with a one-pane tab', () {
+      expectRoundTrip(
+        docJson(
+          tabs: [
+            tabJson(
+              't1',
+              paneJson(
+                'p1',
+                workspace: 'w1',
+                item: '0b6b7d8e-2f5a-4c1e-9d3a-6f1b2c3d4e5f',
+                state: {'profileId': 'builtin:bash', 'profileName': 'bash'},
+              ),
+              'p1',
+            ),
+          ],
+          activeTab: 't1',
+          recent: ['p1'],
+          selected: 'w1',
         ),
       );
-      expect(d.tabCount, 1);
-      expect(d.groupOf('t2')!.id, 'g2');
-      expect(d.focusedGroup, 'g2');
     });
 
+    test('round-trips a split tab: a terminal beside an overview', () {
+      expectRoundTrip(base());
+    });
+
+    test('round-trips an empty document and the sidebar state', () {
+      expectRoundTrip(docJson());
+      expectRoundTrip(docJson(collapsed: true, selected: 'w9'));
+      final d = layoutFromJson(docJson(collapsed: true, selected: 'w9'));
+      expect(d.sidebarCollapsed, isTrue);
+      expect(d.selectedWorkspace, 'w9');
+      expect(d.activeTab, isNull);
+      expect(d.tabs, isEmpty);
+    });
+
+    test('an unknown-kind pane round-trips unchanged', () {
+      final unknown = paneJson(
+        'p2',
+        kind: 'chat-over-acp',
+        workspace: 'w1',
+        item: 'session:7',
+        state: {
+          'nested': [
+            1,
+            {'a': null, 'b': 'x'},
+            true,
+          ],
+          'n': 2.5,
+        },
+      );
+      final json = docJson(
+        tabs: [tabJson('t1', splitJson('s1', paneJson('p1'), unknown), 'p1')],
+        activeTab: 't1',
+        recent: ['p1'],
+      );
+      expectRoundTrip(json);
+      final pane = layoutFromJson(json).pane('p2')!;
+      expect(pane.kind, 'chat-over-acp');
+      expect(pane.state['nested'], isA<List<Object?>>());
+    });
+
+    test('a stored terminal pane loads with its binding and state', () {
+      final d = layoutFromJson(
+        docJson(
+          tabs: [
+            tabJson(
+              't1',
+              paneJson(
+                'p1',
+                workspace: 'w1',
+                item: 'uuid-1',
+                state: {'profileId': 'builtin:pwsh', 'profileName': 'pwsh'},
+              ),
+              'p1',
+            ),
+          ],
+          activeTab: 't1',
+        ),
+      );
+      final p = d.pane('p1')!;
+      expect(p.kind, 'terminal');
+      expect(p.workspace, 'w1');
+      expect(p.item, 'uuid-1');
+      expect(p.state, {'profileId': 'builtin:pwsh', 'profileName': 'pwsh'});
+    });
+
+    test('null item and null workspace round-trip', () {
+      final pane = paneJson('p1')..['item'] = null;
+      expectRoundTrip(
+        docJson(
+          tabs: [tabJson('t1', pane, 'p1')],
+          activeTab: 't1',
+          recent: ['p1'],
+        ),
+      );
+    });
+
+    test('a valid document whose recent omits panes is valid', () {
+      expectRoundTrip(base()..['recent'] = ['p1']);
+      expectRoundTrip(base()..['recent'] = <String>[]);
+    });
+
+    test('invalid JSON text reports a reason', () {
+      expect(
+        () => decodeLayout('{nope'),
+        throwsA(isA<LayoutInvalid>().having((e) => e.reason, 'r', isNotEmpty)),
+      );
+    });
+  });
+
+  group('format 2 validation', () {
+    test('a format 1 document is unsupported', () {
+      expectInvalid({
+        'format': 1,
+        'root': {
+          'type': 'group',
+          'id': 'g1',
+          'context': null,
+          'tabs': <Object?>[],
+          'active': null,
+        },
+        'focusedGroup': 'g1',
+        'recent': <Object?>[],
+        'sidebar': {'collapsed': false},
+      }, 'unsupported layout format 1');
+    });
+
+    test('a non-object document is invalid', () {
+      expectInvalid(<Object?>[], 'layout must be an object');
+    });
+
+    test('a pane without a kind is invalid', () {
+      final j = base();
+      (rootOf(j)['first']! as Json).remove('kind');
+      expectInvalid(j, 'pane kind must be a string');
+    });
+
+    test('a split with one child is invalid', () {
+      final j = base();
+      rootOf(j).remove('second');
+      expectInvalid(j, 'split "s1" needs two children');
+    });
+
+    test('an unknown node type is invalid', () {
+      final j = base();
+      (rootOf(j)['first']! as Json)['type'] = 'group';
+      expectInvalid(j, 'unknown node type "group"');
+    });
+
+    test('activeTab set with no tabs is invalid', () {
+      expectInvalid(
+        docJson(activeTab: 't1'),
+        'activeTab must be null when there are no tabs',
+      );
+    });
+
+    test('activeTab null with tabs is invalid', () {
+      expectInvalid(
+        base()..['activeTab'] = null,
+        'activeTab must name a tab when there are tabs',
+      );
+    });
+
+    test('activeTab naming no tab is invalid', () {
+      expectInvalid(
+        base()..['activeTab'] = 'tx',
+        'activeTab "tx" is not a tab',
+      );
+    });
+
+    test('a focusedPane outside its tab is invalid', () {
+      final j = docJson(
+        tabs: [
+          tabJson('t1', paneJson('p1'), 'p1'),
+          tabJson('t2', paneJson('p2'), 'p1'),
+        ],
+        activeTab: 't1',
+      );
+      expectInvalid(j, 'focusedPane "p1" is not a pane of tab "t2"');
+      expectInvalid(
+        base()..['tabs'] = [tabJson('t1', paneJson('p1'), 'pX')],
+        'focusedPane "pX" is not a pane of tab "t1"',
+      );
+    });
+
+    test('duplicate ids are invalid across tabs, splits and panes', () {
+      expectInvalid(
+        docJson(
+          tabs: [
+            tabJson('t1', paneJson('p1'), 'p1'),
+            tabJson('t2', paneJson('p1'), 'p1'),
+          ],
+          activeTab: 't1',
+        ),
+        'duplicate id "p1"',
+      );
+      expectInvalid(
+        docJson(
+          tabs: [
+            tabJson('t1', splitJson('x', paneJson('p1'), paneJson('x')), 'p1'),
+          ],
+          activeTab: 't1',
+        ),
+        'duplicate id "x"',
+      );
+      expectInvalid(
+        docJson(
+          tabs: [
+            tabJson('t1', paneJson('p1'), 'p1'),
+            tabJson('p1', paneJson('p2'), 'p2'),
+          ],
+          activeTab: 't1',
+        ),
+        'duplicate id "p1"',
+      );
+      expectInvalid(
+        docJson(
+          tabs: [
+            tabJson('t1', paneJson('p1'), 'p1'),
+            tabJson('t1', paneJson('p2'), 'p2'),
+          ],
+          activeTab: 't1',
+        ),
+        'duplicate id "t1"',
+      );
+    });
+
+    test('recent naming an unknown or duplicate pane is invalid', () {
+      expectInvalid(
+        base()..['recent'] = ['p1', 'nope'],
+        'recent names an unknown pane',
+      );
+      expectInvalid(
+        base()..['recent'] = ['t1'],
+        'recent names an unknown pane',
+      );
+      expectInvalid(
+        base()..['recent'] = ['p1', 'p2', 'p1'],
+        'recent contains duplicate pane "p1"',
+      );
+    });
+
+    test('state must be an object, direction known, sidebar well-formed', () {
+      final badState = base();
+      (rootOf(badState)['first']! as Json)['state'] = [1];
+      expectInvalid(badState, 'pane state must be a JSON object');
+
+      final badDir = base();
+      rootOf(badDir)['direction'] = 'diagonal';
+      expectInvalid(badDir, 'unknown split direction "diagonal"');
+
+      expectInvalid(
+        base()..['sidebar'] = {'collapsed': 1, 'selected': null},
+        'sidebar.collapsed must be a boolean',
+      );
+      expectInvalid(
+        base()..['sidebar'] = {'collapsed': false, 'selected': 4},
+        'sidebar.selected',
+      );
+    });
+
+    group('bounds', () {
+      test('129 tabs are invalid, 128 are valid', () {
+        List<Json> tabs(int n) => [
+          for (var i = 0; i < n; i++) tabJson('t$i', paneJson('p$i'), 'p$i'),
+        ];
+        expectInvalid(
+          docJson(tabs: tabs(129), activeTab: 't0'),
+          'more than 128 tabs',
+        );
+        layoutFromJson(docJson(tabs: tabs(128), activeTab: 't0'));
+      });
+
+      test('17 panes in a tab are invalid, 16 are valid', () {
+        expectInvalid(
+          docJson(tabs: [chainTab('t1', 'p', 17)], activeTab: 't1'),
+          'tab "t1" has more than 16 panes',
+        );
+        layoutFromJson(
+          docJson(tabs: [chainTab('t1', 'p', 16)], activeTab: 't1'),
+        );
+      });
+
+      test('129 panes are invalid, 128 are valid', () {
+        Json docOf(int fullTabs, int last) => docJson(
+          tabs: [
+            for (var i = 0; i < fullTabs; i++) chainTab('t$i', 'a${i}_', 16),
+            if (last > 0) chainTab('tl', 'z', last),
+          ],
+          activeTab: 't0',
+        );
+        expectInvalid(docOf(8, 1), 'more than 128 panes');
+        layoutFromJson(docOf(8, 0));
+      });
+
+      test('a document over 256 KiB is invalid', () {
+        final state = {'pad': 'x' * 4000};
+        Json tab(int t) {
+          var root = paneJson('t${t}p0', state: state);
+          for (var i = 1; i < 15; i++) {
+            root = splitJson(
+              't${t}s$i',
+              root,
+              paneJson('t${t}p$i', state: state),
+            );
+          }
+          return tabJson('t$t', root, 't${t}p0');
+        }
+
+        final source = jsonEncode(
+          docJson(tabs: [for (var t = 0; t < 7; t++) tab(t)], activeTab: 't0'),
+        );
+        expect(utf8.encode(source).length, greaterThan(maxDocumentBytes));
+        expect(
+          () => decodeLayout(source),
+          throwsA(
+            isA<LayoutInvalid>().having(
+              (e) => e.reason,
+              'reason',
+              contains('exceeds $maxDocumentBytes bytes'),
+            ),
+          ),
+        );
+      });
+
+      test('state over 4 KiB is invalid, at 4 KiB it is valid', () {
+        Json withState(int pad) => docJson(
+          tabs: [
+            tabJson('t1', paneJson('p1', state: {'p': 'x' * pad}), 'p1'),
+          ],
+          activeTab: 't1',
+        );
+        // {"p":"..."} is 8 bytes of structure around the padding.
+        layoutFromJson(withState(maxTabStateBytes - 8));
+        expectInvalid(
+          withState(maxTabStateBytes - 7),
+          'pane state exceeds $maxTabStateBytes bytes',
+        );
+      });
+
+      test('item over 4 KiB is invalid', () {
+        Json withItem(int n) => docJson(
+          tabs: [tabJson('t1', paneJson('p1', item: 'i' * n), 'p1')],
+          activeTab: 't1',
+        );
+        layoutFromJson(withItem(maxItemBytes));
+        expectInvalid(
+          withItem(maxItemBytes + 1),
+          'pane item exceeds $maxItemBytes bytes',
+        );
+      });
+
+      test('ids and kinds over 64 bytes are invalid', () {
+        expectInvalid(
+          docJson(
+            tabs: [tabJson('t1', paneJson('p' * 65), 'p' * 65)],
+            activeTab: 't1',
+          ),
+          'exceeds $maxIdBytes bytes',
+        );
+        expectInvalid(
+          docJson(
+            tabs: [tabJson('t' * 65, paneJson('p1'), 'p1')],
+            activeTab: 't' * 65,
+          ),
+          'exceeds $maxIdBytes bytes',
+        );
+        expectInvalid(
+          docJson(
+            tabs: [tabJson('t1', paneJson('p1', kind: 'k' * 65), 'p1')],
+            activeTab: 't1',
+          ),
+          'exceeds $maxIdBytes bytes',
+        );
+      });
+
+      test('a split ratio outside 0.1 to 0.9 is invalid', () {
+        for (final r in [0.09, 0.91, 0.0, 1.0]) {
+          final j = base();
+          rootOf(j)['ratio'] = r;
+          expectInvalid(j, 'outside 0.1..0.9');
+        }
+        for (final r in [0.1, 0.9]) {
+          final j = base();
+          rootOf(j)['ratio'] = r;
+          layoutFromJson(j);
+        }
+      });
+    });
+  });
+
+  group('open', () {
+    for (final kind in kinds) {
+      test('openTab appends an active one-pane tab ($kind)', () {
+        var d = addTab(const LayoutDocument.initial(), 't1', 'p1', kind: kind);
+        d = addTab(d, 't2', 'p2', kind: kind, workspace: 'w1');
+        expect(tabIds(d), ['t1', 't2']);
+        expect(d.activeTab, 't2');
+        expect(d.focusedPane, 'p2');
+        expect(d.tab('t1')!.focusedPane, 'p1');
+        expect(paneIds(d.tab('t2')!.root), ['p2']);
+        expect(d.pane('p2')!.kind, kind);
+        expect(d.pane('p2')!.workspace, 'w1');
+        expect(d.recent, ['p2', 'p1']);
+        expectValid(d);
+      });
+    }
+
+    test('openTab keeps the sidebar selection and takes no workspace', () {
+      var d = const LayoutDocument.initial().selectWorkspace('w1');
+      d = addTab(d, 't1', 'p1');
+      expect(d.selectedWorkspace, 'w1');
+      expect(d.pane('p1')!.workspace, isNull, reason: 'the caller binds');
+    });
+
+    test('openTab is refused at 128 panes and changes nothing', () {
+      final d = grid(16, 8);
+      expect(d.paneCount, 128);
+      final r = d.openTab(view('extra'), tabId: 'tx');
+      expect(r.refusal, LayoutRefusal.paneLimit);
+      expect(r.document, isNull);
+    });
+
+    test('oversized state is refused', () {
+      final big = {'pad': 'x' * maxTabStateBytes};
+      final r = const LayoutDocument.initial().openTab(
+        view('p1', state: big),
+        tabId: 't1',
+      );
+      expect(r.refusal, LayoutRefusal.stateTooLarge);
+    });
+
+    for (final kind in kinds) {
+      test('openOrFocus focuses the matching pane in another tab ($kind)', () {
+        var d = addTab(const LayoutDocument.initial(), 't1', 'p1', kind: kind);
+        d = split(d, 'p1', 'p1b', kind: kind);
+        d = addTab(d, 't2', 'p2', kind: kind);
+        expect(d.activeTab, 't2');
+        final r = d.openOrFocus(
+          view('fresh', kind: kind, item: 'p1'),
+          tabId: 'tfresh',
+        );
+        final after = ok(r);
+        expect(r.tabId, 't1');
+        expect(r.paneId, 'p1');
+        expect(after.activeTab, 't1');
+        expect(after.tab('t1')!.focusedPane, 'p1');
+        expect(after.recent.first, 'p1');
+        expect(after.tabCount, d.tabCount);
+        expect(after.paneCount, d.paneCount);
+        expectValid(after);
+      });
+    }
+
     test('items of different kinds do not collide', () {
-      var d = ok(LayoutDocument.initial('g1').setGroupContext('g1', 'w1'));
-      d = open(d, 'g1', 't1', kind: 'editor', item: 'x');
-      d = open(d, 'g1', 't2', kind: 'diff', item: 'x');
+      var d = addTab(const LayoutDocument.initial(), 't1', 'p1');
+      d = ok(
+        d.openOrFocus(
+          view('p2', kind: 'workspace-overview', item: 'p1'),
+          tabId: 't2',
+        ),
+      );
       expect(d.tabCount, 2);
     });
 
     test('a null item always opens a new tab', () {
-      var d = LayoutDocument.initial('g1');
-      for (final id in ['t1', 't2']) {
-        d = ok(
-          d.openOrFocus(
-            'g1',
-            'terminal',
-            null,
-            needsWorkspace: false,
-            newTabId: id,
+      final noItem = PaneNode(id: 'p1', kind: 'k', workspace: null, item: null);
+      var d = ok(
+        const LayoutDocument.initial().openOrFocus(noItem, tabId: 't1'),
+      );
+      d = ok(
+        d.openOrFocus(
+          PaneNode(id: 'p2', kind: 'k', workspace: null, item: null),
+          tabId: 't2',
+        ),
+      );
+      expect(d.tabCount, 2);
+    });
+
+    test('terminals with fresh item ids are never matched', () {
+      var d = const LayoutDocument.initial();
+      for (final (tab, pane, item) in [
+        ('t1', 'p1', '0b6b7d8e-2f5a-4c1e-9d3a-6f1b2c3d4e5f'),
+        ('t2', 'p2', '7a1c9e20-5b3d-4f6a-8c2e-1d0f9a8b7c6d'),
+      ]) {
+        final r = d.openOrFocus(
+          view(
+            pane,
+            item: item,
+            state: {'profileId': 'builtin:pwsh', 'profileName': 'pwsh'},
           ),
+          tabId: tab,
         );
+        expect(r.tabId, tab, reason: 'a new tab, not the first');
+        d = ok(r);
       }
       expect(d.tabCount, 2);
     });
 
-    test('oversized state is refused', () {
-      final r = LayoutDocument.initial('g1').openOrFocus(
-        'g1',
-        'terminal',
-        null,
-        needsWorkspace: false,
-        newTabId: 't1',
-        state: {'k': 'x' * 4089},
-      );
-      expect(r.refusal, LayoutRefusal.stateTooLarge);
+    test('focusing an existing pane still works at the pane limit', () {
+      final d = grid(16, 8);
+      final r = d.openOrFocus(view('x', item: 't3p0'), tabId: 'tx');
+      expect(ok(r).activeTab, 't3');
+    });
+
+    test('opening after the pane closed opens a new tab', () {
+      var d = addTab(const LayoutDocument.initial(), 't1', 'p1');
+      d = ok(d.closePane('p1'));
+      expect(d.tabs, isEmpty);
+      final r = d.openOrFocus(view('p2', item: 'p1'), tabId: 't2');
+      expect(r.tabId, 't2');
+      expect(ok(r).tabCount, 1);
     });
   });
 
-  group('select workspace', () {
-    LayoutDocument scenario() {
-      var d = ok(LayoutDocument.initial('g1').setGroupContext('g1', 'w1'));
-      d = open(d, 'g1', 't1');
-      d = ok(d.split('g1', SplitDirection.horizontal, 'g2', 's1'));
-      d = ok(d.setGroupContext('g2', 'w2'));
-      d = open(d, 'g2', 't2');
-      d = ok(d.setGroupContext('g2', 'w1'));
-      d = open(d, 'g2', 't3');
-      return d;
-    }
-
-    test('select workspace focuses its most recent tab and keeps all '
-        'bindings', () {
-      var d = scenario();
-      expect(bindings(d), {'t1': 'w1', 't2': 'w2', 't3': 'w1'});
-      d = ok(d.activateTab('t1'));
-      final before = bindings(d);
-      final sel = d.selectWorkspace('w1');
-      expect(sel.focusedGroup, 'g1');
-      expect(sel.group('g1')!.active, 't1');
-      expect(sel.recent.first, 't1');
-      expect(bindings(sel), before);
-
-      final sel2 = d.selectWorkspace('w2');
-      expect(sel2.focusedGroup, 'g2');
-      expect(sel2.group('g2')!.active, 't2');
-      expect(sel2.group('g2')!.context, 'w2');
-      expect(bindings(sel2), before);
-
-      // After activating t3, w1's most recent tab is t3.
-      final d3 = ok(d.activateTab('t3')).selectWorkspace('w1');
-      expect(d3.group('g2')!.active, 't3');
-      expect(d3.focusedGroup, 'g2');
-    });
-
-    test('select workspace without tabs sets the focused group context '
-        'only', () {
-      final d = scenario();
-      final before = bindings(d);
-      final sel = d.selectWorkspace('w9');
-      expect(sel.group(d.focusedGroup)!.context, 'w9');
-      expect(sel.focusedGroup, d.focusedGroup);
-      expect(bindings(sel), before);
-      expect(sel.recent, d.recent);
-      final other = d.groups.firstWhere((g) => g.id != d.focusedGroup);
-      expect(sel.group(other.id)!.context, other.context);
-    });
-  });
-
-  test('no operation changes a tab\'s binding (all ops)', () {
-    var d = ok(LayoutDocument.initial('g1').setGroupContext('g1', 'w1'));
-    d = open(d, 'g1', 't1');
-    d = open(d, 'g1', 't2');
-    d = ok(d.split('g1', SplitDirection.horizontal, 'g2', 's1'));
-    d = ok(d.setGroupContext('g2', 'w2'));
-    d = open(d, 'g2', 't3');
-    d = open(d, 'g2', 't4', kind: 'editor', item: 'f');
-    final expected = bindings(d);
-    expect(expected, {'t1': 'w1', 't2': 'w1', 't3': 'w2', 't4': 'w2'});
-
-    final steps = <String, LayoutDocument Function(LayoutDocument)>{
-      'split': (x) => ok(x.split('g1', SplitDirection.vertical, 'g3', 's2')),
-      'move': (x) => ok(x.moveTab('t1', 'g2')),
-      'activate': (x) => ok(x.activateTab('t2')),
-      'focusGroup': (x) => ok(x.focusGroup('g2')),
-      'selectWorkspace': (x) => x.selectWorkspace('w2'),
-      'selectWorkspaceNone': (x) => x.selectWorkspace('nope'),
-      'setGroupContext': (x) => ok(x.setGroupContext('g1', 'w7')),
-      'setRatio': (x) => ok(x.setRatio('s1', 0.3)),
-      'collapse': (x) => x.setSidebarCollapsed(true),
-      'openExisting': (x) => ok(
-        x.openOrFocus(
-          'g1',
-          'editor',
-          'f',
-          needsWorkspace: true,
-          newTabId: 'zz',
-        ),
-      ),
-      'openNew': (x) => open(x, 'g1', 'tn'),
-      'clearContext': (x) => x.clearContext('w2'),
-      'clearContextBound': (x) => x.clearContext('w1'),
-      'repair': (x) => x.repairContexts({'w1'}),
-      'repairNone': (x) => x.repairContexts({}),
-    };
-    for (final e in steps.entries) {
-      final after = e.value(d);
-      for (final t in after.tabs) {
-        if (expected.containsKey(t.id)) {
-          expect(
-            t.workspace,
-            expected[t.id],
-            reason: 'op ${e.key} changed ${t.id}',
+  group('split', () {
+    for (final kind in kinds) {
+      for (final direction in SplitDirection.values) {
+        test('splitPane places the new pane second and focuses it '
+            '($kind, ${direction.name})', () {
+          var d = addTab(
+            const LayoutDocument.initial(),
+            't1',
+            'p1',
+            kind: kind,
+            workspace: 'w1',
           );
-        }
+          d = addTab(d, 't2', 'q1');
+          d = ok(d.activateTab('t1'));
+          final r = d.splitPane(
+            'p1',
+            direction,
+            view('p2', kind: 'terminal', workspace: 'w1'),
+            splitId: 's1',
+          );
+          final after = ok(r);
+          expect(r.paneId, 'p2');
+          final root = after.tab('t1')!.root as SplitNode;
+          expect(root.id, 's1');
+          expect(root.direction, direction);
+          expect(root.ratio, 0.5);
+          expect(paneIds(root.first), ['p1']);
+          expect(paneIds(root.second), ['p2']);
+          expect(after.pane('p1')!.kind, kind, reason: 'old pane unchanged');
+          expect(after.tab('t1')!.focusedPane, 'p2');
+          expect(after.activeTab, 't1');
+          expect(after.recent.first, 'p2');
+          expect(after.pane('p2')!.workspace, 'w1');
+          expectValid(after);
+        });
       }
     }
-    // Closing other tabs.
-    final closed = ok(ok(d.closeTab('t3')).closeTab('t1'));
-    expect(closed.tab('t2')!.workspace, 'w1');
-    expect(closed.tab('t4')!.workspace, 'w2');
-    // Chained moves and splits.
-    var c = ok(d.moveTab('t3', 'g1'));
-    c = ok(c.split('g1', SplitDirection.horizontal, 'g9', 's9'));
-    c = ok(c.moveTab('t2', 'g9'));
-    expect(bindings(c), expected);
-  });
 
-  group('context', () {
-    test('clearContext nulls every group context equal to the id', () {
-      var d = ok(LayoutDocument.initial('g1').setGroupContext('g1', 'w1'));
-      d = ok(d.split('g1', SplitDirection.horizontal, 'g2', 's1'));
-      d = ok(d.split('g2', SplitDirection.horizontal, 'g3', 's2'));
-      d = ok(d.setGroupContext('g3', 'w2'));
-      final c = d.clearContext('w1');
-      expect(c.group('g1')!.context, isNull);
-      expect(c.group('g2')!.context, isNull);
-      expect(c.group('g3')!.context, 'w2');
+    test('splitPane splits a pane inside a nested split', () {
+      final d = abc();
+      final after = split(d, 'C', 'D', splitId: 's3');
+      expect(paneIds(after.tab('t1')!.root), ['A', 'B', 'C', 'D']);
+      expect(after.splitNode('s2')!.second, isA<SplitNode>());
+      expect(after.tab('t1')!.focusedPane, 'D');
     });
 
-    test('clearContext leaves tab bindings alone', () {
-      var d = ok(LayoutDocument.initial('g1').setGroupContext('g1', 'w1'));
-      d = open(d, 'g1', 't1');
-      final c = d.clearContext('w1');
-      expect(c.tab('t1')!.workspace, 'w1');
-      expect(c.group('g1')!.context, isNull);
-    });
-
-    test('repairContexts nulls contexts that are not known', () {
-      var d = ok(LayoutDocument.initial('g1').setGroupContext('g1', 'gone'));
-      d = ok(d.split('g1', SplitDirection.horizontal, 'g2', 's1'));
-      d = ok(d.setGroupContext('g2', 'w2'));
-      final r = d.repairContexts({'w2'});
-      expect(r.group('g1')!.context, isNull);
-      expect(r.group('g2')!.context, 'w2');
-    });
-
-    test('boundWorkspaces lists tab bindings only', () {
-      var d = ok(LayoutDocument.initial('g1').setGroupContext('g1', 'w1'));
-      d = open(d, 'g1', 't1');
-      d = ok(d.setGroupContext('g1', 'w2'));
-      expect(d.boundWorkspaces, {'w1'});
-      expect(LayoutDocument.initial('g1').boundWorkspaces, isEmpty);
-    });
-  });
-
-  group('ratio and sidebar', () {
-    test('setRatio clamps to 0.1..0.9', () {
-      var d = ok(
-        LayoutDocument.initial(
-          'g1',
-        ).split('g1', SplitDirection.horizontal, 'g2', 's1'),
+    test('splitPane is refused at 16 panes in the tab', () {
+      final d = grid(1, 16);
+      final r = d.splitPane(
+        't0p3',
+        SplitDirection.horizontal,
+        view('x'),
+        splitId: 'sx',
       );
-      expect((ok(d.setRatio('s1', 0.01)).root as SplitNode).ratio, 0.1);
-      expect((ok(d.setRatio('s1', 5)).root as SplitNode).ratio, 0.9);
-      expect((ok(d.setRatio('s1', 0.7)).root as SplitNode).ratio, 0.7);
+      expect(r.refusal, LayoutRefusal.tabPaneLimit);
+      expect(r.document, isNull);
+      final ok15 = grid(1, 15);
+      expect(
+        ok15
+            .splitPane(
+              't0p3',
+              SplitDirection.horizontal,
+              view('x'),
+              splitId: 'sx',
+            )
+            .isOk,
+        isTrue,
+      );
+    });
+
+    test('splitPane is refused at 128 panes in the document', () {
+      final d = grid(16, 8);
+      final r = d.splitPane(
+        't0p0',
+        SplitDirection.vertical,
+        view('x'),
+        splitId: 'sx',
+      );
+      expect(r.refusal, LayoutRefusal.paneLimit);
+    });
+
+    test('splitPane refuses an unknown pane and oversized state', () {
+      final d = abc();
+      expect(
+        d
+            .splitPane(
+              'nope',
+              SplitDirection.horizontal,
+              view('x'),
+              splitId: 'sx',
+            )
+            .refusal,
+        LayoutRefusal.unknownPane,
+      );
+      expect(
+        d
+            .splitPane(
+              'A',
+              SplitDirection.horizontal,
+              view('x', state: {'pad': 'x' * maxTabStateBytes}),
+              splitId: 'sx',
+            )
+            .refusal,
+        LayoutRefusal.stateTooLarge,
+      );
+    });
+
+    test('splitPane on a pane of a background tab activates that tab', () {
+      var d = addTab(const LayoutDocument.initial(), 't1', 'p1');
+      d = addTab(d, 't2', 'p2');
+      d = split(d, 'p1', 'p1b');
+      expect(d.activeTab, 't1');
+      expect(d.focusedPane, 'p1b');
+      expect(d.recent, ['p1b', 'p2', 'p1']);
+    });
+  });
+
+  group('pane state', () {
+    test("setPaneState replaces only that pane's state; focus, recent and "
+        'the tree are unchanged', () {
+      final d = abc();
+      final after = ok(d.setPaneState('B', {'profileId': 'p2'}));
+      expect(after.pane('B')!.state, {'profileId': 'p2'});
+      expect(after.pane('B')!.workspace, d.pane('B')!.workspace);
+      expect(after.pane('A')!.state, d.pane('A')!.state);
+      expect(after.focusedPane, d.focusedPane);
+      expect(after.recent, d.recent);
+      expect(paneIds(after.tab('t1')!.root), paneIds(d.tab('t1')!.root));
+      expectValid(after);
+    });
+
+    test('setPaneState refuses an unknown pane and an oversized state', () {
+      final d = abc();
+      expect(
+        d.setPaneState('missing', const {}).refusal,
+        LayoutRefusal.unknownPane,
+      );
+      expect(
+        d.setPaneState('B', {'pad': 'x' * maxTabStateBytes}).refusal,
+        LayoutRefusal.stateTooLarge,
+      );
+    });
+  });
+
+  group('close', () {
+    for (final kind in kinds) {
+      test('closing one of two panes gives its space to the sibling '
+          '($kind)', () {
+        var d = addTab(const LayoutDocument.initial(), 't1', 'L', kind: kind);
+        d = split(d, 'L', 'R', kind: kind, splitId: 's1');
+        final after = ok(d.closePane('R'));
+        expect(after.tab('t1')!.root, isA<PaneNode>());
+        expect(paneIds(after.tab('t1')!.root), ['L']);
+        expect(after.tab('t1')!.focusedPane, 'L');
+        expect(after.focusedPane, 'L');
+        expect(after.recent, ['L']);
+        expectValid(after);
+      });
+    }
+
+    test('closing B in A beside (B above C) leaves A beside C', () {
+      final d = ok(abc().setRatio('s1', 0.3).document!.closePane('B'));
+      final root = d.tab('t1')!.root as SplitNode;
+      expect(root.id, 's1');
+      expect(root.ratio, 0.3, reason: 'the outer ratio is unchanged');
+      expect(root.direction, SplitDirection.horizontal);
+      expect(paneIds(root.first), ['A']);
+      expect(paneIds(root.second), ['C']);
+      expect(d.splitNode('s2'), isNull);
+    });
+
+    for (final kind in kinds) {
+      test('closing focused A focuses the sibling\'s first pane, whatever '
+          'recent says ($kind)', () {
+        final d = abc(kind: kind);
+        expect(d.recent, ['A', 'C', 'B'], reason: 'C is newer than B');
+        final after = ok(d.closePane('A'));
+        expect(paneIds(after.tab('t1')!.root), ['B', 'C']);
+        expect(after.tab('t1')!.focusedPane, 'B');
+        expect(after.recent, ['B', 'C']);
+        expectValid(after);
+      });
+    }
+
+    test('closing an unfocused pane keeps the tab\'s focus', () {
+      final d = abc();
+      final after = ok(d.closePane('C'));
+      expect(after.tab('t1')!.focusedPane, 'A');
+      expect(after.recent, ['A', 'B'], reason: 'order kept, id pruned');
+      final other = ok(d.closePane('B'));
+      expect(other.tab('t1')!.focusedPane, 'A');
+    });
+
+    test('closing the last pane of the active middle tab activates the '
+        'right tab with its own focused pane', () {
+      var d = threeTabs();
+      d = split(d, 'p3', 'p3b'); // t3 now focuses p3b; t3 becomes active
+      d = ok(d.activateTab('t2'));
+      expect(d.recent.first, 'p2');
+      final after = ok(d.closePane('p2'));
+      expect(tabIds(after), ['t1', 't3']);
+      expect(after.activeTab, 't3');
+      expect(after.focusedPane, 'p3b');
+      expect(after.recent.first, 'p3b');
+      expect(after.recent, isNot(contains('p2')));
+      expectValid(after);
+    });
+
+    test('closing the rightmost active tab activates its left neighbour '
+        'with its own focused pane', () {
+      var d = threeTabs();
+      d = split(d, 'p2', 'p2b');
+      d = ok(d.activateTab('t3'));
+      final after = ok(d.closeTab('t3'));
+      expect(tabIds(after), ['t1', 't2']);
+      expect(after.activeTab, 't2');
+      expect(after.focusedPane, 'p2b');
+      expect(after.recent.first, 'p2b');
+    });
+
+    test('closing the only tab leaves activeTab null', () {
+      final d = ok(
+        addTab(
+          const LayoutDocument.initial(),
+          't1',
+          'p1',
+        ).selectWorkspace('w1').closeTab('t1'),
+      );
+      expect(d.tabs, isEmpty);
+      expect(d.activeTab, isNull);
+      expect(d.focusedPane, isNull);
+      expect(d.recent, isEmpty);
+      expect(d.selectedWorkspace, 'w1', reason: 'the selection stays');
+      expectValid(d);
+    });
+
+    test('closing the leftmost active tab activates the one that was right '
+        'of it', () {
+      var d = threeTabs();
+      d = ok(d.activateTab('t1'));
+      final after = ok(d.closeTab('t1'));
+      expect(after.activeTab, 't2');
+    });
+
+    test('closing a tab that is not active changes no focus', () {
+      var d = threeTabs();
+      d = split(d, 'p3', 'p3b');
+      d = ok(d.activateTab('t2'));
+      final before = d;
+      final after = ok(d.closeTab('t3'));
+      expect(after.activeTab, before.activeTab);
+      expect(after.focusedPane, before.focusedPane);
+      expect(after.recent, [
+        for (final id in before.recent)
+          if (id != 'p3' && id != 'p3b') id,
+      ]);
+      expect(tabIds(after), ['t1', 't2']);
+      expectValid(after);
+    });
+
+    test('closing the focused pane of a background tab changes no window '
+        'focus or history order', () {
+      var d = addTab(const LayoutDocument.initial(), 't1', 'a');
+      d = split(d, 'a', 'b');
+      d = addTab(d, 't2', 'x');
+      expect(d.tab('t1')!.focusedPane, 'b');
+      final before = d;
+      final after = ok(d.closePane('b'));
+      expect(after.activeTab, 't2');
+      expect(after.focusedPane, 'x');
+      expect(after.tab('t1')!.focusedPane, 'a');
+      expect(after.recent, [
+        for (final id in before.recent)
+          if (id != 'b') id,
+      ]);
+    });
+
+    test('closing a tab removes all its panes from the document', () {
+      final d = ok(abc().closeTab('t1'));
+      expect(d.paneCount, 0);
+      expect(d.recent, isEmpty);
+    });
+
+    test('unknown pane and tab are refused', () {
+      final d = abc();
+      expect(d.closePane('nope').refusal, LayoutRefusal.unknownPane);
+      expect(d.closeTab('nope').refusal, LayoutRefusal.unknownTab);
+    });
+  });
+
+  group('move', () {
+    for (final kind in kinds) {
+      test('movePaneToNewTab inserts the tab after its source and keeps '
+          'the pane ($kind)', () {
+        var d = addTab(
+          const LayoutDocument.initial(),
+          't1',
+          'p1',
+          kind: kind,
+          workspace: 'w1',
+        );
+        d = split(d, 'p1', 'p2', kind: kind, workspace: 'w1');
+        d = split(d, 'p2', 'p3', kind: kind, workspace: 'w1');
+        d = addTab(d, 't2', 'q1');
+        final before = d.pane('p2');
+        final r = d.movePaneToNewTab('p2', newTabId: 'tn');
+        final after = ok(r);
+        expect(r.tabId, 'tn');
+        expect(tabIds(after), ['t1', 'tn', 't2']);
+        expect(paneIds(after.tab('t1')!.root), ['p1', 'p3']);
+        expect(paneIds(after.tab('tn')!.root), ['p2']);
+        expect(after.pane('p2'), same(before), reason: 'the pane is untouched');
+        expect(after.activeTab, 'tn');
+        expect(after.focusedPane, 'p2');
+        expect(after.recent.first, 'p2');
+        expect(bindings(after), bindings(d));
+        expectValid(after);
+      });
+    }
+
+    test('movePaneToNewTab is refused for a tab\'s only pane', () {
+      final d = threeTabs();
+      final r = d.movePaneToNewTab('p1', newTabId: 'tn');
+      expect(r.refusal, LayoutRefusal.nothingToMove);
+      expect(
+        d.movePaneToNewTab('nope', newTabId: 'tn').refusal,
+        LayoutRefusal.unknownPane,
+      );
+    });
+
+    test('moving focused A out of A beside (B above C) focuses B in the '
+        'source and A in the new tab', () {
+      final d = abc();
+      expect(d.focusedPane, 'A');
+      final after = ok(d.movePaneToNewTab('A', newTabId: 'tn'));
+      expect(after.tab('t1')!.focusedPane, 'B');
+      expect(after.tab('tn')!.focusedPane, 'A');
+      expect(after.activeTab, 'tn');
+      expect(after.recent.first, 'A');
+      expect(paneIds(after.tab('t1')!.root), ['B', 'C']);
+      expect(after.tab('t1')!.root, isA<SplitNode>());
+      expect(after.splitNode('s1'), isNull);
+    });
+
+    test('moving an unfocused pane out keeps the source tab\'s focus', () {
+      final after = ok(abc().movePaneToNewTab('C', newTabId: 'tn'));
+      expect(after.tab('t1')!.focusedPane, 'A');
+      expect(after.tab('tn')!.focusedPane, 'C');
+    });
+
+    for (final direction in SplitDirection.values) {
+      test('moveTabIntoSplit puts the moved root second and focuses its '
+          'pane (${direction.name})', () {
+        var d = addTab(
+          const LayoutDocument.initial(),
+          't1',
+          'p1',
+          workspace: 'w1',
+        );
+        d = split(d, 'p1', 'p1b', workspace: 'w1');
+        d = addTab(d, 't2', 'ov', kind: 'workspace-overview', workspace: 'w2');
+        d = addTab(d, 't3', 'mx', kind: 'mystery-kind');
+        d = ok(d.activateTab('t1'));
+        final oldRoot = d.tab('t1')!.root;
+        final moved = d.tab('t2')!.root;
+        final r = d.moveTabIntoSplit('t2', direction, splitId: 'sm');
+        final after = ok(r);
+        expect(tabIds(after), ['t1', 't3']);
+        expect(after.activeTab, 't1');
+        final root = after.tab('t1')!.root as SplitNode;
+        expect(root.id, 'sm');
+        expect(root.direction, direction);
+        expect(root.ratio, 0.5);
+        expect(root.first, same(oldRoot));
+        expect(root.second, same(moved));
+        expect(after.tab('t1')!.focusedPane, 'ov');
+        expect(after.recent.first, 'ov');
+        expect(bindings(after), bindings(d));
+        expectValid(after);
+      });
+    }
+
+    test('moveTabIntoSplit puts a terminal beside an overview', () {
+      var d = addTab(const LayoutDocument.initial(), 't1', 'term');
+      d = addTab(d, 't2', 'ov', kind: 'workspace-overview', workspace: 'w1');
+      d = ok(d.activateTab('t1'));
+      final after = ok(
+        d.moveTabIntoSplit('t2', SplitDirection.horizontal, splitId: 'sm'),
+      );
+      expect(after.pane('term')!.kind, 'terminal');
+      expect(after.pane('ov')!.kind, 'workspace-overview');
+      expect(after.pane('ov')!.workspace, 'w1');
+      expect(paneIds(after.tab('t1')!.root), ['term', 'ov']);
+    });
+
+    test('moveTabIntoSplit is refused for the active tab and unknown tab', () {
+      final d = threeTabs();
+      expect(
+        d
+            .moveTabIntoSplit('t2', SplitDirection.vertical, splitId: 'sm')
+            .refusal,
+        LayoutRefusal.nothingToMove,
+      );
+      expect(
+        d
+            .moveTabIntoSplit('nope', SplitDirection.vertical, splitId: 'sm')
+            .refusal,
+        LayoutRefusal.unknownTab,
+      );
+    });
+
+    test('moveTabIntoSplit over 16 panes is refused and changes nothing', () {
+      final d = grid(2, 9);
+      expect(d.activeTab, 't0');
+      final r = d.moveTabIntoSplit(
+        't1',
+        SplitDirection.vertical,
+        splitId: 'sm',
+      );
+      expect(r.refusal, LayoutRefusal.tabPaneLimit);
+      expect(r.document, isNull);
+      final fits = grid(2, 8);
+      expect(
+        fits
+            .moveTabIntoSplit('t1', SplitDirection.vertical, splitId: 'sm')
+            .isOk,
+        isTrue,
+      );
+    });
+  });
+
+  group('focus and history', () {
+    test('focusPane focuses the pane, activates its tab, fronts recent', () {
+      var d = threeTabs();
+      d = split(d, 'p1', 'p1b');
+      d = ok(d.activateTab('t3'));
+      final after = ok(d.focusPane('p1'));
+      expect(after.activeTab, 't1');
+      expect(after.tab('t1')!.focusedPane, 'p1');
+      expect(after.recent.first, 'p1');
+      expect(after.recent.toSet().length, after.recent.length);
+      expect(d.focusPane('nope').refusal, LayoutRefusal.unknownPane);
+    });
+
+    test('activateTab shows the tab\'s own focused pane and fronts it', () {
+      var d = threeTabs();
+      d = split(d, 'p1', 'p1b');
+      d = ok(d.activateTab('t3'));
+      final after = ok(d.activateTab('t1'));
+      expect(after.focusedPane, 'p1b');
+      expect(after.recent.first, 'p1b');
+      expect(d.activateTab('nope').refusal, LayoutRefusal.unknownTab);
+    });
+
+    test('setRatio clamps to 0.1..0.9 and leaves recent alone', () {
+      final d = abc();
+      expect(ok(d.setRatio('s1', 0.02)).splitNode('s1')!.ratio, 0.1);
+      expect(ok(d.setRatio('s1', 0.97)).splitNode('s1')!.ratio, 0.9);
+      expect(ok(d.setRatio('s2', 0.25)).splitNode('s2')!.ratio, 0.25);
+      expect(ok(d.setRatio('s2', 0.25)).recent, d.recent);
       expect(d.setRatio('nope', 0.5).refusal, LayoutRefusal.unknownSplit);
     });
 
-    test('sidebar state toggles and starts expanded', () {
-      final d = LayoutDocument.initial('g1');
+    test('the sidebar starts expanded and toggles', () {
+      const d = LayoutDocument.initial();
       expect(d.sidebarCollapsed, isFalse);
       expect(d.setSidebarCollapsed(true).sidebarCollapsed, isTrue);
+      expect(
+        d.setSidebarCollapsed(true).setSidebarCollapsed(false).sidebarCollapsed,
+        isFalse,
+      );
     });
   });
 
-  group('codec', () {
-    test('codec round-trips sidebar state', () {
-      for (final collapsed in [true, false]) {
-        final d = LayoutDocument.initial('g1').setSidebarCollapsed(collapsed);
-        final back = decodeLayout(enc(d));
-        expect(back.sidebarCollapsed, collapsed);
-        expect(enc(back), enc(d));
-      }
+  group('workspace selection', () {
+    /// Tabs t1 (pane a1 of A), t2 (b2 of B), t3 (b3 of B, b3b of B).
+    LayoutDocument workspaces() {
+      var d = addTab(
+        const LayoutDocument.initial(),
+        't1',
+        'a1',
+        workspace: 'A',
+      );
+      d = addTab(d, 't2', 'b2', workspace: 'B');
+      d = addTab(d, 't3', 'b3', workspace: 'B');
+      d = split(d, 'b3', 'b3b', workspace: 'B');
+      return ok(d.activateTab('t1'));
+    }
+
+    test('selectWorkspace focuses its first pane in recent and keeps every '
+        'binding', () {
+      var d = workspaces();
+      d = ok(d.focusPane('b2'));
+      d = ok(d.focusPane('b3b'));
+      d = ok(d.focusPane('a1'));
+      expect(d.recent, ['a1', 'b3b', 'b2', 'b3', ...d.recent.skip(4)]);
+      final after = d.selectWorkspace('B');
+      expect(after.selectedWorkspace, 'B');
+      expect(after.activeTab, 't3');
+      expect(after.focusedPane, 'b3b');
+      expect(after.recent.first, 'b3b');
+      expect(bindings(after), bindings(d));
+      expectValid(after);
     });
 
-    test('round-trips a full document', () {
-      var d = ok(LayoutDocument.initial('g1').setGroupContext('g1', 'w1'));
-      d = open(d, 'g1', 't1', kind: 'editor', item: 'file:a');
-      d = ok(d.split('g1', SplitDirection.vertical, 'g2', 's1'));
-      d = ok(d.setRatio('s1', 0.25));
-      final s = enc(d);
-      expect(jsonDecode(enc(decodeLayout(s))), jsonDecode(s));
-      final j = jsonDecode(s) as Map<String, Object?>;
-      expect(j['format'], 1);
-      expect(j['focusedGroup'], 'g2');
-      expect(j['sidebar'], {'collapsed': false});
-      expect((j['root'] as Map)['type'], 'split');
+    test('selectWorkspace without panes sets the selection only', () {
+      final d = workspaces();
+      final after = d.selectWorkspace('C');
+      expect(after.selectedWorkspace, 'C');
+      expect(after.activeTab, d.activeTab);
+      expect(after.focusedPane, d.focusedPane);
+      expect(after.recent, d.recent);
+      expect(bindings(after), bindings(d));
     });
 
-    test('unknown kind round-trips unchanged', () {
-      final json = baseJson();
-      final tab = firstTab(json);
-      tab['kind'] = 'future-kind';
-      tab['state'] = {
-        'a': [
-          1,
-          2.5,
-          {'b': null},
-          'x',
-        ],
-        'z': true,
-      };
-      final s = jsonEncode(json);
-      final back = decodeLayout(s);
-      expect(back.tab('t1')!.kind, 'future-kind');
-      expect(jsonDecode(enc(back)), jsonDecode(s));
+    test('with a sparse recent naming none of B\'s panes, the first pane in '
+        'strip and tree order is focused', () {
+      final base = workspaces();
+      final sparse = base.copyWith(recent: ['a1']);
+      expectValid(sparse);
+      final after = sparse.selectWorkspace('B');
+      expect(after.activeTab, 't2');
+      expect(after.focusedPane, 'b2');
+      expect(after.recent.first, 'b2');
+      // The tree-order case: B's first pane in t3 is b3, not b3b.
+      final onlyT3 = ok(sparse.closeTab('t2'))
+          .copyWith(recent: <String>[])
+          .selectWorkspace('B');
+      expect(onlyT3.activeTab, 't3');
+      expect(onlyT3.focusedPane, 'b3');
     });
 
-    test('null item and null workspace round-trip', () {
-      final json = baseJson();
-      final tab = firstTab(json);
-      tab['item'] = null;
-      tab['workspace'] = null;
-      final back = decodeLayout(jsonEncode(json));
-      expect(back.tab('t1')!.item, isNull);
-      expect(back.tab('t1')!.workspace, isNull);
-      expect(jsonDecode(enc(back)), json);
+    test('clearSelection nulls a selection naming the workspace only', () {
+      final d = workspaces().selectWorkspace('B');
+      expect(d.clearSelection('A').selectedWorkspace, 'B');
+      final cleared = d.clearSelection('B');
+      expect(cleared.selectedWorkspace, isNull);
+      expect(cleared.recent, d.recent);
+      expect(bindings(cleared), bindings(d));
     });
 
-    test('invalid JSON text reports a reason', () {
-      expect(() => decodeLayout('{nope'), throwsA(isA<LayoutInvalid>()));
+    test('repairSelection nulls an unknown workspace only', () {
+      final d = workspaces().selectWorkspace('B');
+      expect(d.repairSelection({'A', 'B'}).selectedWorkspace, 'B');
+      final repaired = d.repairSelection({'A'});
+      expect(repaired.selectedWorkspace, isNull);
+      expect(repaired.recent, d.recent);
+      expect(
+        const LayoutDocument.initial().repairSelection({}).selectedWorkspace,
+        isNull,
+      );
     });
   });
 
-  group('validation', () {
-    test('format other than 1 is unsupported', () {
-      final j = baseJson()..['format'] = 2;
-      expectInvalid(j, 'unsupported layout format 2');
-    });
-
-    test('non-object document is invalid', () {
-      expectInvalid([], null);
-    });
-
-    test('duplicate ids are invalid', () {
-      final j = baseJson();
-      firstTab(j)['id'] = 'g1';
-      expectInvalid(j, 'duplicate');
-    });
-
-    test('active must be null iff group has no tabs', () {
-      final a = baseJson();
-      firstGroup(a)['active'] = null;
-      expectInvalid(a, 'active');
-      final b = baseJson();
-      firstGroup(b)['active'] = 'other';
-      expectInvalid(b, 'active');
-      final c = baseJson();
-      firstGroup(c)['tabs'] = [];
-      c['recent'] = [];
-      expectInvalid(c, 'active');
-    });
-
-    test('focusedGroup must exist', () {
-      final j = baseJson()..['focusedGroup'] = 'missing';
-      expectInvalid(j, 'focusedGroup');
-    });
-
-    test('recent must name existing tabs without duplicates', () {
-      final a = baseJson()..['recent'] = ['t1', 't1'];
-      expectInvalid(a, 'recent');
-      final b = baseJson()..['recent'] = ['ghost'];
-      expectInvalid(b, 'recent');
-    });
-
-    test('state must be an object', () {
-      final j = baseJson();
-      firstTab(j)['state'] = [1];
-      expectInvalid(j, 'state');
-    });
-
-    test('sidebar and node types are checked', () {
-      expectInvalid(baseJson()..['sidebar'] = {'collapsed': 'yes'}, 'sidebar');
-      final j = baseJson();
-      firstGroup(j)['type'] = 'blob';
-      expectInvalid(j, 'type');
-    });
-
-    test('unknown direction is invalid', () {
-      final j = jsonDecode(
-        enc(
-          ok(
-            LayoutDocument.initial(
-              'g1',
-            ).split('g1', SplitDirection.horizontal, 'g2', 's1'),
-          ),
-        ),
-      ) as Map<String, Object?>;
-      (j['root'] as Map)['direction'] = 'diagonal';
-      expectInvalid(j, 'direction');
-    });
-
-    group('bounds', () {
-      void idCase(String label, void Function(Map<String, Object?>, String) set) {
-        test('$label: 64 bytes ok, 65 invalid, empty invalid', () {
-          final at = baseJson();
-          set(at, 'a' * 64);
-          expect(() => layoutFromJson(at), returnsNormally);
-          final over = baseJson();
-          set(over, 'a' * 65);
-          expectInvalid(over);
-          final empty = baseJson();
-          set(empty, '');
-          expectInvalid(empty);
-        });
+  group('invariants', () {
+    test('no operation writes a binding, changes an unknown-kind pane, or '
+        'breaks validation', () {
+      for (var seed = 1; seed <= 12; seed++) {
+        _randomWalk(seed);
       }
-
-      idCase('tab id', (j, v) {
-        firstTab(j)['id'] = v;
-        j['recent'] = [v];
-        firstGroup(j)['active'] = v;
-      });
-      idCase('group id', (j, v) {
-        firstGroup(j)['id'] = v;
-        j['focusedGroup'] = v;
-      });
-      idCase('kind', (j, v) => firstTab(j)['kind'] = v);
-      idCase('workspace ref', (j, v) => firstTab(j)['workspace'] = v);
-      idCase('context', (j, v) => firstGroup(j)['context'] = v);
-
-      test('multi-byte ids are measured in UTF-8 bytes', () {
-        final at = baseJson();
-        firstTab(at)['kind'] = 'é' * 32; // 64 bytes
-        expect(() => layoutFromJson(at), returnsNormally);
-        final over = baseJson();
-        firstTab(over)['kind'] = 'é' * 33; // 66 bytes
-        expectInvalid(over);
-      });
-
-      test('item: 4096 bytes ok, 4097 invalid', () {
-        final at = baseJson();
-        firstTab(at)['item'] = 'a' * 4096;
-        expect(() => layoutFromJson(at), returnsNormally);
-        final over = baseJson();
-        firstTab(over)['item'] = 'a' * 4097;
-        expectInvalid(over, 'item');
-      });
-
-      test('state: 4096 encoded bytes ok, 4097 invalid', () {
-        // {"k":"..."} adds 8 bytes around the payload.
-        final at = baseJson();
-        firstTab(at)['state'] = {'k': 'x' * 4088};
-        expect(utf8.encode(jsonEncode(firstTab(at)['state'])).length, 4096);
-        expect(() => layoutFromJson(at), returnsNormally);
-        final over = baseJson();
-        firstTab(over)['state'] = {'k': 'x' * 4089};
-        expectInvalid(over, 'state');
-      });
-
-      test('document: 262144 bytes ok, 262145 invalid', () {
-        final s = jsonEncode(baseJson());
-        final pad = maxDocumentBytes - utf8.encode(s).length;
-        expect(() => decodeLayout(s + ' ' * pad), returnsNormally);
-        expect(
-          () => decodeLayout(s + ' ' * (pad + 1)),
-          throwsA(isA<LayoutInvalid>()),
-        );
-        expect(maxDocumentBytes, 262144);
-      });
-
-      test('ratio: 0.1 and 0.9 ok, 0.09 and 0.91 invalid', () {
-        Map<String, Object?> withRatio(Object r) {
-          final j = jsonDecode(
-            enc(
-              ok(
-                LayoutDocument.initial(
-                  'g1',
-                ).split('g1', SplitDirection.horizontal, 'g2', 's1'),
-              ),
-            ),
-          ) as Map<String, Object?>;
-          (j['root'] as Map)['ratio'] = r;
-          return j;
-        }
-
-        expect(() => layoutFromJson(withRatio(0.1)), returnsNormally);
-        expect(() => layoutFromJson(withRatio(0.9)), returnsNormally);
-        expectInvalid(withRatio(0.09), 'ratio');
-        expectInvalid(withRatio(0.91), 'ratio');
-        expectInvalid(withRatio('half'), 'ratio');
-      });
-
-      test('groups: 16 ok, 17 invalid', () {
-        final d = withGroups(16);
-        expect(() => decodeLayout(enc(d)), returnsNormally);
-        final j = jsonDecode(enc(d)) as Map<String, Object?>;
-        j['root'] = {
-          'type': 'split',
-          'id': 's99',
-          'direction': 'horizontal',
-          'ratio': 0.5,
-          'first': j['root'],
-          'second': {
-            'type': 'group',
-            'id': 'g99',
-            'context': null,
-            'tabs': <Object?>[],
-            'active': null,
-          },
-        };
-        expectInvalid(j, 'group');
-      });
-
-      test('tabs: 128 ok, 129 invalid', () {
-        var d = LayoutDocument.initial('g1');
-        for (var i = 0; i < 128; i++) {
-          d = open(d, 'g1', 't$i');
-        }
-        expect(() => decodeLayout(enc(d)), returnsNormally);
-        final j = jsonDecode(enc(d)) as Map<String, Object?>;
-        (firstGroup(j)['tabs'] as List).add({
-          'id': 'extra',
-          'kind': 'terminal',
-          'workspace': null,
-          'item': null,
-          'state': <String, Object?>{},
-        });
-        j['recent'] = [...(j['recent'] as List), 'extra'];
-        expectInvalid(j, 'tab');
-      });
     });
   });
 }

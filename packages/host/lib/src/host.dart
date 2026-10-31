@@ -10,10 +10,12 @@ import 'host_faults.dart';
 import 'host_log.dart';
 import 'host_options.dart';
 import 'ledger.dart';
+import 'profiles/profile_service.dart';
 import 'profile_lock.dart';
 import 'settler.dart';
 import 'store/store.dart';
 import 'store/store_error.dart';
+import 'terminal/terminal_service.dart';
 import 'unit_manager.dart';
 import 'workbench_service.dart';
 import 'workspace_resolver.dart';
@@ -74,6 +76,8 @@ class Host {
   CleanupService? _cleanup;
   WorkspaceService? _workspaces;
   WorkbenchService? _workbench;
+  ProfileService? _profiles;
+  TerminalService? _terminals;
   bool _stopping = false;
 
   /// Runs until the desktop goes away; returns the exit code.
@@ -84,7 +88,11 @@ class Host {
       // Non-blocking: a desktop that stops reading must not block the isolate
       // in a write, or the host could neither notice nor shut down.
       output: IOSinkAdapter(stdout.nonBlocking),
-      capabilities: {Capability.workbench, ...?extension?.capabilities},
+      capabilities: {
+        Capability.workbench,
+        Capability.terminal,
+        ...?extension?.capabilities,
+      },
       onHello: _onHello,
       onRequest: _onRequest,
     );
@@ -99,6 +107,13 @@ class Host {
       if (!profile.existsSync()) profile.createSync(recursive: true);
     } on FileSystemException catch (e) {
       return _unavailable(e);
+    }
+    // The store holds profile environments, which can carry secrets: only
+    // the owner may enter the profile (the files in it then need no mode of
+    // their own), so a profile that cannot be made so is not used.
+    if (!Platform.isWindows) {
+      final refused = _notOwnerOnly();
+      if (refused != null) return _unavailable(FileSystemException(refused));
     }
     try {
       _lock = await ProfileLock.tryAcquire(profile);
@@ -123,6 +138,31 @@ class Host {
       return _StartFailure(_storeError(e), HostExit.startFailed);
     }
     log.event('host-start', ids: {'pid': pid});
+    return null;
+  }
+
+  /// Why the POSIX profile directory is not owner-only, or null when it is
+  /// now: it is not a symbolic link, chmod to 0700 succeeded (only the owner
+  /// or root may chmod), its mode reads back as 0700, and every entry in it
+  /// is no symbolic link and could be made owner-only too.
+  String? _notOwnerOnly() {
+    if (FileSystemEntity.isLinkSync(profile.path)) {
+      return 'it is a symbolic link';
+    }
+    if (!chmodPath(profile.path, 0x1c0)) {
+      return 'it cannot be made owner-only (another account owns it?)';
+    }
+    if (FileStat.statSync(profile.path).mode & 0x1ff != 0x1c0) {
+      return 'its mode does not stay owner-only (0700)';
+    }
+    // What was put there while it was open to others: no link, and nothing
+    // another account owns. Now that it is 0700, nothing new can appear.
+    for (final entry in profile.listSync(recursive: true, followLinks: false)) {
+      if (entry is Link) return '${entry.path} is a symbolic link';
+      if (!chmodPath(entry.path, entry is Directory ? 0x1c0 : 0x180)) {
+        return '${entry.path} cannot be made owner-only';
+      }
+    }
     return null;
   }
 
@@ -214,6 +254,21 @@ class Host {
       ),
       notify: _connection.notify,
     );
+    final profiles = _profiles = ProfileService(
+      store: store,
+      log: log,
+      faults: faults,
+      options: options,
+    );
+    _terminals = TerminalService(
+      connection: _connection,
+      units: units,
+      profiles: profiles,
+      workspaces: workspaces,
+      faults: faults,
+      options: options,
+      log: log,
+    );
     _workbench = WorkbenchService(
       store: store,
       ledger: ledger,
@@ -273,6 +328,36 @@ class Host {
         final p = WorkspaceRemoveParams.fromJson(params);
         return _workbench!.removeWorkspace(p.id).toJson();
     }
+    switch (method) {
+      case Method.profileList:
+        return (await _profiles!.list()).toJson();
+      case Method.profileSave:
+        final p = ProfileSaveParams.fromJson(params);
+        return (await _profiles!.save(p)).toJson();
+      case Method.profileRemove:
+        await _profiles!.remove(ProfileRemoveParams.fromJson(params));
+        return <String, Object?>{};
+      case Method.profileSetDefault:
+        await _profiles!.setDefault(ProfileSetDefaultParams.fromJson(params));
+        return <String, Object?>{};
+    }
+    switch (method) {
+      case Method.terminalOpen:
+        final p = TerminalOpenParams.fromJson(params);
+        return (await _terminals!.open(p)).toJson();
+      case Method.terminalAttach:
+        await _terminals!.attach(TerminalAttachParams.fromJson(params));
+        return <String, Object?>{};
+      case Method.terminalResize:
+        _terminals!.resize(TerminalResizeParams.fromJson(params));
+        return <String, Object?>{};
+      case Method.terminalClose:
+        _terminals!.close(TerminalCloseParams.fromJson(params));
+        return <String, Object?>{};
+      case Method.terminalRelease:
+        _terminals!.release(TerminalReleaseParams.fromJson(params));
+        return <String, Object?>{};
+    }
     if (method.startsWith('test/') && extension != null) {
       return extension!.handle(
         HostServices(units: _units!, faults: faults, connection: _connection),
@@ -298,6 +383,7 @@ class Host {
     await _startup;
     if (_stopping) return;
     final units = _units;
+    _terminals?.dispose();
     if (units != null) {
       _log?.event('shutdown', code: reason.kind);
       await _cleanup?.reconciliation?.timeout(

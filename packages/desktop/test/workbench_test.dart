@@ -13,97 +13,8 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:host_protocol/host_protocol.dart';
 
 import 'support/fake_host.dart';
-
-// --- fixtures ---------------------------------------------------------------
-
-LayoutTab tabOf(
-  String id, {
-  String kind = 'note',
-  String? ws,
-  String? item,
-  Map<String, Object?> state = const {},
-}) => LayoutTab(id: id, kind: kind, workspace: ws, item: item, state: state);
-
-TabGroup groupOf(
-  String id, {
-  String? ctx,
-  List<LayoutTab> tabs = const [],
-  String? active,
-}) => TabGroup(
-  id: id,
-  context: ctx,
-  tabs: tabs,
-  active: active ?? (tabs.isEmpty ? null : tabs.first.id),
-);
-
-LayoutDocument docOf(
-  LayoutNode root, {
-  required String focused,
-  bool collapsed = false,
-  List<String> recent = const [],
-}) => LayoutDocument(
-  root: root,
-  focusedGroup: focused,
-  recent: recent,
-  sidebarCollapsed: collapsed,
-);
-
-/// Two groups side by side.
-LayoutDocument twoGroups(
-  TabGroup a,
-  TabGroup b, {
-  String? focused,
-  bool collapsed = false,
-  List<String> recent = const [],
-}) => docOf(
-  SplitNode(
-    id: 's1',
-    direction: SplitDirection.horizontal,
-    ratio: 0.5,
-    first: a,
-    second: b,
-  ),
-  focused: focused ?? a.id,
-  collapsed: collapsed,
-  recent: recent,
-);
-
-final _tracked = <ChangeNotifier>[];
-
-T track<T extends ChangeNotifier>(T notifier) {
-  _tracked.add(notifier);
-  return notifier;
-}
-
-/// A widget test that disposes what it tracked inside the test, before the
-/// framework checks for pending timers.
-void uiTest(String name, Future<void> Function(WidgetTester tester) body) {
-  testWidgets(name, (tester) async {
-    try {
-      await body(tester);
-      await tester.pumpWidget(const SizedBox());
-    } finally {
-      for (final n in _tracked) {
-        n.dispose();
-      }
-      _tracked.clear();
-    }
-  });
-}
-
-Json jsonOf(LayoutDocument d) =>
-    jsonDecode(jsonEncode(layoutToJson(d))) as Json;
-
-class FakePicker implements FolderPicker {
-  String? next;
-  int calls = 0;
-
-  @override
-  Future<String?> pickFolder() async {
-    calls++;
-    return next;
-  }
-}
+import 'support/fake_terminal_surface.dart';
+import 'support/workbench_support.dart';
 
 /// A picker whose plugin call fails.
 class _ThrowingPicker implements FolderPicker {
@@ -117,11 +28,15 @@ Future<WorkbenchController> pumpWorkbench(
   FakeHostLink link, {
   FolderPicker? picker,
   CleanupController? cleanup,
+  Size size = const Size(1400, 900),
 }) async {
-  tester.view.physicalSize = const Size(1400, 900);
+  tester.view.physicalSize = size;
   tester.view.devicePixelRatio = 1;
   addTearDown(tester.view.reset);
-  final controller = WorkbenchController(picker: picker ?? FakePicker());
+  final controller = WorkbenchController(
+    picker: picker ?? FakePicker(),
+    surfaceFactory: FakeSurfaces().call,
+  );
   track(controller);
   await tester.pumpWidget(
     MaterialApp(
@@ -133,27 +48,36 @@ Future<WorkbenchController> pumpWorkbench(
   return controller;
 }
 
-FakeHostLink linkWith(
-  LayoutDocument? layout, {
-  List<WorkspaceRecord> records = const [],
-  HelloResult? hello,
-}) {
-  final link = FakeHostLink(hello: hello);
-  if (layout != null) link.storedLayout = jsonOf(layout);
-  link.records.addAll(records);
-  return link;
-}
-
 const ms500 = Duration(milliseconds: 500);
 
-Finder key(String k) => find.byKey(Key(k));
+/// A tab holding [count] panes in a balanced tree of alternating splits, so
+/// every pane keeps a usable size.
+LayoutTabNode gridTab(String id, int count) {
+  var n = 0;
+  LayoutNode build(int panes, SplitDirection direction) {
+    if (panes == 1) return paneOf('$id-p${++n}');
+    final firstCount = panes ~/ 2;
+    final other = direction == SplitDirection.horizontal
+        ? SplitDirection.vertical
+        : SplitDirection.horizontal;
+    final first = build(firstCount, other);
+    final second = build(panes - firstCount, other);
+    return splitOf(
+      '$id-s${n}x${first.id}',
+      first,
+      second,
+      direction: direction,
+    );
+  }
 
-Finder inside(String k, Finder f) => find.descendant(of: key(k), matching: f);
+  return tabOf(id, build(count, SplitDirection.horizontal));
+}
 
 // --- the saver (D6), without a widget ---------------------------------------
 
 class SaveProbe {
-  final calls = <({Json layout, int revision, Completer<WorkbenchSaveResult> done})>[];
+  final calls =
+      <({Json layout, int revision, Completer<WorkbenchSaveResult> done})>[];
 
   Future<WorkbenchSaveResult> call(Json layout, int revision) {
     final done = Completer<WorkbenchSaveResult>();
@@ -199,9 +123,7 @@ void main() {
       for (final entry in changedAt.entries) {
         if (entry.value > 7900) continue; // saved after the loop ends
         expect(
-          saved.any(
-            (s) => s.n >= entry.key && s.at <= entry.value + 2000,
-          ),
+          saved.any((s) => s.n >= entry.key && s.at <= entry.value + 2000),
           isTrue,
           reason: 'change ${entry.key} at ${entry.value} ms saved within 2 s',
         );
@@ -466,14 +388,748 @@ void main() {
     });
   });
 
+  group('tabs and panes', () {
+    uiTest('a one-pane tab gives its view the whole central area and the '
+        'sidebar stays beside it', (tester) async {
+      final link = linkWith(
+        docOf([tabOf('t1', overviewOf('p1', 'A'))], selected: 'A'),
+        records: [workspaceRecord('A')],
+      );
+      await pumpWorkbench(tester, link);
+
+      final central = tester.getRect(key('central-area'));
+      final pane = tester.getRect(key('pane-p1'));
+      final strip = tester.getRect(key('tab-strip'));
+      final sidebar = tester.getRect(key('sidebar'));
+      expect(pane.left, central.left);
+      expect(pane.right, central.right);
+      expect(pane.bottom, central.bottom);
+      expect(pane.top, strip.bottom);
+      expect(sidebar.right, central.left, reason: 'beside, unchanged');
+      expect(find.byKey(const Key('pane-p1')), findsOneWidget);
+    });
+
+    uiTest('the tab renders a terminal and an overview side by side', (
+      tester,
+    ) async {
+      final link = linkWith(
+        docOf([
+          tabOf(
+            't1',
+            splitOf(
+              's1',
+              restoredTerminal('p1', ws: 'A'),
+              overviewOf('p2', 'A'),
+            ),
+          ),
+        ], selected: 'A'),
+        records: [workspaceRecord('A')],
+        hello: helloResult(capabilities: terminalCapabilities),
+      );
+      final c = await pumpWorkbench(tester, link);
+
+      expect(
+        inside('pane-p1', find.textContaining('Ended, not restored')),
+        findsOneWidget,
+      );
+      expect(inside('pane-p2', key('overview-A')), findsOneWidget);
+      final left = tester.getRect(key('pane-p1'));
+      final right = tester.getRect(key('pane-p2'));
+      expect(left.right, lessThanOrEqualTo(right.left));
+      expect(left.top, right.top);
+      expect(left.height, right.height);
+      expect(find.byKey(const Key('tab-t1')), findsOneWidget);
+      expect(find.byType(Draggable<String>), findsNothing);
+      expect(c.layout!.tabs, hasLength(1));
+    });
+
+    uiTest('dragging a divider sets the ratio, also over several updates per '
+        'frame', (tester) async {
+      final link = linkWith(
+        docOf([tabOf('t1', splitOf('s1', paneOf('p1'), paneOf('p2')))]),
+      );
+      final c = await pumpWorkbench(tester, link);
+      double ratio() => c.layout!.splitNode('s1')!.ratio;
+      final available = tester.getSize(key('split-view-s1')).width - 6;
+
+      final drag = await tester.startGesture(
+        tester.getCenter(key('split-handle-s1')),
+      );
+      await drag.moveBy(const Offset(40, 0));
+      await tester.pump();
+      final before = ratio();
+      await drag.moveBy(const Offset(10, 0));
+      await drag.moveBy(const Offset(10, 0));
+      await drag.moveBy(const Offset(10, 0));
+      await tester.pump();
+      await drag.up();
+      await tester.pump();
+
+      expect(ratio(), closeTo(before + 30 / available, 1e-9));
+      expect(c.layout!.focusedPane, 'p1', reason: 'a drag is not a focus');
+    });
+
+    uiTest('tapping a pane focuses it and marks it', (tester) async {
+      final link = linkWith(
+        docOf([tabOf('t1', splitOf('s1', paneOf('p1'), paneOf('p2')))]),
+      );
+      final c = await pumpWorkbench(tester, link);
+      expect(c.layout!.focusedPane, 'p1');
+
+      await tester.tapAt(tester.getCenter(key('pane-p2')));
+      await tester.pump();
+
+      expect(c.layout!.focusedPane, 'p2');
+      expect(c.layout!.tab('t1')!.focusedPane, 'p2');
+      expect(key('focused-pane-p2'), findsOneWidget);
+      expect(key('focused-pane-p1'), findsNothing);
+      await tester.pump(const Duration(seconds: 3));
+    });
+
+    uiTest('a tab is titled by its focused pane, with the pane count above '
+        'one', (tester) async {
+      final link = linkWith(
+        docOf([
+          tabOf(
+            't1',
+            splitOf('s1', overviewOf('p1', 'A'), paneOf('p2')),
+            focused: 'p1',
+          ),
+          tabOf('t2', overviewOf('p3', 'B')),
+        ]),
+        records: [workspaceRecord('A'), workspaceRecord('B')],
+      );
+      await pumpWorkbench(tester, link);
+
+      expect(
+        inside('tab-t1', find.textContaining('Workspace overview · A')),
+        findsOneWidget,
+      );
+      expect(inside('tab-t1', find.text('2')), findsOneWidget);
+      expect(
+        inside('tab-t2', find.textContaining('Workspace overview · B')),
+        findsOneWidget,
+      );
+      expect(inside('tab-t2', find.text('1')), findsNothing);
+    });
+  });
+
+  group('empty state', () {
+    uiTest('closing the last tab shows the empty-state message and New '
+        'terminal with its shortcut; + stays, sidebar and selection are '
+        'unchanged', (tester) async {
+      final link = linkWith(
+        docOf([tabOf('t1', overviewOf('p1', 'A'))], selected: 'A'),
+        records: [workspaceRecord('A')],
+        hello: helloResult(capabilities: terminalCapabilities),
+      );
+      final c = await pumpWorkbench(tester, link);
+      expect(key('empty-state'), findsNothing);
+
+      await tester.tap(key('close-t1'));
+      await tester.pumpAndSettle();
+
+      expect(c.layout!.activeTab, isNull);
+      expect(c.layout!.tabs, isEmpty);
+      expect(key('empty-state'), findsOneWidget);
+      expect(find.text('No tab is open.'), findsOneWidget);
+      expect(inside('new-terminal', find.text('New terminal')), findsOneWidget);
+      expect(inside('new-terminal', find.text('Ctrl+Shift+T')), findsOneWidget);
+      expect(
+        tester.widget<FilledButton>(key('new-terminal')).onPressed,
+        isNotNull,
+      );
+      expect(key('add-tab'), findsOneWidget);
+      expect(key('tab-strip'), findsOneWidget);
+      expect(key('sidebar'), findsOneWidget);
+      expect(c.layout!.selectedWorkspace, 'A');
+      await tester.pump(const Duration(seconds: 3));
+    });
+
+    uiTest('first launch shows Personal with no tabs, the empty state and no '
+        'prompt', (tester) async {
+      final c = await pumpWorkbench(tester, linkWith(null));
+      expect(c.layout!.tabs, isEmpty);
+      expect(c.layout!.activeTab, isNull);
+      expect(c.layout!.selectedWorkspace, isNull);
+      expect(find.text('Personal'), findsOneWidget);
+      expect(find.text('Open folder'), findsOneWidget);
+      expect(key('empty-state'), findsOneWidget);
+      expect(find.byTooltip('New tab'), findsOneWidget);
+      expect(find.byType(AlertDialog), findsNothing);
+    });
+
+    uiTest('an invalid stored layout shows no tabs, the empty state and the '
+        'restore notice', (tester) async {
+      final link = linkWith(null, records: [workspaceRecord('A')]);
+      link.restoreError = 'activeTab "t9" is not a tab';
+      final c = await pumpWorkbench(tester, link);
+
+      expect(c.layout!.tabs, isEmpty);
+      expect(key('empty-state'), findsOneWidget);
+      expect(
+        find.textContaining('saved layout could not be restored'),
+        findsOneWidget,
+      );
+      expect(
+        find.textContaining('activeTab "t9" is not a tab'),
+        findsOneWidget,
+      );
+      expect(key('ws-A'), findsOneWidget);
+    });
+
+    uiTest('a stored format 2 layout that fails validation on the desktop '
+        'is reported the same way', (tester) async {
+      final link = linkWith(null);
+      link.storedLayout = {'format': 2, 'tabs': <Object?>[], 'activeTab': 't1'};
+      final c = await pumpWorkbench(tester, link);
+      expect(c.layout!.tabs, isEmpty);
+      expect(
+        find.textContaining('saved layout could not be restored'),
+        findsOneWidget,
+      );
+    });
+
+    uiTest('New terminal is disabled with the reason when the host has no '
+        'terminal capability, and the + menu works', (tester) async {
+      await pumpWorkbench(tester, linkWith(null));
+
+      final button = tester.widget<FilledButton>(key('new-terminal'));
+      expect(button.onPressed, isNull);
+      expect(find.textContaining('does not support terminals'), findsOneWidget);
+      await tester.tap(key('add-tab'));
+      await tester.pumpAndSettle();
+      expect(
+        tester.widget<PopupMenuItem<String>>(key('launch-terminal')).enabled,
+        isFalse,
+      );
+      expect(key('open-folder'), findsOneWidget);
+    });
+  });
+
+  group('close', () {
+    uiTest('pane close removes the pane and its sibling fills the space', (
+      tester,
+    ) async {
+      final link = linkWith(
+        docOf([
+          tabOf('t1', splitOf('s1', paneOf('p1'), paneOf('p2')), focused: 'p2'),
+        ]),
+      );
+      final c = await pumpWorkbench(tester, link);
+
+      await tester.tap(key('close-pane-p2'));
+      await tester.pumpAndSettle();
+
+      final tab = c.layout!.tab('t1')!;
+      expect(tab.root, isA<PaneNode>());
+      expect(tab.root.id, 'p1');
+      expect(tab.focusedPane, 'p1');
+      expect(key('pane-p2'), findsNothing);
+      expect(
+        tester.getRect(key('pane-p1')).right,
+        tester.getRect(key('central-area')).right,
+      );
+      await tester.pump(const Duration(seconds: 3));
+    });
+
+    uiTest('closing an inactive tab leaves the active tab and its focused '
+        'pane', (tester) async {
+      final link = linkWith(
+        docOf([
+          tabOf('t1', splitOf('s1', paneOf('p1'), paneOf('p2')), focused: 'p2'),
+          tabOf('t2', paneOf('p3')),
+        ]),
+      );
+      final c = await pumpWorkbench(tester, link);
+
+      await tester.tap(key('close-t2'));
+      await tester.pumpAndSettle();
+
+      expect(c.layout!.tabs.map((t) => t.id), ['t1']);
+      expect(c.layout!.activeTab, 't1');
+      expect(c.layout!.focusedPane, 'p2');
+      await tester.pump(const Duration(seconds: 3));
+    });
+
+    uiTest('closing the active middle tab activates the one on its right '
+        'with its own focused pane', (tester) async {
+      final link = linkWith(
+        docOf([
+          tabOf('t1', paneOf('p1')),
+          tabOf('t2', paneOf('p2')),
+          tabOf('t3', splitOf('s3', paneOf('p3'), paneOf('p4')), focused: 'p4'),
+        ], active: 't2'),
+      );
+      final c = await pumpWorkbench(tester, link);
+
+      await tester.tap(key('close-t2'));
+      await tester.pumpAndSettle();
+
+      expect(c.layout!.activeTab, 't3');
+      expect(c.layout!.focusedPane, 'p4');
+      await tester.pump(const Duration(seconds: 3));
+    });
+  });
+
+  group('moves', () {
+    uiTest('Move to new tab and Move into split are disabled when there is '
+        'nothing to move', (tester) async {
+      final link = linkWith(
+        docOf([
+          tabOf('t1', paneOf('p1')),
+          tabOf('t2', splitOf('s2', paneOf('p2'), paneOf('p3'))),
+        ]),
+      );
+      await pumpWorkbench(tester, link);
+
+      expect(tester.widget<IconButton>(key('move-p1')).onPressed, isNull);
+
+      await tester.tap(key('tab-menu-t1'));
+      await tester.pumpAndSettle();
+      expect(
+        tester
+            .widget<PopupMenuItem<String>>(key('move-split-right-t1'))
+            .enabled,
+        isFalse,
+      );
+      expect(
+        tester
+            .widget<PopupMenuItem<String>>(key('move-split-below-t1'))
+            .enabled,
+        isFalse,
+      );
+      expect(
+        tester.widget<PopupMenuItem<String>>(key('close-tab-t1')).enabled,
+        isTrue,
+      );
+      await tester.tapAt(const Offset(5, 5));
+      await tester.pumpAndSettle();
+
+      await tester.tap(key('tab-menu-t2'));
+      await tester.pumpAndSettle();
+      expect(
+        tester
+            .widget<PopupMenuItem<String>>(key('move-split-right-t2'))
+            .enabled,
+        isTrue,
+      );
+    });
+
+    uiTest("the moved tab renders below the active tab's panes", (
+      tester,
+    ) async {
+      final link = linkWith(
+        docOf([
+          tabOf('t1', splitOf('s1', paneOf('p1'), paneOf('p2'))),
+          tabOf('t2', overviewOf('p3', 'B')),
+        ]),
+        records: [workspaceRecord('B')],
+      );
+      final c = await pumpWorkbench(tester, link);
+
+      await tester.tap(key('tab-menu-t2'));
+      await tester.pumpAndSettle();
+      await tester.tap(key('move-split-below-t2'));
+      await tester.pumpAndSettle();
+
+      expect(c.layout!.tabs.map((t) => t.id), ['t1']);
+      final root = c.layout!.tab('t1')!.root as SplitNode;
+      expect(root.direction, SplitDirection.vertical);
+      expect(root.second.id, 'p3');
+      expect(c.layout!.focusedPane, 'p3');
+      expect(c.layout!.pane('p3')!.workspace, 'B');
+      expect(
+        tester.getRect(key('pane-p3')).top,
+        greaterThanOrEqualTo(tester.getRect(key('pane-p1')).bottom),
+      );
+      expect(key('overview-B'), findsOneWidget);
+      await tester.pump(const Duration(seconds: 3));
+    });
+
+    uiTest('Move to new tab puts the pane in a new active tab after its '
+        'source and keeps its binding', (tester) async {
+      final link = linkWith(
+        docOf([
+          tabOf(
+            't1',
+            splitOf('s1', overviewOf('p1', 'A'), paneOf('p2', ws: 'B')),
+          ),
+          tabOf('t9', paneOf('p9')),
+        ]),
+        records: [workspaceRecord('A'), workspaceRecord('B')],
+      );
+      final c = await pumpWorkbench(tester, link);
+
+      await tester.tap(key('move-p2'));
+      await tester.pumpAndSettle();
+
+      final ids = c.layout!.tabs.map((t) => t.id).toList();
+      expect(ids, hasLength(3));
+      expect(ids.first, 't1');
+      expect(ids.last, 't9');
+      final moved = c.layout!.tabs[1];
+      expect(moved.root.id, 'p2');
+      expect(c.layout!.activeTab, moved.id);
+      expect(c.layout!.pane('p2')!.workspace, 'B');
+      expect(c.layout!.tab('t1')!.root.id, 'p1');
+      await tester.pump(const Duration(seconds: 3));
+    });
+
+    uiTest('a refused move reports the limit and changes nothing', (
+      tester,
+    ) async {
+      final link = linkWith(docOf([gridTab('t1', 9), gridTab('t2', 8)]));
+      final c = await pumpWorkbench(tester, link);
+      final before = jsonOf(c.layout!);
+
+      await tester.tap(key('tab-menu-t2'));
+      await tester.pumpAndSettle();
+      await tester.tap(key('move-split-right-t2'));
+      await tester.pumpAndSettle();
+
+      expect(jsonOf(c.layout!), before);
+      expect(find.textContaining('16 panes'), findsOneWidget);
+    });
+  });
+
+  group('launcher', () {
+    uiTest('+ opens Workspace overview in a new active tab bound to the '
+        'sidebar selection, other views unchanged', (tester) async {
+      final link = linkWith(
+        docOf([tabOf('t1', overviewOf('p1', 'A'))], selected: 'B'),
+        records: [workspaceRecord('A'), workspaceRecord('B')],
+      );
+      final c = await pumpWorkbench(tester, link);
+
+      await tester.tap(key('add-tab'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Workspace overview'));
+      await tester.pumpAndSettle();
+
+      final d = c.layout!;
+      expect(d.tabs, hasLength(2));
+      expect(d.tabs.first.id, 't1');
+      expect((d.tabs.first.root as PaneNode).workspace, 'A');
+      final fresh = d.tabs.last.root as PaneNode;
+      expect(fresh.kind, workspaceOverviewKind);
+      expect(fresh.workspace, 'B');
+      expect(d.activeTab, d.tabs.last.id);
+      expect(d.focusedPane, fresh.id);
+      await tester.pump(const Duration(seconds: 3));
+    });
+
+    uiTest('+ with Personal selected marks workspace-needing kinds, offers '
+        'Open folder and creates no tab', (tester) async {
+      final c = await pumpWorkbench(tester, linkWith(null));
+
+      await tester.tap(find.byTooltip('New tab'));
+      await tester.pumpAndSettle();
+
+      expect(find.textContaining('needs a workspace'), findsOneWidget);
+      expect(find.text('Open folder...'), findsOneWidget);
+      await tester.tap(find.textContaining('needs a workspace'));
+      await tester.pumpAndSettle();
+      expect(c.layout!.tabs, isEmpty, reason: 'no tab until a workspace');
+    });
+
+    uiTest('opening an open item focuses its pane in another tab', (
+      tester,
+    ) async {
+      final link = linkWith(
+        docOf(
+          [tabOf('t1', overviewOf('p1', 'A')), tabOf('t2', paneOf('p2'))],
+          active: 't2',
+          selected: 'A',
+        ),
+        records: [workspaceRecord('A')],
+      );
+      final c = await pumpWorkbench(tester, link);
+
+      await tester.tap(key('add-tab'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Workspace overview'));
+      await tester.pumpAndSettle();
+
+      expect(c.layout!.tabs, hasLength(2));
+      expect(c.layout!.activeTab, 't1');
+      expect(c.layout!.focusedPane, 'p1');
+      await tester.pump(const Duration(seconds: 3));
+    });
+
+    uiTest('the launcher reports the limit', (tester) async {
+      final tabs = [for (var i = 1; i <= 8; i++) gridTab('t$i', 16)];
+      final link = linkWith(
+        docOf(tabs, selected: 'A'),
+        records: [workspaceRecord('A')],
+      );
+      final c = await pumpWorkbench(tester, link);
+      expect(c.layout!.paneCount, maxPanes);
+
+      await tester.tap(key('add-tab'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Workspace overview'));
+      await tester.pumpAndSettle();
+
+      expect(c.layout!.tabs, hasLength(8));
+      expect(c.layout!.paneCount, maxPanes);
+      expect(find.textContaining('128 panes'), findsOneWidget);
+    });
+  });
+
+  group('split', () {
+    Future<WorkbenchController> pumpSplittable(
+      WidgetTester tester,
+      LayoutDocument layout,
+    ) => pumpWorkbench(
+      tester,
+      linkWith(
+        layout,
+        records: [workspaceRecord('A')],
+        hello: helloResult(capabilities: terminalCapabilities),
+      ),
+    );
+
+    uiTest('the split action reports the limit', (tester) async {
+      // A tab at 16 panes.
+      final c = await pumpSplittable(tester, docOf([gridTab('t1', 16)]));
+      await tester.tap(key('split-right-t1-p16'));
+      await tester.pumpAndSettle();
+      expect(c.layout!.paneCount, 16);
+      expect(find.textContaining('16 panes'), findsOneWidget);
+      expect(c.terminals.linkOf('t1-p16'), isNull);
+    });
+
+    uiTest('the split action reports the limit of the document', (
+      tester,
+    ) async {
+      // 15 tabs of 8 panes = 120, and one of 8: 128 in all.
+      final tabs = [for (var i = 1; i <= 16; i++) gridTab('t$i', 8)];
+      final c = await pumpSplittable(tester, docOf(tabs, active: 't1'));
+      expect(c.layout!.paneCount, maxPanes);
+
+      await tester.tap(key('split-down-t1-p8'));
+      await tester.pumpAndSettle();
+
+      expect(c.layout!.paneCount, maxPanes);
+      expect(find.textContaining('128 panes'), findsOneWidget);
+    });
+  });
+
+  group('workspace binding', () {
+    uiTest('a pane bound to an unavailable workspace keeps its binding and '
+        'shows unavailable', (tester) async {
+      final link = linkWith(
+        docOf([tabOf('t1', overviewOf('p1', 'A'))], selected: 'A'),
+        records: [
+          workspaceRecord(
+            'A',
+            availability: Availability.unavailable,
+            reason: 'folder missing',
+          ),
+        ],
+      );
+      final c = await pumpWorkbench(tester, link);
+
+      expect(
+        inside('pane-header-p1', find.text('unavailable')),
+        findsOneWidget,
+      );
+      expect(find.textContaining('folder missing'), findsWidgets);
+      expect(c.layout!.pane('p1')!.workspace, 'A');
+      expect(key('check-A'), findsOneWidget);
+    });
+  });
+
+  group('sidebar', () {
+    uiTest('collapsing and expanding the sidebar keeps tabs, panes, splits, '
+        'active tab and focused pane', (tester) async {
+      final link = linkWith(
+        docOf(
+          [
+            tabOf('t1', splitOf('s1', paneOf('p1', ws: 'A'), paneOf('p2'))),
+            tabOf('t2', paneOf('p3')),
+          ],
+          active: 't1',
+          selected: 'A',
+        ),
+        records: [workspaceRecord('A')],
+      );
+      final c = await pumpWorkbench(tester, link);
+      await tester.tapAt(tester.getCenter(key('pane-p2')));
+      await tester.pump();
+      final before = jsonEncode(layoutToJson(c.layout!)['tabs']);
+      expect(c.layout!.focusedPane, 'p2');
+
+      await tester.tap(find.byTooltip('Collapse sidebar'));
+      await tester.pump();
+      expect(key('sidebar'), findsNothing);
+      expect(find.byTooltip('Expand sidebar'), findsOneWidget);
+      expect(c.layout!.sidebarCollapsed, isTrue);
+      expect(c.layout!.activeTab, 't1');
+      expect(c.layout!.focusedPane, 'p2');
+      expect(key('pane-p1'), findsOneWidget);
+      expect(key('pane-p2'), findsOneWidget);
+      expect(key('tab-t2'), findsOneWidget);
+
+      await tester.tap(find.byTooltip('Expand sidebar'));
+      await tester.pump();
+      expect(key('sidebar'), findsOneWidget);
+      expect(jsonEncode(layoutToJson(c.layout!)['tabs']), before);
+      expect(c.layout!.activeTab, 't1');
+      expect(c.layout!.focusedPane, 'p2');
+      await tester.pump(const Duration(seconds: 3));
+    });
+
+    uiTest('the collapsed sidebar is restored from load', (tester) async {
+      await pumpWorkbench(tester, linkWith(docOf(const [], collapsed: true)));
+
+      expect(key('sidebar'), findsNothing);
+      expect(find.byTooltip('Expand sidebar'), findsOneWidget);
+    });
+
+    uiTest('Personal returns the selection to no workspace without moving '
+        'any binding', (tester) async {
+      final link = linkWith(
+        docOf([tabOf('t1', overviewOf('p1', 'A'))], selected: 'A'),
+        records: [workspaceRecord('A')],
+      );
+      final c = await pumpWorkbench(tester, link);
+
+      await tester.tap(key('personal'));
+      await tester.pump();
+
+      expect(c.layout!.selectedWorkspace, isNull);
+      expect(c.layout!.pane('p1')!.workspace, 'A');
+      await tester.pump(const Duration(seconds: 3));
+    });
+  });
+
+  group('unsupported view', () {
+    uiTest('the unsupported view pane names the kind and can be split, moved '
+        'and closed', (tester) async {
+      final sketch = paneOf(
+        'p1',
+        kind: 'sketch',
+        item: 'x',
+        state: {
+          'a': 1,
+          'b': [2],
+        },
+      );
+      final link = linkWith(
+        docOf([tabOf('t1', sketch)]),
+        hello: helloResult(capabilities: terminalCapabilities),
+      );
+      final c = await pumpWorkbench(tester, link);
+
+      expect(
+        inside('pane-p1', find.textContaining('Unsupported view')),
+        findsWidgets,
+      );
+      expect(inside('pane-p1', find.textContaining('sketch')), findsWidgets);
+
+      // Split: a terminal opens beside it.
+      await tester.tap(key('split-right-p1'));
+      await tester.pump(const Duration(milliseconds: 50));
+      await tester.pumpAndSettle();
+      expect(c.layout!.tabs.single.paneCount, 2);
+
+      // Move it to a new tab.
+      await tester.tap(key('move-p1'));
+      await tester.pumpAndSettle();
+      expect(c.layout!.tabs, hasLength(2));
+      expect(c.layout!.tabOf('p1')!.paneCount, 1);
+
+      // Its JSON is the same in the save.
+      await tester.pump(ms500);
+      await tester.pump();
+      final saved = link.saves.last.layout;
+      final panes = <Json>[];
+      void walk(Object? n) {
+        if (n is Map && n['type'] == 'pane') {
+          panes.add(n.cast<String, Object?>());
+        }
+        if (n is Map && n['type'] == 'split') {
+          walk(n['first']);
+          walk(n['second']);
+        }
+      }
+
+      for (final t in saved['tabs']! as List) {
+        walk((t as Map)['root']);
+      }
+      final stored = panes.singleWhere((p) => p['id'] == 'p1');
+      expect(stored, {
+        'type': 'pane',
+        'id': 'p1',
+        'kind': 'sketch',
+        'workspace': null,
+        'item': 'x',
+        'state': {
+          'a': 1,
+          'b': [2],
+        },
+      });
+
+      // Close it.
+      await tester.tap(key('close-pane-p1'));
+      await tester.pumpAndSettle();
+      expect(c.layout!.pane('p1'), isNull);
+    });
+  });
+
+  group('narrow widths', () {
+    uiTest('the strip, headers, empty state and every kind lay out without '
+        'overflow at 143 px', (tester) async {
+      final link = linkWith(
+        docOf(
+          [
+            tabOf(
+              't1',
+              splitOf(
+                's1',
+                splitOf(
+                  's2',
+                  overviewOf('p1', 'A'),
+                  restoredTerminal('p2', ws: 'A'),
+                  direction: SplitDirection.vertical,
+                ),
+                paneOf('p3', kind: 'sketch', item: 'x'),
+              ),
+            ),
+            tabOf('t2', paneOf('p4')),
+          ],
+          selected: 'A',
+          collapsed: true,
+        ),
+        records: [workspaceRecord('A', label: 'a-rather-long-workspace-label')],
+        hello: helloResult(capabilities: terminalCapabilities),
+      );
+      final c = await pumpWorkbench(tester, link, size: const Size(183, 600));
+      expect(tester.takeException(), isNull);
+      expect(tester.getSize(key('central-area')).width, 143);
+
+      // The same with the empty state.
+      await c.requestClose(['p1', 'p2', 'p3', 'p4'], (_) async => true);
+      await tester.pumpAndSettle();
+      expect(c.layout!.tabs, isEmpty);
+      expect(key('empty-state'), findsOneWidget);
+      expect(tester.takeException(), isNull);
+      tester.view.physicalSize = const Size(100, 300);
+      await tester.pumpAndSettle();
+      expect(tester.takeException(), isNull);
+      await tester.pump(const Duration(seconds: 3));
+    });
+  });
+
   group('workbench', () {
     uiTest('workbench and layout show while the host reconciles', (
       tester,
     ) async {
-      final layout = twoGroups(
-        groupOf('g1', ctx: 'A', tabs: [tabOf('t1', ws: 'A')]),
-        groupOf('g2'),
-      );
+      final layout = docOf([
+        tabOf('t1', splitOf('s1', overviewOf('p1', 'A'), paneOf('p2'))),
+      ], selected: 'A');
       final link = linkWith(
         layout,
         records: [workspaceRecord('A')],
@@ -487,232 +1143,10 @@ void main() {
       expect(find.textContaining('Cleaning up'), findsOneWidget);
     });
 
-    uiTest('first launch shows Personal with one empty group', (
-      tester,
-    ) async {
-      final c = await pumpWorkbench(tester, linkWith(null));
-      expect(c.layout!.groupCount, 1);
-      expect(c.layout!.tabCount, 0);
-      expect(find.text('Personal'), findsOneWidget);
-      expect(find.text('Open folder'), findsOneWidget);
-      expect(find.byTooltip('New tab'), findsOneWidget);
-      expect(find.byType(AlertDialog), findsNothing);
-    });
-
-    uiTest('dragging a tab to another group keeps its binding', (
-      tester,
-    ) async {
-      final layout = twoGroups(
-        groupOf('g1', ctx: 'A', tabs: [
-          tabOf('t0'),
-          tabOf('t1', kind: workspaceOverviewKind, ws: 'A', item: 'A'),
-        ]),
-        groupOf('g2', ctx: 'B'),
-      );
-      final link = linkWith(
-        layout,
-        records: [workspaceRecord('A'), workspaceRecord('B')],
-      );
-      final c = await pumpWorkbench(tester, link);
-
-      // The visible start of the tab (its center can lie behind the + button).
-      final from = tester.getTopLeft(key('tab-t1')) + const Offset(20, 18);
-      final to = tester.getCenter(key('group-g2'));
-      final drag = await tester.startGesture(from);
-      await drag.moveBy(const Offset(24, 0));
-      await tester.pump();
-      await drag.moveTo(to);
-      await tester.pump();
-      await drag.up();
-      await tester.pump();
-
-      final moved = c.layout!;
-      expect(moved.groupOf('t1')!.id, 'g2');
-      expect(moved.group('g2')!.active, 't1');
-      expect(moved.tab('t1')!.workspace, 'A');
-      expect(inside('group-g2', key('tab-t1')), findsOneWidget);
-      expect(inside('group-g1', key('tab-t1')), findsNothing);
-      expect(inside('group-g1', key('tab-t0')), findsOneWidget);
-    });
-
-    uiTest('drag updates before a rebuild all move the divider', (
-      tester,
-    ) async {
-      final layout = twoGroups(groupOf('g1'), groupOf('g2'));
-      final c = await pumpWorkbench(tester, linkWith(layout));
-      double ratio() => (c.layout!.root as SplitNode).ratio;
-      final available =
-          tester.getSize(key('split-view-s1')).width - 6; // minus the handle
-
-      final drag = await tester.startGesture(
-        tester.getCenter(key('split-handle-s1')),
-      );
-      await drag.moveBy(const Offset(40, 0));
-      await tester.pump();
-      final before = ratio();
-      // Three updates arrive before the next frame.
-      await drag.moveBy(const Offset(10, 0));
-      await drag.moveBy(const Offset(10, 0));
-      await drag.moveBy(const Offset(10, 0));
-      await tester.pump();
-      await drag.up();
-      await tester.pump();
-
-      expect(ratio(), closeTo(before + 30 / available, 1e-9));
-    });
-
-    uiTest('split action reports the group limit', (tester) async {
-      var d = LayoutDocument.initial('g1');
-      var n = 1;
-      var dir = SplitDirection.horizontal;
-      // Balanced: every round splits every group once.
-      while (d.groupCount < maxTabGroups) {
-        for (final g in d.groups.toList()) {
-          n++;
-          d = d.split(g.id, dir, 'g$n', 's$n').document!;
-          d = d.focusGroup('g1').document!;
-        }
-        dir = dir == SplitDirection.horizontal
-            ? SplitDirection.vertical
-            : SplitDirection.horizontal;
-      }
-      expect(d.groupCount, maxTabGroups);
-      final c = await pumpWorkbench(tester, linkWith(d));
-      expect(c.layout!.groupCount, maxTabGroups);
-
-      await tester.tap(key('split-h-g1'));
-      await tester.pump();
-
-      expect(c.layout!.groupCount, maxTabGroups);
-      expect(find.textContaining('16 tab groups'), findsOneWidget);
-    });
-
-    uiTest(
-      '+ in an unfocused group opens the view there bound to that group\'s context',
-      (tester) async {
-        final layout = twoGroups(
-          groupOf('g1', ctx: 'A', tabs: [tabOf('t0', ws: 'A')]),
-          groupOf('g2', ctx: 'B'),
-          focused: 'g1',
-        );
-        final link = linkWith(
-          layout,
-          records: [workspaceRecord('A'), workspaceRecord('B')],
-        );
-        final c = await pumpWorkbench(tester, link);
-
-        await tester.tap(key('add-g2'));
-        await tester.pumpAndSettle();
-        await tester.tap(find.text('Workspace overview'));
-        await tester.pumpAndSettle();
-
-        final d = c.layout!;
-        final g2 = d.group('g2')!;
-        expect(g2.tabs, hasLength(1));
-        expect(g2.tabs.single.kind, workspaceOverviewKind);
-        expect(g2.tabs.single.workspace, 'B');
-        expect(g2.active, g2.tabs.single.id);
-        expect(d.focusedGroup, 'g2');
-        expect(d.group('g1')!.tabs, hasLength(1));
-      },
-    );
-
-    uiTest(
-      'launcher without context marks workspace-needing kinds and offers Open folder',
-      (tester) async {
-        final c = await pumpWorkbench(tester, linkWith(null));
-
-        await tester.tap(find.byTooltip('New tab'));
-        await tester.pumpAndSettle();
-
-        expect(find.textContaining('needs a workspace'), findsOneWidget);
-        expect(find.text('Open folder...'), findsOneWidget);
-        await tester.tap(find.textContaining('needs a workspace'));
-        await tester.pumpAndSettle();
-        expect(c.layout!.tabCount, 0, reason: 'no tab until a workspace');
-      },
-    );
-
-    uiTest('launcher reports the tab limit', (tester) async {
-      final tabs = [for (var i = 0; i < maxTabs; i++) tabOf('t$i', ws: 'A')];
-      final layout = docOf(groupOf('g1', ctx: 'A', tabs: tabs), focused: 'g1');
-      final c = await pumpWorkbench(
-        tester,
-        linkWith(layout, records: [workspaceRecord('A')]),
-      );
-
-      await tester.tap(key('add-g1'));
-      await tester.pumpAndSettle();
-      await tester.tap(find.text('Workspace overview'));
-      await tester.pumpAndSettle();
-
-      expect(c.layout!.tabCount, maxTabs);
-      expect(find.textContaining('128 tabs'), findsOneWidget);
-    });
-
-    uiTest(
-      'tab bound to an unavailable workspace keeps its binding and shows unavailable',
-      (tester) async {
-        final layout = docOf(
-          groupOf('g1', ctx: 'A', tabs: [
-            tabOf('t1', kind: workspaceOverviewKind, ws: 'A', item: 'A'),
-          ]),
-          focused: 'g1',
-        );
-        final link = linkWith(
-          layout,
-          records: [
-            workspaceRecord(
-              'A',
-              availability: Availability.unavailable,
-              reason: 'folder missing',
-            ),
-          ],
-        );
-        final c = await pumpWorkbench(tester, link);
-
-        expect(inside('tab-t1', find.text('unavailable')), findsOneWidget);
-        expect(find.textContaining('folder missing'), findsWidgets);
-        expect(c.layout!.tab('t1')!.workspace, 'A');
-        expect(key('check-A'), findsOneWidget);
-      },
-    );
-
-    uiTest('collapsing and expanding the sidebar keeps groups, tabs and focus', (
-      tester,
-    ) async {
-      final layout = twoGroups(
-        groupOf('g1', ctx: 'A', tabs: [tabOf('t1', ws: 'A')]),
-        groupOf('g2', tabs: [tabOf('t2')]),
-        focused: 'g2',
-      );
-      final c = await pumpWorkbench(
-        tester,
-        linkWith(layout, records: [workspaceRecord('A')]),
-      );
-      final before = jsonEncode(layoutToJson(c.layout!)['root']);
-
-      await tester.tap(find.byTooltip('Collapse sidebar'));
-      await tester.pump();
-      expect(key('sidebar'), findsNothing);
-      expect(find.byTooltip('Expand sidebar'), findsOneWidget);
-      expect(c.layout!.sidebarCollapsed, isTrue);
-      expect(c.layout!.focusedGroup, 'g2');
-      expect(key('tab-t1'), findsOneWidget);
-      expect(key('tab-t2'), findsOneWidget);
-
-      await tester.tap(find.byTooltip('Expand sidebar'));
-      await tester.pump();
-      expect(key('sidebar'), findsOneWidget);
-      expect(jsonEncode(layoutToJson(c.layout!)['root']), before);
-      expect(c.layout!.focusedGroup, 'g2');
-      await tester.pump(const Duration(seconds: 3)); // let the saves go
-    });
-
     uiTest('a change survives killing the desktop after the save period', (
       tester,
     ) async {
-      final layout = docOf(groupOf('g1'), focused: 'g1');
+      final layout = docOf(const []);
       final link = linkWith(layout);
       final c = await pumpWorkbench(tester, link);
 
@@ -723,7 +1157,10 @@ void main() {
       // Killed: no flush, no quit, nothing more runs in this desktop.
       final sent = jsonOf(c.layout!);
       await tester.pumpWidget(const SizedBox());
-      expect(link.calls.where((x) => x.startsWith('workbench/save')), hasLength(1));
+      expect(
+        link.calls.where((x) => x.startsWith('workbench/save')),
+        hasLength(1),
+      );
       expect(link.quitCalled, isFalse);
 
       // The next launch: a new desktop and host on the same profile.
@@ -735,14 +1172,6 @@ void main() {
 
       expect(jsonOf(reopened.layout!), sent);
       expect(reopened.layout!.sidebarCollapsed, isTrue);
-      expect(find.byTooltip('Expand sidebar'), findsOneWidget);
-    });
-
-    uiTest('collapsed sidebar is restored from load', (tester) async {
-      final layout = docOf(groupOf('g1'), focused: 'g1', collapsed: true);
-      await pumpWorkbench(tester, linkWith(layout));
-
-      expect(key('sidebar'), findsNothing);
       expect(find.byTooltip('Expand sidebar'), findsOneWidget);
     });
 
@@ -826,45 +1255,7 @@ void main() {
       expect(link.storedLayout, jsonOf(c.layout!));
     });
 
-    uiTest('empty layout with restore notice', (tester) async {
-      final link = linkWith(null, records: [workspaceRecord('A')]);
-      link.restoreError = 'unsupported layout format 9';
-      final c = await pumpWorkbench(tester, link);
-
-      expect(c.layout!.groupCount, 1);
-      expect(c.layout!.tabCount, 0);
-      expect(
-        find.textContaining('saved layout could not be restored'),
-        findsOneWidget,
-      );
-      expect(find.textContaining('unsupported layout format 9'), findsOneWidget);
-      expect(key('ws-A'), findsOneWidget);
-    });
-
-    uiTest('unsupported view tab names the kind', (tester) async {
-      final layout = docOf(
-        groupOf('g1', tabs: [
-          tabOf('t1', kind: 'sketch', item: 'x', state: {'a': 1, 'b': [2]}),
-        ]),
-        focused: 'g1',
-      );
-      final link = linkWith(layout);
-      await pumpWorkbench(tester, link);
-
-      expect(find.textContaining('Unsupported view'), findsWidgets);
-      expect(find.textContaining('sketch'), findsWidgets);
-
-      await tester.tap(find.byTooltip('Collapse sidebar'));
-      await tester.pump(ms500);
-      await tester.pump();
-      expect(link.saves, hasLength(1));
-      expect(
-        jsonEncode(link.saves.single.layout['root']),
-        jsonEncode(jsonOf(layout)['root']),
-      );
-    });
-
-    uiTest('picked folder appears and becomes group context', (
+    uiTest('the picked folder appears and becomes the sidebar selection', (
       tester,
     ) async {
       final picker = FakePicker()..next = '/work/new-project';
@@ -879,7 +1270,8 @@ void main() {
       expect(find.text('new-project'), findsOneWidget);
       expect(find.text('/work/new-project'), findsOneWidget);
       final id = c.workspaces.single.id;
-      expect(c.layout!.group(c.layout!.focusedGroup)!.context, id);
+      expect(c.layout!.selectedWorkspace, id);
+      await tester.pump(const Duration(seconds: 3));
     });
 
     uiTest('an already known folder is selected as in the sidebar', (
@@ -897,7 +1289,120 @@ void main() {
       await tester.pump();
 
       expect(c.workspaces, hasLength(1));
-      expect(c.layout!.group(c.layout!.focusedGroup)!.context, 'A');
+      expect(c.layout!.selectedWorkspace, 'A');
+      await tester.pump(const Duration(seconds: 3));
+    });
+
+    uiTest('no new binding to a workspace while its remove is out', (
+      tester,
+    ) async {
+      final layout = docOf([tabOf('t1', paneOf('p1'))]);
+      final link = linkWith(layout, records: [workspaceRecord('C')]);
+      link.removeGate = Completer<void>();
+      final c = await pumpWorkbench(tester, link);
+
+      await tester.tap(key('remove-C'));
+      await tester.pump();
+      expect(link.calls.last, 'workspace/remove C');
+
+      c.openView(workspaceOverviewKind);
+      c.selectWorkspace('C');
+      await tester.pump();
+      expect(c.layout!.tabs, hasLength(1));
+      expect(c.layout!.selectedWorkspace, isNull);
+      expect(find.textContaining('being removed'), findsOneWidget);
+
+      link.removeGate!.complete();
+      await tester.pump();
+      await tester.pump();
+      expect(c.workspace('C'), isNull);
+      expect(c.layout!.boundWorkspaces, isEmpty);
+      await tester.pump(const Duration(seconds: 3));
+    });
+
+    uiTest('removing the selected workspace returns the in-memory selection '
+        'to Personal', (tester) async {
+      final layout = docOf([tabOf('t1', paneOf('p1'))], selected: 'C');
+      final link = linkWith(layout, records: [workspaceRecord('C')]);
+      link.removeAnswers.add(const WorkspaceRemoveResult(9));
+      link.removeGate = Completer<void>();
+      final c = await pumpWorkbench(tester, link);
+
+      // Unsaved changes when Remove is chosen.
+      await tester.tap(find.byTooltip('Collapse sidebar'));
+      await tester.pump();
+      await tester.tap(find.byTooltip('Expand sidebar'));
+      await tester.pump();
+      await tester.tap(key('remove-C'));
+      await tester.pump();
+      expect(link.calls.last, 'workspace/remove C');
+      expect(
+        link.calls[link.calls.length - 2],
+        startsWith('workbench/save'),
+        reason: 'the layout is flushed before the remove',
+      );
+
+      // A change made while the remove is out.
+      c.setSidebarCollapsed(true);
+      link.removeGate!.complete();
+      await tester.pump();
+      await tester.pump();
+
+      expect(c.layout!.selectedWorkspace, isNull);
+      expect(c.workspace('C'), isNull);
+      expect(c.saver.counter, greaterThanOrEqualTo(9));
+      await tester.pump(ms500);
+      await tester.pump();
+      expect(link.saves.last.revision, greaterThan(9));
+      final saved = layoutFromJson(link.saves.last.layout);
+      expect(saved.selectedWorkspace, isNull);
+      expect(saved.sidebarCollapsed, isTrue);
+
+      await tester.tap(find.byTooltip('New tab'));
+      await tester.pumpAndSettle();
+      expect(find.text('Open folder...'), findsOneWidget);
+      expect(find.textContaining('needs a workspace'), findsOneWidget);
+    });
+
+    uiTest('Remove is disabled while panes are bound', (tester) async {
+      final layout = docOf([tabOf('t1', paneOf('p1', ws: 'A'))]);
+      final link = linkWith(
+        layout,
+        records: [workspaceRecord('A'), workspaceRecord('B')],
+      );
+      await pumpWorkbench(tester, link);
+
+      expect(tester.widget<IconButton>(key('remove-A')).onPressed, isNull);
+      expect(
+        find.textContaining("A's panes must be closed first"),
+        findsOneWidget,
+      );
+      expect(tester.widget<IconButton>(key('remove-B')).onPressed, isNotNull);
+    });
+
+    uiTest('sidebar selection focuses the most recent bound pane and never '
+        'rebinds', (tester) async {
+      final layout = docOf(
+        [
+          tabOf('t1', paneOf('p1', ws: 'A')),
+          tabOf('t2', paneOf('p2', ws: 'B')),
+        ],
+        active: 't2',
+        selected: 'B',
+        recent: const ['p2', 'p1'],
+      );
+      final c = await pumpWorkbench(
+        tester,
+        linkWith(layout, records: [workspaceRecord('A'), workspaceRecord('B')]),
+      );
+
+      await tester.tap(key('ws-A'));
+      await tester.pump();
+      expect(c.layout!.activeTab, 't1');
+      expect(c.layout!.focusedPane, 'p1');
+      expect(c.layout!.selectedWorkspace, 'A');
+      expect(c.layout!.pane('p2')!.workspace, 'B', reason: 'never rebinds');
+      await tester.pump(const Duration(seconds: 3));
     });
 
     uiTest('a failed open shows path and reason and adds nothing', (
@@ -1023,37 +1528,6 @@ void main() {
       expect(key('badge-B'), findsNothing);
     });
 
-    uiTest('no new binding to a workspace while its remove is out', (
-      tester,
-    ) async {
-      final layout = twoGroups(
-        groupOf('g1', ctx: 'C'),
-        groupOf('g2'),
-      );
-      final link = linkWith(layout, records: [workspaceRecord('C')]);
-      link.removeGate = Completer<void>();
-      final c = await pumpWorkbench(tester, link);
-
-      await tester.tap(key('remove-C'));
-      await tester.pump();
-      expect(link.calls.last, 'workspace/remove C');
-
-      c.openView('g1', workspaceOverviewKind);
-      c.focusGroup('g2');
-      c.selectWorkspace('C');
-      await tester.pump();
-      expect(c.layout!.tabCount, 0);
-      expect(c.layout!.group('g2')!.context, isNull);
-      expect(find.textContaining('being removed'), findsOneWidget);
-
-      link.removeGate!.complete();
-      await tester.pump();
-      await tester.pump();
-      expect(c.workspace('C'), isNull);
-      expect(c.layout!.boundWorkspaces, isEmpty);
-      await tester.pump(const Duration(seconds: 3));
-    });
-
     uiTest('a workspace record received during the load is applied after it', (
       tester,
     ) async {
@@ -1127,12 +1601,7 @@ void main() {
     });
 
     uiTest('sidebar badge opens filtered cleanup list', (tester) async {
-      final layout = docOf(
-        groupOf('g1', ctx: 'A', tabs: [
-          tabOf('t1', kind: workspaceOverviewKind, ws: 'A', item: 'A'),
-        ]),
-        focused: 'g1',
-      );
+      final layout = docOf([tabOf('t1', overviewOf('p1', 'A'))], selected: 'A');
       final link = linkWith(
         layout,
         records: [workspaceRecord('A', cleanupGroups: 2)],
@@ -1231,65 +1700,6 @@ void main() {
       expect(c.workspace('A')!.cleanup.groups, 0);
     });
 
-    uiTest('in-memory context cleared', (tester) async {
-      final layout = docOf(groupOf('g1', ctx: 'C'), focused: 'g1');
-      final link = linkWith(layout, records: [workspaceRecord('C')]);
-      link.removeAnswers.add(const WorkspaceRemoveResult(9));
-      link.removeGate = Completer<void>();
-      final c = await pumpWorkbench(tester, link);
-
-      // Unsaved changes when Remove is chosen.
-      await tester.tap(find.byTooltip('Collapse sidebar'));
-      await tester.pump();
-      await tester.tap(find.byTooltip('Expand sidebar'));
-      await tester.pump();
-      await tester.tap(key('remove-C'));
-      await tester.pump();
-      expect(link.calls.last, 'workspace/remove C');
-      expect(
-        link.calls[link.calls.length - 2],
-        startsWith('workbench/save'),
-        reason: 'the layout is flushed before the remove',
-      );
-
-      // A change made while the remove is out.
-      c.setSidebarCollapsed(true);
-      link.removeGate!.complete();
-      await tester.pump();
-      await tester.pump();
-
-      expect(c.layout!.group('g1')!.context, isNull);
-      expect(c.workspace('C'), isNull);
-      expect(c.saver.counter, greaterThanOrEqualTo(9));
-      await tester.pump(ms500);
-      await tester.pump();
-      expect(link.saves.last.revision, greaterThan(9));
-      final saved = layoutFromJson(link.saves.last.layout);
-      expect(saved.group('g1')!.context, isNull);
-      expect(saved.sidebarCollapsed, isTrue);
-
-      await tester.tap(find.byTooltip('New tab'));
-      await tester.pumpAndSettle();
-      expect(find.text('Open folder...'), findsOneWidget);
-      expect(find.textContaining('needs a workspace'), findsOneWidget);
-    });
-
-    uiTest('Remove disabled while tabs are bound', (tester) async {
-      final layout = docOf(
-        groupOf('g1', ctx: 'A', tabs: [tabOf('t1', ws: 'A')]),
-        focused: 'g1',
-      );
-      final link = linkWith(
-        layout,
-        records: [workspaceRecord('A'), workspaceRecord('B')],
-      );
-      await pumpWorkbench(tester, link);
-
-      expect(tester.widget<IconButton>(key('remove-A')).onPressed, isNull);
-      expect(find.textContaining("A's tabs must be closed first"), findsOneWidget);
-      expect(tester.widget<IconButton>(key('remove-B')).onPressed, isNotNull);
-    });
-
     uiTest('workspace-in-use on remove is reported', (tester) async {
       final link = linkWith(null, records: [workspaceRecord('A')]);
       link.removeAnswers.add(
@@ -1303,28 +1713,6 @@ void main() {
 
       expect(c.workspace('A'), isNotNull);
       expect(find.textContaining('in use'), findsOneWidget);
-    });
-
-    uiTest('sidebar selection focuses the most recent bound tab', (
-      tester,
-    ) async {
-      final layout = twoGroups(
-        groupOf('g1', ctx: 'A', tabs: [tabOf('t1', ws: 'A')]),
-        groupOf('g2', ctx: 'B'),
-        focused: 'g2',
-        recent: const ['t1'],
-      );
-      final c = await pumpWorkbench(
-        tester,
-        linkWith(layout, records: [workspaceRecord('A'), workspaceRecord('B')]),
-      );
-
-      await tester.tap(key('ws-A'));
-      await tester.pump();
-      expect(c.layout!.focusedGroup, 'g1');
-      expect(c.layout!.tab('t1')!.workspace, 'A');
-      expect(c.layout!.group('g2')!.context, 'B', reason: 'never rebinds');
-      await tester.pump(const Duration(seconds: 3));
     });
 
     uiTest('records are applied only when seq is above the last applied', (
@@ -1406,7 +1794,10 @@ void main() {
       expect(c.layout!.sidebarCollapsed, isFalse);
       expect(c.workspace('A'), isNotNull);
       expect(second.saves, isNotEmpty);
-      expect(second.saves.last.layout['sidebar'], {'collapsed': false});
+      expect(second.saves.last.layout['sidebar'], {
+        'collapsed': false,
+        'selected': null,
+      });
       expect(second.saves.last.revision, greaterThan(1));
     });
   });

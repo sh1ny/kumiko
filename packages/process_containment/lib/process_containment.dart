@@ -5,11 +5,13 @@ library;
 
 export 'src/contained_unit.dart';
 export 'src/fs_identity.dart';
-export 'src/libc.dart' show sessionIdOf;
+export 'src/libc.dart' show chmodPath, sessionIdOf;
 export 'src/marker_scan.dart';
 export 'src/posix_process_table.dart'
     show PosixProcessTable, posixKill, posixKillpg, posixSigkill, posixSigterm;
 export 'src/posix_unit.dart';
+export 'src/pty.dart';
+export 'src/pty_io.dart';
 export 'src/process_identity.dart';
 export 'src/process_table.dart';
 export 'src/unit_exec.dart' show runUnitExec, unitMarkerVariable;

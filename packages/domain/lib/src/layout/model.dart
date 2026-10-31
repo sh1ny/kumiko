@@ -1,12 +1,26 @@
-/// Immutable working-set layout model (design D2, D7, D8).
+/// Immutable working-set layout model, format 2: tabs contain panes
+/// (design D11).
+///
+/// Nothing here names a view kind: `kind` is an opaque string the desktop
+/// interprets.
 library;
 
 /// Direction of a split.
 enum SplitDirection { horizontal, vertical }
 
-/// A tab. `workspace` is set at creation and never written by any operation.
-final class LayoutTab {
-  const LayoutTab({
+/// A node of a tab's split tree: a [PaneNode] leaf or a [SplitNode].
+sealed class LayoutNode {
+  const LayoutNode();
+  String get id;
+
+  /// The panes below this node in tree order (`first` before `second`).
+  List<PaneNode> get panes;
+}
+
+/// A pane: one view for its whole life. `workspace` is set at creation and
+/// never written by any operation; the pane id is the view's id.
+final class PaneNode extends LayoutNode {
+  const PaneNode({
     required this.id,
     required this.kind,
     required this.workspace,
@@ -14,12 +28,13 @@ final class LayoutTab {
     this.state = const <String, Object?>{},
   });
 
+  @override
   final String id;
 
   /// Opaque view kind; the desktop decides which kinds it knows.
   final String kind;
 
-  /// Workspace this tab is bound to, or null.
+  /// Workspace this view is bound to, or null.
   final String? workspace;
 
   /// The kind's identity key used for focus-existing, or null.
@@ -27,42 +42,9 @@ final class LayoutTab {
 
   /// Kind-owned JSON object, preserved verbatim.
   final Map<String, Object?> state;
-}
-
-/// A node of the split tree.
-sealed class LayoutNode {
-  const LayoutNode();
-  String get id;
-}
-
-/// A group of tabs: a leaf of the split tree.
-final class TabGroup extends LayoutNode {
-  const TabGroup({
-    required this.id,
-    required this.context,
-    required this.tabs,
-    required this.active,
-  });
 
   @override
-  final String id;
-
-  /// Workspace context new tabs bind to, or null.
-  final String? context;
-  final List<LayoutTab> tabs;
-
-  /// Id of the active tab; null iff [tabs] is empty.
-  final String? active;
-
-  TabGroup withContext(String? value) =>
-      TabGroup(id: id, context: value, tabs: tabs, active: active);
-
-  TabGroup withTabs(List<LayoutTab> newTabs, String? newActive) => TabGroup(
-    id: id,
-    context: context,
-    tabs: List.unmodifiable(newTabs),
-    active: newActive,
-  );
+  List<PaneNode> get panes => [this];
 }
 
 /// An interior node splitting the area between two children.
@@ -78,9 +60,14 @@ final class SplitNode extends LayoutNode {
   @override
   final String id;
   final SplitDirection direction;
+
+  /// The first child's share of the area.
   final double ratio;
   final LayoutNode first;
   final LayoutNode second;
+
+  @override
+  List<PaneNode> get panes => [...first.panes, ...second.panes];
 
   SplitNode withChildren(LayoutNode newFirst, LayoutNode newSecond) =>
       SplitNode(
@@ -100,77 +87,98 @@ final class SplitNode extends LayoutNode {
   );
 }
 
+/// A tab: a split tree of panes and the pane focused within it.
+final class LayoutTabNode {
+  const LayoutTabNode({
+    required this.id,
+    required this.root,
+    required this.focusedPane,
+  });
+
+  final String id;
+  final LayoutNode root;
+
+  /// One of this tab's own panes.
+  final String focusedPane;
+
+  /// Panes in tree order.
+  List<PaneNode> get panes => root.panes;
+  int get paneCount => panes.length;
+
+  LayoutTabNode withRoot(LayoutNode newRoot, String newFocused) =>
+      LayoutTabNode(id: id, root: newRoot, focusedPane: newFocused);
+
+  LayoutTabNode withFocus(String paneId) =>
+      LayoutTabNode(id: id, root: root, focusedPane: paneId);
+}
+
 /// The working-set document.
 final class LayoutDocument {
   const LayoutDocument({
-    required this.root,
-    required this.focusedGroup,
+    required this.tabs,
+    required this.activeTab,
     required this.recent,
     required this.sidebarCollapsed,
+    required this.selectedWorkspace,
   });
 
-  /// One empty group, no context, focused, sidebar expanded.
-  factory LayoutDocument.initial(String groupId) => LayoutDocument(
-    root: TabGroup(id: groupId, context: null, tabs: const [], active: null),
-    focusedGroup: groupId,
-    recent: const [],
-    sidebarCollapsed: false,
-  );
+  /// No tabs, sidebar expanded, Personal selected.
+  const LayoutDocument.initial()
+    : tabs = const [],
+      activeTab = null,
+      recent = const [],
+      sidebarCollapsed = false,
+      selectedWorkspace = null;
 
-  final LayoutNode root;
-  final String focusedGroup;
+  /// The strip, left to right.
+  final List<LayoutTabNode> tabs;
 
-  /// Tab ids, most recently active first.
+  /// Id of the active tab; null if and only if [tabs] is empty.
+  final String? activeTab;
+
+  /// Pane ids, most recently focused first. Sparse: may omit panes.
   final List<String> recent;
   final bool sidebarCollapsed;
 
-  /// Groups in tree order (first before second).
-  List<TabGroup> get groups {
-    final out = <TabGroup>[];
-    void walk(LayoutNode n) {
-      switch (n) {
-        case TabGroup():
-          out.add(n);
-        case SplitNode():
-          walk(n.first);
-          walk(n.second);
-      }
-    }
+  /// The workspace new tabs bind to, or null for Personal.
+  final String? selectedWorkspace;
 
-    walk(root);
-    return out;
-  }
-
-  /// All tabs in tree order.
-  List<LayoutTab> get tabs => [for (final g in groups) ...g.tabs];
-
-  int get groupCount => groups.length;
   int get tabCount => tabs.length;
 
-  /// The set of workspace ids that tabs are bound to.
+  /// All panes in strip order, then tree order.
+  List<PaneNode> get panes => [for (final t in tabs) ...t.panes];
+  int get paneCount => panes.length;
+
+  /// The set of workspace ids that panes are bound to.
   Set<String> get boundWorkspaces => {
-    for (final t in tabs)
-      if (t.workspace != null) t.workspace!,
+    for (final p in panes)
+      if (p.workspace != null) p.workspace!,
   };
 
-  TabGroup? group(String id) {
-    for (final g in groups) {
-      if (g.id == id) return g;
-    }
-    return null;
-  }
-
-  LayoutTab? tab(String id) {
+  LayoutTabNode? tab(String id) {
     for (final t in tabs) {
       if (t.id == id) return t;
     }
     return null;
   }
 
-  /// The group that holds the tab [tabId].
-  TabGroup? groupOf(String tabId) {
-    for (final g in groups) {
-      if (g.tabs.any((t) => t.id == tabId)) return g;
+  /// The active tab.
+  LayoutTabNode? get active => activeTab == null ? null : tab(activeTab!);
+
+  /// The window's focused pane: the active tab's.
+  String? get focusedPane => active?.focusedPane;
+
+  PaneNode? pane(String id) {
+    for (final p in panes) {
+      if (p.id == id) return p;
+    }
+    return null;
+  }
+
+  /// The tab that holds the pane [paneId].
+  LayoutTabNode? tabOf(String paneId) {
+    for (final t in tabs) {
+      if (t.panes.any((p) => p.id == paneId)) return t;
     }
     return null;
   }
@@ -186,19 +194,29 @@ final class LayoutDocument {
       }
     }
 
-    walk(root);
+    for (final t in tabs) {
+      walk(t.root);
+    }
     return found;
   }
 
   LayoutDocument copyWith({
-    LayoutNode? root,
-    String? focusedGroup,
+    List<LayoutTabNode>? tabs,
+    Object? activeTab = _keep,
     List<String>? recent,
     bool? sidebarCollapsed,
+    Object? selectedWorkspace = _keep,
   }) => LayoutDocument(
-    root: root ?? this.root,
-    focusedGroup: focusedGroup ?? this.focusedGroup,
+    tabs: tabs == null ? this.tabs : List.unmodifiable(tabs),
+    activeTab: identical(activeTab, _keep)
+        ? this.activeTab
+        : activeTab as String?,
     recent: recent == null ? this.recent : List.unmodifiable(recent),
     sidebarCollapsed: sidebarCollapsed ?? this.sidebarCollapsed,
+    selectedWorkspace: identical(selectedWorkspace, _keep)
+        ? this.selectedWorkspace
+        : selectedWorkspace as String?,
   );
 }
+
+const Object _keep = Object();

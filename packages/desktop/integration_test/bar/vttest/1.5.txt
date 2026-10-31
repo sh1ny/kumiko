@@ -1,0 +1,26 @@
+# vttest 2.7 (20230201) screen 1.5: cursor-control characters inside escape sequences
+rows: all
+|Test of cursor-control characters inside ESC sequences.                         |
+|Below should be four identical lines:                                           |
+|                                                                                |
+|A B C D E F G H I                                                               |
+|A B C D E F G H I                                                               |
+|A B C D E F G H I                                                               |
+|A B C D E F G H I                                                               |
+|                                                                                |
+|Push <RETURN>                                                                   |
+|                                                                                |
+|                                                                                |
+|                                                                                |
+|                                                                                |
+|                                                                                |
+|                                                                                |
+|                                                                                |
+|                                                                                |
+|                                                                                |
+|                                                                                |
+|                                                                                |
+|                                                                                |
+|                                                                                |
+|                                                                                |
+|                                                                                |

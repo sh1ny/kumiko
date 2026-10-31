@@ -1,0 +1,26 @@
+# vttest 2.7 (20230201) screen 2.9: jump scroll, region
+rows: all
+|                                                                                |
+|                                                                                |
+|                                                                                |
+|                                                                                |
+|                                                                                |
+|                                                                                |
+|                                                                                |
+|                                                                                |
+|                                                                                |
+|                                                                                |
+|                                                                                |
+|Push <RETURN>                                                                   |
+|Jump scroll down region [12..13] size 2 Line 29                                 |
+|                                                                                |
+|                                                                                |
+|                                                                                |
+|                                                                                |
+|                                                                                |
+|                                                                                |
+|                                                                                |
+|                                                                                |
+|                                                                                |
+|                                                                                |
+|                                                                                |

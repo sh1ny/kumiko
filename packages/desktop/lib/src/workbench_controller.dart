@@ -4,30 +4,104 @@ import 'dart:math';
 
 import 'package:domain/domain.dart';
 import 'package:flutter/foundation.dart';
+import 'package:flutter/scheduler.dart';
 import 'package:flutter/services.dart';
+import 'package:flutter/widgets.dart' show FocusManager;
 import 'package:host_protocol/host_protocol.dart';
 
 import 'cleanup_controller.dart';
 import 'folder_picker.dart';
 import 'host_link.dart';
 import 'layout_saver.dart';
+import 'terminal/terminal_controller.dart';
+import 'terminal/terminal_surface.dart';
+
+/// Why closing [pane] would lose running work, or null (design D9).
+typedef WarnsOnClose = String? Function(
+  WorkbenchController controller,
+  PaneNode pane,
+);
 
 /// A view kind registered in the desktop (design D7).
 class ViewKind {
-  const ViewKind(this.id, this.label, {required this.needsWorkspace});
+  const ViewKind(
+    this.id,
+    this.label, {
+    required this.needsWorkspace,
+    this.warnsOnClose,
+  });
 
   final String id;
   final String label;
   final bool needsWorkspace;
+
+  /// Null when closing a pane of this kind never warns.
+  final WarnsOnClose? warnsOnClose;
+}
+
+/// One pane a close would end running work in, and why.
+typedef CloseWarning = ({String paneId, String title, String reason});
+
+/// Asks the user to confirm a close that warns; true to go on.
+typedef ConfirmClose = Future<bool> Function(List<CloseWarning> warnings);
+
+/// What a Terminal launch did.
+enum TerminalLaunchKind {
+  opened,
+
+  /// The host or the app cannot run terminals; [TerminalLaunch.message] says why.
+  unavailable,
+
+  /// The default profile is missing: the user picks one.
+  chooseProfile,
+
+  /// There is no profile at all: the user adds one.
+  noProfile,
+
+  /// The profile list could not be fetched.
+  failed,
+}
+
+class TerminalLaunch {
+  const TerminalLaunch(
+    this.kind, {
+    this.profiles = const [],
+    this.missingDefault,
+    this.message,
+  });
+
+  final TerminalLaunchKind kind;
+  final List<ShellProfile> profiles;
+
+  /// The name (or id) of the default profile that is no longer there.
+  final String? missingDefault;
+  final String? message;
 }
 
 const String workspaceOverviewKind = 'workspace-overview';
 
-/// The kinds the launcher offers. This change registers only the Workspace
-/// overview; later changes add more.
+/// A terminal pane: `item` is a fresh UUID per launch, `state` is
+/// `{profileId, profileName}` (design D8).
+const String terminalKind = 'terminal';
+
+String? _terminalWarnsOnClose(WorkbenchController c, PaneNode pane) =>
+    c.terminals.warnsOnClose(pane.id);
+
+/// The registered kinds. The Workspace overview is offered by the launcher
+/// as it is; the terminal has entries of its own there.
 const List<ViewKind> registeredViews = [
   ViewKind(workspaceOverviewKind, 'Workspace overview', needsWorkspace: true),
+  ViewKind(
+    terminalKind,
+    'Terminal',
+    needsWorkspace: false,
+    warnsOnClose: _terminalWarnsOnClose,
+  ),
 ];
+
+/// The registered kinds the launcher offers as one plain entry each.
+Iterable<ViewKind> get launcherViews =>
+    registeredViews.where((k) => k.id != terminalKind);
 
 ViewKind? viewKindOf(String id) {
   for (final k in registeredViews) {
@@ -36,10 +110,22 @@ ViewKind? viewKindOf(String id) {
   return null;
 }
 
+String _uuid() {
+  final random = Random.secure();
+  final bytes = [for (var i = 0; i < 16; i++) random.nextInt(256)];
+  bytes[6] = (bytes[6] & 0x0f) | 0x40;
+  bytes[8] = (bytes[8] & 0x3f) | 0x80;
+  final hex = [for (final b in bytes) b.toRadixString(16).padLeft(2, '0')];
+  return '${hex.sublist(0, 4).join()}-${hex.sublist(4, 6).join()}-'
+      '${hex.sublist(6, 8).join()}-${hex.sublist(8, 10).join()}-'
+      '${hex.sublist(10).join()}';
+}
+
 String _randomId(String prefix) {
   final random = Random.secure();
   final bits = [
-    for (var i = 0; i < 6; i++) random.nextInt(256).toRadixString(16).padLeft(2, '0'),
+    for (var i = 0; i < 6; i++)
+      random.nextInt(256).toRadixString(16).padLeft(2, '0'),
   ];
   return '$prefix-${bits.join()}';
 }
@@ -51,10 +137,26 @@ class WorkbenchController extends ChangeNotifier {
   WorkbenchController({
     required this._picker,
     String Function(String prefix)? newId,
-  }) : _newId = newId ?? _randomId {
+    TerminalSurfaceFactory? surfaceFactory,
+  }) : _newId = newId ?? _randomId,
+       _hasEngine = surfaceFactory != null {
     _saver = LayoutSaver(save: _save);
     _saver.addListener(notifyListeners);
+    terminals = TerminalController(
+      surfaceFactory: surfaceFactory ?? _noSurface,
+      removePane: removePane,
+    );
+    terminals.addListener(notifyListeners);
+    terminals.addListener(_onTerminals);
   }
+
+  final bool _hasEngine;
+
+  static TerminalSurface _noSurface({int scrollbackLimit = 0}) =>
+      throw StateError('no terminal engine');
+
+  /// The terminal panes' links.
+  late final TerminalController terminals;
 
   final FolderPicker _picker;
   final String Function(String prefix) _newId;
@@ -71,9 +173,14 @@ class WorkbenchController extends ChangeNotifier {
   String? _restoreNotice;
   String? _message;
   bool _reconciling = false;
+  ProfileListResult? _profiles;
+
+  /// Names of every profile seen, to name a default that was removed.
+  final Map<String, String> _profileNames = {};
 
   List<WorkspaceRecord> _workspaces = const [];
   final Map<String, int> _seq = {};
+
   /// Per workspace: the `cleanupRevision` its cleanup fields were applied at.
   final Map<String, int> _cleanupOf = {};
 
@@ -127,6 +234,8 @@ class WorkbenchController extends ChangeNotifier {
     final generation = ++_generation;
     _detachLink();
     _link = link;
+    terminals.attach(link);
+    _profiles = null;
     _loadError = null;
     _loading = _layout == null;
     _listLoaded = false;
@@ -138,6 +247,7 @@ class WorkbenchController extends ChangeNotifier {
       ..add(link.cleanupStates.listen(_onCleanupState))
       ..add(link.workspaceChanges.listen(_onWorkspaceChanged));
     notifyListeners();
+    if (terminalsUnavailableReason == null) unawaited(refreshProfiles());
 
     final WorkbenchLoadResult result;
     try {
@@ -180,17 +290,18 @@ class WorkbenchController extends ChangeNotifier {
         try {
           _layout = layoutFromJson(stored);
         } on LayoutInvalid catch (e) {
-          _restoreNotice = 'The saved layout could not be restored: ${e.reason}';
+          _restoreNotice =
+              'The saved layout could not be restored: ${e.reason}';
         }
       } else if (result.restoreError != null) {
         _restoreNotice =
             'The saved layout could not be restored: ${result.restoreError}';
       }
-      _layout ??= LayoutDocument.initial(_newId('g'));
+      _layout ??= LayoutDocument.initial();
     }
     _loading = false;
     final known = {for (final w in _workspaces) w.id};
-    final repaired = _layout!.repairContexts(known);
+    final repaired = _layout!.repairSelection(known);
     final repairedChanged = _encode(repaired) != _encode(_layout!);
     _layout = repaired;
     if (repairedChanged) {
@@ -213,7 +324,9 @@ class WorkbenchController extends ChangeNotifier {
     _generation++;
     _heldChanges = null;
     _detachLink();
+    terminals.detach();
     _link = null;
+    _profiles = null;
     _loading = false;
     notifyListeners();
   }
@@ -246,63 +359,506 @@ class WorkbenchController extends ChangeNotifier {
 
   // --- layout operations --------------------------------------------------
 
-  void _setLayout(LayoutDocument d) {
+  /// The pane whose view should take the keyboard focus once it is mounted.
+  String? _keyboardTarget;
+  bool _keyboardScheduled = false;
+
+  void _onTerminals() {
+    if (_keyboardTarget != null) _scheduleKeyboardFocus();
+  }
+
+  /// The keyboard follows the window's focused pane: [paneId]'s terminal view
+  /// takes it after the frame that mounts or reveals the view.
+  /// Whether the pending keyboard request came from a click in the pane,
+  /// which leaves the keys with a control of the pane that took them.
+  bool _keyboardUnlessInPane = false;
+
+  void _wantKeyboard(String? paneId, {bool unlessInPane = false}) {
+    _keyboardTarget = paneId;
+    _keyboardUnlessInPane = unlessInPane;
+    if (paneId != null) _scheduleKeyboardFocus();
+  }
+
+  void _scheduleKeyboardFocus() {
+    if (_keyboardScheduled || _disposed) return;
+    _keyboardScheduled = true;
+    try {
+      SchedulerBinding.instance
+        ..addPostFrameCallback((_) {
+          _keyboardScheduled = false;
+          _applyKeyboardFocus();
+        })
+        ..ensureVisualUpdate();
+    } on Object {
+      _keyboardScheduled = false; // no binding: no view to focus
+    }
+  }
+
+  void _applyKeyboardFocus() {
+    final id = _keyboardTarget;
+    if (id == null || _disposed) return;
+    final pane = _layout?.pane(id);
+    if (pane == null || _layout?.focusedPane != id) {
+      _keyboardTarget = null;
+      return;
+    }
+    if (pane.kind != terminalKind) {
+      // A view without keyboard input: the previous terminal lets go.
+      _keyboardTarget = null;
+      FocusManager.instance.primaryFocus?.unfocus();
+      return;
+    }
+    // No link yet: asked again when the terminal controller changes.
+    final link = terminals.linkOf(id);
+    if (link == null) return;
+    _keyboardTarget = null;
+    // A click that put the keys in a control of the pane, such as the
+    // search field, leaves them there.
+    if (_keyboardUnlessInPane && _keyboardInPane(id)) return;
+    link.surface.requestFocus();
+  }
+
+  /// Whether the primary focus sits inside the view of pane [id].
+  static bool _keyboardInPane(String id) {
+    final context = FocusManager.instance.primaryFocus?.context;
+    if (context == null) return false;
+    final paneKey = Key('pane-$id');
+    var inside = false;
+    context.visitAncestorElements((e) {
+      if (e.widget.key == paneKey) inside = true;
+      return !inside;
+    });
+    return inside;
+  }
+
+  void _setLayout(LayoutDocument d, {bool refocus = false}) {
+    final focusedBefore = _layout?.focusedPane;
     _layout = d;
     _message = null;
     _saver.change(layoutToJson(d));
+    terminals.sync({
+      for (final p in d.panes)
+        if (p.kind == terminalKind) p.id,
+    });
+    if (refocus || d.focusedPane != focusedBefore) {
+      _wantKeyboard(d.focusedPane);
+    }
     notifyListeners();
   }
 
-  bool _commit(LayoutResult r) {
+  bool _commit(LayoutResult r, {bool refocus = false}) {
     final d = r.document;
     if (d == null) {
       _message = switch (r.refusal!) {
-        LayoutRefusal.groupLimit =>
-          'Cannot split: the limit of $maxTabGroups tab groups is reached.',
-        LayoutRefusal.tabLimit =>
-          'Cannot open a view: the limit of $maxTabs tabs is reached.',
-        LayoutRefusal.needsWorkspace =>
-          'This view needs a workspace. Open a folder first.',
+        LayoutRefusal.paneLimit =>
+          'Cannot open another pane: the workbench holds at most $maxPanes '
+              'panes.',
+        LayoutRefusal.tabPaneLimit =>
+          'Cannot add the pane: a tab holds at most $maxPanesPerTab panes.',
         LayoutRefusal.stateTooLarge => 'The view state is too large.',
-        LayoutRefusal.unknownGroup ||
+        LayoutRefusal.nothingToMove => 'There is nothing to move.',
         LayoutRefusal.unknownTab ||
+        LayoutRefusal.unknownPane ||
         LayoutRefusal.unknownSplit => 'That item is no longer there.',
       };
       notifyListeners();
       return false;
     }
-    _setLayout(d);
+    _setLayout(d, refocus: refocus);
     return true;
   }
 
-  void split(String groupId, SplitDirection direction) {
-    final d = _layout;
-    if (d == null) return;
-    _commit(d.split(groupId, direction, _newId('g'), _newId('s')));
+  /// Every id in use in the layout.
+  Set<String> _usedIds() {
+    final used = <String>{};
+    void walk(LayoutNode n) {
+      used.add(n.id);
+      if (n is SplitNode) {
+        walk(n.first);
+        walk(n.second);
+      }
+    }
+
+    for (final t in _layout?.tabs ?? const <LayoutTabNode>[]) {
+      used.add(t.id);
+      walk(t.root);
+    }
+    return used;
   }
 
-  void moveTab(String tabId, String toGroupId) {
-    final d = _layout;
-    if (d == null) return;
-    _commit(d.moveTab(tabId, toGroupId));
+  /// A new id that no tab, pane or split of the layout has.
+  String _fresh(String prefix) {
+    final used = _usedIds();
+    var id = _newId(prefix);
+    while (used.contains(id)) {
+      id = _newId(prefix);
+    }
+    return id;
   }
 
-  void closeTab(String tabId) {
+  void splitPane(String paneId, SplitDirection direction, PaneNode view) {
     final d = _layout;
     if (d == null) return;
-    _commit(d.closeTab(tabId));
+    _commit(d.splitPane(paneId, direction, view, splitId: _fresh('s')));
+  }
+
+  /// Moves a pane into a new tab after its source. Nothing is sent to the
+  /// host: the pane keeps its id, so its terminal link follows it.
+  void movePaneToNewTab(String paneId) {
+    final d = _layout;
+    if (d == null) return;
+    _commit(d.movePaneToNewTab(paneId, newTabId: _fresh('t')), refocus: true);
+  }
+
+  /// Whether tab [tabId] can be moved into a split of the active tab.
+  bool canMoveIntoSplit(String tabId) {
+    final d = _layout;
+    return d != null &&
+        d.tab(tabId) != null &&
+        d.activeTab != null &&
+        d.activeTab != tabId;
+  }
+
+  void moveTabIntoSplit(String tabId, SplitDirection direction) {
+    final d = _layout;
+    if (d == null) return;
+    _commit(
+      d.moveTabIntoSplit(tabId, direction, splitId: _fresh('s')),
+      refocus: true,
+    );
+  }
+
+  /// Removes one pane from the layout (an ended terminal, or the others of a
+  /// confirmed close); a tab's last pane takes the tab with it.
+  void removePane(String paneId) {
+    final d = _layout;
+    if (d == null || d.pane(paneId) == null) return;
+    _commit(d.closePane(paneId));
+  }
+
+  /// Closes the panes in one layout change; unknown ids are skipped.
+  void _closePanes(Iterable<String> paneIds) {
+    var d = _layout;
+    if (d == null) return;
+    for (final id in paneIds) {
+      if (d!.pane(id) == null) continue;
+      if (d.closePane(id).document case final next?) d = next;
+    }
+    if (!identical(d, _layout)) _setLayout(d!);
+  }
+
+  /// Pane and tab close go through here: panes whose kind warns are named in
+  /// one [confirm]ation first (design D9). Cancel changes nothing. On confirm
+  /// every terminal is asked to close in parallel; the other panes go at once.
+  Future<void> requestClose(List<String> paneIds, ConfirmClose confirm) async {
+    final warnings = <CloseWarning>[];
+    for (final id in paneIds) {
+      final pane = _layout?.pane(id);
+      if (pane == null) continue;
+      final reason = viewKindOf(pane.kind)?.warnsOnClose?.call(this, pane);
+      if (reason != null) {
+        warnings.add((paneId: id, title: paneTitle(pane), reason: reason));
+      }
+    }
+    if (warnings.isNotEmpty && !await confirm(warnings)) return;
+    // The dialog may have been open for a while: look at the panes again.
+    final plain = <String>[];
+    final terminalCloses = <Future<void>>[];
+    for (final id in paneIds) {
+      final pane = _layout?.pane(id);
+      if (pane == null) continue;
+      if (pane.kind == terminalKind) {
+        terminalCloses.add(terminals.closeConfirmed(id));
+      } else {
+        plain.add(id);
+      }
+    }
+    _closePanes(plain);
+    await Future.wait(terminalCloses);
+  }
+
+  /// The ids of every pane in tab [tabId].
+  List<String> panesOfTab(String tabId) => [
+    for (final p in _layout?.tab(tabId)?.panes ?? const <PaneNode>[]) p.id,
+  ];
+
+  /// The title a pane shows (and a close warning names).
+  String paneTitle(PaneNode pane) {
+    final kind = viewKindOf(pane.kind);
+    if (kind == null) return 'Unsupported view';
+    if (kind.id == terminalKind) {
+      final name =
+          terminals.linkOf(pane.id)?.profileName ?? pane.state['profileName'];
+      return name is String ? '${kind.label} · $name' : kind.label;
+    }
+    final workspace = pane.workspace == null
+        ? null
+        : this.workspace(pane.workspace!);
+    return workspace == null
+        ? kind.label
+        : '${kind.label} · ${workspace.label}';
+  }
+
+  /// A tab is titled by its focused pane.
+  String tabTitle(LayoutTabNode tab) {
+    final pane = tab.panes.where((p) => p.id == tab.focusedPane);
+    return pane.isEmpty ? 'Tab' : paneTitle(pane.first);
+  }
+
+  // --- terminals ----------------------------------------------------------
+
+  /// Why a terminal cannot be started now, or null.
+  String? get terminalsUnavailableReason {
+    final hello = _link?.hello;
+    if (hello == null) return 'the host is not connected';
+    if (!hello.capabilities.contains(Capability.terminal)) {
+      return 'the host does not support terminals';
+    }
+    if (!_hasEngine) return 'the terminal engine did not load';
+    return null;
+  }
+
+  /// The profiles as the host last listed them, or null before the first
+  /// answer.
+  ProfileListResult? get profiles => _profiles;
+
+  void _setProfiles(ProfileListResult list) {
+    _profiles = list;
+    for (final p in list.profiles) {
+      _profileNames[p.id] = p.name;
+    }
+    notifyListeners();
+  }
+
+  String profileNameOf(String id) => _profileNames[id] ?? id;
+
+  /// `profile/list`, remembered. Null when the host does not answer.
+  Future<ProfileListResult?> refreshProfiles() async {
+    final link = _link;
+    if (link == null || terminalsUnavailableReason != null) return null;
+    final generation = _generation;
+    try {
+      final list = await link.profileList();
+      if (_stale(generation)) return null;
+      _setProfiles(list);
+      return list;
+    } on RpcException {
+      return null;
+    } on ConnectionClosedException {
+      return null;
+    }
+  }
+
+  /// A fresh id for a profile the user adds.
+  String newProfileId() => _newId('profile');
+
+  /// The link for a profile call. Without a host the call fails as on a
+  /// closed connection, which the profile dialog reports.
+  HostLink _profileLink() =>
+      _link ??
+      (throw ConnectionClosedException(
+        const CloseReason(CloseReason.closedLocally, 'no host is connected'),
+      ));
+
+  /// Saves a user profile; throws what the host refuses with.
+  Future<ShellProfile> saveProfile(ShellProfile profile) async {
+    final saved = await _profileLink().saveProfile(profile);
+    await refreshProfiles();
+    return saved;
+  }
+
+  Future<void> removeProfile(String id) async {
+    await _profileLink().removeProfile(id);
+    await refreshProfiles();
+  }
+
+  Future<void> setDefaultProfile(String id) async {
+    await _profileLink().setDefaultProfile(id);
+    await refreshProfiles();
+  }
+
+  /// The launcher's Terminal entry: opens a new tab holding a terminal pane
+  /// with the default profile, or with [profileId], bound to the sidebar
+  /// selection. [choose] asks for the list instead, for the profile picker.
+  /// Nothing starts without a usable profile, and none is substituted.
+  Future<TerminalLaunch> launchTerminal({
+    String? profileId,
+    bool choose = false,
+  }) => _launch(profileId: profileId, choose: choose);
+
+  /// A pane header's split: a terminal beside or below [paneId], bound to
+  /// that pane's workspace; the pane itself is untouched. With a host that
+  /// refuses the open, the new pane stays with the reason and **Start shell**.
+  Future<TerminalLaunch> splitWithTerminal(
+    String paneId,
+    SplitDirection direction, {
+    String? profileId,
+    bool choose = false,
+  }) => _launch(
+    profileId: profileId,
+    choose: choose,
+    splitOf: paneId,
+    direction: direction,
+  );
+
+  Future<TerminalLaunch> _launch({
+    String? profileId,
+    bool choose = false,
+    String? splitOf,
+    SplitDirection direction = SplitDirection.horizontal,
+  }) async {
+    final reason = terminalsUnavailableReason;
+    final link = _link;
+    if (reason != null || link == null || _layout == null) {
+      final message = reason == null
+          ? 'There is no workbench yet.'
+          : 'A terminal cannot be started: $reason.';
+      _message = message;
+      notifyListeners();
+      return TerminalLaunch(TerminalLaunchKind.unavailable, message: message);
+    }
+    if (splitOf != null && _layout!.pane(splitOf) == null) {
+      return const TerminalLaunch(
+        TerminalLaunchKind.failed,
+        message: 'That item is no longer there.',
+      );
+    }
+    final generation = _generation;
+    final ProfileListResult list;
+    try {
+      list = await link.profileList();
+    } on RpcException catch (e) {
+      return _launchFailed(e.message.isEmpty ? e.reason : e.message);
+    } on ConnectionClosedException {
+      return _launchFailed('the host is gone');
+    }
+    if (_stale(generation)) {
+      return const TerminalLaunch(TerminalLaunchKind.failed);
+    }
+    _setProfiles(list);
+    if (list.profiles.isEmpty) {
+      return const TerminalLaunch(TerminalLaunchKind.noProfile);
+    }
+    final wanted = profileId ?? (list.defaultAvailable ? list.defaultId : null);
+    ShellProfile? profile;
+    for (final p in list.profiles) {
+      if (p.id == wanted) profile = p;
+    }
+    if (choose || profile == null) {
+      return TerminalLaunch(
+        TerminalLaunchKind.chooseProfile,
+        profiles: list.profiles,
+        missingDefault: choose || profileId != null || list.defaultId == null
+            ? null
+            : profileNameOf(list.defaultId!),
+      );
+    }
+    final d = _layout;
+    if (d == null) {
+      return const TerminalLaunch(
+        TerminalLaunchKind.failed,
+        message: 'That item is no longer there.',
+      );
+    }
+    final String? workspaceId;
+    if (splitOf != null) {
+      final pane = d.pane(splitOf);
+      if (pane == null) {
+        return const TerminalLaunch(
+          TerminalLaunchKind.failed,
+          message: 'That item is no longer there.',
+        );
+      }
+      workspaceId = pane.workspace;
+    } else {
+      workspaceId = d.selectedWorkspace;
+    }
+    if (_beingRemoved(workspaceId)) {
+      return TerminalLaunch(TerminalLaunchKind.failed, message: _message);
+    }
+    final view = PaneNode(
+      id: _fresh('p'),
+      kind: terminalKind,
+      workspace: workspaceId,
+      item: _uuid(),
+      state: {'profileId': profile.id, 'profileName': profile.name},
+    );
+    final result = splitOf == null
+        ? d.openTab(view, tabId: _fresh('t'))
+        : d.splitPane(splitOf, direction, view, splitId: _fresh('s'));
+    if (!_commit(result)) {
+      return TerminalLaunch(TerminalLaunchKind.failed, message: _message);
+    }
+    unawaited(
+      terminals.start(
+        view.id,
+        profileId: profile.id,
+        profileName: profile.name,
+        workspaceId: view.workspace,
+      ),
+    );
+    return const TerminalLaunch(TerminalLaunchKind.opened);
+  }
+
+  TerminalLaunch _launchFailed(String reason) {
+    final message = 'Could not list the shell profiles: $reason';
+    _message = message;
+    notifyListeners();
+    return TerminalLaunch(TerminalLaunchKind.failed, message: message);
+  }
+
+  /// **Start shell** in a restored or ended terminal pane, with [profileId]
+  /// (the pane's own, or the default the pane offered because its profile is
+  /// gone). The host's current list decides whether it still exists.
+  Future<void> startShell(String paneId, String profileId) async {
+    final pane = _layout?.pane(paneId);
+    if (pane == null || terminalsUnavailableReason != null) return;
+    final list = await refreshProfiles();
+    if (list == null || _layout?.pane(paneId) == null) return;
+    ShellProfile? profile;
+    for (final p in list.profiles) {
+      if (p.id == profileId) profile = p;
+    }
+    if (profile == null) {
+      _message = 'The profile is no longer available.';
+      notifyListeners();
+      return;
+    }
+    // A replacement (the offered default) is what the pane restores next.
+    final current = _layout?.pane(paneId);
+    if (current != null &&
+        (current.state['profileId'] != profile.id ||
+            current.state['profileName'] != profile.name)) {
+      final state = {
+        ...current.state,
+        'profileId': profile.id,
+        'profileName': profile.name,
+      };
+      if (!_commit(_layout!.setPaneState(paneId, state))) return;
+    }
+    await terminals.start(
+      paneId,
+      profileId: profile.id,
+      profileName: profile.name,
+      workspaceId: pane.workspace,
+    );
   }
 
   void activateTab(String tabId) {
     final d = _layout;
-    if (d == null) return;
+    if (d == null || d.activeTab == tabId) return;
     _commit(d.activateTab(tabId));
   }
 
-  void focusGroup(String groupId) {
+  void focusPane(String paneId) {
     final d = _layout;
-    if (d == null || d.focusedGroup == groupId) return;
-    _commit(d.focusGroup(groupId));
+    if (d == null) return;
+    if (d.focusedPane == paneId) {
+      // Clicked while the keys went elsewhere.
+      _wantKeyboard(paneId, unlessInPane: true);
+      return;
+    }
+    if (_commit(d.focusPane(paneId))) _keyboardUnlessInPane = true;
   }
 
   void setRatio(String splitId, double ratio) {
@@ -317,31 +873,46 @@ class WorkbenchController extends ChangeNotifier {
     _setLayout(d.setSidebarCollapsed(collapsed));
   }
 
-  /// Opens a view of [kindId] in [groupId], bound to the group's context.
-  void openView(String groupId, String kindId) {
+  /// Opens a view of [kindId] in a new tab, bound to the sidebar selection;
+  /// an open item is focused where it is instead.
+  void openView(String kindId) {
     final d = _layout;
     final kind = viewKindOf(kindId);
     if (d == null || kind == null) return;
-    final group = d.group(groupId);
-    if (group == null) return;
-    if (kind.needsWorkspace && _beingRemoved(group.context)) return;
+    final selected = d.selectedWorkspace;
+    if (kind.needsWorkspace && selected == null) {
+      _message = 'This view needs a workspace. Open a folder first.';
+      notifyListeners();
+      return;
+    }
+    if (kind.needsWorkspace && _beingRemoved(selected)) return;
     _commit(
       d.openOrFocus(
-        groupId,
-        kind.id,
-        kind.needsWorkspace ? group.context : null,
-        needsWorkspace: kind.needsWorkspace,
-        newTabId: _newId('t'),
+        PaneNode(
+          id: _fresh('p'),
+          kind: kind.id,
+          workspace: kind.needsWorkspace ? selected : null,
+          item: kind.needsWorkspace ? selected : null,
+          state: const {},
+        ),
+        tabId: _fresh('t'),
       ),
     );
   }
 
-  /// Sidebar selection: focus the most recent tab bound to the workspace, or
-  /// set the focused group's context.
+  /// Sidebar selection: sets the selection and focuses the most recent pane
+  /// bound to the workspace. No binding changes.
   void selectWorkspace(String id) {
     final d = _layout;
     if (d == null || _beingRemoved(id)) return;
     _setLayout(d.selectWorkspace(id));
+  }
+
+  /// Sidebar Personal: no workspace selected. No binding changes.
+  void selectPersonal() {
+    final d = _layout;
+    if (d == null || d.selectedWorkspace == null) return;
+    _setLayout(d.copyWith(selectedWorkspace: null));
   }
 
   /// A remove of [id] is out: nothing new may bind to it until it answers,
@@ -371,9 +942,9 @@ class WorkbenchController extends ChangeNotifier {
 
   // --- workspaces ---------------------------------------------------------
 
-  /// Open folder: the native picker, then `workspace/open`. [groupId], when
-  /// given, is focused first so the folder becomes its context.
-  Future<void> openFolder({String? groupId}) async {
+  /// Open folder: the native picker, then `workspace/open`; the folder
+  /// becomes the sidebar selection.
+  Future<void> openFolder() async {
     final link = _link;
     if (link == null || _layout == null) return;
     final generation = _generation;
@@ -392,7 +963,6 @@ class WorkbenchController extends ChangeNotifier {
       final result = await link.workspaceOpen(path);
       if (_stale(generation)) return;
       _applyRecord(result.workspace, result.cleanupRevision, add: true);
-      if (groupId != null) focusGroup(groupId);
       selectWorkspace(result.workspace.id);
     } on RpcException catch (e) {
       if (_stale(generation)) return;
@@ -428,11 +998,11 @@ class WorkbenchController extends ChangeNotifier {
     }
   }
 
-  /// Whether tabs are bound to the workspace; Remove is disabled then.
+  /// Whether panes are bound to the workspace; Remove is disabled then.
   bool isBound(String id) => _layout?.boundWorkspaces.contains(id) ?? false;
 
   /// Remove (design D11): flush the layout, `workspace/remove`, then clear
-  /// the context in memory and raise the revision counter.
+  /// the selection in memory and raise the revision counter.
   Future<void> removeWorkspace(String id) async {
     final link = _link;
     if (link == null || _layout == null || isBound(id)) return;
@@ -451,11 +1021,11 @@ class WorkbenchController extends ChangeNotifier {
       _cleanupOf.remove(id);
       _removed.add(id);
       _saver.raiseCounter(result.revision);
-      _setLayout(_layout!.clearContext(id));
+      _setLayout(_layout!.clearSelection(id));
     } on RpcException catch (e) {
       if (_stale(generation)) return;
       _message = e.reason == ErrorCode.workspaceInUse
-          ? 'The workspace is in use; close its tabs first.'
+          ? 'The workspace is in use; close its panes first.'
           : 'Could not remove the workspace: '
                 '${e.message.isEmpty ? e.reason : e.message}';
       notifyListeners();
@@ -571,6 +1141,9 @@ class WorkbenchController extends ChangeNotifier {
     _disposed = true;
     _generation++;
     _detachLink();
+    terminals.removeListener(notifyListeners);
+    terminals.removeListener(_onTerminals);
+    terminals.dispose();
     _saver.removeListener(notifyListeners);
     _saver.dispose();
     super.dispose();

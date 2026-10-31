@@ -30,6 +30,55 @@ class LatestCleanupState {
   }, isBroadcast: true);
 }
 
+/// `terminal/open` then `terminal/attach` over [connection]: both channels
+/// are registered before the attach, so the host's first output has a
+/// receiver. A refused attach (the host's attach timeout may have run out
+/// while the desktop was suspended) closes both channels again, so their
+/// slots stop counting against [maxChannels], and asks the host to close the
+/// terminal; the refusal is rethrown.
+Future<TerminalChannels> openTerminalChannels(
+  Connection connection,
+  TerminalOpenParams params,
+) async {
+  Future<Json> request(String method, Json params) async =>
+      ((await connection.request(method, params))! as Map<Object?, Object?>)
+          .cast<String, Object?>();
+
+  final opened = TerminalOpenResult.fromJson(
+    await request(Method.terminalOpen, params.toJson()),
+  );
+  final output = connection.attachInbound(
+    opened.outputChannel,
+    grantInitial: false,
+  );
+  final input = connection.attachOutbound(opened.inputChannel);
+  try {
+    await connection.request(
+      Method.terminalAttach,
+      TerminalAttachParams(opened.terminalId).toJson(),
+    );
+  } on Object {
+    for (final id in [opened.outputChannel, opened.inputChannel]) {
+      await connection.closeChannel(id).then<void>((_) {}, onError: (_) {});
+    }
+    if (!connection.isClosed) {
+      await connection
+          .request(
+            Method.terminalClose,
+            TerminalCloseParams(opened.terminalId).toJson(),
+          )
+          .then<void>((_) {}, onError: (_) {});
+    }
+    rethrow;
+  }
+  connection.grantInitial(opened.outputChannel);
+  return TerminalChannels(
+    terminalId: opened.terminalId,
+    output: output,
+    write: input.write,
+  );
+}
+
 /// The real [HostLink] over a started [HostSession].
 ///
 /// The cleanup wire shapes are the ones in `host_protocol`'s `messages.dart`.
@@ -159,6 +208,59 @@ class SessionLink implements HostLink {
       );
 
   @override
+  Future<ProfileListResult> profileList() async =>
+      ProfileListResult.fromJson(await _request(Method.profileList, {}));
+
+  @override
+  Future<ShellProfile> saveProfile(ShellProfile profile) async =>
+      ProfileSaveResult.fromJson(
+        await _request(Method.profileSave, ProfileSaveParams(profile).toJson()),
+      ).profile;
+
+  @override
+  Future<void> removeProfile(String id) =>
+      _request(Method.profileRemove, ProfileRemoveParams(id).toJson());
+
+  @override
+  Future<void> setDefaultProfile(String id) =>
+      _request(Method.profileSetDefault, ProfileSetDefaultParams(id).toJson());
+
+  @override
+  Future<TerminalChannels> openTerminal(TerminalOpenParams params) =>
+      openTerminalChannels(session.connection, params);
+
+  @override
+  Future<void> resizeTerminal(String terminalId, int cols, int rows) =>
+      _request(
+        Method.terminalResize,
+        TerminalResizeParams(
+          terminalId: terminalId,
+          cols: cols,
+          rows: rows,
+        ).toJson(),
+      );
+
+  @override
+  Future<void> closeTerminal(String terminalId) =>
+      _request(Method.terminalClose, TerminalCloseParams(terminalId).toJson());
+
+  @override
+  Future<void> releaseTerminal(String terminalId) => _request(
+    Method.terminalRelease,
+    TerminalReleaseParams(terminalId).toJson(),
+  );
+
+  @override
+  Stream<TerminalExited> get terminalExits => session.notifications
+      .where((n) => n.method == Method.terminalExited)
+      .map((n) => TerminalExited.fromJson(n.params));
+
+  @override
+  Stream<TerminalCloseFailed> get terminalCloseFailures => session.notifications
+      .where((n) => n.method == Method.terminalCloseFailed)
+      .map((n) => TerminalCloseFailed.fromJson(n.params));
+
+  @override
   Future<void> quit() async {
     await session.quit();
   }
@@ -167,3 +269,12 @@ class SessionLink implements HostLink {
 /// A connector that starts [launcher]'s host.
 HostConnector launcherConnector(HostLauncher launcher) =>
     () async => SessionLink(await launcher.start());
+
+/// A connector for when there is no absolute profile directory to start the
+/// host with (`defaultProfileDir` returned null): every start fails, naming
+/// [homeVariable], so the status window shows why.
+HostConnector noProfileDirConnector(String homeVariable) =>
+    () async => throw HostStartException(
+      HostStartFailure.spawnFailed,
+      'no absolute profile directory: set $homeVariable to an absolute path',
+    );

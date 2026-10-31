@@ -2,6 +2,7 @@
 // `--unit-exec` mode and the fixture programs units run (design D2, D10).
 // Compiled by the tests with `dart compile exe`.
 import 'dart:async';
+import 'dart:convert';
 import 'dart:ffi';
 import 'dart:io';
 import 'dart:isolate';
@@ -37,6 +38,10 @@ Future<void> main(List<String> args) async {
         _breakaway();
       case 'host-sim':
         await _hostSim();
+      case 'tty':
+        await _tty(args.sublist(2));
+      case 'flood':
+        await _flood();
       default:
         stderr.writeln('unknown fixture ${args[1]}');
         exit(64);
@@ -167,4 +172,29 @@ Future<void> _hostSim() async {
   );
   _report('host-sim-unit-${unit.pid}');
   _stayAlive();
+}
+
+/// Reports what a PTY child sees on its stdio: `TTY:<in>:<out>:<err>;` for
+/// terminal-ness, `ARGS:<base64 of the JSON argument list>;`, then
+/// `SIZE:<cols>x<rows>;` every 100 ms.
+Future<void> _tty(List<String> rest) async {
+  final flags = [stdin.hasTerminal, stdout.hasTerminal, stderr.hasTerminal];
+  stdout.write('TTY:${flags.map((f) => f ? 1 : 0).join(':')};');
+  stdout.write('ARGS:${base64.encode(utf8.encode(jsonEncode(rest)))};');
+  await stdout.flush();
+  while (true) {
+    stdout.write('SIZE:${stdout.terminalColumns}x${stdout.terminalLines};');
+    await stdout.flush();
+    await Future<void>.delayed(const Duration(milliseconds: 100));
+  }
+}
+
+/// Writes output as fast as the terminal takes it, forever.
+Future<void> _flood() async {
+  _report('flood');
+  final line = '${'x' * 100}\n';
+  while (true) {
+    stdout.write(line);
+    await stdout.flush();
+  }
 }

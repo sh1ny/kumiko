@@ -257,5 +257,49 @@ void main() {
       );
       expect(checkImportRules(ws.path).single, contains('test_hooks'));
     });
+
+    void desktopTree({required String mainImport}) {
+      _write(ws, 'packages/desktop/pubspec.yaml', 'name: desktop\n');
+      _write(
+        ws,
+        'packages/desktop/lib/main.dart',
+        "import '$mainImport';\nvoid main() {}\n",
+      );
+      _write(ws, 'packages/desktop/lib/src/app.dart', 'void run() {}\n');
+      _write(
+        ws,
+        'packages/desktop/lib/src/spike/terminal_spike.dart',
+        'void spike() {}\n',
+      );
+      _write(
+        ws,
+        'packages/desktop/lib/spike_main.dart',
+        "import 'src/spike/terminal_spike.dart';\nvoid main() {}\n",
+      );
+    }
+
+    test('desktop release entry point not reaching the spike passes', () {
+      desktopTree(mainImport: 'src/app.dart');
+      expect(checkImportRules(ws.path), isEmpty);
+    });
+
+    test('desktop release entry point reaching the spike fails', () {
+      desktopTree(mainImport: 'src/app.dart');
+      _write(
+        ws,
+        'packages/desktop/lib/src/app.dart',
+        "import 'package:desktop/src/spike/terminal_spike.dart';\n",
+      );
+      final violations = checkImportRules(ws.path);
+      expect(violations.single, contains('spike'));
+      expect(violations.single, contains('main.dart'));
+      expect(violations.single, contains('app.dart'));
+    });
+
+    test('desktop release entry point importing the spike entry fails', () {
+      desktopTree(mainImport: 'spike_main.dart');
+      expect(checkImportRules(ws.path), isNotEmpty);
+      expect(checkImportRules(ws.path).first, contains('spike'));
+    });
   });
 }

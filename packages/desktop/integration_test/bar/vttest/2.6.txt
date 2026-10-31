@@ -1,0 +1,26 @@
+# vttest 2.7 (20230201) screen 2.6: 80 columns, dark background
+rows: all
+|1234567890123456789012345678901234567890123456789012345678901234567890123456789 |
+|                                                                                |
+|  This is 80 column mode, dark background.                                      |
+|   This is 80 column mode, dark background.                                     |
+|    This is 80 column mode, dark background.                                    |
+|     This is 80 column mode, dark background.                                   |
+|      This is 80 column mode, dark background.                                  |
+|       This is 80 column mode, dark background.                                 |
+|        This is 80 column mode, dark background.                                |
+|         This is 80 column mode, dark background.                               |
+|          This is 80 column mode, dark background.                              |
+|           This is 80 column mode, dark background.                             |
+|            This is 80 column mode, dark background.                            |
+|             This is 80 column mode, dark background.                           |
+|              This is 80 column mode, dark background.                          |
+|               This is 80 column mode, dark background.                         |
+|                This is 80 column mode, dark background.                        |
+|                 This is 80 column mode, dark background.                       |
+|                  This is 80 column mode, dark background.                      |
+|                   This is 80 column mode, dark background.Push <RETURN>        |
+|                                                                                |
+|                                                                                |
+|                                                                                |
+|                                                                                |

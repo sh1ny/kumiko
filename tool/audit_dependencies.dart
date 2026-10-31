@@ -299,7 +299,9 @@ Iterable<File> _dartFiles(String dir) {
 
 /// D1 (domain imports no `dart:io` or `dart:ffi`) and D10 (nothing reachable
 /// from `packages/host/bin/kumiko_host.dart` lies under
-/// `packages/host/lib/src/test_hooks/`).
+/// `packages/host/lib/src/test_hooks/`, and nothing reachable from
+/// `packages/desktop/lib/main.dart` is the terminal spike: `lib/spike_main.dart`
+/// or `lib/src/spike/`).
 List<String> checkImportRules(String workspaceRoot) {
   final violations = <String>[];
   final packagesDir = p.join(workspaceRoot, 'packages');
@@ -332,35 +334,74 @@ List<String> checkImportRules(String workspaceRoot) {
 
   final hostDir = p.join(packagesDir, 'host');
   if (File(p.join(hostDir, 'pubspec.yaml')).existsSync()) {
-    final entry = p.normalize(p.join(hostDir, 'bin', 'kumiko_host.dart'));
-    if (!File(entry).existsSync()) {
-      violations.add('D10: release entry point $entry does not exist');
-    } else {
-      final hooks = p.normalize(p.join(hostDir, 'lib', 'src', 'test_hooks'));
-      final parents = <String, String?>{entry: null};
-      final queue = [entry];
-      for (var i = 0; i < queue.length; i++) {
-        final current = queue[i];
-        for (final uri in directiveUris(File(current).readAsStringSync())) {
-          final target = _resolve(uri, current, libs);
-          if (target == null ||
-              parents.containsKey(target) ||
-              !File(target).existsSync()) {
-            continue;
-          }
-          parents[target] = current;
-          queue.add(target);
-          if (p.isWithin(hooks, target)) {
-            final chain = <String>[];
-            for (String? n = target; n != null; n = parents[n]) {
-              chain.insert(0, p.relative(n, from: workspaceRoot));
-            }
-            violations.add(
-              'D10: release entry point reaches lib/src/test_hooks/: '
-              '${chain.join(' -> ')}',
-            );
-          }
+    final hooks = p.normalize(p.join(hostDir, 'lib', 'src', 'test_hooks'));
+    violations.addAll(
+      _releaseReach(
+        workspaceRoot: workspaceRoot,
+        entry: p.normalize(p.join(hostDir, 'bin', 'kumiko_host.dart')),
+        libs: libs,
+        forbidden: (file) => p.isWithin(hooks, file),
+        what: 'lib/src/test_hooks/',
+      ),
+    );
+  }
+
+  // The terminal engine spike (change host-terminals, task 6.1) is a debug
+  // entry point of its own; the release app never reaches it.
+  final desktopDir = p.join(packagesDir, 'desktop');
+  if (File(p.join(desktopDir, 'pubspec.yaml')).existsSync()) {
+    final spikeDir = p.normalize(p.join(desktopDir, 'lib', 'src', 'spike'));
+    final spikeEntry = p.normalize(
+      p.join(desktopDir, 'lib', 'spike_main.dart'),
+    );
+    violations.addAll(
+      _releaseReach(
+        workspaceRoot: workspaceRoot,
+        entry: p.normalize(p.join(desktopDir, 'lib', 'main.dart')),
+        libs: libs,
+        forbidden: (file) => file == spikeEntry || p.isWithin(spikeDir, file),
+        what: 'the terminal spike',
+      ),
+    );
+  }
+  return violations;
+}
+
+/// D10: every file reachable from the release [entry] through import,
+/// export and part directives; one violation per [forbidden] file reached,
+/// with the chain that reaches it.
+List<String> _releaseReach({
+  required String workspaceRoot,
+  required String entry,
+  required Map<String, String> libs,
+  required bool Function(String file) forbidden,
+  required String what,
+}) {
+  if (!File(entry).existsSync()) {
+    return ['D10: release entry point $entry does not exist'];
+  }
+  final violations = <String>[];
+  final parents = <String, String?>{entry: null};
+  final queue = [entry];
+  for (var i = 0; i < queue.length; i++) {
+    final current = queue[i];
+    for (final uri in directiveUris(File(current).readAsStringSync())) {
+      final target = _resolve(uri, current, libs);
+      if (target == null ||
+          parents.containsKey(target) ||
+          !File(target).existsSync()) {
+        continue;
+      }
+      parents[target] = current;
+      queue.add(target);
+      if (forbidden(target)) {
+        final chain = <String>[];
+        for (String? n = target; n != null; n = parents[n]) {
+          chain.insert(0, p.relative(n, from: workspaceRoot));
         }
+        violations.add(
+          'D10: release entry point reaches $what: ${chain.join(' -> ')}',
+        );
       }
     }
   }

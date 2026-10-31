@@ -1,0 +1,26 @@
+# vttest 2.7 (20230201) screen 2.11: origin mode, bottom line
+rows: all
+|                                                                                |
+|                                                                                |
+|                                                                                |
+|                                                                                |
+|                                                                                |
+|                                                                                |
+|                                                                                |
+|                                                                                |
+|                                                                                |
+|                                                                                |
+|                                                                                |
+|                                                                                |
+|                                                                                |
+|                                                                                |
+|                                                                                |
+|                                                                                |
+|                                                                                |
+|                                                                                |
+|                                                                                |
+|                                                                                |
+|                                                                                |
+|                                                                                |
+|This line should be the one above the bottom of the screen. Push <RETURN>       |
+|Origin mode test. This line should be at the bottom of the screen.              |

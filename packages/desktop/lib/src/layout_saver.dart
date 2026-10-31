@@ -4,8 +4,10 @@ import 'package:flutter/foundation.dart';
 import 'package:host_protocol/host_protocol.dart';
 
 /// Sends one `workbench/save`.
-typedef SaveCall =
-    Future<WorkbenchSaveResult> Function(Json layout, int revision);
+typedef SaveCall = Future<WorkbenchSaveResult> Function(
+  Json layout,
+  int revision,
+);
 
 enum SaveState { clean, pending, inFlight, failed }
 

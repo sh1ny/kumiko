@@ -14,6 +14,11 @@ dependencies:
   file_selector: ^1.0.3
   host_protocol: any
   process_containment: any
+  flutter_alacritty: 2.4.1
+  # flutter_alacritty 2.4.1 allows ^2.12.0, but its Rust side
+  # (rust_lib_flutter_alacritty 0.2.2) is built against exactly 2.12.0, and
+  # RustLib.init() refuses any other runtime version.
+  flutter_rust_bridge: 2.12.0
 
 dev_dependencies:
   flutter_test:
@@ -21,6 +26,7 @@ dev_dependencies:
   integration_test:
     sdk: flutter
   flutter_lints: ^6.0.0
+  sqlite3: ^3.8.0
 
 flutter:
   uses-material-design: true

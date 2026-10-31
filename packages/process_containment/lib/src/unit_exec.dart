@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'dart:ffi';
 import 'dart:io';
 
@@ -14,21 +15,50 @@ const String unitMarkerVariable = 'KUMIKO_UNIT';
 /// `Process.start` is the unit's own, and `dart:io` keeps reaping the exit
 /// status and owning stdio.
 ///
-/// [args] are `<containment-id> -- <argv...>`. Never returns: it either
-/// `execve`s or exits with 2 (usage), 126/127 (cannot execute) or 1 (setup
-/// failure). POSIX only.
+/// [args] are `<containment-id> [--pty <slave>] -- <argv...>`. Never returns:
+/// it either `execve`s or exits with 2 (usage), 126/127 (cannot execute) or 1
+/// (setup failure). POSIX only.
+///
+/// With `--pty <slave>` the shim's stdout pipe from `Process.start` becomes a
+/// *status pipe*: it is moved to a high close-on-exec descriptor, and the
+/// slave terminal (opened after `setsid`, made the controlling terminal with
+/// `TIOCSCTTY`) is `dup2`ed onto 0, 1 and 2. A failing step writes one JSON
+/// line `{"stage": "<step>", "errno": N}` to the status pipe and exits; a
+/// successful `execve` closes it with nothing written, which the host reads as
+/// "the program started". Stages: `status-fd`, `exec`, `setsid`, `open-slave`,
+/// `tiocsctty`, `dup2`.
 Never runUnitExec(List<String> args) {
   if (Platform.isWindows) _fail('unit-exec is POSIX only', 1);
-  if (args.length < 3 || args[1] != '--' || args[0].isEmpty) {
-    _fail('usage: --unit-exec <containment-id> -- <argv...>', 2);
-  }
+  const usage =
+      'usage: --unit-exec <containment-id> [--pty <slave>] -- '
+      '<argv...>';
+  if (args.isEmpty || args[0].isEmpty) _fail(usage, 2);
+  final slave = args.length > 2 && args[1] == '--pty' ? args[2] : null;
+  final dashes = slave == null ? 1 : 3;
+  if (args.length < dashes + 2 || args[dashes] != '--') _fail(usage, 2);
   final id = args[0];
-  final argv = args.sublist(2);
+  final argv = args.sublist(dashes + 1);
+  errno(); // bind it now; the first use must not sit between a call and its errno
+
+  var statusFd = -1;
+  if (slave != null) {
+    // Keep the pipe the host reads, before fd 1 is replaced.
+    for (final floor in const [200, 64, 10]) {
+      statusFd = fcntlInt(1, fDupfdCloexec, floor);
+      if (statusFd != -1) break;
+    }
+    if (statusFd == -1) {
+      _fail('status pipe: fcntl failed (errno ${errno()})', 1);
+    }
+  }
 
   final env = Map<String, String>.of(Platform.environment);
   env[unitMarkerVariable] = id;
   final program = _resolveProgram(argv.first, env['PATH']);
-  if (program == null) _fail('${argv.first}: not found', 127);
+  if (program == null) {
+    if (slave != null) _statusFail(statusFd, 'exec', enoent, 127);
+    _fail('${argv.first}: not found', 127);
+  }
 
   // Prepare every native buffer before touching process state.
   final pathPtr = program.toNativeUtf8();
@@ -36,14 +66,51 @@ Never runUnitExec(List<String> args) {
   final envpPtr = _stringArray([
     for (final e in env.entries) '${e.key}=${e.value}',
   ]);
+  final slavePtr = slave?.toNativeUtf8();
 
   _markFdsCloseOnExec();
   _resetSignals();
-  if (setsid() == -1) _fail('setsid failed (errno ${errno()})', 1);
+  if (setsid() == -1) {
+    final err = errno();
+    if (slave != null) _statusFail(statusFd, 'setsid', err, 1);
+    _fail('setsid failed (errno $err)', 1);
+  }
+
+  if (slavePtr != null) {
+    // No O_NOCTTY: the open may already make it the controlling terminal on
+    // Linux and macOS; TIOCSCTTY below makes that explicit and certain.
+    final tty = posixOpen(slavePtr, oRdwr, 0);
+    if (tty == -1) _statusFail(statusFd, 'open-slave', errno(), 1);
+    if (ioctlInt(tty, tiocsctty, 0) == -1) {
+      _statusFail(statusFd, 'tiocsctty', errno(), 1);
+    }
+    for (var fd = 0; fd <= 2; fd++) {
+      if (posixDup2(tty, fd) == -1) _statusFail(statusFd, 'dup2', errno(), 1);
+    }
+    if (tty > 2) posixClose(tty);
+  }
 
   execve(pathPtr, argvPtr, envpPtr);
   final err = errno();
-  _fail('execve $program failed (errno $err)', err == eacces ? 126 : 127);
+  final code = err == eacces ? 126 : 127;
+  if (slave != null) _statusFail(statusFd, 'exec', err, code);
+  _fail('execve $program failed (errno $err)', code);
+}
+
+/// Reports a failed step on the status pipe and exits.
+Never _statusFail(int statusFd, String stage, int err, int code) {
+  final line = jsonEncode({'stage': stage, 'errno': err});
+  final bytes = utf8.encode('$line${String.fromCharCode(10)}');
+  final buf = calloc<Uint8>(bytes.length);
+  buf.asTypedList(bytes.length).setAll(0, bytes);
+  var offset = 0;
+  while (offset < bytes.length) {
+    final n = posixWrite(statusFd, buf + offset, bytes.length - offset);
+    if (n < 0 && errno() == eintr) continue;
+    if (n <= 0) break;
+    offset += n;
+  }
+  exit(code);
 }
 
 Never _fail(String message, int code) {
@@ -54,7 +121,9 @@ Never _fail(String message, int code) {
 String? _resolveProgram(String name, String? path) {
   if (name.contains('/')) return name;
   for (final dir in (path ?? '/usr/bin:/bin').split(':')) {
-    if (dir.isEmpty) continue;
+    // An empty or relative entry names the working directory, which can be
+    // a checkout: only absolute directories are searched.
+    if (!dir.startsWith('/')) continue;
     final candidate = '$dir/$name';
     if (FileSystemEntity.isFileSync(candidate)) return candidate;
   }

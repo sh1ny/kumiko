@@ -1,0 +1,26 @@
+# vttest 2.7 (20230201) screen 1.6: leading zeros in escape sequences
+rows: all
+|Test of leading zeros in ESC sequences.                                         |
+|Two lines below you should see the sentence "This is a correct sentence".       |
+|                                                                                |
+|This is a correct sentence                                                      |
+|                                                                                |
+|                                                                                |
+|                                                                                |
+|                                                                                |
+|                                                                                |
+|                                                                                |
+|                                                                                |
+|                                                                                |
+|                                                                                |
+|                                                                                |
+|                                                                                |
+|                                                                                |
+|                                                                                |
+|                                                                                |
+|                                                                                |
+|Push <RETURN>                                                                   |
+|                                                                                |
+|                                                                                |
+|                                                                                |
+|                                                                                |

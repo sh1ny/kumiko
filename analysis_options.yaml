@@ -12,6 +12,7 @@ analyzer:
     - "t3code/**"
     - "itsaplan/**"
     - "tool/probes/**"
+    - "third_party/**"
     - "packages/desktop/windows/**"
     - "packages/desktop/linux/**"
     - "packages/desktop/macos/**"

@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:typed_data';
 
 import 'package:desktop/src/launcher_link.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -11,7 +12,80 @@ CleanupState stateOf(int revision, {bool reconciling = false}) => CleanupState(
   unresolvedUnits: 0,
 );
 
+class _Pipe implements ByteSink {
+  final StreamController<List<int>> controller = StreamController();
+
+  @override
+  void add(List<int> data) => controller.add(Uint8List.fromList(data));
+
+  @override
+  Future<void> flush() => Future.value();
+}
+
 void main() {
+  test('with no profile directory the connector fails to start, naming the '
+      'variable to set', () async {
+    final error = await noProfileDirConnector(
+      'HOME',
+    )().then<Object?>((_) => null, onError: (Object e) => e);
+    expect(
+      error,
+      isA<HostStartException>()
+          .having((e) => e.kind, 'kind', HostStartFailure.spawnFailed)
+          .having((e) => e.message, 'message', contains('HOME')),
+    );
+  });
+
+  test('a refused terminal/attach closes both channels and asks the host to '
+      'close the terminal', () async {
+    final toHost = _Pipe();
+    final toDesktop = _Pipe();
+    final hostCalls = <String>[];
+    late final Connection host;
+    host = Connection(
+      input: toHost.controller.stream,
+      output: toDesktop,
+      capabilities: const {Capability.terminal},
+      onHello: (params, negotiated) => const HelloInfo.ready('host-1'),
+      onRequest: (method, params) {
+        hostCalls.add(method);
+        switch (method) {
+          case Method.terminalOpen:
+            final ids = host.reserveChannels(2).ids;
+            return TerminalOpenResult(
+              terminalId: 't1',
+              outputChannel: ids[0],
+              inputChannel: ids[1],
+            ).toJson();
+          case Method.terminalAttach:
+            // The host's attach timeout ran out while the desktop slept.
+            throw RpcException(ErrorCode.invalidParams, 'unknown terminal t1');
+          default:
+            return <String, Object?>{};
+        }
+      },
+    );
+    final desktop = Connection(
+      input: toDesktop.controller.stream,
+      output: toHost,
+      capabilities: const {Capability.terminal},
+    );
+    await desktop.hello();
+
+    await expectLater(
+      openTerminalChannels(
+        desktop,
+        const TerminalOpenParams(profileId: 'p', cols: 80, rows: 24),
+      ),
+      throwsA(isA<RpcException>()),
+    );
+    // Every desktop slot is free again.
+    desktop.reserveChannels(maxChannels).release();
+    expect(hostCalls, contains(Method.terminalClose));
+    await desktop.close();
+    await host.close();
+  });
+
   group('cleanup state replay', () {
     test('a late listener receives the newest state first', () async {
       final source = StreamController<CleanupState>(sync: true);

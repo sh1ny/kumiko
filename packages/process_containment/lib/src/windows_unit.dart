@@ -6,6 +6,8 @@ import 'dart:isolate';
 import 'package:ffi/ffi.dart';
 
 import 'contained_unit.dart';
+import 'pty.dart';
+import 'pty_io.dart' show ConsoleCloser;
 import 'unit_exec.dart';
 import 'windows_api.dart';
 import 'windows_jobs.dart';
@@ -52,8 +54,9 @@ class WindowsUnit implements ContainedUnit {
     this.startTime,
     this.containmentId,
     this._processHandle,
-    this._job,
-  ) {
+    this._job, [
+    this.pty,
+  ]) {
     exitCode = Isolate.run(() => _waitForExit(_processHandle)).whenComplete(() {
       _exited = true;
       _closeProcessIfDone();
@@ -68,6 +71,9 @@ class WindowsUnit implements ContainedUnit {
 
   @override
   final String containmentId;
+
+  /// The unit's pseudo-terminal handles when it was spawned with `pty`.
+  final PtyHandles? pty;
 
   final int _processHandle;
   int _job;
@@ -153,43 +159,96 @@ const int _openExisting = 3;
 /// the job before its first instruction runs, then resumed. The process is
 /// born in the creator's own job (the desktop's outer job when the host is
 /// the creator), so it ends up in both, and neither lets it break away.
+///
+/// With [pty] the unit gets a pseudo-console instead of `NUL` stdio (design
+/// D2): two pipes plus `CreatePseudoConsole`, passed as
+/// `PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE` in the attribute list, no std handles
+/// and no `CREATE_NO_WINDOW`; Ctrl+C is not ignored in it, whatever the
+/// creator inherited. Nothing is inherited, so the handle-list
+/// attribute is not needed there. The pipe ends and the `HPCON` are in
+/// [WindowsUnit.pty]; the caller closes them (the console through a
+/// [ConsoleCloser]). A failure then throws [SpawnFailed] with the failing
+/// call as the stage.
 WindowsUnit spawnWindowsUnit({
   required String executable,
   List<String> args = const [],
   required String containmentId,
   Map<String, String>? environment,
   String? workingDirectory,
+  PtyOptions? pty,
 }) {
+  getLastError(); // bind it now: its first use clobbers the last error
   final job = createJob();
   final toFree = <Pointer<NativeType>>[];
   var nul = 0;
+  var inRead = 0;
+  var inWrite = 0;
+  var outRead = 0;
+  var outWrite = 0;
+  var hpcon = 0;
+  var ptyOwnedByUnit = false;
   var attributeList = nullptr.cast<Void>();
   var processHandle = 0;
   var threadHandle = 0;
   try {
-    // SECURITY_ATTRIBUTES (24 bytes, bInheritHandle at 16) for an inheritable
-    // NUL handle.
-    final sa = calloc<Uint8>(24);
-    toFree.add(sa);
-    sa.cast<Uint32>().value = 24;
-    (sa + 16).cast<Int32>().value = 1;
-    final nulName = 'NUL'.toNativeUtf16();
-    toFree.add(nulName);
-    nul = createFileW(
-      nulName,
-      _genericReadWrite,
-      _shareReadWrite,
-      sa.cast<Void>(),
-      _openExisting,
-      0,
-      0,
-    );
-    if (nul == -1) {
-      throw WindowsApiException('CreateFileW(NUL)', getLastError());
+    if (pty == null) {
+      // SECURITY_ATTRIBUTES (24 bytes, bInheritHandle at 16) for an
+      // inheritable NUL handle.
+      final sa = calloc<Uint8>(24);
+      toFree.add(sa);
+      sa.cast<Uint32>().value = 24;
+      (sa + 16).cast<Int32>().value = 1;
+      final nulName = 'NUL'.toNativeUtf16();
+      toFree.add(nulName);
+      nul = createFileW(
+        nulName,
+        _genericReadWrite,
+        _shareReadWrite,
+        sa.cast<Void>(),
+        _openExisting,
+        0,
+        0,
+      );
+      if (nul == -1) {
+        throw WindowsApiException('CreateFileW(NUL)', getLastError());
+      }
+    } else {
+      // Two anonymous pipes (not inheritable) feed the pseudo-console. The
+      // console duplicates its ends, so the host closes them straight away
+      // and keeps the other two.
+      final ends = calloc<IntPtr>(4);
+      toFree.add(ends);
+      if (createPipeNative(ends, ends + 1, nullptr, 0) == 0) {
+        throw WindowsApiException('CreatePipe(input)', getLastError());
+      }
+      inRead = ends[0];
+      inWrite = ends[1];
+      if (createPipeNative(ends + 2, ends + 3, nullptr, 0) == 0) {
+        throw WindowsApiException('CreatePipe(output)', getLastError());
+      }
+      outRead = ends[2];
+      outWrite = ends[3];
+      final console = calloc<IntPtr>();
+      toFree.add(console);
+      final hr = createPseudoConsole(
+        pty.size.packedCoord,
+        inRead,
+        outWrite,
+        0,
+        console,
+      );
+      if (hr != 0) {
+        throw WindowsApiException('CreatePseudoConsole', hr);
+      }
+      hpcon = console.value;
+      closeHandleNative(inRead);
+      inRead = 0;
+      closeHandleNative(outWrite);
+      outWrite = 0;
     }
 
-    // Only the NUL handle is inherited, not every inheritable handle the host
-    // happens to hold.
+    // Only one handle is inherited: the NUL handle for plain units, none at
+    // all for a pseudo-console unit, whose std handles the console provides.
     final listSize = calloc<Size>();
     toFree.add(listSize);
     initializeProcThreadAttributeList(nullptr, 1, 0, listSize);
@@ -201,14 +260,27 @@ WindowsUnit spawnWindowsUnit({
         getLastError(),
       );
     }
-    final handles = calloc<IntPtr>(1);
-    toFree.add(handles);
-    handles.value = nul;
-    if (updateProcThreadAttribute(
+    if (pty == null) {
+      final handles = calloc<IntPtr>(1);
+      toFree.add(handles);
+      handles.value = nul;
+      if (updateProcThreadAttribute(
+            attributeList,
+            0,
+            _procThreadAttributeHandleList,
+            handles.cast<Void>(),
+            sizeOf<IntPtr>(),
+            nullptr,
+            nullptr,
+          ) ==
+          0) {
+        throw WindowsApiException('UpdateProcThreadAttribute', getLastError());
+      }
+    } else if (updateProcThreadAttribute(
           attributeList,
           0,
-          _procThreadAttributeHandleList,
-          handles.cast<Void>(),
+          procThreadAttributePseudoconsole,
+          Pointer<Void>.fromAddress(hpcon), // the HPCON itself, not a pointer
           sizeOf<IntPtr>(),
           nullptr,
           nullptr,
@@ -221,10 +293,14 @@ WindowsUnit spawnWindowsUnit({
     final startup = calloc<Uint8>(112);
     toFree.add(startup);
     startup.cast<Uint32>().value = 112;
+    // A pseudo-console child must not pick up the host's own std handles (the
+    // host's stdio is a pipe to the desktop): STARTF_USESTDHANDLES with
+    // INVALID_HANDLE_VALUE makes the console supply them.
+    final stdHandle = pty == null ? nul : -1;
     (startup + 60).cast<Uint32>().value = _startfUseStdHandles;
-    (startup + 80).cast<IntPtr>().value = nul;
-    (startup + 88).cast<IntPtr>().value = nul;
-    (startup + 96).cast<IntPtr>().value = nul;
+    (startup + 80).cast<IntPtr>().value = stdHandle;
+    (startup + 88).cast<IntPtr>().value = stdHandle;
+    (startup + 96).cast<IntPtr>().value = stdHandle;
     (startup + 104).cast<Pointer<Void>>().value = attributeList;
 
     final info = calloc<Uint8>(24); // PROCESS_INFORMATION
@@ -243,16 +319,23 @@ WindowsUnit spawnWindowsUnit({
     final cwd = workingDirectory?.toNativeUtf16();
     if (cwd != null) toFree.add(cwd);
 
+    if (pty != null) {
+      // A child inherits "ignore Ctrl+C" from its creator, and the host may
+      // have been started with it set; a terminal's programs must see Ctrl+C.
+      // The flag is per process, so the creator stops ignoring Ctrl+C too.
+      setConsoleCtrlHandler(nullptr, 0);
+    }
     final ok = createProcessW(
       application,
       commandLine,
       nullptr,
       nullptr,
-      1,
+      pty == null ? 1 : 0, // a pseudo-console unit inherits nothing
       _createSuspended |
           _createUnicodeEnvironment |
           _extendedStartupInfoPresent |
-          _createNoWindow,
+          // CREATE_NO_WINDOW conflicts with pseudo-console attachment.
+          (pty == null ? _createNoWindow : 0),
       env.cast<Void>(),
       cwd ?? nullptr,
       startup.cast<Void>(),
@@ -285,14 +368,35 @@ WindowsUnit spawnWindowsUnit({
       containmentId,
       processHandle,
       job,
+      pty == null
+          ? null
+          : PtyHandles(
+              readHandle: outRead,
+              writeHandle: inWrite,
+              console: hpcon,
+            ),
     );
     processHandle = 0; // now owned by the unit
+    ptyOwnedByUnit = true;
     return unit;
+  } on WindowsApiException catch (e) {
+    closeHandleNative(job);
+    if (processHandle != 0) closeHandleNative(processHandle);
+    if (pty != null) throw SpawnFailed(e.call, e.code);
+    rethrow;
   } catch (_) {
     closeHandleNative(job);
     if (processHandle != 0) closeHandleNative(processHandle);
     rethrow;
   } finally {
+    if (pty != null && !ptyOwnedByUnit) {
+      // Closing the pipe ends first lets ClosePseudoConsole return at once.
+      if (outRead != 0) closeHandleNative(outRead);
+      if (inWrite != 0) closeHandleNative(inWrite);
+      if (inRead != 0) closeHandleNative(inRead);
+      if (outWrite != 0) closeHandleNative(outWrite);
+      if (hpcon != 0) closePseudoConsole(hpcon);
+    }
     if (threadHandle != 0) closeHandleNative(threadHandle);
     if (nul != 0 && nul != -1) closeHandleNative(nul);
     if (attributeList != nullptr) deleteProcThreadAttributeList(attributeList);

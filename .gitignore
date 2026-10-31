@@ -8,6 +8,9 @@ build/
 .flutter-plugins-dependencies
 pubspec_overrides.yaml
 
+# Rust build outputs of vendored crates
+/third_party/**/target/
+
 # Untracked reference checkouts
 /orca/
 /t3code/
