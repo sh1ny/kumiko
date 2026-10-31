@@ -23,10 +23,11 @@ class DesktopInfo {
 /// Launch result retains the handle and caller-owned I/O even if a short-lived
 /// child exits and settlement removes it from [UnitManager.live].
 class UnitLaunch {
-  const UnitLaunch({required this.id, required this.unit});
+  const UnitLaunch({required this.id, required this.unit, required this.target});
 
   final String id;
   final ContainedUnit unit;
+  final ResolvedDirectory target;
   UnitPipes? get pipes => unit.pipes;
 }
 
@@ -226,7 +227,7 @@ class UnitManager {
         }),
       );
       log.event('unit-launched', ids: {'unit': id});
-      return UnitLaunch(id: id, unit: unit);
+      return UnitLaunch(id: id, unit: unit, target: identity);
     } finally {
       _launching--;
     }

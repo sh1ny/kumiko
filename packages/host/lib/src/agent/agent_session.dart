@@ -57,7 +57,7 @@ class AgentSession {
   final void Function(AgentPermissionResolvedParams) onPermissionResolved;
   final void Function(AgentStopResultParams) onStopResult;
   final void Function(AgentTurnEndedParams) onTurnEnded;
-  final FutureOr<void> Function(List<Uint8List>) enqueueEvents;
+  final FutureOr<void> Function(Iterable<Uint8List>) enqueueEvents;
   final AgentDeadlineFactory _deadlineFactory;
   AgentState _state = AgentState.starting;
   AgentState get state => _state;
@@ -87,6 +87,12 @@ class AgentSession {
     _publish();
   }
 
+  /// Attach republishes authoritative current state after the desktop has
+  /// registered its session/channel. No pre-start notification buffer needed.
+  void publishState() {
+    if (!_disposed) _publish();
+  }
+
   void ready({required String nativeSessionId}) {
     if (_state != AgentState.starting) {
       throw StateError('session is not starting');
@@ -98,13 +104,13 @@ class AgentSession {
   /// Continue owns the actual load/resume requests; these hooks frame replay
   /// on the same ordered, bounded event path before transitioning to idle.
   Future<void> replayStarted() => _enqueue(
-    encodeAgentEvent(AgentEvent.replay(AgentReplayPhase.start)).toList(),
+    encodeAgentEvent(AgentEvent.replay(AgentReplayPhase.start)),
   );
   Future<void> replayEnded() => _enqueue(
-    encodeAgentEvent(AgentEvent.replay(AgentReplayPhase.end)).toList(),
+    encodeAgentEvent(AgentEvent.replay(AgentReplayPhase.end)),
   );
   Future<void> notice(String text) =>
-      _enqueue(encodeAgentEvent(AgentEvent.notice(text)).toList());
+      _enqueue(encodeAgentEvent(AgentEvent.notice(text)));
 
   /// Acceptance only: the host ACK must not wait for the adapter's result.
   /// One turn is active; completion is reported through control callbacks.
@@ -125,7 +131,7 @@ class AgentSession {
     lastTurnError = null;
     _set(AgentState.running);
     _enqueue(
-      encodeAgentEvent(AgentEvent.text(AgentEventKind.user, text)).toList(),
+      encodeAgentEvent(AgentEvent.text(AgentEventKind.user, text)),
     ).ignore();
     client
         .prompt(_nativeSessionId!, text)
@@ -144,9 +150,9 @@ class AgentSession {
     return normalizeAcpUpdate(update);
   }
 
-  Future<void> _consume(Object value) => _enqueue(value as List<Uint8List>);
-  Future<void> _enqueue(List<Uint8List> lines) {
-    if (_disposed || lines.isEmpty) return Future.value();
+  Future<void> _consume(Object value) => _enqueue(value as Iterable<Uint8List>);
+  Future<void> _enqueue(Iterable<Uint8List> lines) {
+    if (_disposed) return Future.value();
     final queued = _events.then<void>((_) {
       if (!_disposed) return enqueueEvents(lines);
     });
@@ -174,7 +180,7 @@ class AgentSession {
         reason != null
             ? AgentEvent.turn(reason)
             : AgentEvent.notice(error.toString()),
-      ).toList(),
+      ),
     );
     if (!_hasTurn || turn != _turn || _disposed || _terminal) return;
     _deadline?.cancel();
@@ -228,7 +234,7 @@ class AgentSession {
         AgentEvent.notice(
           'Too many pending permission requests; the extra request was cancelled.',
         ),
-      ).toList();
+      );
     }
     final tool = params['toolCall'];
     final options = params['options'];

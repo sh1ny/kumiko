@@ -4,6 +4,7 @@ import 'dart:io';
 import 'package:host_protocol/host_protocol.dart';
 import 'package:process_containment/process_containment.dart';
 
+import 'agent/agent_service.dart';
 import 'agent/runtime_profile_service.dart';
 import 'cleanup_service.dart';
 import 'host_extension.dart';
@@ -80,6 +81,7 @@ class Host {
   ProfileService? _profiles;
   RuntimeProfileService? _runtimeProfiles;
   TerminalService? _terminals;
+  AgentService? _agents;
   bool _stopping = false;
 
   /// Runs until the desktop goes away; returns the exit code.
@@ -278,6 +280,14 @@ class Host {
       options: options,
       log: log,
     );
+    _agents = AgentService(
+      connection: _connection,
+      units: units,
+      workspaces: workspaces,
+      profiles: _runtimeProfiles!,
+      store: store,
+      options: options,
+    );
     _workbench = WorkbenchService(
       store: store,
       ledger: ledger,
@@ -384,13 +394,37 @@ class Host {
         _terminals!.release(TerminalReleaseParams.fromJson(params));
         return <String, Object?>{};
     }
+    switch (method) {
+      case Method.agentStart:
+        if (params['workspaceId'] == null || params['workspaceId'] == '') {
+          throw RpcException(ErrorCode.workspaceRequired, 'an agent needs a workspace');
+        }
+        return (await _agents!.start(AgentStartParams.fromJson(params))).toJson();
+      case Method.agentAttach:
+        _agents!.attach(AgentSessionParams.fromJson(params));
+        return <String, Object?>{};
+      case Method.agentPrompt:
+        _agents!.prompt(AgentPromptParams.fromJson(params));
+        return <String, Object?>{};
+      case Method.agentStop:
+        _agents!.stop(AgentSessionParams.fromJson(params));
+        return <String, Object?>{};
+      case Method.agentPermissionReply:
+        _agents!.permissionReply(AgentPermissionReplyParams.fromJson(params));
+        return <String, Object?>{};
+      case Method.agentClose:
+        _agents!.close(AgentSessionParams.fromJson(params));
+        return <String, Object?>{};
+      case Method.agentRelease:
+        _agents!.release(AgentSessionParams.fromJson(params));
+        return <String, Object?>{};
+    }
     if (method.startsWith('test/') && extension != null) {
       return extension!.handle(
         HostServices(
           units: _units!,
           faults: faults,
           connection: _connection,
-          runtimeProfiles: _runtimeProfiles!,
         ),
         method,
         params,
@@ -415,6 +449,7 @@ class Host {
     if (_stopping) return;
     final units = _units;
     _terminals?.dispose();
+    _agents?.dispose();
     if (units != null) {
       _log?.event('shutdown', code: reason.kind);
       await _cleanup?.reconciliation?.timeout(
@@ -422,6 +457,7 @@ class Host {
         onTimeout: () {},
       );
       await units.shutdown(options.shutdownDeadline);
+      await _agents?.finishShutdown();
     }
     await _finish(code);
   }

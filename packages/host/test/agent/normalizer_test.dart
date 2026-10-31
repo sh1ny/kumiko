@@ -96,6 +96,30 @@ void main() {
       );
     },
   );
+  test('escaped text preserves the raw cap encoded event limits and truncation marker', () {
+    final content = <String, Object?>{
+      'type': 'text',
+      'text': '\u0001' * (maxAgentTextChunkBytes + 1),
+    };
+    final normalized = normalizeAcpUpdate({
+      'sessionUpdate': 'agent_message_chunk',
+      'content': content,
+    });
+    final decoder = AgentEventDecoder();
+    var textBytes = 0;
+    AgentEvent? last;
+    for (final line in normalized) {
+      expect(line.length, lessThanOrEqualTo(maxAgentTextEventBytes + 1));
+      for (final event in decoder.add(line)) {
+        expect(event.text!.runes.every((r) => r == 1), isTrue);
+        textBytes += event.text!.length;
+        last = event;
+      }
+    }
+    decoder.close();
+    expect(textBytes, maxAgentTextChunkBytes);
+    expect(last!.truncated, isTrue);
+  });
   test('codec bounds split text truncate tool content and plans', () {
     final text = events({
       'sessionUpdate': 'agent_message_chunk',

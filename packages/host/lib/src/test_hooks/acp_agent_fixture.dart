@@ -9,8 +9,11 @@ import 'package:host_protocol/host_protocol.dart';
 /// provider qualification. Only explicitly named environment values are
 /// reported; neither inherited credentials nor full environment are dumped.
 Future<int> runAcpAgentFixture(List<String> args) async {
+  final scriptIndex = args.indexOf('--script');
   final script = jsonDecode(
-    Platform.environment['KUMIKO_TEST_ACP_SCRIPT'] ?? '{}',
+    scriptIndex >= 0
+        ? File(args[scriptIndex + 1]).readAsStringSync()
+        : Platform.environment['KUMIKO_TEST_ACP_SCRIPT'] ?? '{}',
   ) as Json;
   final sink = stdout.nonBlocking;
   return runAcpAgentScript(
@@ -28,7 +31,7 @@ Future<int> runAcpAgentFixture(List<String> args) async {
       final path = script['reportFile'];
       if (path is String) {
         File(path).writeAsStringSync(
-          '${jsonEncode(value)}\n',
+          '${jsonEncode({'executable': Platform.resolvedExecutable, ...value})}\n',
           mode: FileMode.append,
           flush: true,
         );
@@ -138,6 +141,9 @@ Future<int> runAcpAgentScript({
       final action = value as Json;
       if (action['update'] case final Json value) await update(value);
       if (action['stderr'] case final String value) writeError(value);
+      if (action['writeFile'] case final Json value) {
+        File(value['path'] as String).writeAsStringSync(value['text'] as String);
+      }
       if (action['report'] == true) report(launchReport());
       if (action['spawnTree'] == true) {
         if (spawnTree == null) {
@@ -235,6 +241,7 @@ Future<int> runAcpAgentScript({
         });
       case 'session/new':
         report({'newCwd': params['cwd'], 'mcpServers': params['mcpServers']});
+        await actions(script['new']);
         await result(id, {'sessionId': native});
       case 'session/load' || 'session/resume':
         native = params['sessionId'] as String;

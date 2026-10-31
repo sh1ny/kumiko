@@ -308,13 +308,15 @@ class AcpClient {
             // release; release is idempotent for an owner and cancelled waiter.
             Object? normalized;
             try {
-              final decoded = jsonDecode(
-                utf8.decode(Uint8List.sublistView(buffer, 0, length)),
+              // Decode and synchronous normalization live on a separate stack.
+              // Do not retain the original decoded (up to 16 MiB) envelope in
+              // this async reader frame while bounded consumption waits.
+              final dispatched = _decodeAndDispatch(
+                Uint8List.sublistView(buffer, 0, length),
               );
-              if (decoded is! Json) {
-                throw AcpProtocolException('envelope must be an object');
-              }
-              normalized = await _dispatch(decoded);
+              normalized = dispatched is Future<Object?>
+                  ? await dispatched
+                  : dispatched;
             } finally {
               _permit.release(this);
             }
@@ -348,7 +350,15 @@ class AcpClient {
     }
   }
 
-  Future<Object?> _dispatch(Json message) async {
+  FutureOr<Object?> _decodeAndDispatch(Uint8List bytes) {
+    final decoded = jsonDecode(utf8.decode(bytes));
+    if (decoded is! Json) {
+      throw AcpProtocolException('envelope must be an object');
+    }
+    return _dispatch(decoded);
+  }
+
+  FutureOr<Object?> _dispatch(Json message) {
     if (message['jsonrpc'] != '2.0') {
       throw AcpProtocolException('invalid JSON-RPC version');
     }
@@ -382,11 +392,10 @@ class AcpClient {
       if (method != 'session/update' || normalizeNotification == null) {
         return null;
       }
-      return _untilClosed<Object?>(
-        Future<Object?>.sync(
-          () => normalizeNotification!(method, params as Json? ?? {}),
-        ),
-      );
+      final normalized = normalizeNotification!(method, params as Json? ?? {});
+      return normalized is Future<Object?>
+          ? _untilClosed<Object?>(normalized)
+          : normalized;
     }
     if ((id is! String && id is! int) ||
         message.containsKey('result') == message.containsKey('error')) {

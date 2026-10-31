@@ -3,9 +3,11 @@ import 'dart:typed_data';
 import 'package:host_protocol/host_protocol.dart';
 
 /// Reviewed ACP v1 updates only. The shared event codec is the single source
-/// of truncation/encoded-byte policy. Eager materialization finishes bounded
-/// normalization before the transport releases its large-line permit.
-List<Uint8List> normalizeAcpUpdate(Json update) {
+/// of truncation/encoded-byte policy. Text is snapshotted and raw-bounded
+/// synchronously, before ACP releases its large-line permit. Its wire encoding
+/// is lazy: escaping must not retain a multi-MiB list behind stalled credit.
+/// Tool/plan normalization eagerly finishes their single bounded event.
+Iterable<Uint8List> normalizeAcpUpdate(Json update) {
   AgentEvent? event;
   final kind = update['sessionUpdate'];
   if (kind == 'user_message_chunk' ||
@@ -15,14 +17,18 @@ List<Uint8List> normalizeAcpUpdate(Json update) {
     if (content is Json &&
         content['type'] == 'text' &&
         content['text'] is String) {
-      event = AgentEvent.text(
-        kind == 'user_message_chunk'
-            ? AgentEventKind.user
-            : kind == 'agent_message_chunk'
-            ? AgentEventKind.agentText
-            : AgentEventKind.thought,
-        content['text']! as String,
-      );
+      final source = content['text']! as String;
+      final text = clampUtf8(source, maxAgentTextChunkBytes);
+      final eventKind = kind == 'user_message_chunk'
+          ? AgentEventKind.user
+          : kind == 'agent_message_chunk'
+          ? AgentEventKind.agentText
+          : AgentEventKind.thought;
+      return encodeAgentEvent(AgentEvent.fromJson({
+        'kind': eventKind.name,
+        'text': text,
+        if (text.length != source.length) 'truncated': true,
+      }));
     }
   } else if (kind == 'tool_call' || kind == 'tool_call_update') {
     final id = update['toolCallId'];

@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:host_protocol/host_protocol.dart';
@@ -6,6 +7,8 @@ import 'package:sqlite3/sqlite3.dart';
 import 'package:test/test.dart';
 
 import 'support/harness.dart';
+import 'support/agent_support.dart';
+import 'support/terminal_support.dart';
 
 RuntimeProfile user(
   String id, {
@@ -104,6 +107,60 @@ void main() {
       Link(joinPath(bin.path, 'claude-agent-acp')).createSync(script.path);
     }
   }
+
+  test("a profile's executable and args reach the adapter unchanged (fixture agent reports its argv)", () async {
+    final d = await start();
+    final w = await d.openWorkspace(bin.path);
+    const args = ['-y', '@agentclientprotocol/claude-agent-acp@0.99.1', '', '--setting="a b"'];
+    final report = await saveAgentFixture(d, bin, args: args, script: {'reportLaunch': true});
+    final saved = (await list(d)).profiles.single;
+    final a = AgentPeer(d);
+    await a.start(w.workspace.id, runtime: saved.id);
+    await a.attach();
+    final launch = await waitFixture(report, (p) => p.containsKey('argv'));
+    expect(launch['argv'], saved.args);
+    expect(File(launch['executable'] as String).absolute.path,
+        File(saved.executable).absolute.path);
+    expect((launch['argv'] as List).skip(4), args);
+    expect(saved.executable.toLowerCase(), isNot(endsWith('.cmd')));
+    await a.close();
+  });
+  test("profile env override reaches only its own sessions, not a terminal or another profile's session", () async {
+    final d = await start();
+    final w = await d.openWorkspace(bin.path);
+    const key = 'KUMIKO_PROFILE_ENV_CANARY';
+    final p = await saveAgentFixture(d, bin, id: 'p',
+      script: {'reportLaunch': true, 'reportEnv': [key]},
+      env: {key: 'debug'});
+    final q = await saveAgentFixture(d, bin, id: 'q',
+      script: {'reportLaunch': true, 'reportEnv': [key]});
+    final a = AgentPeer(d);
+    final b = AgentPeer(d);
+    await a.start(w.workspace.id, runtime: 'p');
+    await b.start(w.workspace.id, runtime: 'q');
+    await a.attach();
+    await b.attach();
+    expect((await waitFixture(p, (p) => p.containsKey('env')))['env'], {key: 'debug'});
+    expect((await waitFixture(q, (p) => p.containsKey('env')))['env'], isEmpty);
+    await d.saveFixtureProfile(cwd: bin.path);
+    final terminal = await d.openTerminal('fixture');
+    await terminal.waitForText('READY;');
+    await terminal.send('env $key');
+    // The fixture emits ENV:<name>=<base64>;, not the NAME:<value>;
+    // shape accepted by decodedToken. Wait for the complete response so a
+    // split PTY read cannot be mistaken for a missing environment value.
+    final response = RegExp('ENV:${RegExp.escape(key)}=([^;]*);');
+    await eventually(
+      () => response.hasMatch(terminal.text),
+      reason: 'terminal did not report the complete environment response',
+    );
+    final value = response.firstMatch(terminal.text)!.group(1)!;
+    expect(utf8.decode(base64.decode(value)), '-');
+    await terminal.close();
+    await terminal.waitExited();
+    await a.close();
+    await b.close();
+  });
 
   test(
     'runtime/list with no adapter returns no built-in and the reason',

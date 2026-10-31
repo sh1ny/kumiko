@@ -37,6 +37,14 @@ The user installs Node (at least version 22 for the Claude adapter) and the adap
 
 `AgentSession` owns the state sequence, pending permission choices and Stop outcome. Prompt acceptance does not await the native turn result. Stop queues cancelled permission outcomes before `session/cancel`, never kills the process, and retains `stopping` after an unconfirmed deadline until the one permitted late result. Unknown native errors retain their code and message; the exact authentication classifier is added only after real qualification observes it. The scripted ACP fixture is test support, not qualification evidence, and reports only explicitly selected environment values.
 
+## Host agent service implementation
+
+`AgentService` owns each live adapter unit, its reserved event channel and the private session record. Start validates the workspace and runtime before spawning, initializes ACP and creates the native session before inserting a record. Failures settle the process tree and release the channel without recording an incomplete session. Adapter stderr stays in a bounded memory ring; it is never written to the host log.
+
+Attach publishes the current sequenced state after the acknowledgement. The bounded event relay pauses adapter output instead of dropping events; Stop, permission replies and close remain on the control channel. Closing acknowledges entry into `closing` before cancellation, grace and containment settlement. A confirmed close retains the immutable native record but releases the live unit. Desktop or host loss uses the existing ledger reconciliation path, including adapter descendants.
+
+Unknown native errors retain their bounded code and message in ordinary start/prompt results. Native authentication classification remains unverified until task 10.2 records the real adapter's exact error; fixture errors do not establish that match.
+
 ## Protocol implementation
 
 `host_protocol` owns the runtime/agent control DTOs and `AgentEvent` codec. Events are UTF-8 newline-delimited JSON; use `encodeAgentEvent` to apply encoded-size bounds, and one `AgentEventDecoder` per received channel. Register the inbound channel before sending `agent/attach`, and grant its initial credit only after attach succeeds. Existing reservation and credit primitives provide the handshake without another transport abstraction.
