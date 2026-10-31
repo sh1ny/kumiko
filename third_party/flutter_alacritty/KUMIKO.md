@@ -96,5 +96,13 @@ A commit longer than the two-space sentinel lost its first two characters
 even when the IME had not kept the sentinel. They are now dropped only when
 the text starts with it. Test: `packages/desktop/test/vendored_input_test.dart`.
 
+**A result from before a resize is not applied after it**
+(`lib/engine/terminal_engine_client.dart`). A resize applies at once while
+an advance or scroll is awaited, and that call's result can describe the
+grid before the resize; applying it put the old size and content back. The
+client now counts resizes and, when one happened during the call, applies
+the engine's current snapshot instead. Test:
+`packages/desktop/test/engine_client_resize_test.dart`.
+
 To move to a newer upstream version, copy its `lib/`, `pubspec.yaml` and
 licence again and re-apply the patch until upstream carries the fix.

@@ -68,6 +68,9 @@ class TerminalEngineClient {
   void _updatePending() => pending.value = _buf.length + _inFlight;
   bool _drainScheduled = false;
   bool _advancing = false;
+
+  /// Resizes applied so far; see [_applyScrollSinceResize].
+  int _resizes = 0;
   DateTime? _interactiveUntil;
   int? _pendingColumns;
   int? _pendingRows;
@@ -213,14 +216,19 @@ class TerminalEngineClient {
         if (_disposed || _buf.isEmpty) break;
         final batch = _buf.takeBytes();
         _inFlight = batch.length;
+        final resizes = _resizes;
         if (_rasterHotPath) {
           final frame = await _raster!.advanceAndTakeRasterPresent(batch);
           if (_disposed) return;
-          _applyRasterFrame(frame);
+          if (resizes == _resizes) {
+            _applyRasterFrame(frame);
+          } else {
+            refreshView(); // the frame predates a resize
+          }
         } else {
           final update = await _binding.advanceAndTakeDamage(batch);
           if (_disposed) return;
-          _applyUpdate(update);
+          _applyUpdate(resizes == _resizes ? update : _currentSnapshot());
         }
         if (_disposed) return;
         _inFlight = 0;
@@ -318,6 +326,7 @@ class TerminalEngineClient {
     _pendingColumns = null;
     _pendingRows = null;
     _binding.resize(columns, rows);
+    _resizes++;
     // Engine resize sets TermDamage::Full; sync snapshot keeps MirrorGrid in sync.
     refreshView();
     _schedulePtyResize(columns, rows);
@@ -344,9 +353,9 @@ class TerminalEngineClient {
       'scrollLines($delta) before ${_gridPosSnapshot()}',
     );
     if (_rasterHotPath) {
-      _applyRasterFrame(await _raster!.scrollLinesRaster(delta));
+      await _applyRasterSinceResize(_raster!.scrollLinesRaster(delta));
     } else {
-      _applyScrollUpdate(await _binding.scrollLines(delta));
+      await _applyScrollSinceResize(_binding.scrollLines(delta));
     }
     TerminalScrollTrace.log(
       'client',
@@ -360,9 +369,9 @@ class TerminalEngineClient {
       'scrollPixels(${deltaPx.toStringAsFixed(1)}) before ${_gridPosSnapshot()}',
     );
     if (_rasterHotPath) {
-      _applyRasterFrame(await _raster!.scrollPixelsRaster(deltaPx));
+      await _applyRasterSinceResize(_raster!.scrollPixelsRaster(deltaPx));
     } else {
-      _applyScrollUpdate(await _binding.scrollPixels(deltaPx));
+      await _applyScrollSinceResize(_binding.scrollPixels(deltaPx));
     }
     TerminalScrollTrace.log(
       'client',
@@ -376,9 +385,9 @@ class TerminalEngineClient {
       'scrollToBottom before ${_gridPosSnapshot()}',
     );
     if (_rasterHotPath) {
-      _applyRasterFrame(await _raster!.scrollToBottomRaster());
+      await _applyRasterSinceResize(_raster!.scrollToBottomRaster());
     } else {
-      _applyScrollUpdate(await _binding.scrollToBottom());
+      await _applyScrollSinceResize(_binding.scrollToBottom());
     }
     TerminalScrollTrace.log(
       'client',
@@ -392,9 +401,9 @@ class TerminalEngineClient {
       'scrollToTop before ${_gridPosSnapshot()}',
     );
     if (_rasterHotPath) {
-      _applyRasterFrame(await _raster!.scrollToTopRaster());
+      await _applyRasterSinceResize(_raster!.scrollToTopRaster());
     } else {
-      _applyScrollUpdate(await _binding.scrollToTop());
+      await _applyScrollSinceResize(_binding.scrollToTop());
     }
     TerminalScrollTrace.log(
       'client',
@@ -408,9 +417,9 @@ class TerminalEngineClient {
       'scrollToOffset($offsetLines) before ${_gridPosSnapshot()}',
     );
     if (_rasterHotPath) {
-      _applyRasterFrame(await _raster!.scrollToOffsetRaster(offsetLines));
+      await _applyRasterSinceResize(_raster!.scrollToOffsetRaster(offsetLines));
     } else {
-      _applyScrollUpdate(await _binding.scrollToOffset(offsetLines));
+      await _applyScrollSinceResize(_binding.scrollToOffset(offsetLines));
     }
     TerminalScrollTrace.log(
       'client',
@@ -422,6 +431,34 @@ class TerminalEngineClient {
     if (_disposed) return;
     _applyUpdate(update);
     // MirrorGrid notify schedules the frame.
+  }
+
+  /// The engine's whole viewport now, with search marks when searching.
+  GridUpdate _currentSnapshot() => _binding.searchIsActive()
+      ? _binding.fullSnapshotSearched()
+      : _binding.fullSnapshot();
+
+  // A resize applies synchronously while an awaited engine call is in
+  // flight, so that call's result can describe the grid before it. Such a
+  // result is replaced by the engine's current state.
+  Future<void> _applyScrollSinceResize(Future<GridUpdate> pending) async {
+    final resizes = _resizes;
+    final update = await pending;
+    if (_disposed) return;
+    _applyScrollUpdate(resizes == _resizes ? update : _currentSnapshot());
+  }
+
+  Future<void> _applyRasterSinceResize(
+    Future<RasterPresentFrame> pending,
+  ) async {
+    final resizes = _resizes;
+    final frame = await pending;
+    if (_disposed) return;
+    if (resizes == _resizes) {
+      _applyRasterFrame(frame);
+    } else {
+      refreshView();
+    }
   }
 
   void clearHistory() {
