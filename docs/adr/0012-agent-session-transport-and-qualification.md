@@ -59,6 +59,14 @@ The host qualification tests run real contained fixture processes and native pip
 
 RSS sampling uses asynchronous, single-flight OS queries so measurement does not block the desktop connection's credit loop. The scripted fixture serializes complete output lines, including gated and chunked lines, while keeping request handling concurrent. These regressions prove Kumiko's transport behavior on the OS running them; they do not qualify a real adapter version.
 
+## Desktop chat implementation
+
+`AgentController` owns live pane links and the bounded, in-memory transcript. Control notifications determine state and permission choices; the event channel determines transcript order. Accepted user prompts enter history only through the host's canonical event, so local draft submission cannot duplicate a prompt or reorder it ahead of earlier channel data. Identical prompts in different turns remain distinct.
+
+Chat panes persist only `sessionId` and `runtimeName`. Restore reads saved records without launching an adapter; Continue is explicit. Pane moves preserve live links and pending permission choices. Host loss disables runtime actions until the new host resolves saved records. Transcript eviction leaves a visible marker rather than persisting conversation text.
+
+The generic `ViewCloser` contract replaces the terminal-only close branch. Agent and terminal panes share one mixed-tab confirmation while retaining their own settlement behavior. The workspace-bound Claude Code launcher uses runtime profile selection and the editor's argv-only configuration; missing capability, profile or workspace remains visible instead of selecting a fallback.
+
 ## Protocol implementation
 
 `host_protocol` owns the runtime/agent control DTOs and `AgentEvent` codec. Events are UTF-8 newline-delimited JSON; use `encodeAgentEvent` to apply encoded-size bounds, and one `AgentEventDecoder` per received channel. Register the inbound channel before sending `agent/attach`, and grant its initial credit only after attach succeeds. Existing reservation and credit primitives provide the handshake without another transport abstraction.

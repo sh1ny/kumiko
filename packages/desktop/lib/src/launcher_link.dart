@@ -261,6 +261,145 @@ class SessionLink implements HostLink {
       .map((n) => TerminalCloseFailed.fromJson(n.params));
 
   @override
+  Future<RuntimeListResult> runtimeList() async =>
+      RuntimeListResult.fromJson(await _request(Method.runtimeList, {}));
+
+  @override
+  Future<RuntimeProfile> saveRuntimeProfile(RuntimeProfile profile) async {
+    await _request(Method.runtimeSave, RuntimeSaveParams(profile).toJson());
+    return profile;
+  }
+
+  @override
+  Future<void> removeRuntimeProfile(String id) =>
+      _request(Method.runtimeRemove, RuntimeRemoveParams(id).toJson());
+
+  @override
+  Future<void> setDefaultRuntimeProfile(String id) =>
+      _request(Method.runtimeSetDefault, RuntimeSetDefaultParams(id).toJson());
+
+  @override
+  Future<AgentStartResult> startAgent(AgentStartParams params) async =>
+      AgentStartResult.fromJson(await _request(Method.agentStart, params.toJson()));
+
+  @override
+  Future<AgentContinueResult> continueAgent(String sessionId) async =>
+      AgentContinueResult.fromJson(await _request(
+        Method.agentContinue, AgentSessionParams(sessionId).toJson(),
+      ));
+
+  @override
+  Stream<AgentEvent> attachAgent(String sessionId, int eventChannel) {
+    final connection = session.connection;
+    final decoder = AgentEventDecoder();
+    StreamSubscription<Object?>? input;
+    var cancelled = false;
+    late final StreamController<AgentEvent> events;
+    Future<void> cancel() async {
+      cancelled = true;
+      await input?.cancel();
+      await connection.closeChannel(eventChannel).then<void>(
+        (_) {}, onError: (Object _) {},
+      );
+    }
+    events = StreamController<AgentEvent>(
+      sync: true,
+      onListen: () {
+        final bytes = connection.attachInbound(eventChannel, grantInitial: false);
+        input = bytes.listen((chunk) {
+          if (cancelled) return;
+          try {
+            for (final event in decoder.add(chunk)) {
+              events.add(event);
+            }
+          } on Object catch (error, stack) {
+            events.addError(error, stack);
+            unawaited(cancel());
+            unawaited(events.close());
+          }
+        }, onError: (Object error, StackTrace stack) {
+          if (!cancelled) events.addError(error, stack);
+          unawaited(cancel());
+          unawaited(events.close());
+        }, onDone: () {
+          if (!cancelled) {
+            try {
+              decoder.close();
+            } on Object catch (error, stack) {
+              events.addError(error, stack);
+            }
+          }
+          unawaited(events.close());
+        });
+        unawaited(() async {
+          try {
+            await _request(Method.agentAttach, AgentSessionParams(sessionId).toJson());
+            if (!cancelled) connection.grantInitial(eventChannel);
+          } on Object catch (error, stack) {
+            if (!cancelled) events.addError(error, stack);
+            await cancel();
+            unawaited(events.close());
+          }
+        }());
+      },
+      onPause: () => input?.pause(),
+      onResume: () => input?.resume(),
+      onCancel: cancel,
+    );
+    return events.stream;
+  }
+
+  @override
+  Future<void> promptAgent(AgentPromptParams params) =>
+      _request(Method.agentPrompt, params.toJson());
+  @override
+  Future<void> stopAgent(String sessionId) =>
+      _request(Method.agentStop, AgentSessionParams(sessionId).toJson());
+  @override
+  Future<void> replyAgentPermission(AgentPermissionReplyParams params) =>
+      _request(Method.agentPermissionReply, params.toJson());
+  @override
+  Future<void> closeAgent(String sessionId) =>
+      _request(Method.agentClose, AgentSessionParams(sessionId).toJson());
+  @override
+  Future<void> releaseAgent(String sessionId) =>
+      _request(Method.agentRelease, AgentSessionParams(sessionId).toJson());
+  @override
+  Future<AgentRecordsResult> agentRecords(List<String> sessionIds) async =>
+      AgentRecordsResult.fromJson(await _request(
+        Method.agentRecords, AgentRecordsParams(sessionIds).toJson(),
+      ));
+
+  @override
+  Stream<AgentStateParams> get agentStates => session.notifications
+      .where((n) => n.method == Method.agentState)
+      .map((n) => AgentStateParams.fromJson(n.params));
+  @override
+  Stream<AgentPermissionRequestedParams> get agentPermissionRequests =>
+      session.notifications.where((n) => n.method == Method.agentPermissionRequested)
+      .map((n) => AgentPermissionRequestedParams.fromJson(n.params));
+  @override
+  Stream<AgentPermissionResolvedParams> get agentPermissionResolutions =>
+      session.notifications.where((n) => n.method == Method.agentPermissionResolved)
+      .map((n) => AgentPermissionResolvedParams.fromJson(n.params));
+  @override
+  Stream<AgentStopResultParams> get agentStopResults => session.notifications
+      .where((n) => n.method == Method.agentStopResult)
+      .map((n) => AgentStopResultParams.fromJson(n.params));
+  @override
+  Stream<AgentTurnEndedParams> get agentTurnEnds => session.notifications
+      .where((n) => n.method == Method.agentTurnEnded)
+      .map((n) => AgentTurnEndedParams.fromJson(n.params));
+  @override
+  Stream<AgentExitedParams> get agentExits => session.notifications
+      .where((n) => n.method == Method.agentExited)
+      .map((n) => AgentExitedParams.fromJson(n.params));
+  @override
+  Stream<AgentCloseFailedParams> get agentCloseFailures => session.notifications
+      .where((n) => n.method == Method.agentCloseFailed)
+      .map((n) => AgentCloseFailedParams.fromJson(n.params));
+
+  @override
   Future<void> quit() async {
     await session.quit();
   }

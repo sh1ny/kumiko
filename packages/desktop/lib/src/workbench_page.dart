@@ -6,6 +6,8 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:host_protocol/host_protocol.dart';
 
+import 'agent/agent_pane_view.dart';
+import 'agent/runtime_profiles_dialog.dart';
 import 'cleanup_controller.dart';
 import 'cleanup_list_view.dart';
 import 'terminal/profiles_dialog.dart';
@@ -16,6 +18,9 @@ const String _openFolderValue = '#open-folder';
 const String _terminalValue = '#terminal';
 const String _terminalProfileValue = '#terminal-profile';
 const String _shellProfilesValue = '#shell-profiles';
+const String _agentValue = '#agent';
+const String _agentProfileValue = '#agent-profile';
+const String _runtimeProfilesValue = '#runtime-profiles';
 
 /// The workbench: workspaces sidebar, a tab strip over the active tab's pane
 /// tree, notices.
@@ -680,6 +685,12 @@ class _TabStrip extends StatelessWidget {
                     launchTerminalFlow(context, controller, choose: true);
                   case _shellProfilesValue:
                     showProfilesDialog(context, controller);
+                  case _agentValue:
+                    launchAgentFlow(context, controller);
+                  case _agentProfileValue:
+                    launchAgentFlow(context, controller, choose: true);
+                  case _runtimeProfilesValue:
+                    showRuntimeProfilesDialog(context, controller);
                   default:
                     controller.openView(value);
                 }
@@ -696,6 +707,24 @@ class _TabStrip extends StatelessWidget {
                           : kind.label,
                     ),
                   ),
+                PopupMenuItem<String>(
+                  key: const Key('launch-agent-chat'),
+                  value: _agentValue,
+                  enabled: selected != null && controller.agentsUnavailableReason == null,
+                  child: Text(controller.agentsUnavailableReason != null
+                      ? 'Claude Code (${controller.agentsUnavailableReason})'
+                      : selected == null ? 'Claude Code (needs a workspace)' : 'Claude Code'),
+                ),
+                PopupMenuItem<String>(
+                  key: const Key('launch-agent-profile'), value: _agentProfileValue,
+                  enabled: selected != null && controller.agentsUnavailableReason == null,
+                  child: const Text('Claude Code with runtime profile...'),
+                ),
+                PopupMenuItem<String>(
+                  key: const Key('runtime-profiles'), value: _runtimeProfilesValue,
+                  enabled: controller.agentsUnavailableReason == null,
+                  child: const Text('Runtime profiles...'),
+                ),
                 const PopupMenuDivider(),
                 PopupMenuItem<String>(
                   key: const Key('launch-terminal'),
@@ -736,6 +765,15 @@ final ButtonStyle _compactButton = IconButton.styleFrom(
   tapTargetSize: MaterialTapTargetSize.shrinkWrap,
 );
 
+String? _agentStatus(WorkbenchController controller, LayoutTabNode tab) {
+  final statuses = [
+    for (final pane in tab.panes)
+      if (pane.kind == agentChatKind)
+        controller.agents.linkOf(pane.id)?.statusLabel ?? 'Ended',
+  ];
+  return statuses.where((s) => s == 'Waiting for approval').firstOrNull ?? statuses.firstOrNull;
+}
+
 class _TabChip extends StatelessWidget {
   const _TabChip({
     required this.controller,
@@ -752,7 +790,7 @@ class _TabChip extends StatelessWidget {
     final theme = Theme.of(context);
     final movable = controller.canMoveIntoSplit(tab.id);
     return ConstrainedBox(
-      constraints: const BoxConstraints(maxWidth: 220),
+      constraints: BoxConstraints(maxWidth: _agentStatus(controller, tab) == null ? 220 : 360),
       child: Material(
         key: Key('tab-${tab.id}'),
         color: active
@@ -773,6 +811,11 @@ class _TabChip extends StatelessWidget {
                   ),
                 ),
               ),
+              if (_agentStatus(controller, tab) case final status?)
+                Flexible(child: Padding(
+                  padding: const EdgeInsets.only(left: 6),
+                  child: AgentStatusChip(status, compact: true, key: Key('tab-agent-status-${tab.id}')),
+                )),
               if (tab.paneCount > 1)
                 Padding(
                   padding: const EdgeInsets.only(left: 6),
@@ -1214,6 +1257,14 @@ class _PaneBody extends StatelessWidget {
       return WorkspaceOverview(
         controller: controller,
         workspaceId: pane.workspace,
+      );
+    }
+    if (pane.kind == agentChatKind) {
+      return AgentPaneView(
+        key: ValueKey('agent-view-${pane.id}'),
+        controller: controller.agents,
+        paneId: pane.id,
+        focused: controller.layout!.focusedPane == pane.id,
       );
     }
     if (pane.kind == terminalKind) {

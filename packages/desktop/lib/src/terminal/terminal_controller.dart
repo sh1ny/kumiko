@@ -7,6 +7,7 @@ import 'package:flutter/scheduler.dart';
 import 'package:host_protocol/host_protocol.dart';
 
 import '../host_link.dart';
+import '../view_closer.dart';
 import 'terminal_surface.dart';
 
 /// The desktop's view of one terminal pane's host terminal (design D9):
@@ -119,7 +120,7 @@ class TerminalLink extends ChangeNotifier {
 /// [TerminalSurface] and the surface's input back, debounces resizes, and
 /// follows `terminal/exited` and `terminal/closeFailed`. It never touches the
 /// layout: removing a pane is [removePane].
-class TerminalController extends ChangeNotifier {
+class TerminalController extends ChangeNotifier implements ViewCloser {
   TerminalController({
     required this.surfaceFactory,
     required this.removePane,
@@ -546,6 +547,7 @@ class TerminalController extends ChangeNotifier {
   /// Why closing [paneId] would end running work, or null (design D9). A
   /// `starting` terminal warns like a `live` one, since its shell is about to
   /// exist.
+  @override
   String? warnsOnClose(String paneId) => switch (statusOf(paneId)) {
     TerminalStatus.starting => 'its shell is starting',
     TerminalStatus.live => 'its shell is running',
@@ -556,6 +558,7 @@ class TerminalController extends ChangeNotifier {
   /// `starting` one leaves its open on the orphan list). Live: the intent is
   /// recorded, `terminal/close` sent, and the pane goes when the host reports
   /// the exit of any reason.
+  @override
   Future<void> closeConfirmed(String paneId) async {
     final link = _links[paneId];
     final host = _host;

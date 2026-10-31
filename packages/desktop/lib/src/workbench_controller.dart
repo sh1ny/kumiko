@@ -9,18 +9,18 @@ import 'package:flutter/services.dart';
 import 'package:flutter/widgets.dart' show FocusManager;
 import 'package:host_protocol/host_protocol.dart';
 
+import 'agent/agent_controller.dart';
 import 'cleanup_controller.dart';
 import 'folder_picker.dart';
 import 'host_link.dart';
 import 'layout_saver.dart';
 import 'terminal/terminal_controller.dart';
 import 'terminal/terminal_surface.dart';
+import 'view_closer.dart';
 
-/// Why closing [pane] would lose running work, or null (design D9).
-typedef WarnsOnClose = String? Function(
-  WorkbenchController controller,
-  PaneNode pane,
-);
+export 'agent/agent_controller.dart' show agentChatKind;
+
+typedef ViewCloserOf = ViewCloser Function(WorkbenchController controller);
 
 /// A view kind registered in the desktop (design D7).
 class ViewKind {
@@ -28,15 +28,15 @@ class ViewKind {
     this.id,
     this.label, {
     required this.needsWorkspace,
-    this.warnsOnClose,
+    this.closer,
   });
 
   final String id;
   final String label;
   final bool needsWorkspace;
 
-  /// Null when closing a pane of this kind never warns.
-  final WarnsOnClose? warnsOnClose;
+  /// The owner of this kind's close lifecycle, or null for plain views.
+  final ViewCloserOf? closer;
 }
 
 /// One pane a close would end running work in, and why.
@@ -84,8 +84,18 @@ const String workspaceOverviewKind = 'workspace-overview';
 /// `{profileId, profileName}` (design D8).
 const String terminalKind = 'terminal';
 
-String? _terminalWarnsOnClose(WorkbenchController c, PaneNode pane) =>
-    c.terminals.warnsOnClose(pane.id);
+ViewCloser _terminalCloser(WorkbenchController c) => c.terminals;
+ViewCloser _agentCloser(WorkbenchController c) => c.agents;
+
+enum AgentLaunchKind { opened, unavailable, noWorkspace, chooseProfile, noProfile, failed }
+
+class AgentLaunch {
+  const AgentLaunch(this.kind, {this.profiles = const [], this.message, this.workspaceId});
+  final AgentLaunchKind kind;
+  final List<RuntimeProfile> profiles;
+  final String? message;
+  final String? workspaceId;
+}
 
 /// The registered kinds. The Workspace overview is offered by the launcher
 /// as it is; the terminal has entries of its own there.
@@ -95,13 +105,14 @@ const List<ViewKind> registeredViews = [
     terminalKind,
     'Terminal',
     needsWorkspace: false,
-    warnsOnClose: _terminalWarnsOnClose,
+    closer: _terminalCloser,
   ),
+  ViewKind(agentChatKind, 'Claude Code', needsWorkspace: true, closer: _agentCloser),
 ];
 
 /// The registered kinds the launcher offers as one plain entry each.
 Iterable<ViewKind> get launcherViews =>
-    registeredViews.where((k) => k.id != terminalKind);
+    registeredViews.where((k) => k.id != terminalKind && k.id != agentChatKind);
 
 ViewKind? viewKindOf(String id) {
   for (final k in registeredViews) {
@@ -148,6 +159,20 @@ class WorkbenchController extends ChangeNotifier {
     );
     terminals.addListener(notifyListeners);
     terminals.addListener(_onTerminals);
+    agents = AgentController(
+      removePane: removePane,
+      savePaneState: (id, state) {
+        final d = _layout;
+        if (d != null && d.pane(id) != null) _commit(d.setPaneState(id, state));
+      },
+      focusPane: (id) {
+        final tab = _layout?.tabOf(id);
+        if (tab != null) activateTab(tab.id);
+        focusPane(id);
+      },
+    );
+    agents.addListener(notifyListeners);
+    agents.addListener(_onTerminals);
   }
 
   final bool _hasEngine;
@@ -157,6 +182,9 @@ class WorkbenchController extends ChangeNotifier {
 
   /// The terminal panes' links.
   late final TerminalController terminals;
+  late final AgentController agents;
+  RuntimeListResult? _runtimes;
+  RuntimeListResult? get runtimes => _runtimes;
 
   final FolderPicker _picker;
   final String Function(String prefix) _newId;
@@ -235,6 +263,8 @@ class WorkbenchController extends ChangeNotifier {
     _detachLink();
     _link = link;
     terminals.attach(link);
+    agents.attach(link);
+    _runtimes = null;
     _profiles = null;
     _loadError = null;
     _loading = _layout == null;
@@ -315,6 +345,9 @@ class WorkbenchController extends ChangeNotifier {
         _saver.change(layoutToJson(repaired));
       }
     }
+    agents.sync(_layout!.panes.where((p) => p.kind == agentChatKind));
+    await agents.restore();
+    if (_stale(generation)) return;
     notifyListeners();
     if (_latestStateRevision > _listApplied) unawaited(_refreshList());
   }
@@ -325,6 +358,8 @@ class WorkbenchController extends ChangeNotifier {
     _heldChanges = null;
     _detachLink();
     terminals.detach();
+    agents.detach();
+    _runtimes = null;
     _link = null;
     _profiles = null;
     _loading = false;
@@ -402,6 +437,14 @@ class WorkbenchController extends ChangeNotifier {
       _keyboardTarget = null;
       return;
     }
+    if (pane.kind == agentChatKind) {
+      final link = agents.linkOf(id);
+      if (link == null || link.promptFocus.context == null) return;
+      _keyboardTarget = null;
+      if (_keyboardUnlessInPane && _keyboardInPane(id)) return;
+      link.promptFocus.requestFocus();
+      return;
+    }
     if (pane.kind != terminalKind) {
       // A view without keyboard input: the previous terminal lets go.
       _keyboardTarget = null;
@@ -440,6 +483,7 @@ class WorkbenchController extends ChangeNotifier {
       for (final p in d.panes)
         if (p.kind == terminalKind) p.id,
     });
+    agents.sync(d.panes.where((p) => p.kind == agentChatKind));
     if (refocus || d.focusedPane != focusedBefore) {
       _wantKeyboard(d.focusedPane);
     }
@@ -549,13 +593,14 @@ class WorkbenchController extends ChangeNotifier {
 
   /// Pane and tab close go through here: panes whose kind warns are named in
   /// one [confirm]ation first (design D9). Cancel changes nothing. On confirm
-  /// every terminal is asked to close in parallel; the other panes go at once.
+  /// each view's owner is asked to close in parallel; plain panes go at once.
   Future<void> requestClose(List<String> paneIds, ConfirmClose confirm) async {
     final warnings = <CloseWarning>[];
     for (final id in paneIds) {
       final pane = _layout?.pane(id);
       if (pane == null) continue;
-      final reason = viewKindOf(pane.kind)?.warnsOnClose?.call(this, pane);
+      final closer = viewKindOf(pane.kind)?.closer?.call(this);
+      final reason = closer?.warnsOnClose(id);
       if (reason != null) {
         warnings.add((paneId: id, title: paneTitle(pane), reason: reason));
       }
@@ -563,18 +608,19 @@ class WorkbenchController extends ChangeNotifier {
     if (warnings.isNotEmpty && !await confirm(warnings)) return;
     // The dialog may have been open for a while: look at the panes again.
     final plain = <String>[];
-    final terminalCloses = <Future<void>>[];
+    final closes = <Future<void>>[];
     for (final id in paneIds) {
       final pane = _layout?.pane(id);
       if (pane == null) continue;
-      if (pane.kind == terminalKind) {
-        terminalCloses.add(terminals.closeConfirmed(id));
+      final closer = viewKindOf(pane.kind)?.closer?.call(this);
+      if (closer != null) {
+        closes.add(closer.closeConfirmed(id));
       } else {
         plain.add(id);
       }
     }
     _closePanes(plain);
-    await Future.wait(terminalCloses);
+    await Future.wait(closes);
   }
 
   /// The ids of every pane in tab [tabId].
@@ -603,6 +649,88 @@ class WorkbenchController extends ChangeNotifier {
   String tabTitle(LayoutTabNode tab) {
     final pane = tab.panes.where((p) => p.id == tab.focusedPane);
     return pane.isEmpty ? 'Tab' : paneTitle(pane.first);
+  }
+
+  String? get agentsUnavailableReason {
+    final hello = _link?.hello;
+    if (hello == null) return 'the host is not connected';
+    if (!hello.capabilities.contains(Capability.agent)) return 'the host does not support agents';
+    return null;
+  }
+
+  Future<RuntimeListResult?> refreshRuntimes() async {
+    final link = _link;
+    if (link == null || agentsUnavailableReason != null) return null;
+    final generation = _generation;
+    try {
+      final result = await link.runtimeList();
+      if (_stale(generation)) return null;
+      _runtimes = result;
+      notifyListeners();
+      return result;
+    } on RpcException catch (e) {
+      if (!_stale(generation)) {
+        _message = 'Could not list runtime profiles: ${e.message.isEmpty ? e.reason : e.message}';
+        notifyListeners();
+      }
+      return null;
+    } on ConnectionClosedException {
+      return null;
+    }
+  }
+
+  Future<RuntimeProfile> saveRuntimeProfile(RuntimeProfile profile) async {
+    final result = await _profileLink().saveRuntimeProfile(profile);
+    await refreshRuntimes();
+    return result;
+  }
+
+  Future<void> removeRuntimeProfile(String id) async {
+    await _profileLink().removeRuntimeProfile(id);
+    await refreshRuntimes();
+  }
+
+  Future<void> setDefaultRuntimeProfile(String id) async {
+    await _profileLink().setDefaultRuntimeProfile(id);
+    await refreshRuntimes();
+  }
+
+  Future<AgentLaunch> launchAgent({String? profileId, bool choose = false, String? workspaceId}) async {
+    final reason = agentsUnavailableReason;
+    final link = _link;
+    final target = workspaceId ?? _layout?.selectedWorkspace;
+    if (reason != null || link == null || _layout == null) {
+      return AgentLaunch(AgentLaunchKind.unavailable, message: reason);
+    }
+    if (target == null) return const AgentLaunch(AgentLaunchKind.noWorkspace);
+    if (_beingRemoved(target)) return AgentLaunch(AgentLaunchKind.failed, message: _message);
+    final generation = _generation;
+    final list = await refreshRuntimes();
+    if (_stale(generation) || list == null) return const AgentLaunch(AgentLaunchKind.failed);
+    if (list.profiles.isEmpty) {
+      return AgentLaunch(AgentLaunchKind.noProfile, message: list.defaultReason, workspaceId: target);
+    }
+    final wanted = profileId ?? (list.defaultAvailable ? list.defaultId : null);
+    final profile = list.profiles.where((p) => p.id == wanted).firstOrNull;
+    if (choose || profile == null) {
+      return AgentLaunch(AgentLaunchKind.chooseProfile, profiles: list.profiles,
+        message: choose ? null : list.defaultReason ?? 'The default runtime profile is unavailable. Choose or add a profile.',
+        workspaceId: target);
+    }
+    final d = _layout;
+    if (d == null || workspace(target) == null || _beingRemoved(target)) {
+      return const AgentLaunch(AgentLaunchKind.failed);
+    }
+    final pane = PaneNode(
+      id: _fresh('p'), kind: agentChatKind, workspace: target, item: _uuid(),
+      state: {'runtimeName': profile.name},
+    );
+    if (!_commit(d.openTab(pane, tabId: _fresh('t')))) {
+      return AgentLaunch(AgentLaunchKind.failed, message: _message);
+    }
+    unawaited(agents.start(pane.id, workspaceId: target,
+      runtimeName: profile.name, runtimeProfileId: profile.id));
+    return AgentLaunch(AgentLaunchKind.opened, workspaceId: target);
   }
 
   // --- terminals ----------------------------------------------------------
@@ -878,7 +1006,7 @@ class WorkbenchController extends ChangeNotifier {
   void openView(String kindId) {
     final d = _layout;
     final kind = viewKindOf(kindId);
-    if (d == null || kind == null) return;
+    if (d == null || kind == null || kind.id == agentChatKind) return;
     final selected = d.selectedWorkspace;
     if (kind.needsWorkspace && selected == null) {
       _message = 'This view needs a workspace. Open a folder first.';
@@ -1144,6 +1272,9 @@ class WorkbenchController extends ChangeNotifier {
     terminals.removeListener(notifyListeners);
     terminals.removeListener(_onTerminals);
     terminals.dispose();
+    agents.removeListener(notifyListeners);
+    agents.removeListener(_onTerminals);
+    agents.dispose();
     _saver.removeListener(notifyListeners);
     _saver.dispose();
     super.dispose();

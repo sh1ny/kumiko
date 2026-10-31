@@ -97,6 +97,33 @@ abstract interface class HostLink {
   /// The `terminal/closeFailed` notifications.
   Stream<TerminalCloseFailed> get terminalCloseFailures;
 
+  Future<RuntimeListResult> runtimeList();
+  Future<RuntimeProfile> saveRuntimeProfile(RuntimeProfile profile);
+  Future<void> removeRuntimeProfile(String id);
+  Future<void> setDefaultRuntimeProfile(String id);
+
+  Future<AgentStartResult> startAgent(AgentStartParams params);
+  Future<AgentContinueResult> continueAgent(String sessionId);
+
+  /// Registers the bounded decoder before attach, then grants channel credit.
+  /// A single synchronous consumer owns this stream; cancelling releases the
+  /// local channel. The host's session channel is freed with [releaseAgent].
+  Stream<AgentEvent> attachAgent(String sessionId, int eventChannel);
+  Future<void> promptAgent(AgentPromptParams params);
+  Future<void> stopAgent(String sessionId);
+  Future<void> replyAgentPermission(AgentPermissionReplyParams params);
+  Future<void> closeAgent(String sessionId);
+  Future<void> releaseAgent(String sessionId);
+  Future<AgentRecordsResult> agentRecords(List<String> sessionIds);
+
+  Stream<AgentStateParams> get agentStates;
+  Stream<AgentPermissionRequestedParams> get agentPermissionRequests;
+  Stream<AgentPermissionResolvedParams> get agentPermissionResolutions;
+  Stream<AgentStopResultParams> get agentStopResults;
+  Stream<AgentTurnEndedParams> get agentTurnEnds;
+  Stream<AgentExitedParams> get agentExits;
+  Stream<AgentCloseFailedParams> get agentCloseFailures;
+
   /// Ends the host as the desktop quits.
   Future<void> quit();
 }
