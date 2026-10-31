@@ -208,6 +208,9 @@ void main() {
         stopReason: 'refusal',
         error: 'auth-required',
         message: 'sign in',
+        nativeCode: -9876,
+        nativeMessage: 'synthetic native error',
+        nativeMessageTruncated: true,
       ).toJson(),
       (j) => AgentTurnEndedParams.fromJson(j).toJson(),
     );

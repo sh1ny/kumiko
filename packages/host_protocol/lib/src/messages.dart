@@ -2152,22 +2152,36 @@ class AgentTurnEndedParams {
     this.stopReason,
     this.error,
     this.message,
+    this.nativeCode,
+    this.nativeMessage,
+    this.nativeMessageTruncated = false,
   });
   factory AgentTurnEndedParams.fromJson(Json json) => AgentTurnEndedParams(
     sessionId: _req<String>(json, 'sessionId'),
     stopReason: _opt<String>(json, 'stopReason'),
     error: _opt<String>(json, 'error'),
     message: _opt<String>(json, 'message'),
+    nativeCode: _opt<int>(json, 'nativeCode'),
+    nativeMessage: _opt<String>(json, 'nativeMessage'),
+    nativeMessageTruncated: _opt<bool>(json, 'nativeMessageTruncated') ?? false,
   );
   final String sessionId;
   final String? stopReason;
   final String? error;
   final String? message;
+  final int? nativeCode;
+
+  /// Native diagnostic, bounded to 4 KiB by the host, not a classifier result.
+  final String? nativeMessage;
+  final bool nativeMessageTruncated;
   Json toJson() => {
     'sessionId': sessionId,
     'stopReason': ?stopReason,
     'error': ?error,
     'message': ?message,
+    'nativeCode': ?nativeCode,
+    'nativeMessage': ?nativeMessage,
+    if (nativeMessageTruncated) 'nativeMessageTruncated': true,
   };
 }
 

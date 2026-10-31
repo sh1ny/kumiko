@@ -669,7 +669,12 @@ class AgentService {
       }
       final tail = io?.stderr.tail() ?? '';
       final status = io?.status;
-      final reason = stage == 'initialize' && tail.startsWith('unit-exec:')
+      final reason =
+          stage == 'session/new' &&
+              error is AcpRemoteException &&
+              error.isAuthenticationRequired
+          ? ErrorCode.authRequired
+          : stage == 'initialize' && tail.startsWith('unit-exec:')
           ? status == 127
                 ? ErrorCode.executableNotFound
                 : status == 126
@@ -978,7 +983,11 @@ class AgentService {
             : error is AcpProtocolException
             ? ErrorCode.adapterProtocol
             : 'adapter-exited',
-        resumeReason: restoring ? 'adapter-error' : null,
+        resumeReason: restoring
+            ? error is AcpRemoteException && error.isAuthenticationRequired
+                  ? ErrorCode.authRequired
+                  : 'adapter-error'
+            : null,
         message: restoring
             ? clampUtf8(
                 error is AcpRemoteException ? error.message : error.toString(),

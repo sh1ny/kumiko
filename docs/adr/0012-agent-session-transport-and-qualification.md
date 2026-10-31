@@ -35,7 +35,7 @@ The user installs Node (at least version 22 for the Claude adapter) and the adap
 
 `AcpClient` speaks ACP v1 over contained standard I/O. Its shared `LargeLinePermit` serializes parsing and normalization of lines larger than 1 MiB, with a 16 MiB line ceiling. Normalization finishes before the permit is released; the separate consumption callback then applies event-queue backpressure. Closing or failing a client also releases its permit or cancels its wait without waiting for native I/O disposal. The service still owns containment termination and pipe cleanup.
 
-`AgentSession` owns the state sequence, pending permission choices and Stop outcome. Prompt acceptance does not await the native turn result. Stop queues cancelled permission outcomes before `session/cancel`, never kills the process, and retains `stopping` after an unconfirmed deadline until the one permitted late result. Unknown native errors retain their code and message; the exact authentication classifier is added only after real qualification observes it. The scripted ACP fixture is test support, not qualification evidence, and reports only explicitly selected environment values.
+`AgentSession` owns the state sequence, pending permission choices and Stop outcome. Prompt acceptance does not await the native turn result. Stop queues cancelled permission outcomes before `session/cancel`, never kills the process, and retains `stopping` after an unconfirmed deadline until the one permitted late result. Native errors retain their code and message. The authentication classifier matches only the observed code `-32000` and exact message `Authentication required`, recorded for `@agentclientprotocol/claude-agent-acp` 0.99.1 on Windows and personally confirmed by the user. The scripted ACP fixture is test support, not qualification evidence, and reports only explicitly selected environment values.
 
 ## Host agent service implementation
 
@@ -43,7 +43,7 @@ The user installs Node (at least version 22 for the Claude adapter) and the adap
 
 Attach publishes the current sequenced state after the acknowledgement. The bounded event relay pauses adapter output instead of dropping events; Stop, permission replies and close remain on the control channel. Closing acknowledges entry into `closing` before cancellation, grace and containment settlement. A confirmed close retains the immutable native record but releases the live unit. Desktop or host loss uses the existing ledger reconciliation path, including adapter descendants.
 
-Unknown native errors retain their bounded code and message in ordinary start/prompt results. Native authentication classification remains unverified until task 10.2 records the real adapter's exact error; fixture errors do not establish that match.
+Unknown native errors retain their code and message in ordinary start/prompt results. Start errors and `agent/turnEnded` carry `nativeCode`, a `nativeMessage` bounded to 4 KiB UTF-8, and `nativeMessageTruncated` when shortened. Qualification rejects truncated diagnostics and waits for the actual prompt result, not its acceptance acknowledgement. An isolated session that starts successfully offers a separately approved minimal model request; a successful model turn is not authentication-failure evidence. Native authentication classification uses the real error recorded in `docs/qualification/claude-agent-acp.md`: an isolated `session/new` succeeded, then `session/prompt` returned code `-32000` and exact message `Authentication required`. The user confirmed both the authentication semantics and the saved evidence; synthetic errors test the classifier but do not establish that match.
 
 ## Continue and saved-record implementation
 
@@ -51,7 +51,7 @@ Unknown native errors retain their bounded code and message in ordinary start/pr
 
 The adapter initialized by the Continue run determines availability. A qualified, advertised load takes precedence over resume; neither path sends a prompt or falls back to `session/new`. Restoration starts only after attach and uses the ordinary bounded event relay. Load brackets the ordered history with replay markers; resume emits the earlier-messages-not-shown notice. Both deadlines count 60 active seconds, excluding bounded event-consumption pauses.
 
-Only the test-host extension accepts candidate qualification overrides. The release entry point ignores that environment and refuses test fixtures; the production qualified list remains unchanged until real observations are recorded.
+Only the test-host extension accepts candidate qualification overrides. The release entry point ignores that environment and refuses test fixtures. The production qualified list names `@agentclientprotocol/claude-agent-acp` 0.99.1 for load and resume from the confirmed Windows observations; Linux/macOS user items remain explicitly unproven, so the qualification verdict is provisional ACCEPTED, not QUALIFIED.
 
 ## Native load regressions
 

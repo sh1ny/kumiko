@@ -103,12 +103,10 @@ class AgentSession {
 
   /// Continue owns the actual load/resume requests; these hooks frame replay
   /// on the same ordered, bounded event path before transitioning to idle.
-  Future<void> replayStarted() => _enqueue(
-    encodeAgentEvent(AgentEvent.replay(AgentReplayPhase.start)),
-  );
-  Future<void> replayEnded() => _enqueue(
-    encodeAgentEvent(AgentEvent.replay(AgentReplayPhase.end)),
-  );
+  Future<void> replayStarted() =>
+      _enqueue(encodeAgentEvent(AgentEvent.replay(AgentReplayPhase.start)));
+  Future<void> replayEnded() =>
+      _enqueue(encodeAgentEvent(AgentEvent.replay(AgentReplayPhase.end)));
   Future<void> notice(String text) =>
       _enqueue(encodeAgentEvent(AgentEvent.notice(text)));
 
@@ -130,9 +128,8 @@ class AgentSession {
     _notConfirmed = false;
     lastTurnError = null;
     _set(AgentState.running);
-    _enqueue(
-      encodeAgentEvent(AgentEvent.text(AgentEventKind.user, text)),
-    ).ignore();
+    _enqueue(encodeAgentEvent(AgentEvent.text(AgentEventKind.user, text)))
+        .ignore();
     client
         .prompt(_nativeSessionId!, text)
         .then<void>(
@@ -202,12 +199,23 @@ class AgentSession {
     }
     _cancelPermissions();
     _hasTurn = false;
+    final nativeMessage = error is AcpRemoteException
+        ? clampUtf8(error.message, 4096)
+        : null;
     onTurnEnded(
       AgentTurnEndedParams(
         sessionId: sessionId,
         stopReason: reason,
-        error: error == null ? null : 'adapter-error',
+        error: error == null
+            ? null
+            : error is AcpRemoteException && error.isAuthenticationRequired
+            ? ErrorCode.authRequired
+            : 'adapter-error',
         message: error == null ? null : _message(error),
+        nativeCode: error is AcpRemoteException ? error.code : null,
+        nativeMessage: nativeMessage,
+        nativeMessageTruncated:
+            error is AcpRemoteException && nativeMessage != error.message,
       ),
     );
     _set(AgentState.idle);

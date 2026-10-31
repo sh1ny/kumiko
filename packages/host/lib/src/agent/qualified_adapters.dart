@@ -5,4 +5,6 @@
 /// literal list; keep it as tuples of single-quoted strings and `<String>` lists.
 /// Runtime claim logic must also require the adapter to advertise each feature.
 /// An empty list makes no adapter qualification claim.
-const qualifiedAdapters = <(String, String, List<String>)>[];
+const qualifiedAdapters = <(String, String, List<String>)>[
+  ('@agentclientprotocol/claude-agent-acp', '0.99.1', <String>['load', 'resume']),
+];

@@ -252,11 +252,72 @@ void main() {
     expect(s.state, AgentState.idle);
     expect(ends.single.error, 'adapter-error');
     expect(ends.single.message, 'synthetic sign-in wording not real auth');
+    final wire = ends.single.toJson();
+    expect(wire['nativeCode'], -9876);
+    expect(wire['nativeMessage'], 'synthetic sign-in wording not real auth');
+    expect(wire['nativeMessageTruncated'], isNot(true));
     expect(
       s.lastTurnError,
       isA<AcpRemoteException>().having((e) => e.code, 'code', -9876),
     );
     expect(events.first.text, 'hello');
+  });
+  test('observed prompt authentication error returns idle with auth-required and exact native diagnostics', () async {
+    s.acceptPrompt('hello');
+    p.error(getPromptId(), -32000, 'Authentication required');
+    await pumpAcp();
+    expect(s.state, AgentState.idle);
+    expect(ends.single.error, ErrorCode.authRequired);
+    expect(ends.single.message, 'Authentication required');
+    expect(ends.single.nativeCode, -32000);
+    expect(ends.single.nativeMessage, 'Authentication required');
+    expect(ends.single.nativeMessageTruncated, isNot(isTrue));
+    expect(
+      s.lastTurnError,
+      isA<AcpRemoteException>()
+          .having((e) => e.code, 'code', -32000)
+          .having((e) => e.message, 'message', 'Authentication required'),
+    );
+    expect(s.sessionId, 'host');
+    expect(s.nativeSessionId, 'native');
+    expect(p.client.isClosed, isFalse);
+    s.acceptPrompt('after external sign-in');
+    expect(s.state, AgentState.running);
+    await finish('end_turn');
+    expect(ends, hasLength(2));
+    expect(ends.last.error, isNull);
+    expect(s.state, AgentState.idle);
+  });
+  for (final (code, message) in [
+    (-32001, 'Authentication required'),
+    (-32000, 'Authentication required.'),
+  ]) {
+    test(
+      'prompt authentication near-match $code "$message" stays generic with native diagnostics',
+      () async {
+        s.acceptPrompt('hello');
+        p.error(getPromptId(), code, message);
+        await pumpAcp();
+        expect(s.state, AgentState.idle);
+        expect(ends.single.error, 'adapter-error');
+        expect(ends.single.message, message);
+        expect(ends.single.nativeCode, code);
+        expect(ends.single.nativeMessage, message);
+        expect(ends.single.nativeMessageTruncated, isNot(isTrue));
+      },
+    );
+  }
+  test('prompt native diagnostics mark UTF-8 truncation rather than claiming an exact error', () async {
+    final message = '值' * 2000;
+    s.acceptPrompt('hello');
+    p.error(getPromptId(), -9876, message);
+    await pumpAcp();
+    final wire = ends.single.toJson();
+    expect(wire['nativeCode'], -9876);
+    expect(wire['nativeMessage'], '值' * 1365);
+    expect(wire['nativeMessageTruncated'], isTrue);
+    expect(ends.single.error, 'adapter-error');
+    expect(s.state, AgentState.idle);
   });
   test('more than 16 permissions cancels extra and emits notice', () async {
     s.acceptPrompt('hello');

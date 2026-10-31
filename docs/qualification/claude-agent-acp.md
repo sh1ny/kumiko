@@ -1,10 +1,84 @@
 # Claude agent ACP qualification
 
-This is the format template, not an observation record. No adapter version has
-been recorded here. `tool/qualify_claude_acp.dart` and the user will add version
-sections from real runs in tasks 10.1 and 10.2 of `claude-acp-chat-session`.
-Do not copy a template into an evidence section before making those observations.
-The qualified list stays empty until task 10.3 selects claims from recorded runs.
+This document contains real per-version observations and a fenced format template.
+Windows qualification of `@agentclientprotocol/claude-agent-acp` 0.99.1 was run
+through `tool/qualify_claude_acp.dart` and personally confirmed by the user.
+Linux and macOS user observations remain `unproven`; they are not passing results.
+Do not copy the fenced template into an evidence section before making those
+observations. Capability claims must match the recorded results below.
+
+## Running qualification
+
+Run from the repository root with the pinned toolchains and `FLUTTER_ROOT` set
+to the mise-managed Flutter installation. The driver builds the complete test-host
+bundle; it never uses the release host.
+
+Windows PowerShell, with the pinned Dart already on `PATH`:
+
+```powershell
+$env:FLUTTER_ROOT = (mise where flutter).Trim()
+dart tool/qualify_claude_acp.dart --dry-run
+dart tool/qualify_claude_acp.dart --workspace "<absolute disposable checkout>"
+```
+
+If the shell does not forward `mise exec --` arguments correctly, invoke Dart
+directly as above, or pass the complete command to `mise exec -c`.
+
+Git Bash, Linux or macOS:
+
+```sh
+export FLUTTER_ROOT="$(mise where flutter)"
+mise exec -- dart tool/qualify_claude_acp.dart --dry-run
+mise exec -- dart tool/qualify_claude_acp.dart --workspace "<absolute disposable checkout>"
+```
+
+`--dry-run` uses only owned temporary files and the contained scripted fixture.
+It exercises streaming, tools, an explicit fixture permission choice, Stop,
+confirmed close, preferred load, resume-only continuation and refusal without
+the candidate override. Its output is not real-adapter evidence and it never
+writes version observations here.
+
+Real qualification requires an interactive terminal, Node 22 or newer, the
+user's installed adapter and native Claude Code setup. Claude Code alone does
+not install the ACP adapter. Install the planned candidate separately:
+
+```sh
+npm install --global @agentclientprotocol/claude-agent-acp@0.99.1
+```
+
+Restart the qualification driver after installing; it detects runtime profiles
+when the test host starts. At the runtime profile prompt, a blank answer uses
+the detected default.
+
+Use a disposable checkout:
+approved provider requests may spend tokens and change workspace files.
+`--profile-dir "<existing Kumiko profile>"` reuses existing runtime profiles;
+`--profile "<runtime profile id>"` selects one explicitly. An unavailable chosen
+profile or default is reported rather than silently replaced. Without
+`--profile-dir`, the Kumiko profile is disposable.
+
+Separate explicit approvals gate provider execution, prompts, the offered
+permission choice, Stop, close, authentication isolation and the final evidence
+write. There is no `--yes` or noninteractive real mode. Authentication isolation
+uses a fresh temporary `CLAUDE_CONFIG_DIR` and per-session credential environment
+overrides; it never signs the user out, copies login files or changes global
+credentials. An isolated session that starts successfully has not yet proved
+model authentication. The driver then offers a separately approved minimal
+model request through the ordinary prompt path. Review the exact prompt before
+approving; no tool permission is answered automatically. Native authentication
+errors may come from session creation or the prompt's actual turn result.
+Successful model execution is reported as success, not authentication-failure
+evidence. Declining the request, an unrelated failure, or missing/truncated native
+diagnostics leaves authentication unrecorded. Recording an error still requires
+your confirmation that its exact code and message mean authentication is required.
+Without that observation, Windows evidence remains unwritten.
+
+The candidate identity comes from the actual initialized adapter. Qualification
+uses that exact candidate only in the test host: both extras exercise preferred
+load; a second run with resume alone exercises the resume path. Neither grants
+production capabilities. The final write preserves other OS observations and
+requires confirmed Windows results plus the exact, nontruncated native
+authentication error. Unrun Linux/macOS observations remain `unproven`.
 
 ## Status legend
 
@@ -54,7 +128,9 @@ Each tuple is `(adapterName, exactVersion, qualifiedExtraCapabilities)`. An empt
 capability list claims only the baseline qualification, not load or resume.
 Only `load` and `resume` are allowed, at most once each. Source comments and
 whitespace are allowed; computed expressions, aliases and other declarations are
-not. Entries and identities must be unique. The production list is empty now.
+not. Entries and identities must be unique. The production list currently names
+`@agentclientprotocol/claude-agent-acp` 0.99.1 for `load` and `resume`, backed by
+the confirmed Windows results below. Linux/macOS remain explicitly unproven.
 
 Run `dart run tool/check_qualification.dart [resultsPath [sourcePath]]` from the
 repository root. Defaults are this file and
@@ -126,3 +202,49 @@ fenced block must remain a template, not an observed adapter version section.
 | auth-required observed | user | | | | |
 | launch from Finder or the Dock | user | | | | |
 ```
+
+## adapter @agentclientprotocol/claude-agent-acp 0.99.1
+
+### windows
+
+| Item | Kind | Result | Notes | Auth code | Auth message |
+|---|---|---|---|---|---|
+| launch | user | pass | Real local adapter through test host; OS=windows; 2026-10-31; user confirmed pass. |  |  |
+| streaming | user | pass | Real local adapter through test host; OS=windows; 2026-10-31; user confirmed pass. |  |  |
+| tool activity | user | pass | Real local adapter through test host; OS=windows; 2026-10-31; user confirmed pass. |  |  |
+| permission request | user | pass | Real local adapter through test host; OS=windows; 2026-10-31; user confirmed pass. |  |  |
+| Stop | user | pass | Real local adapter through test host; OS=windows; 2026-10-31; user confirmed pass. |  |  |
+| close with confirmation | user | pass | Real local adapter through test host; OS=windows; 2026-10-31; user confirmed pass. |  |  |
+| load | user | pass | Real local adapter through test host; OS=windows; 2026-10-31; user confirmed pass. |  |  |
+| resume | user | pass | Real local adapter through test host; OS=windows; 2026-10-31; user confirmed pass. |  |  |
+| auth-required observed | user | pass | Real local adapter through test host; OS=windows; 2026-10-31; isolated session/new succeeded, then session/prompt returned this exact error; user confirmed authentication semantics and pass. | -32000 | Authentication required |
+
+### linux
+
+| Item | Kind | Result | Notes | Auth code | Auth message |
+|---|---|---|---|---|---|
+| launch | user | unproven | Not verified by a user on this OS. |  |  |
+| streaming | user | unproven | Not verified by a user on this OS. |  |  |
+| tool activity | user | unproven | Not verified by a user on this OS. |  |  |
+| permission request | user | unproven | Not verified by a user on this OS. |  |  |
+| Stop | user | unproven | Not verified by a user on this OS. |  |  |
+| close with confirmation | user | unproven | Not verified by a user on this OS. |  |  |
+| load | user | unproven | Not verified by a user on this OS. |  |  |
+| resume | user | unproven | Not verified by a user on this OS. |  |  |
+| auth-required observed | user | unproven | Not verified by a user on this OS. |  |  |
+
+### macos
+
+| Item | Kind | Result | Notes | Auth code | Auth message |
+|---|---|---|---|---|---|
+| launch | user | unproven | Not verified by a user on this OS. |  |  |
+| streaming | user | unproven | Not verified by a user on this OS. |  |  |
+| tool activity | user | unproven | Not verified by a user on this OS. |  |  |
+| permission request | user | unproven | Not verified by a user on this OS. |  |  |
+| Stop | user | unproven | Not verified by a user on this OS. |  |  |
+| close with confirmation | user | unproven | Not verified by a user on this OS. |  |  |
+| load | user | unproven | Not verified by a user on this OS. |  |  |
+| resume | user | unproven | Not verified by a user on this OS. |  |  |
+| auth-required observed | user | unproven | Not verified by a user on this OS. |  |  |
+| launch from Finder or the Dock | user | unproven | Not verified by a user on this OS. |  |  |
+

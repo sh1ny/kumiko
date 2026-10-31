@@ -26,6 +26,12 @@ class AcpRemoteException implements Exception {
   final int code;
   final String message;
   final Object? data;
+
+  /// Exact native signature observed with claude-agent-acp 0.99.1. Callers
+  /// classify it only for session/new, load, resume and prompt errors.
+  bool get isAuthenticationRequired =>
+      code == -32000 && message == 'Authentication required';
+
   @override
   String toString() => 'ACP error $code: $message';
 }
