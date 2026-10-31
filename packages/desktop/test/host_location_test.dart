@@ -75,6 +75,38 @@ void main() {
       );
     });
 
+    test('a relative base directory is ignored', () {
+      // A relative one would resolve against the working directory, which
+      // could be a checkout that ships its own profile and shell profiles.
+      expect(
+        defaultProfileDir(
+          os: HostOs.linux,
+          env: {'XDG_DATA_HOME': 'data'},
+          home: '/home/a',
+        ),
+        '/home/a/.local/share/kumiko',
+      );
+      for (final relative in [r'AppData\Local', r'C:AppData', r'\AppData']) {
+        expect(
+          defaultProfileDir(
+            os: HostOs.windows,
+            env: {'LOCALAPPDATA': relative},
+            home: r'C:\Users\a',
+          ),
+          r'C:\Users\a\AppData\Local\Kumiko',
+          reason: relative,
+        );
+      }
+      expect(
+        defaultProfileDir(
+          os: HostOs.windows,
+          env: {'LOCALAPPDATA': r'\\server\share\a'},
+          home: r'C:\Users\a',
+        ),
+        r'\\server\share\a\Kumiko',
+      );
+    });
+
     test('macOS uses Application Support', () {
       expect(
         defaultProfileDir(os: HostOs.macos, env: {}, home: '/Users/a'),

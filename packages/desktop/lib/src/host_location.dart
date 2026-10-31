@@ -35,15 +35,20 @@ String resolveHostExecutable({
 
 /// The per-OS default profile directory. The desktop never creates it: the
 /// host that holds the profile lock does, so a refused second launch writes
-/// nothing there.
+/// nothing there. A base directory variable that is not an absolute path is
+/// ignored, as the XDG spec asks: it would resolve against the working
+/// directory, and a profile found there decides what a new terminal runs.
 String defaultProfileDir({
   required HostOs os,
   required Map<String, String> env,
   required String home,
 }) {
+  final absolute = os == HostOs.windows
+      ? RegExp(r'^([A-Za-z]:[\\/]|\\\\)')
+      : RegExp('^/');
   String? set(String key) {
     final v = env[key];
-    return v == null || v.isEmpty ? null : v;
+    return v == null || !absolute.hasMatch(v) ? null : v;
   }
 
   switch (os) {
