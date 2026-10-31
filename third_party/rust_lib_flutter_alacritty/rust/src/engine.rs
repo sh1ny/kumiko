@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
+use std::time::Instant;
 
 use crate::csi_mode_scan::{CsiModeEvent, CsiModeScanner};
 use crate::event_proxy::{
@@ -379,9 +380,6 @@ pub struct TerminalEngine {
     /// change notifications. When set, [`reconfigure`](Self::reconfigure) pushes
     /// an OSC 997 report so a live theme toggle re-themes the TUI without a restart.
     color_scheme_subscribed: bool,
-    /// DEC 2026 synchronized output active. alacritty parses SyncUpdate as a
-    /// no-op (no `TermMode` bit); we track it here and OR into `mode_flags`.
-    synchronized_output_active: bool,
     /// Retained RGBA pixmap for the Rust-raster present path (Dart uploads to
     /// `ui.Image`). `None` until the first [`Self::take_raster_present`].
     raster: Option<TerminalRasterPresent>,
@@ -430,7 +428,6 @@ impl TerminalEngine {
             scroll_fraction: 0.0,
             csi_mode_scanner: CsiModeScanner::new(),
             color_scheme_subscribed: false,
-            synchronized_output_active: false,
             raster: None,
         }
     }
@@ -439,14 +436,31 @@ impl TerminalEngine {
     /// Dart `kModeSynchronizedOutput` (`1 << 23`).
     pub const MODE_SYNCHRONIZED_OUTPUT: u32 = 1 << 23;
 
-    /// Whether DEC 2026 synchronized output is currently active.
+    /// Whether DEC 2026 synchronized output is currently active: the parser
+    /// holds the update's bytes until it ends or its deadline passes.
     pub fn synchronized_output_active(&self) -> bool {
-        self.synchronized_output_active
+        self.parser.sync_timeout().sync_timeout().is_some()
+    }
+
+    /// Applies a synchronized update whose deadline has passed. The parser
+    /// buffers every byte after `CSI ? 2026 h` and leaves the deadline to its
+    /// caller: without this, a program that died before `CSI ? 2026 l` would
+    /// hold all later output for good.
+    fn end_expired_sync(&mut self) {
+        let expired = self
+            .parser
+            .sync_timeout()
+            .sync_timeout()
+            .is_some_and(|deadline| deadline <= Instant::now());
+        if expired {
+            self.parser.stop_sync(&mut self.term);
+            self.resolve_pending_replies();
+        }
     }
 
     fn packed_mode_flags(&self) -> u32 {
         let mut flags = self.term.mode().bits();
-        if self.synchronized_output_active {
+        if self.synchronized_output_active() {
             flags |= Self::MODE_SYNCHRONIZED_OUTPUT;
         }
         flags
@@ -483,6 +497,7 @@ impl TerminalEngine {
         // bytes — OSC pre-filtering can splice the stream, but it only touches
         // `ESC ]` sequences, never the `ESC [` CSI we look for.
         let toggles = self.csi_mode_scanner.feed(&bytes);
+        self.end_expired_sync();
         let (filtered, osc_events) = extract_osc_events(&bytes);
         for e in osc_events {
             self.events.lock().unwrap().push(e);
@@ -497,8 +512,8 @@ impl TerminalEngine {
                     self.emit_color_scheme_report();
                 }
                 CsiModeEvent::ColorSchemeUnsubscribe => self.color_scheme_subscribed = false,
-                CsiModeEvent::SyncUpdateSet => self.synchronized_output_active = true,
-                CsiModeEvent::SyncUpdateReset => self.synchronized_output_active = false,
+                // The parser itself holds a synchronized update.
+                CsiModeEvent::SyncUpdateSet | CsiModeEvent::SyncUpdateReset => {}
             }
         }
     }
@@ -1173,6 +1188,7 @@ impl TerminalEngine {
     }
 
     pub fn full_snapshot(&mut self) -> RenderUpdate {
+        self.end_expired_sync();
         let cols = self.term.columns();
         let rows = self.term.screen_lines();
         let display_offset = self.term.grid().display_offset();
@@ -1745,6 +1761,37 @@ mod tests {
         assert!(e.synchronized_output_active());
         e.advance(b"\x1b[?2026l".to_vec());
         assert!(!e.synchronized_output_active());
+    }
+
+    fn row_text(e: &mut TerminalEngine, row: usize, len: usize) -> String {
+        let snapshot = e.full_snapshot();
+        let line = snapshot.lines.iter().find(|l| l.line == row as u32).unwrap();
+        line.codepoints[..len]
+            .iter()
+            .map(|&c| match c {
+                0 => ' ',
+                c => char::from_u32(c).unwrap_or(' '),
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_synchronized_update_that_never_ends_is_applied_after_its_deadline() {
+        let mut e = engine(20, 5);
+        e.advance(b"[?2026hfrozen".to_vec());
+        assert!(e.synchronized_output_active());
+        assert_eq!(row_text(&mut e, 0, 6), "      ", "held while it runs");
+        // The program died before `CSI ? 2026 l`.
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        assert_eq!(row_text(&mut e, 0, 6), "frozen");
+        assert!(!e.synchronized_output_active());
+        assert_eq!(
+            e.full_snapshot().mode_flags & TerminalEngine::MODE_SYNCHRONIZED_OUTPUT,
+            0
+        );
+        // Later output is applied as it comes.
+        e.advance(b" then".to_vec());
+        assert_eq!(row_text(&mut e, 0, 11), "frozen then");
     }
 
     #[test]

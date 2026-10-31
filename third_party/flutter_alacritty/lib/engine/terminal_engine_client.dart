@@ -77,6 +77,30 @@ class TerminalEngineClient {
   /// are deferred until the mode clears (then one full snapshot).
   bool _syncOutputActive = false;
 
+  /// Looks at a held present again once the parser's deadline for a
+  /// synchronized update (150 ms) can have passed: a program that died before
+  /// ending it must not leave the screen frozen until its next byte of output.
+  /// The engine applies an expired update when it takes the snapshot.
+  Timer? _syncHoldCheck;
+  static const Duration _syncHoldRecheck = Duration(milliseconds: 200);
+
+  void _holdSynchronized() {
+    _syncOutputActive = true;
+    _syncHoldCheck ??= Timer(_syncHoldRecheck, _recheckSyncHold);
+  }
+
+  void _recheckSyncHold() {
+    _syncHoldCheck = null;
+    // An advance in flight applies its result through the same check.
+    if (_disposed || !_syncOutputActive || _advancing) return;
+    if (synchronizedOutput(_binding.fullSnapshot().modeFlags)) {
+      _syncHoldCheck = Timer(_syncHoldRecheck, _recheckSyncHold);
+      return;
+    }
+    _syncOutputActive = false;
+    refreshView();
+  }
+
   /// Opens (or extends) the interactive drain window so PTY output following
   /// user input is scheduled via microtask rather than post-frame idle.
   void markInteractive([DateTime? now]) {
@@ -217,7 +241,7 @@ class TerminalEngineClient {
     // DEC 2026: hold present while synchronized output is active. Mid-sync
     // damage is partial across advances, so on clear take one full snapshot.
     if (synchronizedOutput(update.modeFlags)) {
-      _syncOutputActive = true;
+      _holdSynchronized();
       return;
     }
     if (_syncOutputActive) {
@@ -235,7 +259,7 @@ class TerminalEngineClient {
   /// Chrome-only mirror apply + raster upload (skips LineUpdate cell mirrors).
   void _applyRasterFrame(RasterPresentFrame frame) {
     if (synchronizedOutput(frame.modeFlags)) {
-      _syncOutputActive = true;
+      _holdSynchronized();
       return;
     }
     if (_syncOutputActive) {
@@ -418,6 +442,7 @@ class TerminalEngineClient {
 
   void dispose() {
     _disposed = true;
+    _syncHoldCheck?.cancel();
     _binding.dispose();
     pending.dispose();
   }

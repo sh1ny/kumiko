@@ -30,6 +30,55 @@ class LatestCleanupState {
   }, isBroadcast: true);
 }
 
+/// `terminal/open` then `terminal/attach` over [connection]: both channels
+/// are registered before the attach, so the host's first output has a
+/// receiver. A refused attach (the host's attach timeout may have run out
+/// while the desktop was suspended) closes both channels again, so their
+/// slots stop counting against [maxChannels], and asks the host to close the
+/// terminal; the refusal is rethrown.
+Future<TerminalChannels> openTerminalChannels(
+  Connection connection,
+  TerminalOpenParams params,
+) async {
+  Future<Json> request(String method, Json params) async =>
+      ((await connection.request(method, params))! as Map<Object?, Object?>)
+          .cast<String, Object?>();
+
+  final opened = TerminalOpenResult.fromJson(
+    await request(Method.terminalOpen, params.toJson()),
+  );
+  final output = connection.attachInbound(
+    opened.outputChannel,
+    grantInitial: false,
+  );
+  final input = connection.attachOutbound(opened.inputChannel);
+  try {
+    await connection.request(
+      Method.terminalAttach,
+      TerminalAttachParams(opened.terminalId).toJson(),
+    );
+  } on Object {
+    for (final id in [opened.outputChannel, opened.inputChannel]) {
+      await connection.closeChannel(id).then<void>((_) {}, onError: (_) {});
+    }
+    if (!connection.isClosed) {
+      await connection
+          .request(
+            Method.terminalClose,
+            TerminalCloseParams(opened.terminalId).toJson(),
+          )
+          .then<void>((_) {}, onError: (_) {});
+    }
+    rethrow;
+  }
+  connection.grantInitial(opened.outputChannel);
+  return TerminalChannels(
+    terminalId: opened.terminalId,
+    output: output,
+    write: input.write,
+  );
+}
+
 /// The real [HostLink] over a started [HostSession].
 ///
 /// The cleanup wire shapes are the ones in `host_protocol`'s `messages.dart`.
@@ -177,27 +226,8 @@ class SessionLink implements HostLink {
       _request(Method.profileSetDefault, ProfileSetDefaultParams(id).toJson());
 
   @override
-  Future<TerminalChannels> openTerminal(TerminalOpenParams params) async {
-    final connection = session.connection;
-    final opened = TerminalOpenResult.fromJson(
-      await _request(Method.terminalOpen, params.toJson()),
-    );
-    final output = connection.attachInbound(
-      opened.outputChannel,
-      grantInitial: false,
-    );
-    final input = connection.attachOutbound(opened.inputChannel);
-    await _request(
-      Method.terminalAttach,
-      TerminalAttachParams(opened.terminalId).toJson(),
-    );
-    connection.grantInitial(opened.outputChannel);
-    return TerminalChannels(
-      terminalId: opened.terminalId,
-      output: output,
-      write: input.write,
-    );
-  }
+  Future<TerminalChannels> openTerminal(TerminalOpenParams params) =>
+      openTerminalChannels(session.connection, params);
 
   @override
   Future<void> resizeTerminal(String terminalId, int cols, int rows) =>

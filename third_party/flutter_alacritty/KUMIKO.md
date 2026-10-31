@@ -36,5 +36,14 @@ when it exceeds 1 MiB. Test:
 `packages/desktop/integration_test/terminal_surface_test.dart` (pending rises
 on feed and returns to 0).
 
+**A held present is looked at again after the update's deadline**
+(`lib/engine/terminal_engine_client.dart`). The client skipped presents while
+the engine reported synchronized output and presented again only with the
+next output. The native crate now applies an update whose deadline passed
+(its `KUMIKO.md`); a timer takes a snapshot after that deadline, so a program
+that died mid-update does not leave the view frozen until more output
+arrives. Test: `packages/desktop/integration_test/terminal_surface_test.dart`
+(output held by synchronized output that never ends is shown).
+
 To move to a newer upstream version, copy its `lib/`, `pubspec.yaml` and
 licence again and re-apply the patch until upstream carries the fix.

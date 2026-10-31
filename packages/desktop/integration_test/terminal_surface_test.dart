@@ -79,6 +79,24 @@ void main() {
     expect(surface.pending.value, 0);
   });
 
+  testWidgets('output held by synchronized output that never ends is shown '
+      'once its deadline has passed', (tester) async {
+    final (surface, _) = await show(tester);
+    String row0() => String.fromCharCodes([
+      for (var c = 0; c < 6; c++) surface.engine.grid.codepointAt(0, c),
+    ]);
+    surface.feed(utf8.encode('\x1b[2J\x1b[H'));
+    await settle(tester);
+    // The program begins a synchronized update and dies before ending it.
+    // The engine's own tests show the hold; here the view catches up once
+    // the update's deadline has passed, with no further output.
+    surface.feed(utf8.encode('\x1b[?2026hfrozen'));
+    for (var i = 0; i < 30 && row0() != 'frozen'; i++) {
+      await tester.pump(const Duration(milliseconds: 100));
+    }
+    expect(row0(), 'frozen');
+  });
+
   testWidgets('a mouse drag selects text', (tester) async {
     final (surface, key) = await show(tester);
     surface.feed(utf8.encode('\x1b[2J\x1b[H${'hello\r\n' * 3}'));
