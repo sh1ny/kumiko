@@ -46,6 +46,26 @@ abstract final class Method {
   static const String terminalRelease = 'terminal/release';
   static const String terminalExited = 'terminal/exited';
   static const String terminalCloseFailed = 'terminal/closeFailed';
+  static const String runtimeList = 'runtime/list';
+  static const String runtimeSave = 'runtime/save';
+  static const String runtimeRemove = 'runtime/remove';
+  static const String runtimeSetDefault = 'runtime/setDefault';
+  static const String agentStart = 'agent/start';
+  static const String agentContinue = 'agent/continue';
+  static const String agentAttach = 'agent/attach';
+  static const String agentPrompt = 'agent/prompt';
+  static const String agentStop = 'agent/stop';
+  static const String agentPermissionReply = 'agent/permissionReply';
+  static const String agentClose = 'agent/close';
+  static const String agentRelease = 'agent/release';
+  static const String agentRecords = 'agent/records';
+  static const String agentState = 'agent/state';
+  static const String agentPermissionRequested = 'agent/permissionRequested';
+  static const String agentPermissionResolved = 'agent/permissionResolved';
+  static const String agentStopResult = 'agent/stopResult';
+  static const String agentTurnEnded = 'agent/turnEnded';
+  static const String agentExited = 'agent/exited';
+  static const String agentCloseFailed = 'agent/closeFailed';
 }
 
 abstract final class Capability {
@@ -54,6 +74,7 @@ abstract final class Capability {
   static const String testChannels = 'test.channels';
   static const String testFaults = 'test.faults';
   static const String terminal = 'terminal';
+  static const String agent = 'agent';
 }
 
 /// The capability a method needs; methods not listed need none.
@@ -80,6 +101,19 @@ const Map<String, String> methodCapability = {
   Method.terminalResize: Capability.terminal,
   Method.terminalClose: Capability.terminal,
   Method.terminalRelease: Capability.terminal,
+  Method.runtimeList: Capability.agent,
+  Method.runtimeSave: Capability.agent,
+  Method.runtimeRemove: Capability.agent,
+  Method.runtimeSetDefault: Capability.agent,
+  Method.agentStart: Capability.agent,
+  Method.agentContinue: Capability.agent,
+  Method.agentAttach: Capability.agent,
+  Method.agentPrompt: Capability.agent,
+  Method.agentStop: Capability.agent,
+  Method.agentPermissionReply: Capability.agent,
+  Method.agentClose: Capability.agent,
+  Method.agentRelease: Capability.agent,
+  Method.agentRecords: Capability.agent,
 };
 
 /// Error reasons, carried as `error.data.reason`.
@@ -117,6 +151,17 @@ abstract final class ErrorCode {
   static const String spawnFailed = 'spawn-failed';
   static const String notAttached = 'not-attached';
   static const String consoleCleanupPending = 'console-cleanup-pending';
+  static const String unknownSession = 'unknown-session';
+  static const String unknownRequest = 'unknown-request';
+  static const String turnRunning = 'turn-running';
+  static const String noRuntimeProfile = 'no-runtime-profile';
+  static const String readOnlyProfile = 'read-only-profile';
+  static const String invalidProfile = 'invalid-profile';
+  static const String adapterStartFailed = 'adapter-start-failed';
+  static const String adapterProtocol = 'adapter-protocol';
+  static const String authRequired = 'auth-required';
+  static const String resumeUnavailable = 'resume-unavailable';
+  static const String workspaceRequired = 'workspace-required';
 
   /// A terminal was opened for a workspace whose directory is unavailable.
   static const String workspaceUnavailable = 'workspace-unavailable';
@@ -403,6 +448,39 @@ String clampUtf8(String value, int maxBytes) {
     end--;
   }
   return utf8.decode(bytes.sublist(0, end));
+}
+
+/// Prefix bounded by encoded JSON string contents (excluding quotes), counting
+/// escapes and preserving code point boundaries in one pass.
+String clampJsonString(String value, int maxEncodedBytes) {
+  var bytes = 0;
+  var end = 0;
+  for (final rune in value.runes) {
+    final int cost;
+    if (rune == 34 ||
+        rune == 92 ||
+        rune == 8 ||
+        rune == 9 ||
+        rune == 10 ||
+        rune == 12 ||
+        rune == 13) {
+      cost = 2;
+    } else if (rune < 32 || (rune >= 0xd800 && rune <= 0xdfff)) {
+      cost = 6;
+    } else {
+      cost = rune < 0x80
+          ? 1
+          : rune < 0x800
+          ? 2
+          : rune < 0x10000
+          ? 3
+          : 4;
+    }
+    if (bytes + cost > maxEncodedBytes) break;
+    bytes += cost;
+    end += rune > 0xffff ? 2 : 1;
+  }
+  return end == value.length ? value : value.substring(0, end);
 }
 
 /// Position in a cleanup listing, keyed by `(target_identity, containment_id)`.
@@ -1521,3 +1599,643 @@ class TestResolveReleaseParams {
   final String path;
   Json toJson() => {'path': path};
 }
+
+// --- runtime profiles and agent sessions (D4-D5) --------------------------
+
+const int maxAgentPromptBytes = 256 * 1024;
+const int maxAgentRecordIds = 128;
+const int maxPermissionTitleBytes = 4 * 1024;
+const int maxPermissionOptions = 16;
+const int maxPermissionNameBytes = 256;
+const int maxPermissionPreviewBytes = 16 * 1024;
+
+/// Shared `{}` request shape (`runtime/list`).
+class EmptyParams {
+  const EmptyParams();
+  factory EmptyParams.fromJson(Json json) => const EmptyParams();
+  Json toJson() => {};
+}
+
+/// Shared `{}` acknowledgement for runtime mutations and agent commands.
+class EmptyResult {
+  const EmptyResult();
+  factory EmptyResult.fromJson(Json json) => const EmptyResult();
+  Json toJson() => {};
+}
+
+/// ACP argv description. Unlike [ShellProfile], cwd is always the workspace.
+/// Domain-level executable/env validation belongs to the host, not this DTO.
+class RuntimeProfile {
+  const RuntimeProfile({
+    required this.id,
+    required this.name,
+    required this.runtimeKind,
+    required this.executable,
+    this.args = const [],
+    this.env = const {},
+  });
+
+  factory RuntimeProfile.fromJson(Json json) {
+    final kind = _req<String>(json, 'runtimeKind');
+    // Share the established shell wire bounds and type checks.
+    final shell = ShellProfile.fromJson(json);
+    final profile = RuntimeProfile(
+      id: shell.id,
+      name: shell.name,
+      runtimeKind: kind,
+      executable: shell.executable,
+      args: shell.args,
+      env: shell.env,
+    );
+    if (utf8.encode(jsonEncode(profile.toJson())).length > maxProfileBytes) {
+      throw RpcException(
+        ErrorCode.invalidParams,
+        'profile exceeds $maxProfileBytes bytes',
+      );
+    }
+    return profile;
+  }
+
+  final String id;
+  final String name;
+  final String runtimeKind;
+  final String executable;
+  final List<String> args;
+  final Map<String, String> env;
+  bool get isBuiltin => id.startsWith('builtin:');
+
+  Json toJson() => {
+    'id': id,
+    'name': name,
+    'runtimeKind': runtimeKind,
+    'executable': executable,
+    'args': args,
+    'env': env,
+  };
+}
+
+class RuntimeListResult {
+  const RuntimeListResult({
+    required this.profiles,
+    required this.defaultAvailable,
+    this.defaultId,
+    this.defaultReason,
+  });
+  factory RuntimeListResult.fromJson(Json json) => RuntimeListResult(
+    profiles: [
+      for (final p in _list<Json>(json, 'profiles')) RuntimeProfile.fromJson(p),
+    ],
+    defaultAvailable: _req<bool>(json, 'defaultAvailable'),
+    defaultId: _opt<String>(json, 'defaultId'),
+    defaultReason: _opt<String>(json, 'defaultReason'),
+  );
+  final List<RuntimeProfile> profiles;
+  final bool defaultAvailable;
+  final String? defaultId;
+  final String? defaultReason;
+  Json toJson() => {
+    'profiles': [for (final p in profiles) p.toJson()],
+    'defaultAvailable': defaultAvailable,
+    'defaultId': ?defaultId,
+    'defaultReason': ?defaultReason,
+  };
+}
+
+class RuntimeSaveParams {
+  const RuntimeSaveParams(this.profile);
+  factory RuntimeSaveParams.fromJson(Json json) =>
+      RuntimeSaveParams(RuntimeProfile.fromJson(_req<Json>(json, 'profile')));
+  final RuntimeProfile profile;
+  Json toJson() => {'profile': profile.toJson()};
+}
+
+class RuntimeRemoveParams {
+  const RuntimeRemoveParams(this.id);
+  factory RuntimeRemoveParams.fromJson(Json json) =>
+      RuntimeRemoveParams(_req<String>(json, 'id'));
+  final String id;
+  Json toJson() => {'id': id};
+}
+
+class RuntimeSetDefaultParams {
+  const RuntimeSetDefaultParams(this.id);
+  factory RuntimeSetDefaultParams.fromJson(Json json) =>
+      RuntimeSetDefaultParams(_req<String>(json, 'id'));
+  final String id;
+  Json toJson() => {'id': id};
+}
+
+class AgentStartParams {
+  const AgentStartParams({required this.workspaceId, this.runtimeProfileId});
+  factory AgentStartParams.fromJson(Json json) => AgentStartParams(
+    workspaceId: _req<String>(json, 'workspaceId'),
+    runtimeProfileId: _opt<String>(json, 'runtimeProfileId'),
+  );
+  final String workspaceId;
+  final String? runtimeProfileId;
+  Json toJson() => {
+    'workspaceId': workspaceId,
+    'runtimeProfileId': ?runtimeProfileId,
+  };
+}
+
+/// Request shape for continue, attach, stop, close and release.
+class AgentSessionParams {
+  const AgentSessionParams(this.sessionId);
+  factory AgentSessionParams.fromJson(Json json) =>
+      AgentSessionParams(_req<String>(json, 'sessionId'));
+  final String sessionId;
+  Json toJson() => {'sessionId': sessionId};
+}
+
+class AgentAdapter {
+  const AgentAdapter({required this.name, required this.version});
+  factory AgentAdapter.fromJson(Json json) => AgentAdapter(
+    name: _req<String>(json, 'name'),
+    version: _req<String>(json, 'version'),
+  );
+  final String name;
+  final String version;
+  Json toJson() => {'name': name, 'version': version};
+}
+
+int _eventChannel(Json json) {
+  final id = _req<int>(json, 'eventChannel');
+  if (id < 1 || id > 0xffffffff) {
+    throw RpcException(ErrorCode.invalidParams, 'invalid eventChannel');
+  }
+  return id;
+}
+
+class AgentStartResult {
+  const AgentStartResult({
+    required this.sessionId,
+    required this.eventChannel,
+    required this.adapter,
+    required this.capabilities,
+  });
+  factory AgentStartResult.fromJson(Json json) => AgentStartResult(
+    sessionId: _req<String>(json, 'sessionId'),
+    eventChannel: _eventChannel(json),
+    adapter: AgentAdapter.fromJson(_req<Json>(json, 'adapter')),
+    capabilities: _list<String>(json, 'capabilities'),
+  );
+  final String sessionId;
+  final int eventChannel;
+  final AgentAdapter adapter;
+  final List<String> capabilities;
+  Json toJson() => {
+    'sessionId': sessionId,
+    'eventChannel': eventChannel,
+    'adapter': adapter.toJson(),
+    'capabilities': capabilities,
+  };
+}
+
+enum AgentContinueMode { load, resume }
+
+class AgentContinueResult {
+  const AgentContinueResult({
+    required this.eventChannel,
+    required this.adapter,
+    required this.capabilities,
+    required this.mode,
+  });
+  factory AgentContinueResult.fromJson(Json json) => AgentContinueResult(
+    eventChannel: _eventChannel(json),
+    adapter: AgentAdapter.fromJson(_req<Json>(json, 'adapter')),
+    capabilities: _list<String>(json, 'capabilities'),
+    mode: _enum(AgentContinueMode.values, json, 'mode'),
+  );
+  final int eventChannel;
+  final AgentAdapter adapter;
+  final List<String> capabilities;
+  final AgentContinueMode mode;
+  Json toJson() => {
+    'eventChannel': eventChannel,
+    'adapter': adapter.toJson(),
+    'capabilities': capabilities,
+    'mode': mode.name,
+  };
+}
+
+class AgentPromptParams {
+  const AgentPromptParams({required this.sessionId, required this.text});
+  factory AgentPromptParams.fromJson(Json json) {
+    final text = _req<String>(json, 'text');
+    if (utf8.encode(text).length > maxAgentPromptBytes) {
+      throw RpcException(
+        ErrorCode.invalidParams,
+        'prompt exceeds $maxAgentPromptBytes bytes',
+      );
+    }
+    return AgentPromptParams(
+      sessionId: _req<String>(json, 'sessionId'),
+      text: text,
+    );
+  }
+  final String sessionId;
+  final String text;
+  Json toJson() => {'sessionId': sessionId, 'text': text};
+}
+
+class AgentPermissionReplyParams {
+  const AgentPermissionReplyParams({
+    required this.sessionId,
+    required this.requestId,
+    required this.optionId,
+  });
+  factory AgentPermissionReplyParams.fromJson(Json json) =>
+      AgentPermissionReplyParams(
+        sessionId: _req<String>(json, 'sessionId'),
+        requestId: _req<String>(json, 'requestId'),
+        optionId: _req<String>(json, 'optionId'),
+      );
+  final String sessionId;
+  final String requestId;
+  final String optionId;
+  Json toJson() => {
+    'sessionId': sessionId,
+    'requestId': requestId,
+    'optionId': optionId,
+  };
+}
+
+class AgentRecordsParams {
+  const AgentRecordsParams(this.sessionIds);
+  factory AgentRecordsParams.fromJson(Json json) {
+    final ids = _list<String>(json, 'sessionIds');
+    if (ids.length > maxAgentRecordIds) {
+      throw RpcException(
+        ErrorCode.invalidParams,
+        'at most $maxAgentRecordIds session ids',
+      );
+    }
+    return AgentRecordsParams(ids);
+  }
+  final List<String> sessionIds;
+  Json toJson() => {'sessionIds': sessionIds};
+}
+
+class AgentRecord {
+  const AgentRecord({
+    required this.known,
+    required this.workspaceAvailable,
+    this.targetPath,
+    this.adapterVersion,
+  });
+  factory AgentRecord.fromJson(Json json) => AgentRecord(
+    known: _req<bool>(json, 'known'),
+    workspaceAvailable: _req<bool>(json, 'workspaceAvailable'),
+    targetPath: _opt<String>(json, 'targetPath'),
+    adapterVersion: _opt<String>(json, 'adapterVersion'),
+  );
+  final bool known;
+  final bool workspaceAvailable;
+  final String? targetPath;
+  final String? adapterVersion;
+  Json toJson() => {
+    'known': known,
+    'workspaceAvailable': workspaceAvailable,
+    'targetPath': ?targetPath,
+    'adapterVersion': ?adapterVersion,
+  };
+}
+
+/// Map keyed by requested Kumiko session id (not an array with implicit order).
+class AgentRecordsResult {
+  const AgentRecordsResult(this.records);
+  factory AgentRecordsResult.fromJson(Json json) => AgentRecordsResult({
+    for (final entry in _req<Json>(json, 'records').entries)
+      entry.key: AgentRecord.fromJson(
+        entry.value is Json
+            ? entry.value! as Json
+            : throw RpcException(ErrorCode.invalidParams, 'invalid record'),
+      ),
+  });
+  final Map<String, AgentRecord> records;
+  Json toJson() => {
+    'records': {for (final e in records.entries) e.key: e.value.toJson()},
+  };
+}
+
+enum AgentState {
+  starting,
+  idle,
+  running,
+  waitingApproval,
+  stopping,
+  closing,
+  ended,
+  failed,
+}
+
+class AgentStateParams {
+  const AgentStateParams({
+    required this.sessionId,
+    required this.seq,
+    required this.state,
+  });
+  factory AgentStateParams.fromJson(Json json) => AgentStateParams(
+    sessionId: _req<String>(json, 'sessionId'),
+    seq: _req<int>(json, 'seq'),
+    state: _enum(AgentState.values, json, 'state'),
+  );
+  final String sessionId;
+  final int seq;
+  final AgentState state;
+  Json toJson() => {'sessionId': sessionId, 'seq': seq, 'state': state.name};
+}
+
+class AgentPermissionOption {
+  const AgentPermissionOption({
+    required this.optionId,
+    required this.name,
+    required this.kind,
+  });
+  factory AgentPermissionOption.fromJson(Json json) => AgentPermissionOption(
+    optionId: _req<String>(json, 'optionId'),
+    name: _req<String>(json, 'name'),
+    kind: _req<String>(json, 'kind'),
+  );
+  final String optionId;
+  final String name;
+  final String kind;
+  Json toJson() => {'optionId': optionId, 'name': name, 'kind': kind};
+}
+
+/// Clamps display strings in both directions, with an explicit loss marker.
+/// Identifiers are never shortened: the runtime must receive its exact optionId.
+class AgentPermissionRequestedParams {
+  factory AgentPermissionRequestedParams({
+    required String sessionId,
+    required String requestId,
+    required String title,
+    required List<AgentPermissionOption> options,
+    String? preview,
+    bool truncated = false,
+  }) {
+    final boundedTitle = clampUtf8(title, maxPermissionTitleBytes);
+    final boundedPreview = preview == null
+        ? null
+        : clampUtf8(preview, maxPermissionPreviewBytes);
+    final boundedOptions = [
+      for (final o in options.take(maxPermissionOptions))
+        AgentPermissionOption(
+          optionId: o.optionId,
+          name: clampUtf8(o.name, maxPermissionNameBytes),
+          kind: o.kind,
+        ),
+    ];
+    var changed =
+        truncated ||
+        boundedTitle != title ||
+        boundedPreview != preview ||
+        options.length > maxPermissionOptions;
+    for (var i = 0; i < boundedOptions.length; i++) {
+      if (boundedOptions[i].name != options[i].name) changed = true;
+    }
+    // Raw UTF-8 display caps alone do not bound JSON: control characters can
+    // expand sixfold. Distribute the remaining encoded budget across display
+    // fields, preserving every option identifier and kind exactly.
+    final skeleton = {
+      'sessionId': sessionId,
+      'requestId': requestId,
+      'title': '',
+      'options': [
+        for (final o in boundedOptions)
+          {'optionId': o.optionId, 'name': '', 'kind': o.kind},
+      ],
+      if (preview != null) 'preview': '',
+      'truncated': true,
+    };
+    var remaining = 64 * 1024 - utf8.encode(jsonEncode(skeleton)).length;
+    if (remaining < 0) {
+      throw RpcException(
+        ErrorCode.invalidParams,
+        'permission metadata exceeds the 64 KiB (65536 byte) notification limit',
+      );
+    }
+    String fit(String text) {
+      final bounded = clampJsonString(text, remaining);
+      remaining -= utf8.encode(jsonEncode(bounded)).length - 2;
+      if (bounded != text) changed = true;
+      return bounded;
+    }
+
+    final finalTitle = fit(boundedTitle);
+    final finalOptions = [
+      for (final o in boundedOptions)
+        AgentPermissionOption(
+          optionId: o.optionId,
+          name: fit(o.name),
+          kind: o.kind,
+        ),
+    ];
+    final finalPreview = boundedPreview == null ? null : fit(boundedPreview);
+    return AgentPermissionRequestedParams._(
+      sessionId,
+      requestId,
+      finalTitle,
+      finalOptions,
+      finalPreview,
+      changed,
+    );
+  }
+
+  const AgentPermissionRequestedParams._(
+    this.sessionId,
+    this.requestId,
+    this.title,
+    this.options,
+    this.preview,
+    this.truncated,
+  );
+
+  factory AgentPermissionRequestedParams.fromJson(Json json) =>
+      AgentPermissionRequestedParams(
+        sessionId: _req<String>(json, 'sessionId'),
+        requestId: _req<String>(json, 'requestId'),
+        title: _req<String>(json, 'title'),
+        preview: _opt<String>(json, 'preview'),
+        options: [
+          for (final o in _list<Json>(json, 'options'))
+            AgentPermissionOption.fromJson(o),
+        ],
+        truncated: _opt<bool>(json, 'truncated') ?? false,
+      );
+  final String sessionId;
+  final String requestId;
+  final String title;
+  final String? preview;
+  final List<AgentPermissionOption> options;
+  final bool truncated;
+  Json toJson() => {
+    'sessionId': sessionId,
+    'requestId': requestId,
+    'title': title,
+    'options': [for (final o in options) o.toJson()],
+    'preview': ?preview,
+    if (truncated) 'truncated': true,
+  };
+}
+
+enum AgentPermissionOutcome { selected, cancelled }
+
+class AgentPermissionResolvedParams {
+  const AgentPermissionResolvedParams({
+    required this.sessionId,
+    required this.requestId,
+    required this.outcome,
+    this.optionId,
+  });
+  factory AgentPermissionResolvedParams.fromJson(Json json) =>
+      AgentPermissionResolvedParams(
+        sessionId: _req<String>(json, 'sessionId'),
+        requestId: _req<String>(json, 'requestId'),
+        outcome: _enum(AgentPermissionOutcome.values, json, 'outcome'),
+        optionId: _opt<String>(json, 'optionId'),
+      );
+  final String sessionId;
+  final String requestId;
+  final AgentPermissionOutcome outcome;
+  final String? optionId;
+  Json toJson() => {
+    'sessionId': sessionId,
+    'requestId': requestId,
+    'outcome': outcome.name,
+    'optionId': ?optionId,
+  };
+}
+
+enum AgentStopOutcome {
+  stopped,
+  finishedFirst,
+  endedWithError,
+  notConfirmed,
+  notRunning,
+}
+
+class AgentStopResultParams {
+  const AgentStopResultParams({
+    required this.sessionId,
+    required this.outcome,
+    this.stopReason,
+    this.message,
+    this.late = false,
+  });
+  factory AgentStopResultParams.fromJson(Json json) => AgentStopResultParams(
+    sessionId: _req<String>(json, 'sessionId'),
+    outcome: _enum(AgentStopOutcome.values, json, 'outcome'),
+    stopReason: _opt<String>(json, 'stopReason'),
+    message: _opt<String>(json, 'message'),
+    late: _opt<bool>(json, 'late') ?? false,
+  );
+  final String sessionId;
+  final AgentStopOutcome outcome;
+  final String? stopReason;
+  final String? message;
+  final bool late;
+  Json toJson() => {
+    'sessionId': sessionId,
+    'outcome': outcome.name,
+    'stopReason': ?stopReason,
+    'message': ?message,
+    if (late) 'late': true,
+  };
+}
+
+class AgentTurnEndedParams {
+  const AgentTurnEndedParams({
+    required this.sessionId,
+    this.stopReason,
+    this.error,
+    this.message,
+  });
+  factory AgentTurnEndedParams.fromJson(Json json) => AgentTurnEndedParams(
+    sessionId: _req<String>(json, 'sessionId'),
+    stopReason: _opt<String>(json, 'stopReason'),
+    error: _opt<String>(json, 'error'),
+    message: _opt<String>(json, 'message'),
+  );
+  final String sessionId;
+  final String? stopReason;
+  final String? error;
+  final String? message;
+  Json toJson() => {
+    'sessionId': sessionId,
+    'stopReason': ?stopReason,
+    'error': ?error,
+    'message': ?message,
+  };
+}
+
+enum AgentExitReason { closed, ended, failed }
+
+class AgentExitedParams {
+  const AgentExitedParams({
+    required this.sessionId,
+    required this.reason,
+    this.status,
+    this.error,
+    this.resumeReason,
+    this.message,
+  });
+  factory AgentExitedParams.fromJson(Json json) => AgentExitedParams(
+    sessionId: _req<String>(json, 'sessionId'),
+    reason: _enum(AgentExitReason.values, json, 'reason'),
+    status: _opt<int>(json, 'status'),
+    error: _opt<String>(json, 'error'),
+    resumeReason: _opt<String>(json, 'resumeReason'),
+    message: _opt<String>(json, 'message'),
+  );
+  final String sessionId;
+  final AgentExitReason reason;
+  final int? status;
+  final String? error;
+  final String? resumeReason;
+  final String? message;
+  Json toJson() => {
+    'sessionId': sessionId,
+    'reason': reason.name,
+    'status': ?status,
+    'error': ?error,
+    'resumeReason': ?resumeReason,
+    'message': ?message,
+  };
+}
+
+class AgentCloseFailedParams {
+  const AgentCloseFailedParams({
+    required this.sessionId,
+    required this.reason,
+    this.message,
+  });
+  factory AgentCloseFailedParams.fromJson(Json json) => AgentCloseFailedParams(
+    sessionId: _req<String>(json, 'sessionId'),
+    reason: _req<String>(json, 'reason'),
+    message: _opt<String>(json, 'message'),
+  );
+  final String sessionId;
+  final String reason;
+  final String? message;
+  Json toJson() => {
+    'sessionId': sessionId,
+    'reason': reason,
+    'message': ?message,
+  };
+}
+
+RpcException adapterStartFailed(String stage, String detail) => RpcException(
+  ErrorCode.adapterStartFailed,
+  detail,
+  {'stage': stage, 'detail': detail},
+);
+
+/// `data.reason` remains the protocol error. The continuation subreason is
+/// [resumeReason], shared with [AgentExitedParams].
+RpcException resumeUnavailable(String resumeReason, {String? detail}) =>
+    RpcException(ErrorCode.resumeUnavailable, detail ?? '', {
+      'resumeReason': resumeReason,
+      'detail': ?detail,
+    });

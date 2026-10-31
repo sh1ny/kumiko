@@ -71,7 +71,7 @@ Test locations:
 | agent-sessions → Agent processes end with the session, the desktop or the host | Unit limit reached | packages/host/test/it/agent_test.dart | agent/start at the unit cap is refused unit-cap with no record | red |
 | agent-sessions → Replies and tool activity stream into the chat | Streamed reply | packages/host/test/it/agent_test.dart; packages/desktop/test/agent_test.dart | 40 scripted chunks arrive as ordered agentText events; the chat's final text equals their concatenation | red |
 | agent-sessions → Replies and tool activity stream into the chat | Tool call progresses | packages/host/test/agent/normalizer_test.dart; packages/desktop/test/agent_test.dart | tool_call then updates map to tool/toolUpdate with status and diff; one card shows the title, statuses in order and the diff | red |
-| agent-sessions → Replies and tool activity stream into the chat | Oversized tool output | packages/host_protocol/test/agent_events_test.dart; packages/desktop/test/agent_test.dart | tool content over the bound is truncated with truncated true within 256 KiB encoded; the card shows the truncated mark and later events still render | red |
+| agent-sessions → Replies and tool activity stream into the chat | Oversized tool output | packages/host_protocol/test/agent_events_test.dart; packages/desktop/test/agent_test.dart | tool content over the bound is truncated with truncated true within256KiB encoded; the card shows the truncated mark and later events still render | red (codec green on Windows; desktop pending) |
 | agent-sessions → Replies and tool activity stream into the chat | Unknown update kind | packages/host/test/agent/normalizer_test.dart; packages/host/test/it/agent_test.dart | an unknown sessionUpdate kind yields no event; the fixture's later chunks still arrive | red |
 | agent-sessions → Permission requests are answered only by an explicit choice | Allow once | packages/host/test/it/agent_test.dart; packages/desktop/test/agent_test.dart | permissionRequested carries the options; permissionReply delivers the optionId to the fixture; the card shows Allow and the status returns to Running | red |
 | agent-sessions → Permission requests are answered only by an explicit choice | Pane moved while a request is pending | packages/desktop/test/agent_test.dart | moving the pane and selecting another workspace keep the request pending with its options and send nothing | red |
@@ -107,15 +107,15 @@ Test locations:
 | agent-sessions → Session event volume is bounded without silent loss | Slow consumer | packages/host/test/it/agent_qualification_test.dart | with no credit, the host stops reading at the queue bound (fixture reports blocked writes); on resume every event arrives in order | red |
 | agent-sessions → Session event volume is bounded without silent loss | Oversized adapter message | packages/host/test/it/agent_qualification_test.dart | a 17 MiB fixture line fails the session adapter-protocol, terminates the unit and keeps the record | red |
 | agent-sessions → Session event volume is bounded without silent loss | Long conversation | packages/desktop/test/agent_test.dart | past 2,000 entries or 8 MiB the oldest entries are hidden behind the marker and new events still render | red |
-| desktop-host-protocol → Each agent session has one host-to-desktop event channel | Start a session | packages/host_protocol/test/agent_channels_test.dart | agent/start result names a session id and a unique host-allocated channel | red |
+| desktop-host-protocol → Each agent session has one host-to-desktop event channel | Start a session | packages/host_protocol/test/agent_channels_test.dart | agent/start result names a session id and a unique host-allocated channel | green (Windows; other OSes pending 11.3 CI) |
 | desktop-host-protocol → Each agent session has one host-to-desktop event channel | Channel limit reached | packages/host/test/it/agent_test.dart | agent/start with the channel limit reached is refused channel-limit with no unit started | red |
 | desktop-host-protocol → Each agent session has one host-to-desktop event channel | Desktop never attaches | packages/host/test/it/agent_close_test.dart | no attach within the attach timeout terminates the unit, frees the channel and keeps the record | red |
 | desktop-host-protocol → Agent state, requests and results travel as control messages | Permission request while the event channel is stalled | packages/host/test/it/agent_qualification_test.dart | channel without credit but queue below the bound: permissionRequested arrives and the reply reaches the fixture | red |
 | desktop-host-protocol → Agent state, requests and results travel as control messages | Event queue full when a permission request is raised | packages/host/test/it/agent_qualification_test.dart | queue at its bound: the request appears only after credit returns; Stop meanwhile yields notConfirmed after the deadline; close is acked within 250 ms and ends the unit | red |
 | desktop-host-protocol → Agent state, requests and results travel as control messages | Reply to an answered request | packages/host/test/agent/agent_session_test.dart | a reply to a resolved request fails unknown-request and writes nothing to the transport | red |
 | desktop-host-protocol → Agent state, requests and results travel as control messages | Stop an unknown session | packages/host/test/it/agent_test.dart | agent/stop for a closed session fails unknown-session and other sessions are unaffected | red |
-| desktop-host-protocol → Agent methods are capability-gated | Both peers support agents | packages/host_protocol/test/agent_messages_test.dart | runtime and agent methods dispatch when both advertise agent | red |
-| desktop-host-protocol → Agent methods are capability-gated | Host without the capability | packages/host_protocol/test/agent_messages_test.dart; packages/desktop/test/agent_test.dart | agent methods fail method-not-available; the Claude Code launcher entry is disabled with the reason and terminal entries work | red |
+| desktop-host-protocol → Agent methods are capability-gated | Both peers support agents | packages/host_protocol/test/agent_messages_test.dart | runtime and agent methods dispatch when both advertise agent | green (Windows; other OSes pending 11.3 CI) |
+| desktop-host-protocol → Agent methods are capability-gated | Host without the capability | packages/host_protocol/test/agent_messages_test.dart; packages/desktop/test/agent_test.dart | agent methods fail method-not-available; the Claude Code launcher entry is disabled with the reason and terminal entries work | red (protocol green on Windows; desktop pending) |
 | desktop-host-protocol → Agent control stays responsive under saturated output | Stop under saturation | packages/host/test/it/agent_qualification_test.dart | saturating terminal A, stalled session B: Stop in session C acked ≤ 250 ms worst of 100 and C's events keep flowing | red |
 | desktop-host-protocol → Agent control stays responsive under saturated output | Permission reply under saturation | packages/host/test/it/agent_qualification_test.dart | saturating terminal A: permissionReply in session C acked ≤ 250 ms worst of 100 and delivered to the fixture | red |
 | workbench-layout → The launcher opens Claude Code sessions | Open Claude Code from the launcher | packages/desktop/test/workbench_test.dart | + Claude Code opens an active, focused new tab with one agent-chat pane bound to A showing Starting | red |
@@ -186,7 +186,7 @@ Test locations:
 
 ## 3. Protocol: agent capability, messages and events (D4, D5)
 
-- [ ] 3.1 Write failing `agent_messages_test.dart`:
+- [x] 3.1 Write failing `agent_messages_test.dart`:
   - typed round-trip of every `runtime/*` and `agent/*` method and notification in D5;
   - each new error code with its data;
   - `agent/records` ≤ 128 ids;
@@ -195,7 +195,7 @@ Test locations:
   - `methodCapability` gating, without the capability → `method-not-available`.
 
   Then add `Capability.agent`, the methods, notifications and errors in `messages.dart`. Verify it passes and flip "Both peers support agents" and the protocol part of "Host without the capability" green.
-- [ ] 3.2 Write failing `agent_events_test.dart` for the normalized event codec and every Resource Bounds event rule:
+- [x] 3.2 Write failing `agent_events_test.dart` for the normalized event codec and every Resource Bounds event rule:
   - newline-delimited JSON round-trip of each kind;
   - text over 64 KiB encoded split on code point boundaries;
   - a 1 MiB text cap with `truncated`;
@@ -207,7 +207,7 @@ Test locations:
   - a desktop-side decoder refusing an event over 256 KiB plus one frame.
 
   Implement in `host_protocol`. Verify it passes and flip the codec part of "Oversized tool output" green.
-- [ ] 3.3 Write failing `agent_channels_test.dart`: `agent/start` reserves one host-allocated outbound channel; no frame before attach; result and first event coalesced in one read keep the connection open. Implement with the existing `reserveChannels(1)` and `attachOutbound`. Verify it passes and flip "Start a session" green.
+- [x] 3.3 Write failing `agent_channels_test.dart`: `agent/start` reserves one host-allocated outbound channel; no frame before attach; result and first event coalesced in one read keep the connection open. Implement with the existing `reserveChannels(1)` and `attachOutbound`. Verify it passes and flip "Start a session" green.
 
 ## 4. Runtime profiles: domain model, store v5, resolution and detection (D7, D11)
 
