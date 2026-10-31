@@ -432,7 +432,12 @@ class Host {
     }
     if (method.startsWith('test/') && extension != null) {
       return extension!.handle(
-        HostServices(units: _units!, faults: faults, connection: _connection),
+        HostServices(
+          units: _units!,
+          faults: faults,
+          connection: _connection,
+          agents: _agents!,
+        ),
         method,
         params,
       );

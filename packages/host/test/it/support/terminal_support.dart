@@ -262,12 +262,35 @@ int hostRssKiB(int pid) {
       'CSV',
       '/NH',
     ]);
-    // "name","pid","session","#","12,345 K" - keep the digits of the last.
-    final last = (r.stdout as String).trim().split('","').last;
-    return int.parse(last.replaceAll(RegExp(r'[^0-9]'), ''));
+    return _parseHostRssKiB(r.stdout as String);
   }
   final r = Process.runSync('ps', ['-o', 'rss=', '-p', '$pid']);
-  return int.parse((r.stdout as String).trim());
+  return _parseHostRssKiB(r.stdout as String);
+}
+
+/// The same OS RSS query without blocking channel consumption or credit.
+Future<int> hostRssKiBAsync(int pid) async {
+  if (Platform.isWindows) {
+    final r = await Process.run('tasklist', [
+      '/FI',
+      'PID eq $pid',
+      '/FO',
+      'CSV',
+      '/NH',
+    ]);
+    return _parseHostRssKiB(r.stdout as String);
+  }
+  final r = await Process.run('ps', ['-o', 'rss=', '-p', '$pid']);
+  return _parseHostRssKiB(r.stdout as String);
+}
+
+int _parseHostRssKiB(String output) {
+  if (Platform.isWindows) {
+    // "name","pid","session","#","12,345 K" - keep the digits of the last.
+    final last = output.trim().split('","').last;
+    return int.parse(last.replaceAll(RegExp(r'[^0-9]'), ''));
+  }
+  return int.parse(output.trim());
 }
 
 /// The pseudo-terminals process [hostPid] holds: its console host children

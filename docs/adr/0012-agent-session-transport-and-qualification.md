@@ -53,6 +53,12 @@ The adapter initialized by the Continue run determines availability. A qualified
 
 Only the test-host extension accepts candidate qualification overrides. The release entry point ignores that environment and refuses test fixtures; the production qualified list remains unchanged until real observations are recorded.
 
+## Native load regressions
+
+The host qualification tests run real contained fixture processes and native pipes. They measure control acknowledgements beside saturated and stalled sessions, verify lossless delivery after backpressure, exercise deferred permissions and the Stop deadline at a full queue, reject a 17 MiB line, and gate two concurrent 8 MiB lines to observe permit ownership and handoff before desktop delivery.
+
+RSS sampling uses asynchronous, single-flight OS queries so measurement does not block the desktop connection's credit loop. The scripted fixture serializes complete output lines, including gated and chunked lines, while keeping request handling concurrent. These regressions prove Kumiko's transport behavior on the OS running them; they do not qualify a real adapter version.
+
 ## Protocol implementation
 
 `host_protocol` owns the runtime/agent control DTOs and `AgentEvent` codec. Events are UTF-8 newline-delimited JSON; use `encodeAgentEvent` to apply encoded-size bounds, and one `AgentEventDecoder` per received channel. Register the inbound channel before sending `agent/attach`, and grant its initial credit only after attach succeeds. Existing reservation and credit primitives provide the handshake without another transport abstraction.

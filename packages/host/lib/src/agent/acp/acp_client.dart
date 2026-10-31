@@ -36,6 +36,10 @@ class LargeLinePermit {
   static final shared = LargeLinePermit();
   Object? _owner;
   final _waiters = <Object, Completer<bool>>{};
+
+  bool owns(Object owner) => _owner == owner;
+  bool isWaiting(Object owner) => _waiters.containsKey(owner);
+
   Future<bool> acquire(Object owner) {
     if (_owner == owner) return Future.value(true);
     if (_owner == null) {
@@ -114,6 +118,8 @@ class AcpClient {
   Object? failure;
   Future<void> get done => _done.future;
   bool get isClosed => _closed;
+  bool get largeLineOwned => _permit.owns(this);
+  bool get largeLineWaiting => _permit.isWaiting(this);
   FutureOr<Object?> Function(String method, Json params)? normalizeNotification;
   FutureOr<void> Function(Object normalized)? consumeNotification;
   Object? Function(Object id, Json params)? onPermissionRequest;

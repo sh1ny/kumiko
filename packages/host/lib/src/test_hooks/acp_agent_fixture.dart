@@ -57,7 +57,11 @@ Future<int> runAcpAgentFixture(List<String> args) async {
 /// beforeInitializeExit:{status,stderr}, exitStatus ends after a prompt.
 /// Actions: update:{sessionUpdate,...}, permission:{toolCall,options},
 /// stderr:string, report:true, oversizedBytes:int, exit:int, spawnTree:true,
-/// stallStdin:true, flood:{count,update}, waitCancel:true, stopReason:string.
+/// stallStdin:true, flood:{count,update,indexPrefix?}, waitCancel:true,
+/// stopReason:string, gatedUpdate:{update,prefixBytes,releaseFile}.
+/// An indexed flood prepends `<indexPrefix><index>:` to each text update.
+/// A gated update flushes its prefix, reports prefixWritten, then waits for the
+/// owned release file before writing the rest of the same actual ACP line.
 /// Permission actions wait for their actual JSON-RPC outcomes before advancing;
 /// waitPermission:false permits a batch of outstanding requests (cap tests).
 /// blockedWriteAfterMs arms an external report during an unaccepted write;
@@ -117,14 +121,66 @@ Future<int> runAcpAgentScript({
     }
   }
 
-  Future<void> send(Json value) => bytes(utf8.encode('${jsonEncode(value)}\n'));
+  // Request handlers run concurrently so they can still receive cancellation
+  // and permission replies. Give each complete line exclusive ownership until
+  // every write/flush finishes, including intentionally fragmented lines.
+  // Keep failures on the chain: later lines must not bypass a failed write.
+  var writeTail = Future<void>.value();
+  Future<void> writeLine(Future<void> Function() action) {
+    return writeTail = writeTail.then((_) => action());
+  }
+
+  Future<void> send(Json value) {
+    final data = utf8.encode('${jsonEncode(value)}\n');
+    return writeLine(() => bytes(data));
+  }
+
   Future<void> result(Object id, Json value) =>
       send({'jsonrpc': '2.0', 'id': id, 'result': value});
-  Future<void> update(Json value) => send({
+  Json updateMessage(Json value) => {
     'jsonrpc': '2.0',
     'method': 'session/update',
     'params': {'sessionId': native, 'update': value},
-  });
+  };
+  Future<void> update(Json value) => send(updateMessage(value));
+
+  Future<void> waitForRelease(File file) async {
+    if (file.existsSync()) {
+      return;
+    }
+    final released = Completer<void>();
+    // Poll a real file predicate, not elapsed time: EOF also releases the
+    // action so a gated child cannot keep its fixture runner alive.
+    final poll = Timer.periodic(const Duration(milliseconds: 10), (_) {
+      if (!released.isCompleted && file.existsSync()) {
+        released.complete();
+      }
+    });
+    try {
+      await Future.any([released.future, closed.future]);
+    } finally {
+      poll.cancel();
+    }
+  }
+
+  Future<void> gatedUpdate(Json gate) {
+    final data = utf8.encode(
+      '${jsonEncode(updateMessage(gate['update'] as Json))}\n',
+    );
+    final prefix = gate['prefixBytes'] as int;
+    return writeLine(() async {
+      await bytes(Uint8List.sublistView(data, 0, prefix));
+      if (ended) {
+        return;
+      }
+      report({'prefixWritten': true, 'bytes': prefix});
+      await waitForRelease(File(gate['releaseFile'] as String));
+      if (!ended) {
+        await bytes(Uint8List.sublistView(data, prefix));
+      }
+    });
+  }
+
   Json launchReport() => {
     'argv': args,
     'cwd': cwd,
@@ -140,6 +196,9 @@ Future<int> runAcpAgentScript({
       if (ended) return null;
       final action = value as Json;
       if (action['update'] case final Json value) await update(value);
+      if (action['gatedUpdate'] case final Json gate) {
+        await gatedUpdate(gate);
+      }
       if (action['stderr'] case final String value) writeError(value);
       if (action['writeFile'] case final Json value) {
         File(value['path'] as String)
@@ -173,21 +232,32 @@ Future<int> runAcpAgentScript({
         }
       }
       if (action['oversizedBytes'] case final int count) {
-        // Deliberately invalid oversized line without allocating it all.
-        var left = count;
-        final chunk = Uint8List(65536)..fillRange(0, 65536, 120);
-        while (left > 0 && !ended) {
-          final n = left < chunk.length ? left : chunk.length;
-          await bytes(Uint8List.sublistView(chunk, 0, n));
-          left -= n;
-        }
-        await bytes([10]);
+        await writeLine(() async {
+          // Deliberately invalid oversized line without allocating it all.
+          var left = count;
+          final chunk = Uint8List(65536)..fillRange(0, 65536, 120);
+          while (left > 0 && !ended) {
+            final n = left < chunk.length ? left : chunk.length;
+            await bytes(Uint8List.sublistView(chunk, 0, n));
+            left -= n;
+          }
+          await bytes([10]);
+        });
       }
       if (action['flood'] case final Json flood) {
         final count = flood['count'] as int;
         final value = flood['update'] as Json;
+        final prefix = flood['indexPrefix'] as String?;
         for (var i = 0; i < count && !ended; i++) {
-          await update(value);
+          if (prefix == null) {
+            await update(value);
+          } else {
+            final content = value['content'] as Json;
+            await update({
+              ...value,
+              'content': {...content, 'text': '$prefix$i:${content['text']}'},
+            });
+          }
           report({'writtenUpdates': i + 1});
         }
       }

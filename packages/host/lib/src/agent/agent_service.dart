@@ -136,6 +136,8 @@ class AgentEventRelay {
   bool _paused = false;
   bool get isPaused => _paused;
   int get queuedBytes => _bytes;
+  int get channelQueuedBytes => _writer?.queuedBytes ?? 0;
+  int get channelSentBytes => _writer?.sentBytes ?? 0;
 
   void _pause(bool value) {
     if (_paused == value) return;
@@ -274,6 +276,19 @@ class AgentService {
   final _io = <_AgentIO>{};
   final _random = Random.secure();
   bool _disposed = false;
+
+  /// Read only on demand by the test extension; no transcript or new counters.
+  Json snapshot() => {
+    for (final entry in _agents.entries)
+      entry.key: {
+        'paused': entry.value.relay.isPaused,
+        'queuedBytes': entry.value.relay.queuedBytes,
+        'channelQueuedBytes': entry.value.relay.channelQueuedBytes,
+        'channelSentBytes': entry.value.relay.channelSentBytes,
+        'largeLineOwned': entry.value.io.client.largeLineOwned,
+        'largeLineWaiting': entry.value.io.client.largeLineWaiting,
+      },
+  };
 
   String _newId() {
     final bytes = List<int>.generate(16, (_) => _random.nextInt(256));
