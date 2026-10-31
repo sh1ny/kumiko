@@ -22,7 +22,7 @@ Adopt **`flutter_alacritty` (patched)**: `flutter_alacritty` 2.4.1 with its Dart
 
 The adoption is **provisional**: `tool/check_spike_results.dart` reports ADOPTABLE, not QUALIFIED. On Windows the host ships Microsoft's open-source ConPTY (change `host-terminals` design D2).
 
-Results (`openspec/changes/host-terminals/spike-results.md`; agent items from CI and the user's machine, user items from the user's own run):
+Results (`openspec/changes/archive/2026-10-31-host-terminals/spike-results.md`; agent items from CI and the user's machine, user items from the user's own run):
 
 | Item | Kind | Windows | Linux | macOS |
 |---|---|---|---|---|

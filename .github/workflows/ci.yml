@@ -33,7 +33,7 @@ jobs:
           sudo apt-get install -y clang cmake ninja-build pkg-config libgtk-3-dev liblzma-dev libstdc++-12-dev xvfb vttest
 
       # The terminal engine bar test runs vttest live on Linux and macOS
-      # (openspec/changes/host-terminals/spike-results.md).
+      # (openspec/changes/archive/2026-10-31-host-terminals/spike-results.md).
       - name: Install vttest
         if: runner.os == 'macOS'
         run: brew install vttest

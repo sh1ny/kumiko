@@ -19,7 +19,7 @@ import 'dart:io';
 
 /// Default location of the results file, relative to the repository root.
 const defaultSpikeResultsPath =
-    'openspec/changes/host-terminals/spike-results.md';
+    'openspec/changes/archive/2026-10-31-host-terminals/spike-results.md';
 
 /// The OS sections, in file order.
 const spikeOses = <String>['windows', 'linux', 'macos'];

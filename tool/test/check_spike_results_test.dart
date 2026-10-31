@@ -210,7 +210,7 @@ void main() {
       expect(runSpikeCheck([p.join(dir.path, 'nope.md')], out: out), 1);
     });
 
-    test('the recorded results file in the change passes', () {
+    test('the recorded results file in the archived change passes', () {
       final out = StringBuffer();
       expect(
         runSpikeCheck([defaultSpikeResultsPath], out: out),
