@@ -97,6 +97,23 @@ void main() {
     expect(row0(), 'frozen');
   });
 
+  testWidgets('a query sent in a synchronized update that never ends is '
+      'answered once its deadline has passed', (tester) async {
+    final (surface, _) = await show(tester);
+    final sent = <int>[];
+    final sub = surface.input.listen(sent.addAll);
+    addTearDown(sub.cancel);
+    surface.feed(utf8.encode('\x1b[2J\x1b[H'));
+    await settle(tester);
+    // The program asks for the cursor position inside the update and waits
+    // for the reply, with no further output.
+    surface.feed(utf8.encode('\x1b[?2026h\x1b[6n'));
+    for (var i = 0; i < 30 && sent.isEmpty; i++) {
+      await tester.pump(const Duration(milliseconds: 100));
+    }
+    expect(latin1.decode(sent), '\x1b[1;1R');
+  });
+
   testWidgets('a mouse drag selects text', (tester) async {
     final (surface, key) = await show(tester);
     surface.feed(utf8.encode('\x1b[2J\x1b[H${'hello\r\n' * 3}'));

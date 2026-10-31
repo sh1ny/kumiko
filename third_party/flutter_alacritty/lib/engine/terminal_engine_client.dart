@@ -93,7 +93,12 @@ class TerminalEngineClient {
     _syncHoldCheck = null;
     // An advance in flight applies its result through the same check.
     if (_disposed || !_syncOutputActive || _advancing) return;
-    if (synchronizedOutput(_binding.fullSnapshot().modeFlags)) {
+    final modeFlags = _binding.fullSnapshot().modeFlags;
+    // Applying an expired update can queue replies (a cursor position
+    // query held in it): route them now, as an advance does, so the program
+    // waiting on one is not left waiting for its next output.
+    _binding.pumpEvents();
+    if (synchronizedOutput(modeFlags)) {
       _syncHoldCheck = Timer(_syncHoldRecheck, _recheckSyncHold);
       return;
     }

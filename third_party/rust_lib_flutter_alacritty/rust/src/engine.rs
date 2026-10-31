@@ -1061,11 +1061,20 @@ impl TerminalEngine {
             Some(h) => (self.intern_hyperlink(h.uri()), FLAG_HYPERLINK),
             None => (0, 0),
         };
+        let mut flags = map_flags(cell.flags) | hyperlink_flag;
+        // Concealed (SGR 8) text crosses as a blank, with no line drawn
+        // through or under it; its background still shows.
+        let codepoint = if cell.flags.contains(Flags::HIDDEN) {
+            flags &= !(FLAG_UNDERLINE | FLAG_STRIKEOUT);
+            ' ' as u32
+        } else {
+            composed_codepoint(cell)
+        };
         CellData {
-            codepoint: composed_codepoint(cell),
+            codepoint,
             fg: self.resolve_color(cell.fg, true),
             bg: self.resolve_color(cell.bg, false),
-            flags: map_flags(cell.flags) | hyperlink_flag,
+            flags,
             hyperlink_id,
         }
     }
@@ -2242,6 +2251,16 @@ mod tests {
             &line.codepoints[..3],
             &['é' as u32, 'ä' as u32, 'q' as u32]
         );
+    }
+
+    #[test]
+    fn concealed_text_is_rendered_blank_without_decorations() {
+        let mut e = engine(12, 3);
+        e.advance(b"[8;4;9msecret[0mshown".to_vec());
+        assert_eq!(row_text(&mut e, 0, 11), "      shown");
+        let snapshot = e.full_snapshot();
+        let line = snapshot.lines.iter().find(|l| l.line == 0).unwrap();
+        assert_eq!(line.flags[0] & (FLAG_UNDERLINE | FLAG_STRIKEOUT), 0);
     }
 
     #[test]

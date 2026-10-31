@@ -2,7 +2,7 @@
 
 The native half of `flutter_alacritty`, version 0.2.2 from pub.dev (MIT,
 `LICENSE`), used through `dependency_overrides` in the workspace
-`pubspec.yaml`. Five changes:
+`pubspec.yaml`. Six changes:
 
 - `rust/Cargo.toml` takes `alacritty_terminal` from
   `../../alacritty_terminal` (see its `KUMIKO.md`) instead of the git pin,
@@ -30,3 +30,8 @@ The native half of `flutter_alacritty`, version 0.2.2 from pub.dev (MIT,
   quarter when full; ids are never reused, so an evicted id resolves to no
   link rather than to another URL. Test:
   `hyperlink_table_stays_bounded_and_never_reuses_an_id`.
+- Concealed text is blank (`rust/src/engine.rs`, `cell_data`). alacritty
+  marks SGR 8 cells hidden, but the engine exported their characters and
+  dropped the mark, so concealed text was drawn. A hidden cell now crosses as
+  a space with no underline or strikeout; its background still shows. Test:
+  `concealed_text_is_rendered_blank_without_decorations`.

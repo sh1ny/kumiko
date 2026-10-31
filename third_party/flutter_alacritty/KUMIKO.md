@@ -42,8 +42,11 @@ the engine reported synchronized output and presented again only with the
 next output. The native crate now applies an update whose deadline passed
 (its `KUMIKO.md`); a timer takes a snapshot after that deadline, so a program
 that died mid-update does not leave the view frozen until more output
-arrives. Test: `packages/desktop/integration_test/terminal_surface_test.dart`
-(output held by synchronized output that never ends is shown).
+arrives. It then routes the engine's events, as an advance does, so a reply
+to a query held in the update (a cursor position report) reaches the program
+waiting on it. Tests: `packages/desktop/integration_test/terminal_surface_test.dart`
+(output held by synchronized output that never ends is shown; a query sent in
+a synchronized update that never ends is answered).
 
 **A right click goes to a program that asked for mouse reports**
 (`lib/ui/terminal_view_pointer.dart`). The view kept every right click for
