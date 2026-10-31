@@ -663,8 +663,7 @@ impl TerminalEngine {
         self.scroll_fraction = 0.0;
         self.term.scroll_display(Scroll::Bottom);
         let after = self.term.grid().display_offset();
-        let line_delta = after as i32 - before as i32;
-        self.after_scroll_refresh(line_delta)
+        self.after_scroll_refresh(after as i32 - before as i32)
     }
 
     pub fn scroll_to_top(&mut self) -> RenderUpdate {
@@ -672,8 +671,7 @@ impl TerminalEngine {
         self.scroll_fraction = 0.0;
         self.term.scroll_display(Scroll::Top);
         let after = self.term.grid().display_offset();
-        let line_delta = after as i32 - before as i32;
-        self.after_scroll_refresh(line_delta)
+        self.after_scroll_refresh(after as i32 - before as i32)
     }
 
     /// Absolute scroll position in lines (GtkAdjustment `value` semantics).
@@ -707,8 +705,7 @@ impl TerminalEngine {
         }
 
         let after = self.term.grid().display_offset();
-        let line_delta = after as i32 - before as i32;
-        self.after_scroll_refresh(line_delta)
+        self.after_scroll_refresh(after as i32 - before as i32)
     }
 
     pub fn clear_history(&mut self) {
