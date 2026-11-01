@@ -1,9 +1,23 @@
+import 'dart:async';
 import 'dart:io';
+import 'dart:isolate';
 
 import 'package:host/src/agent/executable_resolver.dart';
+import 'package:host/src/host_faults.dart';
 import 'package:host_protocol/host_protocol.dart';
 import 'package:process_containment/process_containment.dart';
 import 'package:test/test.dart';
+
+class _ProbeFaults extends HostFaults {
+  final ready = Completer<void>();
+  int registered = 0;
+
+  @override
+  void registerHung(String path, SendPort port) {
+    super.registerHung(path, port);
+    if (++registered == 4) ready.complete();
+  }
+}
 
 void main() {
   late Directory root;
@@ -140,6 +154,50 @@ void main() {
         ? 'POSIX access(X_OK), pending three-OS CI'
         : false,
   );
+  test('launch worker preserves first-match batch refusal across the isolate', () async {
+    final batch = file('first/npx.cmd');
+    file('later/npx.exe');
+    final launch = LaunchExecutableResolver(
+      faults: HostFaults(),
+      resolver: resolver(os: 'windows', paths: ['${root.path}/first', '${root.path}/later']),
+    );
+    await expectLater(launch.resolve('npx'), refused(ErrorCode.notExecutable, batch));
+  });
+
+  test('launch probes retain all four slots after timeout until their workers return', () async {
+    final executable = file(Platform.isWindows ? 'node.exe' : 'node');
+    final faults = _ProbeFaults();
+    final launch = LaunchExecutableResolver(
+      faults: faults,
+      timeout: const Duration(milliseconds: 100),
+    );
+    final pending = <Future<void>>[];
+    try {
+      for (var i = 0; i < 4; i++) {
+        faults.setResolveFault(executable, const ResolveFault(hang: true));
+        pending.add(expectLater(launch.resolve(executable), refused(ErrorCode.busy, executable)));
+      }
+      await faults.ready.future.timeout(const Duration(seconds: 5));
+      await Future.wait(pending);
+      await expectLater(launch.resolve(executable), refused(ErrorCode.busy, executable));
+    } finally {
+      faults.releaseResolve(executable);
+      await Future.wait(pending);
+    }
+    String? resolved;
+    await Future.doWhile(() async {
+      try {
+        resolved = await launch.resolve(executable);
+        return false;
+      } on RpcException catch (error) {
+        if (error.reason != ErrorCode.busy) rethrow;
+        await Future<void>(() {});
+        return true;
+      }
+    }).timeout(const Duration(seconds: 5));
+    expect(resolved, executable);
+  });
+
   test('D11 well-known directories use platform install locations and newest numeric nvm version', () {
     for (final v in ['v9.9.0', 'v22.1.0', 'v22.10.0']) {
       Directory('${root.path}/.nvm/versions/node/$v/bin')

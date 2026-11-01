@@ -288,6 +288,10 @@ class AgentService {
   final Store store;
   final HostOptions options;
   final List<(String, String, List<String>)>? qualifiedAdaptersOverride;
+  late final _executables = LaunchExecutableResolver(
+    faults: workspaces.resolver.faults,
+    timeout: options.resolveTimeout,
+  );
   final _continuing = <String>{};
   final _agents = <String, _Agent>{};
   final _io = <_AgentIO>{};
@@ -597,7 +601,7 @@ class AgentService {
     // resolver before launch; UnitManager independently verifies the captured
     // identity when it launches, and the result is compared below.
     if (saved != null) await _checkContinueTarget(target);
-    final executable = ExecutableResolver().resolve(profile.executable);
+    final executable = await _executables.resolve(profile.executable);
     _available();
     final reservation = connection.reserveChannels(1);
     _AgentIO? io;

@@ -1,8 +1,12 @@
+import 'dart:async';
 import 'dart:io';
+import 'dart:isolate';
 
 import 'package:host_protocol/host_protocol.dart';
 import 'package:process_containment/process_containment.dart';
 
+import '../host_faults.dart';
+import '../host_options.dart';
 import '../profiles/shell_detector.dart' show splitSearchPath;
 
 /// Runtime PATH entries, excluding empty entries (never search a checkout).
@@ -157,4 +161,87 @@ class ExecutableResolver {
     'Executable not found: "$path".',
     {'executable': path},
   );
+}
+
+/// Launch-time filesystem checks share a bounded off-isolate budget. A timeout
+/// abandons the result but retains its slot until the native probe returns.
+/// Unlike detection, interactive launches never queue behind stalled probes.
+class LaunchExecutableResolver {
+  LaunchExecutableResolver({
+    required this.faults,
+    ExecutableResolver? resolver,
+    this.slots = HostOptions.resolveSlots,
+    this.timeout = HostOptions.defaultResolveTimeout,
+  }) : _resolver = resolver ?? ExecutableResolver();
+
+  final HostFaults faults;
+  final ExecutableResolver _resolver;
+  final int slots;
+  final Duration timeout;
+  int _held = 0;
+
+  Future<String> resolve(String executable) {
+    if (_held >= slots) {
+      return Future.error(RpcException(
+        ErrorCode.busy,
+        'Executable resolution is busy.',
+        {'executable': executable},
+      ));
+    }
+    _held++;
+    final fault = faults.takeResolveFault(executable);
+    ReceivePort? hangPort;
+    if (fault != null && fault.hang) {
+      hangPort = ReceivePort()
+        ..listen((Object? message) {
+          if (message is SendPort) faults.registerHung(executable, message);
+        });
+    }
+    final result = Completer<String>();
+    final timer = Timer(timeout, () {
+      result.completeError(RpcException(
+        ErrorCode.busy,
+        'Executable resolution did not answer within ${timeout.inMilliseconds} ms.',
+        {'executable': executable},
+      ));
+    });
+    void finished() {
+      timer.cancel();
+      hangPort?.close();
+      _held--;
+    }
+
+    _spawn(_resolver, executable, fault?.delay.inMilliseconds ?? 0, hangPort?.sendPort).then<void>(
+      (path) {
+        finished();
+        if (!result.isCompleted) result.complete(path);
+      },
+      onError: (Object error, StackTrace stack) {
+        finished();
+        if (!result.isCompleted) result.completeError(error, stack);
+      },
+    );
+    return result.future;
+  }
+
+  // Capture plain resolver configuration only, never the service or its ports.
+  static Future<String> _spawn(
+    ExecutableResolver resolver,
+    String executable,
+    int delayMs,
+    SendPort? hang,
+  ) => Isolate.run(() async {
+    try {
+      return resolver.resolve(executable);
+    } finally {
+      // Test-only faults run in the same isolate as the filesystem probe.
+      if (delayMs > 0) sleep(Duration(milliseconds: delayMs));
+      if (hang != null) {
+        final release = ReceivePort();
+        hang.send(release.sendPort);
+        await release.first;
+        release.close();
+      }
+    }
+  });
 }

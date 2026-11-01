@@ -18,6 +18,7 @@ void main() {
   late AgentPeer live;
   late Json savedRow;
   late String targetPath;
+  late String savedWorkspaceId;
 
   setUp(() async {
     profile = tempDir('agent_target_profile_');
@@ -42,6 +43,7 @@ void main() {
     addTearDown(desktop.dispose);
     await desktop.waitState();
     final workspace = await desktop.openWorkspace(savedWork.path);
+    savedWorkspaceId = workspace.workspace.id;
     await saveAgentFixture(
       desktop,
       savedWork,
@@ -103,6 +105,29 @@ void main() {
     await live.call(Method.agentStop);
     expect(stopClock.elapsed, lessThan(const Duration(milliseconds: 250)));
     expect((await live.wait(Method.agentStopResult))['outcome'], 'stopped');
+  }
+
+  for (final start in [true, false]) {
+    test('${start ? 'Start' : 'Continue'} stalled executable leaves native control responsive and times out before spawn', () async {
+      final executable = testHostExecutable();
+      await desktop.resolveFault(executable, delayMs: 3000);
+      final pending = rpcFailure(start
+          ? saved.call(Method.agentStart, AgentStartParams(
+              workspaceId: savedWorkspaceId,
+              runtimeProfileId: 'saved',
+            ).toJson())
+          : saved.call(Method.agentContinue));
+      await desktop.listWorkspaces();
+      await controlResponds();
+      final error = await pending.timeout(const Duration(seconds: 5));
+      expect(error.reason, ErrorCode.busy);
+      expect(error.data['executable'], executable);
+      expect(error.message, contains('did not answer'));
+      expect(LedgerView(profile).units(), hasLength(1));
+      expect(agentRows(profile).first, savedRow);
+      expect(agentRows(profile), hasLength(2));
+      await live.close();
+    });
   }
 
   test('saved records stalled target leaves native control responsive and times out unavailable', () async {
