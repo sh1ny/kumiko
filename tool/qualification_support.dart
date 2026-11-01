@@ -142,20 +142,29 @@ RuntimeProfile selectQualificationProfile(
   throw StateError('Runtime profile $id is missing; no fallback was selected');
 }
 
+/// Returns a clone using the target OS's credential-name comparison rules.
 Map<String, String> isolatedAuthEnvironment(
   Map<String, String> profile,
   Map<String, String> inherited,
-  String configDir,
-) => {
-  ...profile,
-  'CLAUDE_CONFIG_DIR': configDir,
-  for (final key in const [
+  String configDir, {
+  required String os,
+}) {
+  const credentials = {
     'ANTHROPIC_API_KEY',
     'ANTHROPIC_AUTH_TOKEN',
     'CLAUDE_CODE_OAUTH_TOKEN',
-  ])
-    if (profile.containsKey(key) || inherited.containsKey(key)) key: '',
-};
+  };
+  final windows = os == 'windows';
+  return {
+    for (final entry in profile.entries)
+      entry.key: credentials.contains(windows ? entry.key.toUpperCase() : entry.key)
+          ? ''
+          : entry.value,
+    'CLAUDE_CONFIG_DIR': configDir,
+    for (final key in inherited.keys)
+      if (credentials.contains(windows ? key.toUpperCase() : key)) key: '',
+  };
+}
 
 const qualificationAuthPrompt = 'Reply only OK; no tools or file changes.';
 

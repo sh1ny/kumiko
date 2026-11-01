@@ -1210,13 +1210,15 @@ Future<void> _authObservation(
     selected.env,
     Platform.environment,
     config.path,
+    os: Platform.operatingSystem,
   );
   stdout.writeln(
     'SEPARATE AUTHENTICATION OBSERVATION:\n'
     'A temporary clone of runtime profile ${selected.id} will use:\n'
     'CLAUDE_CONFIG_DIR=${config.path}\n'
     'Present ANTHROPIC_API_KEY / ANTHROPIC_AUTH_TOKEN / CLAUDE_CODE_OAUTH_TOKEN\n'
-    'values are blanked only in this clone. ANTHROPIC_BASE_URL is unchanged.\n'
+    'values are blanked only in this clone (case-insensitive on Windows).\n'
+    'ANTHROPIC_BASE_URL is unchanged.\n'
     'No credentials/config files are copied; no sign-out/global env changes.\n'
     'Other provider or OS credentials may still authenticate; success is NOT an\n'
     'auth-required pass. This attempt may contact a provider and spend tokens.\n'

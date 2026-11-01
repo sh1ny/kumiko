@@ -73,6 +73,12 @@ diagnostics leaves authentication unrecorded. Recording an error still requires
 your confirmation that its exact code and message mean authentication is required.
 Without that observation, Windows evidence remains unwritten.
 
+For the isolated clone, present `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`
+and `CLAUDE_CODE_OAUTH_TOKEN` values are blanked. Matching is case-insensitive
+on Windows (including profile-only overrides) and case-sensitive on POSIX.
+`ANTHROPIC_BASE_URL` and unrelated overrides are preserved; the source profile
+is never changed.
+
 The candidate identity comes from the actual initialized adapter. Qualification
 uses that exact candidate only in the test host: both extras exercise preferred
 load; a second run with resume alone exercises the resume path. Neither grants

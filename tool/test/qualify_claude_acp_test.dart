@@ -151,7 +151,7 @@ void main() {
         final env = isolatedAuthEnvironment(profile.env, {
           'ANTHROPIC_API_KEY': 'inherited-secret',
           'UNRELATED': 'untouched',
-        }, 'isolated-config');
+        }, 'isolated-config', os: 'windows');
         expect(env, {
           'ANTHROPIC_AUTH_TOKEN': '',
           'ANTHROPIC_API_KEY': '',
@@ -162,6 +162,55 @@ void main() {
         expect(profile.env['ANTHROPIC_AUTH_TOKEN'], 'profile-secret');
       },
     );
+    test('Windows auth isolation blanks every credential spelling supplied only by the profile', () {
+      final original = {
+        'anthropic_api_key': 'profile-only-key',
+        'AnThRoPiC_AuTh_ToKeN': 'profile-only-token',
+        'claude_code_oauth_token': 'profile-only-oauth',
+        'ANTHROPIC_BASE_URL': 'gateway',
+        'KEEP': 'value',
+      };
+      final env = isolatedAuthEnvironment(original, {}, 'isolated-config', os: 'windows');
+      for (final key in original.keys.take(3)) {
+        expect(env[key], isEmpty, reason: 'credential spelling $key escaped isolation');
+      }
+      expect(env['ANTHROPIC_BASE_URL'], 'gateway');
+      expect(env['KEEP'], 'value');
+      expect(env['CLAUDE_CONFIG_DIR'], 'isolated-config');
+      expect(original['anthropic_api_key'], 'profile-only-key');
+      expect(original['AnThRoPiC_AuTh_ToKeN'], 'profile-only-token');
+      expect(original['claude_code_oauth_token'], 'profile-only-oauth');
+    });
+
+    test('Windows auth isolation blanks inherited mixed-case credentials without copying unrelated values', () {
+      final env = isolatedAuthEnvironment({}, {
+        'Anthropic_Api_Key': 'inherited-key',
+        'claude_CODE_oauth_TOKEN': 'inherited-oauth',
+        'UNRELATED': 'do not copy',
+      }, 'isolated-config', os: 'windows');
+      expect(env, {
+        'Anthropic_Api_Key': '',
+        'claude_CODE_oauth_TOKEN': '',
+        'CLAUDE_CONFIG_DIR': 'isolated-config',
+      });
+    });
+    for (final os in ['linux', 'macos']) {
+      test('$os auth isolation preserves case-sensitive noncredential names', () {
+        final env = isolatedAuthEnvironment({
+          'anthropic_api_key': 'case-sensitive custom value',
+          'ANTHROPIC_AUTH_TOKEN': 'real documented token',
+        }, {
+          'claude_code_oauth_token': 'case-sensitive inherited value',
+          'CLAUDE_CODE_OAUTH_TOKEN': 'real documented inherited token',
+        }, 'isolated-config', os: os);
+        expect(env['anthropic_api_key'], 'case-sensitive custom value');
+        expect(env['ANTHROPIC_AUTH_TOKEN'], '');
+        expect(env['CLAUDE_CODE_OAUTH_TOKEN'], '');
+        expect(env.containsKey('claude_code_oauth_token'), isFalse);
+        expect(env.containsKey('ANTHROPIC_API_KEY'), isFalse);
+      });
+    }
+
     test('selected and unavailable default profiles never fall back', () {
       const p = RuntimeProfile(
         id: 'present',
