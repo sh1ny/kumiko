@@ -41,7 +41,7 @@ The POSIX process-backed stdin writer observes process exit separately from nati
 
 Turn-end and Stop-result display messages and stop reasons are bounded to 4 KiB of encoded JSON string content, including escaping. A recoverable oversized native error therefore cannot exceed the control-message limit or prevent the transition back to idle. Exact authentication matching uses the original native error; the separate native diagnostic retains its UTF-8 limit and explicit truncation flag.
 
-Prompt-error dispatch performs exact authentication classification synchronously, bounds the retained native message to 4 KiB UTF-8, and drops arbitrary native `error.data` before completing the request future. Credit-blocked turn handling retains only that bounded exception; completed turns do not retain a separate native-error snapshot.
+All native request-error dispatch performs exact authentication classification synchronously, bounds the retained native message to 4 KiB UTF-8, and drops arbitrary native `error.data` before completing the request future. Startup and restoration cleanup, as well as credit-blocked turn handling, retain only that bounded exception. Diagnostics preserve the original truncation flag so shortened authentication-like messages cannot become exact evidence; restoration failures visibly mark truncated text. Completed turns do not retain a separate native-error snapshot.
 
 Successful prompt dispatch likewise validates and reduces the complete native result before completing its future, discarding unrelated result fields. The retained `AcpPromptResult` contains only bounded stop-reason display text, original exact cancellation classification, and truncation metadata. A credit-blocked completion retains this bounded result; canonical turn events preserve their truncation marker.
 
@@ -83,6 +83,8 @@ RSS sampling uses asynchronous, single-flight OS queries so measurement does not
 
 Automated fixture starts explicitly select their scripted runtime profile or isolate detection; an installed real adapter must not become a fixture's default runtime. Native desktop agent integration tests bind `KUMIKO_HOST` to the bundled test host because their ACP runtime uses `--test-fixture`; the other native integration tests retain the release host.
 
+The ledger identity-failure fixture waits for explicit fault release before killing its leader. The test first observes all three process reports, then releases failure and verifies containment cleanup. Process startup speed is not assumed from a fixed one-second delay.
+
 ## Desktop chat implementation
 
 Only the ordered event channel appends canonical user/reply/turn/notice transcript records. Priority turn-end control updates action and authentication metadata without synthesizing duplicate or out-of-order transcript entries. Native sign-in guidance is rendered outside the transcript, and Retry resends the original prompt without replacing an unsent draft.
@@ -90,6 +92,8 @@ Only the ordered event channel appends canonical user/reply/turn/notice transcri
 A split tab aggregates all contained agent statuses using explicit priority: Waiting for approval, Failed, Stopped or unknown, Stopping, Closing, Running, Starting, Idle, Saved/not running, Ended. An earlier idle pane cannot hide active or failed work in another pane, and status updates do not activate the tab.
 
 `AgentController` owns live pane links and the bounded, in-memory transcript. Control notifications determine state and permission choices; the event channel determines transcript order. Accepted user prompts enter history only through the host's canonical event, so local draft submission cannot duplicate a prompt or reorder it ahead of earlier channel data. Identical prompts in different turns remain distinct.
+
+Prompt submission checks the 256 KiB UTF-8 text bound before entering the sending state. `Connection.request` also admits the actual JSON-encoded envelope, including escaping, before taking pending-request ownership; an envelope over the 1 MiB control bound is refused locally as `invalid-params`. Refused submissions preserve the draft, create no user/turn transcript records, and release the sending latch so a corrected prompt can be sent on the same live connection.
 
 Chat panes persist only `sessionId` and `runtimeName`. Restore reads saved records without launching an adapter; Continue is explicit. Pane moves preserve live links and pending permission choices. Host loss disables runtime actions until the new host resolves saved records. Transcript eviction leaves a visible marker rather than persisting conversation text.
 

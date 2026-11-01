@@ -188,6 +188,100 @@ void main() {
     }
   });
 
+  for (final method in [
+    'initialize',
+    'session/new',
+    'session/load',
+    'session/resume',
+  ]) {
+    test(
+      '$method errors release bounded classified owners before delayed cleanup',
+      () async {
+        final permit = LargeLinePermit();
+        final peers = <AcpPeer>[];
+        final retained = <AcpRemoteException>[];
+        final settled = <Future<void>>[];
+        final cleanup = Completer<void>();
+        try {
+          for (var i = 0; i < 2; i++) {
+            final peer = AcpPeer(permit: permit);
+            peers.add(peer);
+            final message = i == 0
+                ? 'Authentication required'
+                : 'Authentication required${'值😀' * 1024}';
+            final enteredCleanup = Completer<void>();
+            final Future<Object?> request = switch (method) {
+              'initialize' => peer.client.initialize(),
+              'session/new' => peer.client.newSession('/target'),
+              'session/load' => peer.client.loadSession('native', '/target'),
+              _ => peer.client.resumeSession('native', '/target'),
+            };
+            settled.add(
+              request.then<void>(
+                (_) => fail('native error unexpectedly succeeded'),
+                onError: (Object error) async {
+                  if (error is! AcpRemoteException) {
+                    enteredCleanup.completeError(error);
+                    return;
+                  }
+                  retained.add(error);
+                  enteredCleanup.complete();
+                  await cleanup.future;
+                },
+              ),
+            );
+            final bytes = utf8.encode(
+              '${jsonEncode({
+                'jsonrpc': '2.0',
+                'id': peer.writes.single['id'],
+                'error': {
+                  'code': -32000,
+                  'message': message,
+                  'data': {'unique': '$i' * (acpLargeLineThreshold + 64)},
+                },
+              })}\n',
+            );
+            expect(bytes.length, greaterThan(acpLargeLineThreshold));
+            expect(bytes.length, lessThan(acpLineLimit));
+            addChunks(peer, bytes);
+            await enteredCleanup.future;
+            final error = retained.last;
+            expect(error.code, -32000);
+            expect(error.isAuthenticationRequired, i == 0);
+            expect(error.message, clampUtf8(message, 4096));
+            expect(error.messageTruncated, i != 0);
+            expect(
+              error.data,
+              isNull,
+              reason: 'cleanup must not retain arbitrary native error data',
+            );
+            expect(peer.client.largeLineOwned, isFalse);
+            expect(peer.client.largeLineWaiting, isFalse);
+            expect(peer.client.isClosed, isFalse);
+          }
+          // Both asynchronous failure consumers are still awaiting cleanup
+          // while each successive native response reuses the same permit.
+          expect(cleanup.isCompleted, isFalse);
+          expect(retained, hasLength(2));
+          expect(
+            retained.fold<int>(
+              0,
+              (bytes, error) => bytes + utf8.encode(error.message).length,
+            ),
+            lessThanOrEqualTo(2 * 4096),
+          );
+          expect(retained.map((error) => error.data), everyElement(isNull));
+        } finally {
+          cleanup.complete();
+          await Future.wait(settled);
+          for (final peer in peers) {
+            await peer.dispose();
+          }
+        }
+      },
+    );
+  }
+
   test('consecutive successful prompts retain only bounded classified results', () async {
     final permit = LargeLinePermit();
     final peers = <AcpPeer>[];

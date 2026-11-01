@@ -373,6 +373,67 @@ void main() {
     );
   }
   test(
+    'concurrent native startup failures preserve truncation after held cleanup',
+    () async {
+      final d = await desktop();
+      final w = await d.openWorkspace(work.path);
+      final nativeMessage = 'Authentication required${'界' * 2000}';
+      for (final method in ['initialize', 'session/new']) {
+        await saveAgentFixture(
+          d,
+          work,
+          id: method == 'initialize' ? 'init-error' : 'new-error',
+          script: {
+            'errors': {
+              method: {
+                'code': -32000,
+                'message': nativeMessage,
+                'data': {'private': 'x' * (1024 * 1024 + 64)},
+              },
+            },
+          },
+        );
+      }
+      final failures = <Future<RpcException>>[];
+      var completed = 0;
+      await d.setFault(TestFault.terminateHangs);
+      try {
+        for (final runtime in ['init-error', 'new-error']) {
+          failures.add(
+            rpcFailure(AgentPeer(d).start(w.workspace.id, runtime: runtime))
+                .then((error) {
+                  completed++;
+                  return error;
+                }),
+          );
+        }
+        await eventually(
+          () => LedgerView(profile).units().length == 2,
+          reason: 'both concurrent failed launches must own contained units',
+        );
+        expect(completed, 0);
+        expect(agentRows(profile), isEmpty);
+      } finally {
+        await d.setFault(TestFault.terminateHangs, enabled: false);
+      }
+      final errors = await Future.wait(failures);
+      expect(errors.map((error) => error.data['stage']), [
+        'initialize',
+        'session/new',
+      ]);
+      for (final error in errors) {
+        expect(error.reason, ErrorCode.adapterStartFailed);
+        expect(error.data['nativeCode'], -32000);
+        expect(error.data['nativeMessageTruncated'], isTrue);
+        expect(error.data['nativeMessage'], clampUtf8(nativeMessage, 4096));
+        expect(jsonEncode(error.toJson()), isNot(contains('"private"')));
+      }
+      noResources();
+      await expectAllGone(readReports(work));
+    },
+  );
+
+  test(
     'long native start error evidence is bounded and explicitly marked inexact',
     () async {
       final d = await desktop();

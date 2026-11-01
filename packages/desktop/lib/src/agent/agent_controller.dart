@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:math';
 
 import 'package:domain/domain.dart';
@@ -605,6 +606,17 @@ class AgentController extends ChangeNotifier implements ViewCloser {
     if (link == null || host == null || !link.canSend || text.trim().isEmpty) {
       return;
     }
+    if (text.length > maxAgentPromptBytes ||
+        utf8.encode(text).length > maxAgentPromptBytes) {
+      link.errorCode = ErrorCode.invalidParams;
+      link._resumeReason = null;
+      link.error =
+          '${ErrorCode.invalidParams}: '
+          'Prompt exceeds 256 KiB. Please shorten the prompt and try again.';
+      link.transcript.add(AgentEvent.notice(link.error!));
+      _changed();
+      return;
+    }
     final generation = _generation;
     link.sending = true;
     link.error = null;
@@ -615,10 +627,12 @@ class AgentController extends ChangeNotifier implements ViewCloser {
     // The host emits accepted prompts on the ordered event channel, including
     // when the adapter later fails. RPC rejection must not create user history.
     _changed();
+    var submitted = false;
     try {
       await host.promptAgent(
         AgentPromptParams(sessionId: link.sessionId!, text: text),
       );
+      submitted = true;
       if (_current(host, generation) &&
           _owns(link) &&
           link.prompt.text == text) {
@@ -626,14 +640,19 @@ class AgentController extends ChangeNotifier implements ViewCloser {
       }
     } on RpcException catch (e) {
       if (!_current(host, generation) || !_owns(link)) return;
-      link.sending = false;
       link.errorCode = e.reason;
       link.error = _describe(e);
       link.transcript.add(AgentEvent.notice(link.error!));
     } on ConnectionClosedException {
       if (_current(host, generation)) detach();
+    } finally {
+      // Only accepted submissions wait for turn-ended to unlock Send. A local
+      // failure must release the latch even when an unexpected error propagates.
+      if (!submitted && _current(host, generation) && _owns(link)) {
+        link.sending = false;
+      }
+      _changed();
     }
-    _changed();
   }
 
   Future<void> stop(String paneId) async {

@@ -22,15 +22,10 @@ class AcpClosedException implements Exception {
 }
 
 class AcpRemoteException implements Exception {
-  AcpRemoteException(this.code, this.message, [this.data])
-    : isAuthenticationRequired =
-          code == -32000 && message == 'Authentication required',
-      messageTruncated = false;
-
-  // Prompt errors cross an asynchronous turn/event-enqueue boundary. Classify
-  // the original signature and discard arbitrary data before completing that
-  // Future, while dispatch still owns the large-line permit.
-  factory AcpRemoteException._prompt(int code, String message) {
+  // Every native request error crosses an asynchronous consumer boundary.
+  // Classify the original signature and discard arbitrary data before
+  // completing its Future, while dispatch still owns the large-line permit.
+  factory AcpRemoteException(int code, String message) {
     final bounded = clampUtf8(message, 4096);
     return AcpRemoteException._bounded(
       code,
@@ -53,7 +48,7 @@ class AcpRemoteException implements Exception {
   final bool messageTruncated;
 
   /// Exact native signature observed with claude-agent-acp 0.99.1, classified
-  /// before any prompt diagnostic truncation.
+  /// before any native diagnostic truncation.
   final bool isAuthenticationRequired;
 
   @override
@@ -497,16 +492,7 @@ class AcpClient {
     if (message.containsKey('error')) {
       if (error is! Json) throw AcpProtocolException('invalid error response');
       pending.completeError(
-        pending.prompt
-            ? AcpRemoteException._prompt(
-                error['code']! as int,
-                error['message']! as String,
-              )
-            : AcpRemoteException(
-                error['code']! as int,
-                error['message']! as String,
-                error['data'],
-              ),
+        AcpRemoteException(error['code']! as int, error['message']! as String),
       );
     } else {
       pending.completer.complete(promptResult ?? result as Json);

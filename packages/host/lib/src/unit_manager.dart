@@ -23,7 +23,11 @@ class DesktopInfo {
 /// Launch result retains the handle and caller-owned I/O even if a short-lived
 /// child exits and settlement removes it from [UnitManager.live].
 class UnitLaunch {
-  const UnitLaunch({required this.id, required this.unit, required this.target});
+  const UnitLaunch({
+    required this.id,
+    required this.unit,
+    required this.target,
+  });
 
   final String id;
   final ContainedUnit unit;
@@ -325,7 +329,7 @@ class UnitManager {
   /// it started are not (test faults only). On Windows the unit's job ends
   /// with the spawn, as it does when `spawnWindowsUnit` fails.
   Future<Never> _failIdentity(ContainedUnit unit) async {
-    await Future<void>.delayed(const Duration(seconds: 1));
+    await faults.waitForIdentityFailureRelease();
     if (unit is WindowsUnit) {
       await unit.terminate();
       unit.close();

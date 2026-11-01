@@ -41,8 +41,15 @@ class HostFaults {
       _active.contains(TestFault.crashAfterSpawnBeforePid);
 
   /// The spawn fails after the unit started, as when its start time cannot
-  /// be read: after 1 s the leader is killed and the spawn throws.
+  /// be read. Disabling the fault releases the leader kill, so tests can
+  /// observe descendant readiness before triggering failure.
   bool get identityReadFails => _active.contains(TestFault.identityReadFails);
+  Completer<void>? _identityFailureRelease;
+
+  Future<void> waitForIdentityFailureRelease() {
+    if (!identityReadFails) return Future<void>.value();
+    return (_identityFailureRelease ??= Completer<void>()).future;
+  }
 
   /// Every kill the host would send fails.
   bool get killFails => _active.contains(TestFault.killFails);
@@ -113,6 +120,10 @@ class HostFaults {
       if (fault == TestFault.terminateHangs) {
         _terminationRelease?.complete();
         _terminationRelease = null;
+      }
+      if (fault == TestFault.identityReadFails) {
+        _identityFailureRelease?.complete();
+        _identityFailureRelease = null;
       }
     }
   }

@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:host_protocol/host_protocol.dart';
@@ -95,6 +96,84 @@ void main() {
         await d.connection.request(Method.agentRecords, AgentRecordsParams(ids))
             as Json,
       );
+
+  test('concurrent load and resume failures preserve inexact diagnostics after held cleanup', () async {
+    final d = await desktop();
+    final w = await d.openWorkspace(work.path);
+    final originals = <AgentPeer>[];
+    final nativeMessage = 'Authentication required${'界' * 2000}';
+    for (final mode in ['load', 'resume']) {
+      await saveAgentFixture(
+        d,
+        work,
+        id: '$mode-error',
+        script: {
+          'agentCapabilities': {
+            if (mode == 'load') 'loadSession': true,
+            'sessionCapabilities': {'resume': <String, Object?>{}},
+          },
+          'errors': {
+            'session/$mode': {
+              'code': -32000,
+              'message': nativeMessage,
+              'data': {'private': 'x' * (1024 * 1024 + 64)},
+            },
+          },
+        },
+      );
+      final a = AgentPeer(d);
+      await a.start(w.workspace.id, runtime: '$mode-error');
+      await a.attach();
+      await a.close();
+      await a.call(Method.agentRelease);
+      originals.add(a);
+    }
+    final rows = agentRows(profile);
+    final restored = <AgentPeer>[];
+    await d.setFault(TestFault.terminateHangs);
+    try {
+      for (final original in originals) {
+        final a = AgentPeer(d);
+        restored.add(a);
+        await continuePeer(a, original.id);
+        await a.attach();
+        await a.wait(Method.agentState, where: (p) => p['state'] == 'failed');
+      }
+      await eventually(
+        () async {
+          final stats =
+              await d.connection.request('test/agent.stats', {}) as Json;
+          final sessions = stats['sessions'] as Json;
+          return restored.every(
+            (a) => (sessions[a.id] as Json)['ending'] == true,
+          );
+        },
+        reason: 'both restoration failures must await held containment cleanup',
+      );
+      expect(LedgerView(profile).units(), hasLength(2));
+      for (final a in restored) {
+        expect(a.of(Method.agentExited), isEmpty);
+      }
+    } finally {
+      await d.setFault(TestFault.terminateHangs, enabled: false);
+    }
+    for (final a in restored) {
+      final exit = await a.wait(Method.agentExited);
+      expect(exit['reason'], 'failed');
+      expect(exit['error'], ErrorCode.resumeUnavailable);
+      expect(exit['resumeReason'], 'adapter-error');
+      expect(exit['message'], contains('[truncated]'));
+      expect(
+        utf8.encode(exit['message'] as String).length,
+        lessThanOrEqualTo(4096),
+      );
+      expect(jsonEncode(exit), isNot(contains('"private"')));
+      await a.call(Method.agentRelease);
+    }
+    expect(agentRows(profile), rows);
+    expect(LedgerView(profile).units(), isEmpty);
+    await expectAllGone(readReports(work));
+  });
 
   test('Continue with load: replay start, replayed user agent tool events, replay end then idle; no prompt sent', () async {
     final d = await desktop();

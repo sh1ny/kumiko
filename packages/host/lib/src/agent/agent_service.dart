@@ -772,7 +772,8 @@ class AgentService {
           'status': ?status,
           if (error is AcpRemoteException) 'nativeCode': error.code,
           'nativeMessage': ?nativeMessage,
-          if (error is AcpRemoteException && nativeMessage != error.message)
+          if (error is AcpRemoteException &&
+              (error.messageTruncated || nativeMessage != error.message))
             'nativeMessageTruncated': true,
         },
       );
@@ -1121,10 +1122,14 @@ class AgentService {
                   : 'adapter-error'
             : null,
         message: restoring
-            ? clampUtf8(
-                error is AcpRemoteException ? error.message : error.toString(),
-                4096,
-              )
+            ? error is AcpRemoteException && error.messageTruncated
+                  ? '${clampUtf8(error.message, 4096 - ' [truncated]'.length)} [truncated]'
+                  : clampUtf8(
+                      error is AcpRemoteException
+                          ? error.message
+                          : error.toString(),
+                      4096,
+                    )
             : error is AcpProtocolException
             ? error.message
             : null,

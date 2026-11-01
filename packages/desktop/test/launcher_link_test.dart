@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:typed_data';
 
+import 'package:desktop/src/agent/agent_controller.dart';
 import 'package:desktop/src/launcher_link.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:host_protocol/host_protocol.dart';
@@ -20,6 +21,118 @@ class _Pipe implements ByteSink {
 
   @override
   Future<void> flush() => Future.value();
+}
+
+/// Only process ownership is substituted: SessionLink and both wire endpoints
+/// are real, so JSON escaping and request admission remain in the test path.
+class _MemorySession implements HostSession {
+  _MemorySession(this.connection, this.hello, this.notifications);
+
+  @override
+  final Connection connection;
+  @override
+  final HelloResult hello;
+  @override
+  final Stream<HostNotification> notifications;
+  @override
+  Stream<CleanupState> get cleanupStates => const Stream.empty();
+
+  @override
+  dynamic noSuchMethod(Invocation invocation) => super.noSuchMethod(invocation);
+}
+
+class _PromptRig {
+  final toHost = _Pipe();
+  final toDesktop = _Pipe();
+  final notifications = StreamController<HostNotification>.broadcast(
+    sync: true,
+  );
+  final attached = Completer<void>();
+  final prompts = <AgentPromptParams>[];
+  late final Connection host;
+  late final Connection desktop;
+  late final AgentController controller;
+
+  Future<void> start() async {
+    host = Connection(
+      input: toHost.controller.stream,
+      output: toDesktop,
+      capabilities: const {Capability.agent},
+      onHello: (_, _) => const HelloInfo.ready('host-1'),
+      onRequest: (method, params) {
+        switch (method) {
+          case Method.agentStart:
+            return AgentStartResult(
+              sessionId: 'agent-1',
+              eventChannel: host.openOutbound().id,
+              adapter: const AgentAdapter(name: 'scripted', version: 'test'),
+              capabilities: const [],
+            ).toJson();
+          case Method.agentAttach:
+            attached.complete();
+            return <String, Object?>{};
+          case Method.agentPrompt:
+            prompts.add(AgentPromptParams.fromJson(params));
+            return <String, Object?>{};
+          default:
+            return <String, Object?>{};
+        }
+      },
+    );
+    desktop = Connection(
+      input: toDesktop.controller.stream,
+      output: toHost,
+      capabilities: const {Capability.agent},
+      onNotification: (method, params) =>
+          notifications.add(HostNotification(method, params)),
+    );
+    final hello = await desktop.hello();
+    controller = AgentController(
+      removePane: (_) {},
+      savePaneState: (_, _) {},
+      focusPane: (_) {},
+    );
+    controller.attach(
+      SessionLink(_MemorySession(desktop, hello, notifications.stream)),
+    );
+    await controller.start(
+      'pane',
+      workspaceId: 'workspace',
+      runtimeName: 'Claude Code',
+    );
+    await attached.future;
+    host.notify(
+      Method.agentState,
+      AgentStateParams(
+        sessionId: 'agent-1',
+        state: AgentState.idle,
+        seq: 1,
+      ).toJson(),
+    );
+    // The reply follows all prior host control records on the same wire.
+    await desktop.request(Method.agentRecords, {'sessionIds': <String>[]});
+    expect(link.canSend, isTrue);
+  }
+
+  AgentLink get link => controller.linkOf('pane')!;
+
+  Future<void> close() async {
+    controller.dispose();
+    await desktop.close();
+    await host.close();
+    await notifications.close();
+    await toHost.controller.close();
+    await toDesktop.controller.close();
+  }
+
+  Future<void> proveRecovery() async {
+    link.prompt.text = 'smaller prompt';
+    await controller.send('pane', link.prompt.text);
+    expect(prompts.map((prompt) => prompt.text), ['smaller prompt']);
+    expect(link.prompt.text, isEmpty);
+    expect(link.error, isNull);
+    expect(desktop.isClosed, isFalse);
+  }
 }
 
 void main() {
@@ -84,6 +197,92 @@ void main() {
     expect(hostCalls, contains(Method.terminalClose));
     await desktop.close();
     await host.close();
+  });
+
+  group('agent prompt size admission over SessionLink and Connection', () {
+    for (final entry in {
+      'exact raw UTF-8 ceiling': 'é' * (maxAgentPromptBytes ~/ 2),
+      'escaped text within the control ceiling': '\u0001' * (170 * 1024),
+    }.entries) {
+      test('${entry.key} remains accepted', () async {
+        final rig = _PromptRig();
+        await rig.start();
+        addTearDown(rig.close);
+        rig.link.prompt.text = entry.value;
+
+        await rig.controller.send('pane', entry.value);
+
+        expect(rig.prompts.single.text, entry.value);
+        expect(rig.link.prompt.text, isEmpty);
+        expect(rig.link.error, isNull);
+        expect(rig.link.sending, isTrue);
+        expect(rig.desktop.isClosed, isFalse);
+      });
+    }
+
+    for (final entry in {
+      'raw UTF-8 over 256 KiB': 'é' * (maxAgentPromptBytes ~/ 2 + 1),
+      'raw text over the control ceiling': 'x' * (maxControlMessage + 1),
+    }.entries) {
+      test(
+        '${entry.key} is refused before sending and preserves the draft',
+        () async {
+          final rig = _PromptRig();
+          await rig.start();
+          addTearDown(rig.close);
+          final sendingStates = <bool>[];
+          rig.controller.addListener(() => sendingStates.add(rig.link.sending));
+          rig.link.prompt.text = entry.value;
+
+          await rig.controller.send('pane', entry.value);
+
+          expect(rig.prompts, isEmpty);
+          expect(sendingStates, everyElement(isFalse));
+          expect(rig.link.sending, isFalse);
+          expect(rig.link.canSend, isTrue);
+          expect(rig.link.state, AgentState.idle);
+          expect(rig.link.prompt.text, entry.value);
+          expect(rig.link.errorCode, ErrorCode.invalidParams);
+          expect(
+            rig.link.error,
+            allOf(contains('256 KiB'), contains('shorten')),
+          );
+          expect(
+            rig.link.transcript.entries.every(
+              (entry) => entry.kind == AgentEventKind.notice,
+            ),
+            isTrue,
+          );
+          await rig.proveRecovery();
+        },
+      );
+    }
+
+    test('JSON-escaped prompt over control ceiling is refused without latching '
+        'sending or creating a turn', () async {
+      final rig = _PromptRig();
+      await rig.start();
+      addTearDown(rig.close);
+      final text = '\u0001' * (200 * 1024);
+      rig.link.prompt.text = text;
+
+      await rig.controller.send('pane', text);
+
+      expect(rig.prompts, isEmpty);
+      expect(rig.link.sending, isFalse);
+      expect(rig.link.canSend, isTrue);
+      expect(rig.link.state, AgentState.idle);
+      expect(rig.link.prompt.text, text);
+      expect(rig.link.errorCode, ErrorCode.invalidParams);
+      expect(rig.link.error, allOf(contains('encoded'), contains('shorten')));
+      expect(
+        rig.link.transcript.entries.every(
+          (entry) => entry.kind == AgentEventKind.notice,
+        ),
+        isTrue,
+      );
+      await rig.proveRecovery();
+    });
   });
 
   group('cleanup state replay', () {
