@@ -58,9 +58,10 @@ It advances these M1 exit criteria:
 - **Stop.** Stop sends ACP `session/cancel` and reports the real outcome:
   - *Stopped*;
   - *Finished before Stop* when the turn ended on its own;
-  - *Stop not confirmed* past the deadline, in which case the turn stays shown as running.
+  - *Turn ended with an error after Stop* with the error message when the prompt answers with an error;
+  - *Stop not confirmed* past the deadline, in which case the status stays *Stopping* with the turn still running.
 
-  Stop never kills the process.
+  If the prompt answers after the deadline, at most one late result replaces *Stop not confirmed* with the actual outcome plus "(after the deadline)", and the status becomes *Idle*. Stop never kills the process.
 - **Close.** Closing a running agent asks "Are you sure you want to stop the running agent?" (direction wording). Cancel keeps it running. Confirm cancels the turn, answers pending permissions as cancelled and terminates the adapter's process tree. Closing an idle agent asks nothing. Either way the saved session record and the runtime's native history remain. A tab close names running agents and live terminals in one confirmation. Moving a pane never warns.
 - **Saved session records and immutable targets.**
   - The host stores one record per session (schema v5) holding:

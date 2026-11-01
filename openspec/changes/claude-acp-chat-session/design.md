@@ -356,7 +356,8 @@ stateDiagram-v2
     waitingApproval --> running: user answers
     running --> stopping: agent/stop
     waitingApproval --> stopping: agent/stop (requests answered cancelled)
-    stopping --> idle: prompt answered (stopResult stopped / finishedFirst)
+    stopping: Stopping (deadline reports notConfirmed; stays Stopping)
+    stopping --> idle: prompt answered (stopResult stopped / finishedFirst / endedWithError; one late result replaces notConfirmed)
     running --> idle: prompt answered
     idle --> closing: agent/close
     running --> closing: agent/close (after desktop confirm)

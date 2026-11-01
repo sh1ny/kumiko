@@ -37,7 +37,7 @@ At start the host SHALL look for `claude-agent-acp` on the user's PATH and the w
 - **THEN** the built-in profile is still detected, and a session started with it reaches *Idle*
 
 #### Scenario: Adapter not installed
-- **WHEN** no `claude-agent-acp` is on PATH
+- **WHEN** `claude-agent-acp` is absent from both PATH and the well-known install directories stated in the design
 - **THEN** no built-in runtime profile is listed, and the Claude Code launcher entry offers to add a profile, naming the npm package and Node ≥ 22
 
 #### Scenario: Built-in profile cannot be edited
@@ -67,7 +67,7 @@ Exactly one runtime profile SHALL be the default when any exists. The first dete
 - **THEN** that profile is the default
 
 #### Scenario: Default profile removed from PATH
-- **WHEN** the stored default is the built-in profile and `claude-agent-acp` is no longer on PATH at host start
+- **WHEN** the stored default is the built-in profile and `claude-agent-acp` is absent from both PATH and the well-known install directories stated in the design at host start
 - **THEN** the default is reported unavailable with the reason, and starting a Claude Code session asks the user to choose or add a profile
 
 ### Requirement: An unusable adapter executable is reported, never substituted

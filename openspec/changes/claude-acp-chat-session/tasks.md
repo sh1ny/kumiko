@@ -400,4 +400,3 @@ Test locations:
 ## Workflow follow-up
 
 - After the change is merged and archived, the roadmap's M1 exit criteria for Claude Code sessions are walked by `specwright-roadmap` **close**, including the Linux and macOS qualification items recorded `unproven`.
-- Review round 1 re-check suggestions 3 (proposal Stop list and state-diagram labels) and 4 (detection scenario wording "on PATH") are wording-only. They are left for a later planning edit, because editing the reviewed artifacts now would void the design review.
