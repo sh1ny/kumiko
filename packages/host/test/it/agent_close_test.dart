@@ -25,9 +25,11 @@ void main() {
     Json script = const {},
     bool attach = true,
     Map<String, String> env = const {},
+    Duration quitTimeout = defaultQuitTimeout,
   }) async {
     final d = await Desktop.start(
       profile,
+      quitTimeout: quitTimeout,
       capabilities: {...testCapabilities, Capability.agent},
       environment: {
         'KUMIKO_TEST_RUNTIME_PATH': '',
@@ -231,6 +233,143 @@ void main() {
     expect(d.connection.isClosed, isFalse);
     expect(agentRows(profile).single['id'], a.id);
   });
+
+  test(
+    'native exit publishes failed before credit unblocks expanded final events',
+    () async {
+      final text = '\u0001' * maxAgentTextChunkBytes;
+      final (d, a, _) = await open(
+        attach: false,
+        script: {
+          'prompt': [
+            {'update': textUpdate(text)},
+            {'exit': 7},
+          ],
+        },
+      );
+      final unit = LedgerView(profile).units().single;
+      final adapterPid = unit['pid'] as int;
+      final adapterStart = processStartTime(adapterPid)!;
+      final decoder = AgentEventDecoder();
+      final received = <AgentEvent>[];
+      final input = d.connection
+          .attachInbound(a.started.eventChannel, grantInitial: false)
+          .listen((bytes) => received.addAll(decoder.add(bytes)));
+      addTearDown(input.cancel);
+      await a.call(Method.agentAttach);
+      await a.prompt('exit under backpressure');
+      Json stats = {};
+      await eventually(() async {
+        final snapshot =
+            await d.connection.request('test/agent.stats', {}) as Json;
+        stats = (snapshot['sessions'] as Json)[a.id] as Json;
+        return stats['paused'] == true &&
+            !isProcessAlive(adapterPid, adapterStart);
+      }, reason: 'adapter did not exit while normalized admission was blocked');
+      expect(stats['queuedBytes'] as int, greaterThanOrEqualTo(1024 * 1024));
+      expect(
+        stats['queuedBytes'] as int,
+        lessThan(1024 * 1024 + maxAgentEventBytes + 1),
+      );
+      expect(
+        stats['channelQueuedBytes'] as int,
+        lessThanOrEqualTo(channelWindow),
+      );
+      expect(stats['largeLineOwned'], isFalse);
+      expect(received, isEmpty);
+      await a.wait(
+        Method.agentState,
+        where: (p) => p['state'] == 'failed',
+        within: const Duration(seconds: 3),
+      );
+      expect(
+        a.of(Method.agentExited),
+        isEmpty,
+        reason: 'a final count cannot be sealed during partial admission',
+      );
+      d.connection.grantInitial(a.started.eventChannel);
+      final exited = await a.wait(
+        Method.agentExited,
+        where: (p) => p['reason'] == 'failed',
+      );
+      final expectedCount =
+          encodeAgentEvent(
+            AgentEvent.text(AgentEventKind.user, 'exit under backpressure'),
+          ).length +
+          encodeAgentEvent(AgentEvent.text(AgentEventKind.agentText, text))
+              .length;
+      expect(exited['status'], 7);
+      expect(exited['eventCount'], expectedCount);
+      await eventually(() => received.length == expectedCount);
+      expect(
+        received
+            .where((event) => event.kind == AgentEventKind.agentText)
+            .map((event) => event.text)
+            .join(),
+        text,
+      );
+      expect(received.every((event) => !event.truncated), isTrue);
+      expect(LedgerView(profile).units(), isEmpty);
+      await a.call(Method.agentRelease);
+      decoder.close();
+    },
+  );
+
+  for (final fault in [TestFault.killFails, TestFault.terminateHangs]) {
+    test(
+      'Windows exited leader with inherited pipes retains unresolved ownership '
+      'and shuts down within bound (${fault.name})',
+      () async {
+        final (d, a, report) = await open(
+          script: {
+            'prompt': [
+              {'spawnPipeHolder': true},
+              {'exit': 8},
+            ],
+          },
+          env: {
+            'KUMIKO_TEST_SETTLE_DEADLINE_MS': '250',
+            'KUMIKO_TEST_SHUTDOWN_DEADLINE_MS': '250',
+            'KUMIKO_TEST_READ_DEADLINE_MS': '50',
+          },
+          quitTimeout: const Duration(seconds: 3),
+        );
+        await d.setFault(fault);
+        final unit = LedgerView(profile).units().single;
+        final adapterPid = unit['pid'] as int;
+        final adapterStart = processStartTime(adapterPid)!;
+        await a.prompt();
+        await waitFixture(report, (p) => p['spawnedPipeHolder'] == true);
+        final tree = await waitReports(work, 2);
+        final holder = tree.singleWhere((process) => process.role == 'sleeper');
+        await eventually(() => !isProcessAlive(adapterPid, adapterStart));
+        expect(holder.alive, isTrue);
+        await a.call(Method.agentClose);
+        await a.wait(Method.agentCloseFailed);
+        expect(a.of(Method.agentExited), isEmpty);
+        final unresolved = LedgerView(profile).units().single;
+        expect(unresolved['state'], 'unresolved');
+        expect(unresolved['containment_id'], unit['containment_id']);
+        expect(holder.alive, isTrue);
+        final clock = Stopwatch()..start();
+        final quit = await d.session.quit();
+        expect(
+          quit.timedOut,
+          isFalse,
+          reason: 'host joined a native ReadFile held by a live descendant',
+        );
+        expect(quit.exitCode, 0);
+        expect(clock.elapsed, lessThan(const Duration(seconds: 3)));
+        final retained = LedgerView(profile).units().single;
+        expect(retained['containment_id'], unit['containment_id']);
+        expect(retained['state'], 'unresolved');
+        expect(retained['unresolved_reason'], contains('shutdown-deadline'));
+        expect(agentRows(profile).single['id'], a.id);
+        await expectAllGone(tree);
+      },
+      skip: !Platform.isWindows,
+    );
+  }
 
   test(
     'exit before attach republishes the final count and drains accepted output',

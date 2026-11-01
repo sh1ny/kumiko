@@ -46,6 +46,13 @@ Future<int> runAcpAgentFixture(List<String> args) async {
       child.stderr.drain<void>().ignore();
       child.exitCode.ignore();
     },
+    spawnPipeHolder: () async {
+      final child = await Process.start(Platform.resolvedExecutable, [
+        '--test-fixture',
+        'sleeper',
+      ], mode: ProcessStartMode.inheritStdio);
+      child.exitCode.ignore();
+    },
   );
 }
 
@@ -57,6 +64,7 @@ Future<int> runAcpAgentFixture(List<String> args) async {
 /// beforeInitializeExit:{status,stderr}, exitStatus ends after a prompt.
 /// Actions: update:{sessionUpdate,...}, permission:{toolCall,options},
 /// stderr:string, report:true, oversizedBytes:int, exit:int, spawnTree:true,
+/// spawnPipeHolder:true (a sleeper inheriting the actual ACP output handles),
 /// stallStdin:true, flood:{count,update,indexPrefix?}, waitCancel:true,
 /// stopReason:string, gatedUpdate:{update,prefixBytes,releaseFile}.
 /// An indexed flood prepends `<indexPrefix><index>:` to each text update.
@@ -78,6 +86,7 @@ Future<int> runAcpAgentScript({
   Map<String, String> environment = const {},
   String cwd = '',
   Future<void> Function()? spawnTree,
+  Future<void> Function()? spawnPipeHolder,
 }) async {
   final reader = StreamIterator<String>(
     input.transform(utf8.decoder).transform(const LineSplitter()),
@@ -211,6 +220,13 @@ Future<int> runAcpAgentScript({
         }
         await spawnTree();
         report({'spawnedTree': true});
+      }
+      if (action['spawnPipeHolder'] == true) {
+        if (spawnPipeHolder == null) {
+          throw StateError('spawnPipeHolder requires a process fixture');
+        }
+        await spawnPipeHolder();
+        report({'spawnedPipeHolder': true});
       }
       if (action['permission'] case final Json permission) {
         final id = 'fixture-permission-${nextId++}';

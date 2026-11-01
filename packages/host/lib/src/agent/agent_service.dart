@@ -94,7 +94,7 @@ class _StderrRing {
 
 /// The client and stderr subscription own the caller-owned pipes even after
 /// UnitManager removes its live handle. Failed cleanup retains this owner until
-/// the leader really exits (for example after the existing cleanup retry).
+/// containment is confirmed settled, not merely until its leader exits.
 class _AgentIO {
   _AgentIO(this.launch) : client = AcpClient.pipes(launch.pipes!) {
     errors = launch.pipes!.stderr.listen(
@@ -665,8 +665,6 @@ class AgentService {
             // Containment is already settled. Preserve the actual start
             // failure rather than replacing it with an endpoint-close error.
           }
-        } else {
-          _disposeAfterExit(io);
         }
       }
       reservation.release();
@@ -882,8 +880,6 @@ class AgentService {
         await a.io.client.close();
         if (outcome.cleaned) {
           await _disposeIo(a.io);
-        } else {
-          _disposeAfterExit(a.io);
         }
         if (!_current(a)) return;
         if (outcome.cleaned) {
@@ -958,8 +954,13 @@ class AgentService {
     final status = await a.io.launch.unit.exitCode;
     a.io.status = status;
     if (!_current(a) || a.ending) return;
-    // EOF is owned by ACP: let final buffered updates normalize and enqueue
-    // before failing the turn or disposing caller-owned pipes.
+    // Native exit is authoritative even when ACP is still admitting an
+    // expanded final update under backpressure. Fail control state now, but
+    // keep the session's event FIFO and ACP reader alive for lossless drain.
+    // The AcpClosedException callback does not start active termination.
+    a.session.fail(const AcpClosedException());
+    // EOF owns the separate final-count lifecycle: buffered updates must
+    // finish normalization/admission before sealing or disposing their pipes.
     await a.io.client.done;
     if (!_current(a) || a.ending) return;
     await _finishFailure(a, a.io.client.failure ?? const AcpClosedException());
@@ -987,8 +988,6 @@ class AgentService {
       } on Object {
         outcome = const UnitOutcome.unresolved('agent-io-close-failed');
       }
-    } else {
-      _disposeAfterExit(a.io);
     }
     if (!_current(a)) return;
     if (!outcome.cleaned) {
@@ -1056,11 +1055,6 @@ class AgentService {
     await io.errors.cancel();
     _io.remove(io);
   }();
-  void _disposeAfterExit(_AgentIO io) {
-    io.launch.unit.exitCode.then<void>((_) async {
-      await _disposeIo(io);
-    }).ignore();
-  }
 
   void _forget(_Agent a) {
     a.callbacks = false;
@@ -1095,7 +1089,8 @@ class AgentService {
   Future<void> finishShutdown() async {
     await Future.wait([
       for (final io in _io.toList())
-        if (io.status != null || !units.live.containsKey(io.launch.id))
+        if (!units.live.containsKey(io.launch.id) &&
+            units.ledger.unit(io.launch.id) == null)
           _disposeIo(io),
     ]);
   }

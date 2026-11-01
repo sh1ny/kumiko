@@ -74,6 +74,7 @@ class AgentLink {
   bool streamFailed = false;
   String? error;
   String? errorCode;
+  String? _resumeReason;
   String? lastPrompt;
   AgentStopResultParams? stopResult;
   StreamSubscription<AgentEvent>? _events;
@@ -95,15 +96,20 @@ class AgentLink {
       (state == AgentState.running || state == AgentState.waitingApproval);
   bool get canContinue =>
       connected && known && phase == AgentLinkPhase.ended && !_draining;
+  // Native restoration retains resume-unavailable as the outer diagnostic.
+  bool get requiresAuthentication =>
+      errorCode == ErrorCode.authRequired ||
+      (errorCode == ErrorCode.resumeUnavailable &&
+          _resumeReason == ErrorCode.authRequired);
   bool get canRetry =>
       connected &&
       ((phase == AgentLinkPhase.ended &&
               state == AgentState.failed &&
               !_draining &&
-              (!known || errorCode == ErrorCode.authRequired)) ||
+              (!known || requiresAuthentication)) ||
           (phase == AgentLinkPhase.live &&
               state == AgentState.idle &&
-              errorCode == ErrorCode.authRequired &&
+              requiresAuthentication &&
               lastPrompt != null));
   bool get canNewSession =>
       connected && phase == AgentLinkPhase.ended && !_draining;
@@ -461,6 +467,7 @@ class AgentController extends ChangeNotifier implements ViewCloser {
     link.state = AgentState.starting;
     link.error = null;
     link.errorCode = null;
+    link._resumeReason = null;
     link.streamFailed = false;
     link.seq = -1;
     link.transcript.clear();
@@ -595,6 +602,7 @@ class AgentController extends ChangeNotifier implements ViewCloser {
     link.sending = true;
     link.error = null;
     link.errorCode = null;
+    link._resumeReason = null;
     link.lastPrompt = text;
     link.stopResult = null;
     // The host emits accepted prompts on the ordered event channel, including
@@ -759,6 +767,7 @@ class AgentController extends ChangeNotifier implements ViewCloser {
           : AgentState.ended;
       if (event.reason == AgentExitReason.failed) {
         link.errorCode = event.error;
+        link._resumeReason = event.resumeReason;
         link.error =
             '${event.error ?? 'Agent failed'}${event.status == null ? '' : ' (status ${event.status})'}${event.resumeReason == null ? '' : ': ${event.resumeReason}'}${event.message == null ? '' : ': ${event.message}'}';
       }

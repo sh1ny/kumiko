@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 
 import 'package:desktop/src/agent/agent_controller.dart';
+import 'package:desktop/src/agent/agent_pane_view.dart';
 import 'package:desktop/src/workbench_controller.dart';
 import 'package:domain/domain.dart';
 import 'package:flutter/material.dart';
@@ -880,6 +881,72 @@ void main() {
       },
     );
 
+    for (final mode in AgentContinueMode.values) {
+      uiTest(
+        '${mode.name} authentication failure Retry continues the same saved conversation',
+        (tester) async {
+          final host = agentHost();
+          final rig = await controllerRig(tester, host);
+          await start(rig, tester);
+          final pane = chat(rig).id;
+          final id = session(rig);
+          host.agentExit(id, reason: AgentExitReason.ended);
+          await flush(tester);
+          host.agentContinueAnswers.add(
+            AgentContinueResult(
+              eventChannel: 121,
+              adapter: const AgentAdapter(
+                name: 'scripted-acp',
+                version: 'test-only',
+              ),
+              capabilities: [mode.name],
+              mode: mode,
+            ),
+          );
+          await agents(rig).continueSession(pane);
+          await flush(tester);
+          host.agentExitSource.add(
+            AgentExitedParams(
+              sessionId: id,
+              reason: AgentExitReason.failed,
+              eventCount: 0,
+              status: 1,
+              error: ErrorCode.resumeUnavailable,
+              resumeReason: ErrorCode.authRequired,
+              message: 'session/${mode.name} native sign-in detail',
+            ),
+          );
+          await flush(tester);
+          final link = agents(rig).linkOf(pane)!;
+          expect(link.state, AgentState.failed);
+          expect(link.known, isTrue);
+          expect(link.sessionId, id);
+          expect(link.errorCode, ErrorCode.resumeUnavailable);
+          expect(link.error, contains(ErrorCode.resumeUnavailable));
+          expect(link.error, contains(ErrorCode.authRequired));
+          expect(
+            link.error,
+            contains('session/${mode.name} native sign-in detail'),
+          );
+          expect(link.canRetry, isTrue);
+          expect(host.agentReleases, [id, id]);
+
+          await agents(rig).retry(pane);
+          await flush(tester);
+          expect(link.phase, AgentLinkPhase.live);
+          expect(link.state, AgentState.idle);
+          expect(link.sessionId, id);
+          expect(link.errorCode, isNull);
+          expect(link.error, isNull);
+          expect(
+            host.calls.where((call) => call == 'agent/continue $id'),
+            hasLength(2),
+          );
+          expect(host.agentStarts, hasLength(1));
+        },
+      );
+    }
+
     uiTest(
       'resume unavailable shows reason; New session uses original workspace and never old id',
       (tester) async {
@@ -1335,6 +1402,65 @@ void main() {
         host.agentState(id, AgentState.running, 2);
         await tester.pump();
         expect(find.textContaining('Answered: Allow'), findsOneWidget);
+      },
+    );
+
+    uiTest(
+      'restoration authentication guidance Retry invokes Continue for the saved session',
+      (tester) async {
+        final host = agentHost();
+        final rig = await controllerRig(tester, host);
+        await start(rig, tester);
+        final pane = chat(rig).id;
+        final id = session(rig);
+        host.agentExit(id, reason: AgentExitReason.ended);
+        await flush(tester);
+        await agents(rig).continueSession(pane);
+        await flush(tester);
+        await tester.pumpWidget(
+          MaterialApp(
+            home: Scaffold(
+              body: AgentPaneView(
+                controller: agents(rig),
+                paneId: pane,
+                focused: false,
+              ),
+            ),
+          ),
+        );
+        host.agentExitSource.add(
+          AgentExitedParams(
+            sessionId: id,
+            reason: AgentExitReason.failed,
+            eventCount: 0,
+            error: ErrorCode.resumeUnavailable,
+            resumeReason: ErrorCode.authRequired,
+            message: 'session/load native sign-in detail',
+          ),
+        );
+        await flush(tester);
+
+        expect(find.textContaining(agentAuthGuidance), findsOneWidget);
+        expect(
+          find.textContaining('resume-unavailable: auth-required'),
+          findsOneWidget,
+        );
+        expect(
+          find.textContaining('session/load native sign-in detail'),
+          findsOneWidget,
+        );
+        expect(key('agent-retry-$pane'), findsOneWidget);
+        await tester.tap(key('agent-retry-$pane'));
+        await flush(tester);
+        expect(
+          host.calls.where((call) => call == 'agent/continue $id'),
+          hasLength(2),
+        );
+        expect(host.agentStarts, hasLength(1));
+        expect(agents(rig).linkOf(pane)!.sessionId, id);
+        expect(agents(rig).linkOf(pane)!.state, AgentState.idle);
+        expect(find.textContaining(agentAuthGuidance), findsNothing);
+        expect(key('agent-retry-$pane'), findsNothing);
       },
     );
 
