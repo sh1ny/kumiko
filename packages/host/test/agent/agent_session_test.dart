@@ -524,6 +524,55 @@ void main() {
     expect(ends.single.error, 'adapter-error');
     expect(s.state, AgentState.idle);
   });
+  test('observed exit retires choices without writes and drains late requests through EOF', () async {
+    s.acceptPrompt('hello');
+    p.permission('pending-at-exit');
+    await pumpAcp();
+    final request = requests.single.requestId;
+    final writesBeforeExit = p.writes.length;
+    s.observeExit();
+    s.observeExit();
+    expect(s.state, AgentState.failed);
+    expect(s.failure, isA<AcpClosedException>());
+    expect(s.pendingPermissionCount, 0);
+    expect(resolved.single.requestId, request);
+    expect(resolved.single.outcome, AgentPermissionOutcome.cancelled);
+    expect(
+      () => s.permissionReply(request, 'opaque/allow'),
+      throwsA(isA<RpcException>().having(
+        (error) => error.reason, 'reason', ErrorCode.unknownRequest,
+      )),
+    );
+    expect(p.writes, hasLength(writesBeforeExit));
+    expect(p.client.isClosed, isFalse);
+    p.update({
+      'sessionUpdate': 'agent_message_chunk',
+      'content': {'type': 'text', 'text': 'before late permission'},
+    });
+    p.permission('late-during-drain');
+    p.update({
+      'sessionUpdate': 'agent_message_chunk',
+      'content': {'type': 'text', 'text': 'after late permission'},
+    });
+    await pumpAcp();
+    expect(p.client.isClosed, isFalse);
+    expect(p.writes, hasLength(writesBeforeExit));
+    expect(requests, hasLength(1));
+    expect(resolved, hasLength(1));
+    expect(
+      events.where((event) => event.kind == AgentEventKind.agentText)
+          .map((event) => event.text),
+      ['before late permission', 'after late permission'],
+    );
+    await p.input.close();
+    await p.client.done;
+    await s.eventsEnqueued;
+    expect(s.state, AgentState.failed);
+    expect(p.writes, hasLength(writesBeforeExit));
+    expect(resolved, hasLength(1));
+    expect(ends, isEmpty);
+  });
+
   test(
     'stdout EOF fails an idle session without requiring another prompt',
     () async {

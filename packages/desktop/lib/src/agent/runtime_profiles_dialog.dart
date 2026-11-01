@@ -32,6 +32,46 @@ Future<String?> showRuntimePicker(BuildContext context, AgentLaunch launch) => s
   ),
 );
 
+Future<void> _configureMissingRuntime(
+  BuildContext context, WorkbenchController controller, String? message,
+) async {
+  final add = await showDialog<bool>(context: context, builder: (context) => AlertDialog(
+    key: const Key('no-runtime-profile-prompt'), title: const Text('No runtime profile'),
+    content: Text('$runtimeInstallMessage${message == null ? '' : '\n$message'}'),
+    actions: [
+      TextButton(onPressed: () => Navigator.of(context).pop(false), child: const Text('Cancel')),
+      FilledButton(onPressed: () => Navigator.of(context).pop(true), child: const Text('Add profile')),
+    ],
+  ));
+  if (add == true && context.mounted) {
+    await showRuntimeProfilesDialog(context, controller, startWithNew: true);
+  }
+}
+
+/// Recovery stays in the original pane; configuration never launches another
+/// chat or replaces the saved record before an explicit profile is selected.
+Future<String?> chooseRecoveryRuntime(
+  BuildContext context, WorkbenchController controller, RuntimeListResult list,
+) async {
+  if (!context.mounted) return null;
+  if (list.profiles.isEmpty) {
+    await _configureMissingRuntime(context, controller, list.defaultReason);
+    return null;
+  }
+  final id = await showRuntimePicker(context, AgentLaunch(
+    AgentLaunchKind.chooseProfile,
+    profiles: list.profiles,
+    message: list.defaultReason ??
+        'The default runtime profile is unavailable. Choose or add a profile.',
+  ));
+  if (!context.mounted) return null;
+  if (id == _addProfile) {
+    await showRuntimeProfilesDialog(context, controller, startWithNew: true);
+    return null;
+  }
+  return id;
+}
+
 Future<void> launchAgentFlow(BuildContext context, WorkbenchController controller, {
   bool choose = false, String? profileId, String? workspaceId,
 }) async {
@@ -49,15 +89,7 @@ Future<void> launchAgentFlow(BuildContext context, WorkbenchController controlle
         await launchAgentFlow(context, controller, profileId: id, workspaceId: result.workspaceId);
       }
     case AgentLaunchKind.noProfile:
-      final add = await showDialog<bool>(context: context, builder: (context) => AlertDialog(
-        key: const Key('no-runtime-profile-prompt'), title: const Text('No runtime profile'),
-        content: Text('$runtimeInstallMessage${result.message == null ? '' : '\n${result.message}'}'),
-        actions: [
-          TextButton(onPressed: () => Navigator.of(context).pop(false), child: const Text('Cancel')),
-          FilledButton(onPressed: () => Navigator.of(context).pop(true), child: const Text('Add profile')),
-        ],
-      ));
-      if (add == true && context.mounted) await showRuntimeProfilesDialog(context, controller, startWithNew: true);
+      await _configureMissingRuntime(context, controller, result.message);
     case AgentLaunchKind.noWorkspace:
       final open = await showDialog<bool>(context: context, builder: (context) => AlertDialog(
         title: const Text('Claude Code needs a workspace'), content: const Text('Open or select a folder first. No agent has been started.'),

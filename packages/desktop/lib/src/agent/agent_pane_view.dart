@@ -44,10 +44,12 @@ class AgentPaneView extends StatefulWidget {
     required this.controller,
     required this.paneId,
     required this.focused,
+    this.chooseRuntimeProfile,
   });
   final AgentController controller;
   final String paneId;
   final bool focused;
+  final Future<String?> Function(RuntimeListResult profiles)? chooseRuntimeProfile;
   @override
   State<AgentPaneView> createState() => _AgentPaneViewState();
 }
@@ -190,7 +192,9 @@ class _AgentPaneViewState extends State<AgentPaneView> {
                   if (link.canNewSession)
                     OutlinedButton(
                       key: Key('agent-new-$id'),
-                      onPressed: () => widget.controller.newSession(id),
+                      onPressed: () => widget.controller.newSession(
+                        id, chooseProfile: widget.chooseRuntimeProfile,
+                      ),
                       child: const Text('New session'),
                     ),
                 ],
@@ -203,7 +207,9 @@ class _AgentPaneViewState extends State<AgentPaneView> {
                 padding: const EdgeInsets.symmetric(horizontal: 8),
                 child: FilledButton(
                   key: Key('agent-retry-$id'),
-                  onPressed: () => widget.controller.retry(id),
+                  onPressed: () => widget.controller.retry(
+                    id, chooseProfile: widget.chooseRuntimeProfile,
+                  ),
                   child: const Text('Retry'),
                 ),
               ),

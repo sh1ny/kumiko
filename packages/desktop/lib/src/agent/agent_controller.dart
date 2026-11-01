@@ -166,6 +166,7 @@ class AgentController extends ChangeNotifier implements ViewCloser {
   final Map<String, AgentLink> _links = {};
   final Map<String, AgentLink> _bySession = {};
   final _pendingStarts = <AgentLink>{};
+  final _freshSelections = <AgentLink>{};
   final _earlyCloseFailures = <String, AgentCloseFailedParams>{};
   final List<StreamSubscription<Object?>> _subscriptions = [];
   final Set<StreamSubscription<AgentExitedParams>> _orphanSubscriptions = {};
@@ -426,6 +427,7 @@ class AgentController extends ChangeNotifier implements ViewCloser {
           ..state = AgentState.starting
           ..connected = true
           ..runtimeProfileId = runtimeProfileId;
+    if (previous != null) link.prompt.value = previous.prompt.value;
     _links[paneId] = link;
     _pendingStarts.add(link);
     if (previous != null) _disposeLink(previous);
@@ -472,7 +474,12 @@ class AgentController extends ChangeNotifier implements ViewCloser {
   Future<void> continueSession(String paneId) async {
     final link = _links[paneId];
     final host = _host;
-    if (link == null || host == null || !link.canContinue) return;
+    if (link == null ||
+        host == null ||
+        !link.canContinue ||
+        _freshSelections.contains(link)) {
+      return;
+    }
     final id = link.sessionId!;
     final existing = _bySession[id];
     if (existing != null && !identical(existing, link)) {
@@ -522,25 +529,80 @@ class AgentController extends ChangeNotifier implements ViewCloser {
     _changed();
   }
 
-  Future<void> newSession(String paneId) async {
+  Future<void> newSession(
+    String paneId, {
+    Future<String?> Function(RuntimeListResult profiles)? chooseProfile,
+  }) async {
     final link = _links[paneId];
-    if (link == null || !link.canNewSession) return;
-    await start(
-      paneId,
-      workspaceId: link.workspaceId,
-      runtimeName: link.runtimeName,
-      runtimeProfileId: link.runtimeProfileId,
-    );
+    final host = _host;
+    if (link == null ||
+        host == null ||
+        !link.canNewSession ||
+        !_freshSelections.add(link)) {
+      return;
+    }
+    final generation = _generation;
+    bool current() =>
+        _current(host, generation) && _owns(link) && link.canNewSession;
+    try {
+      var list = await host.runtimeList();
+      if (!current()) return;
+      // A surviving explicit choice remains authoritative. Only a deleted
+      // original choice rejoins the normal default/profile-picker flow.
+      var wanted = link.runtimeProfileId;
+      if (!list.profiles.any((profile) => profile.id == wanted)) {
+        wanted = list.defaultAvailable ? list.defaultId : null;
+      }
+      var profile = list.profiles.where((p) => p.id == wanted).firstOrNull;
+      if (profile == null) {
+        if (chooseProfile == null) {
+          throw RpcException(
+            ErrorCode.noRuntimeProfile,
+            list.defaultReason ??
+                'The default runtime profile is unavailable. Choose or add a profile.',
+          );
+        }
+        final selected = await chooseProfile(list);
+        if (!current() || selected == null) return;
+        // The picker can outlive profile edits. Never replace an explicit
+        // selection that disappeared while the dialog was open.
+        list = await host.runtimeList();
+        if (!current()) return;
+        profile = list.profiles.where((p) => p.id == selected).firstOrNull;
+        if (profile == null) {
+          throw RpcException(
+            ErrorCode.noRuntimeProfile,
+            'The selected runtime profile is unavailable. Choose or add a profile.',
+          );
+        }
+      }
+      await start(
+        paneId,
+        workspaceId: link.workspaceId,
+        runtimeName: profile.name,
+        runtimeProfileId: profile.id,
+      );
+    } on RpcException catch (e) {
+      if (current()) _failed(link, e);
+    } on ConnectionClosedException {
+      if (_current(host, generation) && _owns(link)) detach();
+    } finally {
+      _freshSelections.remove(link);
+    }
+    _changed();
   }
 
-  Future<void> retry(String paneId) async {
+  Future<void> retry(
+    String paneId, {
+    Future<String?> Function(RuntimeListResult profiles)? chooseProfile,
+  }) async {
     final link = _links[paneId];
     if (link == null || !link.canRetry) return;
     if (link.phase == AgentLinkPhase.ended) {
       if (link.known) {
         await continueSession(paneId);
       } else {
-        await newSession(paneId);
+        await newSession(paneId, chooseProfile: chooseProfile);
       }
     } else {
       // Retry is an explicit user action; it never discards an unsent draft.

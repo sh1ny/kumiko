@@ -276,14 +276,22 @@ void main() {
   });
 
   test(
-    'native exit publishes failed before credit unblocks expanded final events',
+    'native exit retires permissions and drains trailing updates after credit resumes',
     () async {
       final text = '\u0001' * maxAgentTextChunkBytes;
+      const trailing = 'accepted after the expanded final update';
       final (d, a, _) = await open(
         attach: false,
         script: {
           'prompt': [
+            {...permissionAction, 'waitPermission': false},
             {'update': textUpdate(text)},
+            {
+              ...permissionAction,
+              'rpcId': 'late-draining-permission',
+              'waitPermission': false,
+            },
+            {'update': textUpdate(trailing)},
             {'exit': 7},
           ],
         },
@@ -292,6 +300,7 @@ void main() {
       final adapterPid = unit['pid'] as int;
       final adapterStart = processStartTime(adapterPid)!;
       final decoder = AgentEventDecoder();
+      final record = agentRows(profile).single;
       final received = <AgentEvent>[];
       final input = d.connection
           .attachInbound(a.started.eventChannel, grantInitial: false)
@@ -299,6 +308,7 @@ void main() {
       addTearDown(input.cancel);
       await a.call(Method.agentAttach);
       await a.prompt('exit under backpressure');
+      final permission = await a.wait(Method.agentPermissionRequested);
       Json stats = {};
       await eventually(() async {
         final snapshot =
@@ -323,6 +333,17 @@ void main() {
         where: (p) => p['state'] == 'failed',
         within: const Duration(seconds: 3),
       );
+      final resolved = await a.wait(Method.agentPermissionResolved);
+      expect(resolved['requestId'], permission['requestId']);
+      expect(resolved['outcome'], 'cancelled');
+      await expectLater(
+        a.call(Method.agentPermissionReply, {
+          'sessionId': a.id,
+          'requestId': permission['requestId'],
+          'optionId': 'yes',
+        }),
+        rpcCode(ErrorCode.unknownRequest),
+      );
       expect(
         a.of(Method.agentExited),
         isEmpty,
@@ -338,6 +359,8 @@ void main() {
             AgentEvent.text(AgentEventKind.user, 'exit under backpressure'),
           ).length +
           encodeAgentEvent(AgentEvent.text(AgentEventKind.agentText, text))
+              .length +
+          encodeAgentEvent(AgentEvent.text(AgentEventKind.agentText, trailing))
               .length;
       expect(exited['status'], 7);
       expect(exited['eventCount'], expectedCount);
@@ -347,10 +370,15 @@ void main() {
             .where((event) => event.kind == AgentEventKind.agentText)
             .map((event) => event.text)
             .join(),
-        text,
+        '$text$trailing',
       );
       expect(received.every((event) => !event.truncated), isTrue);
+      expect(a.of(Method.agentPermissionRequested), hasLength(1));
+      expect(a.of(Method.agentPermissionResolved), [resolved]);
+      expect(a.of(Method.agentExited), hasLength(1));
+      expect(isProcessAlive(adapterPid, adapterStart), isFalse);
       expect(LedgerView(profile).units(), isEmpty);
+      expect(agentRows(profile).single, record);
       await a.call(Method.agentRelease);
       decoder.close();
     },

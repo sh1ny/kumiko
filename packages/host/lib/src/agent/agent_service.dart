@@ -1085,10 +1085,9 @@ class AgentService {
     a.io.status = status;
     if (!_current(a) || a.ending) return;
     // Native exit is authoritative even when ACP is still admitting an
-    // expanded final update under backpressure. Fail control state now, but
-    // keep the session's event FIFO and ACP reader alive for lossless drain.
-    // Until EOF, this synthetic failure must not interrupt accepted output.
-    a.session.fail(const AcpClosedException());
+    // expanded final update under backpressure. Retire choices without native
+    // replies: stdin has closed, but the ACP reader must drain through EOF.
+    a.session.observeExit();
     // EOF owns the separate final-count lifecycle: buffered updates must
     // finish normalization/admission before sealing or disposing their pipes.
     await a.io.client.done;

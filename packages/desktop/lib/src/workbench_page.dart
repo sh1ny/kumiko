@@ -1301,6 +1301,8 @@ class _PaneBody extends StatelessWidget {
         controller: controller.agents,
         paneId: pane.id,
         focused: controller.layout!.focusedPane == pane.id,
+        chooseRuntimeProfile: (profiles) =>
+            chooseRecoveryRuntime(context, controller, profiles),
       );
     }
     if (pane.kind == terminalKind) {

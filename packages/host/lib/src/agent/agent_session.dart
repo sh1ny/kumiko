@@ -74,6 +74,7 @@ class AgentSession {
   bool _stopped = false;
   bool _notConfirmed = false;
   bool _disposed = false;
+  bool _nativeExited = false;
   AgentDeadline? _deadline;
   Future<void> _events = Future.value();
 
@@ -352,6 +353,9 @@ class AgentSession {
   }
 
   void _answerCancelled(Object rpcId) {
+    // Leader exit closes native stdin before buffered stdout reaches EOF.
+    // Retire desktop choices without writing into that lossless drain.
+    if (_nativeExited) return;
     Future<void> write;
     try {
       write = client.reply(rpcId, {
@@ -430,6 +434,13 @@ class AgentSession {
     _hasTurn = false;
     _cancelPermissions();
     _set(AgentState.ended);
+  }
+
+  /// Publishes failure and retires choices without closing the ACP reader.
+  /// Buffered updates and late permission requests still drain through EOF.
+  void observeExit() {
+    _nativeExited = true;
+    fail(const AcpClosedException());
   }
 
   void fail(Object error) {

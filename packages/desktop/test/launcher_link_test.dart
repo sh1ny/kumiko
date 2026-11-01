@@ -70,6 +70,19 @@ class _PromptRig {
       onRequest: (method, params) {
         calls.add(method);
         switch (method) {
+          case Method.runtimeList:
+            return RuntimeListResult(
+              profiles: [
+                RuntimeProfile(
+                  id: 'scripted',
+                  name: 'Scripted ACP',
+                  runtimeKind: 'claude-code',
+                  executable: 'scripted-acp',
+                ),
+              ],
+              defaultAvailable: true,
+              defaultId: 'scripted',
+            ).toJson();
           case Method.agentStart:
             final id = 'agent-${++starts}';
             final channel = host.openOutbound().id;
