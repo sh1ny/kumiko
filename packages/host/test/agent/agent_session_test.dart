@@ -190,6 +190,21 @@ void main() {
     expect(replies.map((r) => ((r['result'] as Json)['outcome'] as Json)['optionId']), everyElement(option));
   });
 
+  test('a native write failure after its prompt result still fails the transport', () async {
+    p.blockedWrite = Completer<void>();
+    s.acceptPrompt('result won the native write acknowledgement race');
+    await finish('end_turn');
+    expect(s.state, AgentState.idle);
+    final failure = StateError('native stdin worker failed after response');
+    p.blockedWrite!.completeError(failure);
+    p.blockedWrite = null;
+    await pumpAcp();
+    expect(p.client.isClosed, isTrue);
+    expect(s.state, AgentState.failed);
+    expect(s.failure, same(failure));
+    expect(ends, hasLength(1), reason: 'transport failure is not a second turn result');
+  });
+
   test('an admitted permission reply still fails the session if native writing fails', () async {
     s.acceptPrompt('native write failure');
     await pumpAcp();

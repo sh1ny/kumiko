@@ -213,12 +213,8 @@ class AcpClient {
     }, prompt: method == 'session/prompt', newSession: method == 'session/new', onResult: onResult);
     _pending[id] = pending;
     if (!_consuming) pending.resume();
-    write.then<void>(
-      (_) {},
-      onError: (Object error, StackTrace stack) {
-        if (_pending.remove(id) == pending) pending.completeError(error, stack);
-      },
-    );
+    // Admitted I/O failure closes ACP even if its response already arrived.
+    write.ignore();
     return pending.completer.future;
   }
 
@@ -359,6 +355,7 @@ class AcpClient {
       onError: (Object error, StackTrace stack) {
         _writingBytes -= bytes.length;
         _onClose.remove(interrupt);
+        _fail(error);
         if (!result.isCompleted) result.completeError(error, stack);
       },
     );

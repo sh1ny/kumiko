@@ -1,6 +1,8 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:ffi';
 import 'dart:io';
+import 'dart:isolate';
 import 'dart:typed_data';
 
 import 'package:host_protocol/host_protocol.dart';
@@ -8,6 +10,8 @@ import 'package:host_protocol/host_protocol.dart';
 /// Actual stdio ACP fixture. The JSON environment script is test data, never
 /// provider qualification. Only explicitly named environment values are
 /// reported; neither inherited credentials nor full environment are dumped.
+/// `closeStdinAfterNew` selects an adversarial native fixture that stops all
+/// synchronous input reads before closing stdin, while keeping stdout alive.
 Future<int> runAcpAgentFixture(List<String> args) async {
   final scriptIndex = args.indexOf('--script');
   final script = jsonDecode(
@@ -15,6 +19,18 @@ Future<int> runAcpAgentFixture(List<String> args) async {
         ? File(args[scriptIndex + 1]).readAsStringSync()
         : Platform.environment['KUMIKO_TEST_ACP_SCRIPT'] ?? '{}',
   ) as Json;
+  void report(Json value) {
+    final path = script['reportFile'];
+    if (path is String) {
+      File(path).writeAsStringSync(
+        '${jsonEncode({'executable': Platform.resolvedExecutable, ...value})}\n',
+        mode: FileMode.append,
+        flush: true,
+      );
+    }
+  }
+
+  if (script['closeStdinAfterNew'] == true) return _closedInputAgent(report);
   final sink = stdout.nonBlocking;
   return runAcpAgentScript(
     script: script,
@@ -28,16 +44,7 @@ Future<int> runAcpAgentFixture(List<String> args) async {
     writeError: stderr.writeln,
     environment: Platform.environment,
     cwd: Directory.current.path,
-    report: (value) {
-      final path = script['reportFile'];
-      if (path is String) {
-        File(path).writeAsStringSync(
-          '${jsonEncode({'executable': Platform.resolvedExecutable, ...value})}\n',
-          mode: FileMode.append,
-          flush: true,
-        );
-      }
-    },
+    report: report,
     spawnTree: () async {
       final child = await Process.start(Platform.resolvedExecutable, [
         '--test-fixture',
@@ -55,6 +62,48 @@ Future<int> runAcpAgentFixture(List<String> args) async {
       child.exitCode.ignore();
     },
   );
+}
+
+/// No asynchronous stdin reader owns a pending native call when this
+/// adversarial adapter closes its own read handle.
+Future<int> _closedInputAgent(void Function(Json) report) async {
+  while (true) {
+    final line = stdin.readLineSync(encoding: utf8);
+    if (line == null) return 0;
+    final request = jsonDecode(line) as Json;
+    final method = request['method'];
+    final Json result;
+    if (method == 'initialize') {
+      result = {
+        'protocolVersion': 1,
+        'agentInfo': {'name': 'scripted-acp', 'version': 'test-only'},
+        'agentCapabilities': {'loadSession': true},
+      };
+    } else if (method == 'session/new') {
+      result = {'sessionId': 'native-stdin-closed'};
+    } else {
+      throw StateError('unexpected request before stdin close: $method');
+    }
+    stdout.writeln(jsonEncode({
+      'jsonrpc': '2.0',
+      'id': request['id'],
+      'result': result,
+    }));
+    await stdout.flush();
+    if (method != 'session/new') continue;
+    if (Platform.isWindows) {
+      final kernel = DynamicLibrary.open('kernel32.dll');
+      final getStd = kernel.lookupFunction<IntPtr Function(Uint32), int Function(int)>('GetStdHandle');
+      final close = kernel.lookupFunction<Int32 Function(IntPtr), int Function(int)>('CloseHandle');
+      if (close(getStd(0xfffffff6)) == 0) throw StateError('could not close native stdin');
+    } else {
+      final close = DynamicLibrary.process().lookupFunction<Int32 Function(Int32), int Function(int)>('close');
+      if (close(0) != 0) throw StateError('could not close native stdin');
+    }
+    report({'stdinClosed': true});
+    ReceivePort();
+    await Completer<void>().future;
+  }
 }
 
 /// Script format (all optional): agentInfo, agentCapabilities, protocolVersion,
