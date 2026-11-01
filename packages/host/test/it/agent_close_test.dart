@@ -432,6 +432,121 @@ void main() {
     },
   );
 
+  test(
+    'explicit close during held failure settlement preserves dismissal intent',
+    () async {
+      final (d, a, _) = await open(
+        script: {
+          'prompt': [
+            {'oversizedBytes': 1},
+          ],
+        },
+      );
+      final tree = await waitReports(work, 1);
+      await d.setFault(TestFault.terminateHangs);
+      try {
+        await a.prompt('fail before dismissal');
+        await a.wait(Method.agentState, where: (p) => p['state'] == 'failed');
+        await eventually(() async {
+          final stats =
+              await d.connection.request('test/agent.stats', {}) as Json;
+          return ((stats['sessions'] as Json)[a.id] as Json)['ending'] == true;
+        }, reason: 'failure never reached the held containment settlement');
+        expect(a.of(Method.agentExited), isEmpty);
+        expect(LedgerView(profile).units(), hasLength(1));
+        await a.call(Method.agentClose);
+        await a.call(Method.agentClose);
+        expect(
+          a.of(Method.agentExited),
+          isEmpty,
+          reason: 'acknowledged dismissal must still await real cleanup',
+        );
+      } finally {
+        await d.setFault(TestFault.terminateHangs, enabled: false);
+      }
+      final exit = await a.wait(Method.agentExited);
+      expect(exit['reason'], 'closed');
+      expect(a.of(Method.agentExited), hasLength(1));
+      expect(a.of(Method.agentCloseFailed), isEmpty);
+      await expectAllGone(tree);
+      expect(LedgerView(profile).units(), isEmpty);
+      await a.call(Method.agentRelease);
+      expect(agentRows(profile).single['id'], a.id);
+    },
+  );
+
+  test(
+    'explicit close abandons credit-blocked transcript enqueue after failure',
+    () async {
+      final prefill = 'p' * (768 * 1024);
+      final begin = File(joinPath(work.path, 'begin-prefill'));
+      final eof = File(joinPath(work.path, 'fail-after-enqueue-blocks'));
+      final (d, a, report) = await open(
+        attach: false,
+        script: {
+          'afterNew': [
+            {'waitFile': begin.path},
+            {'update': textUpdate(prefill)},
+            {'waitFile': eof.path},
+            {'closeStdout': true},
+          ],
+          'holdPrompt': true,
+        },
+      );
+      final tree = await waitReports(work, 1);
+      await a.attach(credit: false);
+      begin.writeAsStringSync('prefill');
+      final prefillBytes = encodeAgentEvent(
+        AgentEvent.text(AgentEventKind.agentText, prefill),
+      ).fold<int>(0, (sum, line) => sum + line.length);
+      await eventually(() async {
+        final stats =
+            await d.connection.request('test/agent.stats', {}) as Json;
+        final session = (stats['sessions'] as Json)[a.id] as Json;
+        return session['queuedBytes'] == prefillBytes - channelWindow &&
+            session['channelQueuedBytes'] == channelWindow &&
+            session['paused'] == false;
+      }, reason: 'accepted prefill never reached the relay without credit');
+      // The escaped prompt fits control's 1 MiB bound but fills the relay
+      // behind the accepted prefill. It is local FIFO work, not an ACP update:
+      // the ACP reader can independently observe EOF while enqueue is blocked.
+      await a.prompt('\u0001' * (160 * 1024));
+      await waitFixture(report, (p) => p.containsKey('prompt'));
+      await eventually(() async {
+        final stats =
+            await d.connection.request('test/agent.stats', {}) as Json;
+        return ((stats['sessions'] as Json)[a.id] as Json)['paused'] == true;
+      }, reason: 'canonical user enqueue never blocked on withheld credit');
+      eof.writeAsStringSync('fail');
+      await waitFixture(report, (p) => p['stdoutClosed'] == true);
+      await a.wait(Method.agentState, where: (p) => p['state'] == 'failed');
+      await eventually(
+        () => LedgerView(profile).units().isEmpty,
+        reason: 'native cleanup did not finish independently of transcript',
+      );
+      expect(a.of(Method.agentExited), isEmpty);
+      expect(a.events, isEmpty);
+      await a.call(Method.agentClose);
+      final exit = await a.wait(
+        Method.agentExited,
+        within: const Duration(seconds: 3),
+      );
+      expect(exit['reason'], 'closed');
+      expect(a.of(Method.agentExited), hasLength(1));
+      expect(a.of(Method.agentCloseFailed), isEmpty);
+      expect(
+        a.events,
+        isEmpty,
+        reason: 'dismissal must not require data credit',
+      );
+      await expectAllGone(tree);
+      expect(LedgerView(profile).units(), isEmpty);
+      await a.call(Method.agentRelease);
+      expect(agentRows(profile).single['id'], a.id);
+      expect(d.connection.isClosed, isFalse);
+    },
+  );
+
   test('initial attach during held failure settlement preserves final output and native diagnostic', () async {
     final (d, a, _) = await open(
       attach: false,

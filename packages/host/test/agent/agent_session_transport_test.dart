@@ -233,6 +233,133 @@ void main() {
     },
   );
 
+  test(
+    'successful results stay bounded across stalled multi-session consumers',
+    () async {
+      final permit = LargeLinePermit();
+      final peers = <AcpPeer>[];
+      final sessions = <AgentSession>[];
+      final credits = <Completer<void>>[];
+      final completions = <List<AgentTurnEndedParams>>[];
+      final stopResults = <List<AgentStopResultParams>>[];
+      final turns = <List<AgentEvent>>[];
+      final reasons = [
+        'cancelled',
+        'end_turn',
+        'cancelled${'\u0000值😀' * 100000}',
+        'refusal${'x' * (1024 * 1024 + 64)}',
+      ];
+      try {
+        for (var i = 0; i < reasons.length; i++) {
+          final nextPeer = AcpPeer(permit: permit);
+          peers.add(nextPeer);
+          final credit = Completer<void>();
+          credits.add(credit);
+          final completed = <AgentTurnEndedParams>[];
+          completions.add(completed);
+          final stopped = <AgentStopResultParams>[];
+          stopResults.add(stopped);
+          final captured = <AgentEvent>[];
+          turns.add(captured);
+          final enqueuingTurn = Completer<void>();
+          final nextSession = AgentSession(
+            sessionId: 'successful-$i',
+            client: nextPeer.client,
+            onState: (_) {},
+            onPermissionRequested: (_) {},
+            onPermissionResolved: (_) {},
+            onStopResult: stopped.add,
+            onTurnEnded: completed.add,
+            enqueueEvents: (lines) {
+              final decoder = AgentEventDecoder();
+              final decoded = <AgentEvent>[];
+              var bytes = 0;
+              for (final line in lines) {
+                bytes += line.length;
+                decoded.addAll(decoder.add(line));
+              }
+              decoder.close();
+              if (decoded.single.kind == AgentEventKind.user) return null;
+              captured.addAll(decoded);
+              expect(bytes, lessThanOrEqualTo(4352));
+              enqueuingTurn.complete();
+              return credit.future;
+            },
+          )..ready(nativeSessionId: 'native');
+          sessions.add(nextSession);
+          nextSession.acceptPrompt('prompt $i');
+          nextSession.stop();
+          final bytes = utf8.encode(
+            '${jsonEncode({
+              'jsonrpc': '2.0',
+              'id': nextPeer.writes.first['id'],
+              'result': {
+                'stopReason': reasons[i],
+                'payload': {'unique': '$i' * (2 * 1024 * 1024)},
+              },
+            })}\n',
+          );
+          expect(bytes.length, greaterThan(acpLargeLineThreshold));
+          addChunks(nextPeer, bytes);
+          await enqueuingTurn.future;
+          expect(
+            captured.single.kind,
+            AgentEventKind.turn,
+            reason: 'a reduced result must retain its bounded reason, not a generic too-large notice',
+          );
+          expect(captured.single.stopReason, clampJsonString(reasons[i], 4096));
+          expect(captured.single.truncated, i >= 2);
+          expect(nextPeer.client.largeLineOwned, isFalse);
+          expect(nextPeer.client.largeLineWaiting, isFalse);
+          expect(nextSession.state, AgentState.stopping);
+          expect(completed, isEmpty);
+          expect(stopped, isEmpty);
+          if (i.isEven) {
+            credit.complete();
+            await pumpAcp();
+            expect(nextSession.state, AgentState.idle);
+          }
+        }
+        expect(sessions.map((s) => s.state), [
+          AgentState.idle,
+          AgentState.stopping,
+          AgentState.idle,
+          AgentState.stopping,
+        ]);
+        for (final credit in credits) {
+          if (!credit.isCompleted) credit.complete();
+        }
+        await pumpAcp();
+        for (var i = 0; i < sessions.length; i++) {
+          final end = completions[i].single;
+          final stop = stopResults[i].single;
+          expect(sessions[i].state, AgentState.idle);
+          expect(end.error, isNull);
+          expect(end.stopReason, clampJsonString(reasons[i], 4096));
+          expect(
+            stop.outcome,
+            i == 0 ? AgentStopOutcome.stopped : AgentStopOutcome.finishedFirst,
+            reason: 'only the original exact cancelled reason confirms Stop',
+          );
+          expect(stop.stopReason, end.stopReason);
+          expect(stop.late, isFalse);
+          expect(turns[i].single.stopReason, end.stopReason);
+          expect(peers[i].client.isClosed, isFalse);
+        }
+      } finally {
+        for (final credit in credits) {
+          if (!credit.isCompleted) credit.complete();
+        }
+        for (final nextSession in sessions) {
+          nextSession.dispose();
+        }
+        for (final nextPeer in peers) {
+          await nextPeer.dispose();
+        }
+      }
+    },
+  );
+
   for (final stopped in [false, true]) {
     for (final escaped in [false, true]) {
       test(

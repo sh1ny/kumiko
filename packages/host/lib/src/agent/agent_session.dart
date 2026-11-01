@@ -136,7 +136,7 @@ class AgentSession {
     client
         .prompt(_nativeSessionId!, text)
         .then<void>(
-          (reason) => _finish(turn, reason, null),
+          (result) => _finish(turn, result, null),
           onError: (Object error, StackTrace stack) =>
               _finish(turn, null, error),
         )
@@ -168,7 +168,7 @@ class AgentSession {
     return queued;
   }
 
-  Future<void> _finish(int turn, String? reason, Object? error) async {
+  Future<void> _finish(int turn, AcpPromptResult? result, Object? error) async {
     if (!_hasTurn || turn != _turn || _disposed || _terminal) return;
     if (error != null && client.isClosed) {
       fail(error);
@@ -176,8 +176,12 @@ class AgentSession {
     }
     await _enqueue(
       encodeAgentEvent(
-        reason != null
-            ? AgentEvent.turn(reason)
+        result != null
+            ? AgentEvent.fromJson({
+                'kind': AgentEventKind.turn.name,
+                'stopReason': result.stopReason,
+                if (result.truncated) 'truncated': true,
+              })
             : error is AcpRemoteException && error.messageTruncated
             ? AgentEvent.fromJson({
                 'kind': AgentEventKind.notice.name,
@@ -190,10 +194,9 @@ class AgentSession {
     if (!_hasTurn || turn != _turn || _disposed || _terminal) return;
     _deadline?.cancel();
     _deadline = null;
-    // Display control fields have a small encoded budget, including JSON
-    // escaping. Prompt errors were classified and bounded synchronously by ACP
+    // Successes and errors were classified and bounded synchronously by ACP
     // dispatch, so this credit-blocked frame never owns the native envelope.
-    final stopReason = reason == null ? null : clampJsonString(reason, 4096);
+    final stopReason = result?.stopReason;
     final message = error == null ? null : _message(error);
     if (_stopped) {
       onStopResult(
@@ -201,7 +204,7 @@ class AgentSession {
           sessionId: sessionId,
           outcome: error != null
               ? AgentStopOutcome.endedWithError
-              : reason == 'cancelled'
+              : result!.isCancelled
               ? AgentStopOutcome.stopped
               : AgentStopOutcome.finishedFirst,
           stopReason: stopReason,

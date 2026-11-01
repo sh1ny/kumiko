@@ -259,6 +259,7 @@ class _Agent {
   Timer? attachTimer;
   bool attached = false;
   bool ending = false;
+  bool closeRequested = false;
   bool exited = false;
   bool closeFailed = false;
   bool consumerClosed = false;
@@ -907,7 +908,17 @@ class AgentService {
 
   void close(AgentSessionParams params) {
     final a = _require(params.sessionId);
-    if (!a.ending) _beginClose(a);
+    if (a.closeRequested) return;
+    a.closeRequested = true;
+    if (!a.ending) {
+      _beginClose(a);
+    } else {
+      // Failure settlement still owns cleanup. Preserve dismissal without
+      // starting another teardown, and abandon any credit-blocked transcript.
+      a.attachTimer?.cancel();
+      a.session.beginClosing();
+      a.relay.close();
+    }
   }
 
   void release(AgentSessionParams params) {
@@ -1084,15 +1095,19 @@ class AgentService {
     } else {
       // ACP EOF joins adapter updates, but canonical user/turn/notice records
       // also use the session's FIFO. Join accepted work before sealing the
-      // count. Enqueue errors remain failures, not false successful exits.
+      // count, unless explicit dismissal closed the relay to abandon it.
+      // Enqueue errors remain failures, not false successful exits.
       await a.session.eventsEnqueued.then<void>((_) {}, onError: (Object _) {});
       if (!_current(a)) return;
       a.exited = true;
+      if (a.closeRequested) a.session.ended();
       a.session.dispose();
       a.relay.seal();
       final exited = a.exitNotification = AgentExitedParams(
         sessionId: a.record.id,
-        reason: AgentExitReason.failed,
+        reason: a.closeRequested
+            ? AgentExitReason.closed
+            : AgentExitReason.failed,
         eventCount: a.relay.eventCount,
         status: a.io.status,
         error: restoring

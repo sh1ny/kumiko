@@ -89,7 +89,10 @@ void main() {
         };
         expect((await client.initialize()).adapterName, 'script');
         expect(await client.newSession('/fixture'), 'fixture-native');
-        expect(await client.prompt('fixture-native', 'hello'), 'end_turn');
+        expect(
+          (await client.prompt('fixture-native', 'hello')).stopReason,
+          'end_turn',
+        );
         expect(updates, hasLength(2));
         expect(errors, ['canary']);
         expect(reports.first['argv'], ['space arg', '']);
@@ -138,7 +141,10 @@ void main() {
       ) async {
         final prompt = client.prompt('native', 'hello');
         await client.cancel('native');
-        expect(await prompt, mode == 'honour' ? 'cancelled' : 'end_turn');
+        final result = await prompt;
+        expect(result.stopReason, mode == 'honour' ? 'cancelled' : 'end_turn');
+        expect(result.isCancelled, mode == 'honour');
+        expect(result.truncated, isFalse);
       });
     });
   }
@@ -372,7 +378,10 @@ void main() {
             kinds.add((p['update'] as Json)['sessionUpdate']);
             return null;
           };
-          expect(await client.prompt('native', 'hello'), 'end_turn');
+          expect(
+            (await client.prompt('native', 'hello')).stopReason,
+            'end_turn',
+          );
           expect(kinds, ['future', 'agent_message_chunk']);
         },
       );

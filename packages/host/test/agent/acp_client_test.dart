@@ -188,6 +188,106 @@ void main() {
     }
   });
 
+  test('consecutive successful prompts retain only bounded classified results', () async {
+    final permit = LargeLinePermit();
+    final peers = <AcpPeer>[];
+    final retained = <Json>[];
+    try {
+      for (var i = 0; i < 4; i++) {
+        final peer = AcpPeer(permit: permit);
+        peers.add(peer);
+        final reason = i.isEven
+            ? 'cancelled'
+            : 'cancelled${'\u0000值😀' * 100000}';
+        final outcome = peer.client.request('session/prompt', {
+          'sessionId': 'native',
+          'prompt': [
+            {'type': 'text', 'text': 'prompt $i'},
+          ],
+        });
+        final bytes = utf8.encode(
+          '${jsonEncode({
+            'jsonrpc': '2.0',
+            'id': peer.writes.single['id'],
+            'result': {
+              'stopReason': reason,
+              'payload': {'unique': '$i' * (2 * 1024 * 1024)},
+            },
+          })}\n',
+        );
+        expect(bytes.length, greaterThan(acpLargeLineThreshold));
+        expect(bytes.length, lessThan(acpLineLimit));
+        addChunks(peer, bytes);
+        final result = await outcome;
+        retained.add(result);
+        expect(
+          result.containsKey('payload'),
+          isFalse,
+          reason:
+              'dispatch must discard the native result before future delivery',
+        );
+        expect(result['stopReason'], clampJsonString(reason, 4096));
+        expect(result['isCancelled'], i.isEven);
+        expect(result['truncated'], i.isOdd);
+        expect(utf8.encode(jsonEncode(result)).length, lessThanOrEqualTo(4352));
+        expect(peer.client.largeLineOwned, isFalse);
+        expect(peer.client.largeLineWaiting, isFalse);
+        expect(peer.client.isClosed, isFalse);
+      }
+      // The previous completed futures remain live while each following
+      // response uses the shared allowance. Inspect owners, not RSS/GC timing.
+      expect(retained, hasLength(4));
+      expect(
+        retained.fold<int>(
+          0,
+          (bytes, result) => bytes + utf8.encode(jsonEncode(result)).length,
+        ),
+        lessThanOrEqualTo(4 * 4352),
+      );
+    } finally {
+      for (final peer in peers) {
+        await peer.dispose();
+      }
+    }
+  });
+
+  for (final invalid in [null, 42, <Object>[]]) {
+    test(
+      'invalid successful prompt stopReason $invalid fails before following dispatch',
+      () async {
+        final outcome = p.client
+            .request('session/prompt', {})
+            .then<Object?>((value) => value, onError: (Object error) => error);
+        var normalized = 0;
+        p.client.normalizeNotification = (_, _) {
+          normalized++;
+          return null;
+        };
+        p.input.add(
+          utf8.encode(
+            '${jsonEncode({
+              'jsonrpc': '2.0',
+              'id': p.writes.single['id'],
+              'result': {'stopReason': invalid},
+            })}\n'
+            '${jsonEncode({'jsonrpc': '2.0', 'method': 'session/update', 'params': <String, Object?>{}})}\n',
+          ),
+        );
+        final result = await outcome;
+        expect(
+          result,
+          isA<AcpProtocolException>().having(
+            (error) => error.message,
+            'message',
+            'invalid prompt stopReason',
+          ),
+        );
+        expect(p.client.isClosed, isTrue);
+        expect(normalized, 0);
+      },
+    );
+  }
+
   for (final pending in [false, true]) {
     test(
       'complete stdout EOF reports failure ${pending ? 'with pending prompt' : 'while idle'}',

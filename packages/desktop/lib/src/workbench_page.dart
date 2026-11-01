@@ -710,18 +710,28 @@ class _TabStrip extends StatelessWidget {
                 PopupMenuItem<String>(
                   key: const Key('launch-agent-chat'),
                   value: _agentValue,
-                  enabled: selected != null && controller.agentsUnavailableReason == null,
-                  child: Text(controller.agentsUnavailableReason != null
-                      ? 'Claude Code (${controller.agentsUnavailableReason})'
-                      : selected == null ? 'Claude Code (needs a workspace)' : 'Claude Code'),
+                  enabled:
+                      selected != null &&
+                      controller.agentsUnavailableReason == null,
+                  child: Text(
+                    controller.agentsUnavailableReason != null
+                        ? 'Claude Code (${controller.agentsUnavailableReason})'
+                        : selected == null
+                        ? 'Claude Code (needs a workspace)'
+                        : 'Claude Code',
+                  ),
                 ),
                 PopupMenuItem<String>(
-                  key: const Key('launch-agent-profile'), value: _agentProfileValue,
-                  enabled: selected != null && controller.agentsUnavailableReason == null,
+                  key: const Key('launch-agent-profile'),
+                  value: _agentProfileValue,
+                  enabled:
+                      selected != null &&
+                      controller.agentsUnavailableReason == null,
                   child: const Text('Claude Code with runtime profile...'),
                 ),
                 PopupMenuItem<String>(
-                  key: const Key('runtime-profiles'), value: _runtimeProfilesValue,
+                  key: const Key('runtime-profiles'),
+                  value: _runtimeProfilesValue,
                   enabled: controller.agentsUnavailableReason == null,
                   child: const Text('Runtime profiles...'),
                 ),
@@ -766,12 +776,31 @@ final ButtonStyle _compactButton = IconButton.styleFrom(
 );
 
 String? _agentStatus(WorkbenchController controller, LayoutTabNode tab) {
-  final statuses = [
-    for (final pane in tab.panes)
-      if (pane.kind == agentChatKind)
-        controller.agents.linkOf(pane.id)?.statusLabel ?? 'Ended',
-  ];
-  return statuses.where((s) => s == 'Waiting for approval').firstOrNull ?? statuses.firstOrNull;
+  // Surface approvals and failures before active work, then quiescent sessions.
+  const priorities = {
+    'Waiting for approval': 9,
+    'Failed': 8,
+    'Stopped or unknown': 7,
+    'Stopping': 6,
+    'Closing': 5,
+    'Running': 4,
+    'Starting': 3,
+    'Idle': 2,
+    'Saved, not running': 1,
+    'Ended': 0,
+  };
+  String? status;
+  var priority = -1;
+  for (final pane in tab.panes) {
+    if (pane.kind != agentChatKind) continue;
+    final candidate = controller.agents.linkOf(pane.id)?.statusLabel ?? 'Ended';
+    final candidatePriority = priorities[candidate]!;
+    if (candidatePriority > priority) {
+      status = candidate;
+      priority = candidatePriority;
+    }
+  }
+  return status;
 }
 
 class _TabChip extends StatelessWidget {
@@ -789,8 +818,9 @@ class _TabChip extends StatelessWidget {
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final movable = controller.canMoveIntoSplit(tab.id);
+    final agentStatus = _agentStatus(controller, tab);
     return ConstrainedBox(
-      constraints: BoxConstraints(maxWidth: _agentStatus(controller, tab) == null ? 220 : 360),
+      constraints: BoxConstraints(maxWidth: agentStatus == null ? 220 : 360),
       child: Material(
         key: Key('tab-${tab.id}'),
         color: active
@@ -811,11 +841,17 @@ class _TabChip extends StatelessWidget {
                   ),
                 ),
               ),
-              if (_agentStatus(controller, tab) case final status?)
-                Flexible(child: Padding(
-                  padding: const EdgeInsets.only(left: 6),
-                  child: AgentStatusChip(status, compact: true, key: Key('tab-agent-status-${tab.id}')),
-                )),
+              if (agentStatus case final status?)
+                Flexible(
+                  child: Padding(
+                    padding: const EdgeInsets.only(left: 6),
+                    child: AgentStatusChip(
+                      status,
+                      compact: true,
+                      key: Key('tab-agent-status-${tab.id}'),
+                    ),
+                  ),
+                ),
               if (tab.paneCount > 1)
                 Padding(
                   padding: const EdgeInsets.only(left: 6),

@@ -60,6 +60,19 @@ class AcpRemoteException implements Exception {
   String toString() => 'ACP error $code: $message';
 }
 
+/// Successful prompt display data only. Native results are reduced during
+/// dispatch, before their Future or a credit-blocked turn can retain them.
+class AcpPromptResult {
+  AcpPromptResult._(Json result)
+    : stopReason = result['stopReason']! as String,
+      isCancelled = result['isCancelled']! as bool,
+      truncated = result['truncated']! as bool;
+
+  final String stopReason;
+  final bool isCancelled;
+  final bool truncated;
+}
+
 /// One host-wide permit. A closed waiting client is removed, not granted a
 /// permit later. Owners release after normalization, before event delivery.
 class LargeLinePermit {
@@ -235,19 +248,14 @@ class AcpClient {
     {'sessionId': id, 'cwd': cwd, 'mcpServers': <Object>[]},
     timeout: const Duration(seconds: 60),
   );
-  Future<String> prompt(String id, String text) async {
+  Future<AcpPromptResult> prompt(String id, String text) async {
     final result = await request('session/prompt', {
       'sessionId': id,
       'prompt': [
         {'type': 'text', 'text': text},
       ],
     });
-    final reason = result['stopReason'];
-    if (reason is! String) {
-      _fail(AcpProtocolException('invalid prompt stopReason'));
-      throw failure!;
-    }
-    return reason;
+    return AcpPromptResult._(result);
   }
 
   Future<void> cancel(String id) => notify('session/cancel', {'sessionId': id});
@@ -464,10 +472,27 @@ class AcpClient {
     if (!message.containsKey('error') && result is! Json) {
       throw AcpProtocolException('invalid result response');
     }
-    final pending = _pending.remove(id);
+    final pending = _pending[id];
     if (pending == null) {
       return null; // Unknown/late response cannot finish a turn twice.
     }
+    Json? promptResult;
+    if (!message.containsKey('error') && pending.prompt) {
+      final reason = (result as Json)['stopReason'];
+      if (reason is! String) {
+        throw AcpProtocolException('invalid prompt stopReason');
+      }
+      final bounded = clampJsonString(reason, 4096);
+      // Drop every other native result field and classify the original reason
+      // while dispatch still owns the large-line permit. Only this small map
+      // may cross the Future boundary, including for generic prompt requests.
+      promptResult = {
+        'stopReason': bounded,
+        'isCancelled': reason == 'cancelled',
+        'truncated': bounded != reason,
+      };
+    }
+    _pending.remove(id);
     pending.pause();
     if (message.containsKey('error')) {
       if (error is! Json) throw AcpProtocolException('invalid error response');
@@ -484,7 +509,7 @@ class AcpClient {
               ),
       );
     } else {
-      pending.completer.complete(result as Json);
+      pending.completer.complete(promptResult ?? result as Json);
     }
     return null;
   }

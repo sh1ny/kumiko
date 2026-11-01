@@ -150,14 +150,16 @@ class _AgentPaneViewState extends State<AgentPaneView> {
                     ),
             ),
           ),
-          if (link.error != null)
+          if (link.error != null || link.requiresAuthentication)
             Padding(
               padding: const EdgeInsets.symmetric(horizontal: 12),
               child: ConstrainedBox(
                 constraints: const BoxConstraints(maxHeight: 140),
                 child: SingleChildScrollView(
                   child: SelectableText(
-                    '${link.requiresAuthentication ? '$agentAuthGuidance\n' : ''}${link.error}',
+                    link.error == null
+                        ? agentAuthGuidance
+                        : '${link.requiresAuthentication ? '$agentAuthGuidance\n' : ''}${link.error}',
                     style: TextStyle(
                       color: Theme.of(context).colorScheme.error,
                     ),
@@ -320,7 +322,8 @@ class _AgentPaneViewState extends State<AgentPaneView> {
         ),
       );
     }
-    if (entry.kind == AgentEventKind.turn && fields['stopReason'] == 'end_turn') {
+    if (entry.kind == AgentEventKind.turn &&
+        fields['stopReason'] == 'end_turn') {
       return const SizedBox();
     }
     return Padding(

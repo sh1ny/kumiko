@@ -461,13 +461,24 @@ void main() {
         ),
       );
       host.agentState(id, AgentState.idle, 2);
+      host.agentEvent(
+        id,
+        AgentEvent.notice('adapter-error: native prompt failed'),
+      );
       expect(
         link.transcript.entries
             .where((entry) => entry.kind == AgentEventKind.user)
             .map((entry) => entry.text),
         ['accepted prompt'],
       );
-      expect(transcript(rig), contains('native prompt failed'));
+      expect(link.transcript.entries.map((entry) => entry.kind), [
+        AgentEventKind.user,
+        AgentEventKind.notice,
+      ]);
+      expect(
+        link.transcript.entries.last.text,
+        'adapter-error: native prompt failed',
+      );
       expect(link.prompt.text, isEmpty);
       expect(link.canSend, isTrue);
     });
@@ -1252,6 +1263,78 @@ void main() {
       },
     );
 
+    for (final outcome in [
+      (
+        name: 'refusal',
+        stopReason: 'refusal',
+        error: null,
+        message: null,
+        canonical: AgentEvent.turn('refusal'),
+      ),
+      (
+        name: 'native error',
+        stopReason: null,
+        error: 'adapter-error',
+        message: 'native prompt failed',
+        canonical: AgentEvent.notice('adapter-error: native prompt failed'),
+      ),
+    ]) {
+      uiTest(
+        'priority ${outcome.name} control preserves one canonical ordered outcome',
+        (tester) async {
+          final host = agentHost();
+          final rig = await controllerRig(tester, host);
+          await start(rig, tester);
+          final pane = chat(rig).id;
+          final id = session(rig);
+          final link = agents(rig).linkOf(pane)!;
+          await agents(rig).send(pane, 'accepted prompt');
+          host.agentState(id, AgentState.running);
+          host.agentTurnSource.add(
+            AgentTurnEndedParams(
+              sessionId: id,
+              stopReason: outcome.stopReason,
+              error: outcome.error,
+              message: outcome.message,
+            ),
+          );
+          host.agentState(id, AgentState.idle, 2);
+
+          expect(link.sending, isFalse);
+          expect(link.canSend, isTrue);
+          expect(link.transcript.entries, isEmpty);
+
+          host.agentEvent(
+            id,
+            AgentEvent.text(AgentEventKind.user, 'accepted prompt'),
+          );
+          host.agentEvent(
+            id,
+            AgentEvent.text(AgentEventKind.agentText, 'trailing reply'),
+          );
+          host.agentEvent(id, outcome.canonical);
+          expect(link.transcript.entries.map((entry) => entry.kind), [
+            AgentEventKind.user,
+            AgentEventKind.agentText,
+            outcome.canonical.kind,
+          ]);
+          expect(link.transcript.entries.take(2).map((entry) => entry.text), [
+            'accepted prompt',
+            'trailing reply',
+          ]);
+          if (outcome.canonical.kind == AgentEventKind.turn) {
+            expect(
+              link.transcript.entries.last.fields['stopReason'],
+              outcome.stopReason,
+            );
+          } else {
+            expect(link.transcript.entries.last.text, outcome.canonical.text);
+          }
+          expect(link.statusLabel, 'Idle');
+        },
+      );
+    }
+
     uiTest(
       'Continue for a record already live focuses existing pane and creates no duplicate link',
       (tester) async {
@@ -1359,8 +1442,9 @@ void main() {
           AgentTurnEndedParams(sessionId: id, stopReason: 'refusal'),
         );
         host.agentState(id, AgentState.idle, 3);
+        host.agentEvent(id, AgentEvent.turn('refusal'));
         await tester.pump();
-        expect(find.textContaining('refusal'), findsWidgets);
+        expect(find.textContaining('refusal'), findsOneWidget);
         expect(find.text('sent prompt'), findsOneWidget);
         expect(
           tester.widget<TextField>(key('agent-prompt-$pane')).controller!.text,
@@ -1373,8 +1457,12 @@ void main() {
             message: 'exact adapter error',
           ),
         );
+        host.agentEvent(
+          id,
+          AgentEvent.notice('adapter-error: exact adapter error'),
+        );
         await tester.pump();
-        expect(find.textContaining('exact adapter error'), findsWidgets);
+        expect(find.textContaining('exact adapter error'), findsOneWidget);
       },
     );
 
@@ -1604,6 +1692,85 @@ void main() {
     );
 
     uiTest(
+      'priority authentication control keeps guidance and Retry outside canonical transcript',
+      (tester) async {
+        final host = agentHost();
+        final rig = await controllerRig(tester, host);
+        await start(rig, tester);
+        final pane = chat(rig).id;
+        final id = session(rig);
+        final link = agents(rig).linkOf(pane)!;
+        await agents(rig).send(pane, 'retry this prompt');
+        host.agentState(id, AgentState.running);
+        await tester.pumpWidget(
+          MaterialApp(
+            home: Scaffold(
+              body: AgentPaneView(
+                controller: agents(rig),
+                paneId: pane,
+                focused: false,
+              ),
+            ),
+          ),
+        );
+        host.agentTurnSource.add(
+          AgentTurnEndedParams(
+            sessionId: id,
+            error: ErrorCode.authRequired,
+            message: 'native sign-in expired',
+          ),
+        );
+        host.agentState(id, AgentState.idle, 2);
+        await tester.pump();
+
+        expect(find.textContaining(agentAuthGuidance), findsOneWidget);
+        expect(key('agent-retry-$pane'), findsOneWidget);
+        expect(link.error, isNull);
+        expect(link.transcript.entries, isEmpty);
+        expect(find.textContaining('native sign-in expired'), findsNothing);
+
+        host.agentEvent(
+          id,
+          AgentEvent.text(AgentEventKind.user, 'retry this prompt'),
+        );
+        host.agentEvent(
+          id,
+          AgentEvent.text(AgentEventKind.agentText, 'trailing reply'),
+        );
+        host.agentEvent(
+          id,
+          AgentEvent.notice('auth-required: native sign-in expired'),
+        );
+        await tester.pump();
+        expect(link.transcript.entries.map((entry) => entry.kind), [
+          AgentEventKind.user,
+          AgentEventKind.agentText,
+          AgentEventKind.notice,
+        ]);
+        expect(link.transcript.entries.map((entry) => entry.text), [
+          'retry this prompt',
+          'trailing reply',
+          'auth-required: native sign-in expired',
+        ]);
+        expect(find.textContaining('native sign-in expired'), findsOneWidget);
+        expect(find.textContaining(agentAuthGuidance), findsOneWidget);
+
+        await tester.enterText(key('agent-prompt-$pane'), 'unsent draft');
+        await tester.tap(key('agent-retry-$pane'));
+        await flush(tester);
+        expect(host.agentPrompts.map((prompt) => prompt.text), [
+          'retry this prompt',
+          'retry this prompt',
+        ]);
+        expect(link.prompt.text, 'unsent draft');
+        expect(link.transcript.entries, hasLength(3));
+        expect(find.textContaining('native sign-in expired'), findsOneWidget);
+        expect(find.textContaining(agentAuthGuidance), findsNothing);
+        expect(key('agent-retry-$pane'), findsNothing);
+      },
+    );
+
+    uiTest(
       'restoration authentication guidance Retry invokes Continue for the saved session',
       (tester) async {
         final host = agentHost();
@@ -1689,8 +1856,9 @@ void main() {
             message: 'expired detail',
           ),
         );
+        host.agentEvent(id, AgentEvent.notice('auth-required: expired detail'));
         await tester.pump();
-        expect(find.textContaining('expired detail'), findsWidgets);
+        expect(find.textContaining('expired detail'), findsOneWidget);
         host.agentExit(id, reason: AgentExitReason.failed, status: 1);
         await tester.pump();
         expect(find.textContaining('status 1'), findsWidgets);

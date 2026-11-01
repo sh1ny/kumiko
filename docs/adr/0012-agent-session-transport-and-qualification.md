@@ -43,6 +43,8 @@ Turn-end and Stop-result display messages and stop reasons are bounded to 4 KiB 
 
 Prompt-error dispatch performs exact authentication classification synchronously, bounds the retained native message to 4 KiB UTF-8, and drops arbitrary native `error.data` before completing the request future. Credit-blocked turn handling retains only that bounded exception; completed turns do not retain a separate native-error snapshot.
 
+Successful prompt dispatch likewise validates and reduces the complete native result before completing its future, discarding unrelated result fields. The retained `AcpPromptResult` contains only bounded stop-reason display text, original exact cancellation classification, and truncation metadata. A credit-blocked completion retains this bounded result; canonical turn events preserve their truncation marker.
+
 ## Host agent service implementation
 
 `AgentService` owns each live adapter unit, its reserved event channel and the private session record. Start validates the workspace and runtime before spawning, initializes ACP and creates the native session before inserting a record. Failures settle the process tree and release the channel without recording an incomplete session. Adapter stderr stays in a bounded memory ring; it is never written to the host log.
@@ -56,6 +58,8 @@ Unknown native errors retain their code and message in ordinary start/prompt res
 Unexpected exit publishes Failed state as soon as the native leader's exit is observed, even while expanded final output is blocked on bounded relay admission. After ACP and accepted local event enqueues settle, the relay seals its final record count without clearing queued data. `agent/exited.eventCount` is a required nonnegative integer for that run's event channel. The desktop counts consumed decoded records and releases the failed session only after consuming that count; Continue and New session remain disabled until release completes. Explicit dismissal may discard pending data. Premature event-stream termination is a visible stream failure, not a successful drain. `ChannelWriter.closed` lets the service relinquish an abandoned channel even when all its bytes already flushed.
 
 A close failure relinquishes the live transport but does not confirm process termination. The desktop retains the saved identity and error, shows a failed, termination-unconfirmed pane, disables Send, Stop and pending permission answers, and permits dismissal without sending close again to a forgotten session. Continue or a fresh session still passes through the durable workspace cleanup gate; unresolved cleanup is never presented as success.
+
+An explicit close received during unexpected-failure settlement records dismissal intent and abandons the pending transcript relay, releasing credit-blocked local enqueues without starting duplicate containment cleanup. Confirmed settlement then reports `closed`; unresolved settlement still reports `closeFailed`, never a fabricated successful exit. Without explicit dismissal, the accepted transcript still drains losslessly.
 
 Leader exit alone does not establish containment settlement: a surviving descendant can retain inherited native pipe handles. Unresolved cleanup therefore retains native I/O ownership until host exit. After shared shutdown, I/O disposal is joined only when the containment ID is absent from both the live-unit map and the durable ledger; confirmed settlement still disposes pipes normally.
 
@@ -80,6 +84,10 @@ RSS sampling uses asynchronous, single-flight OS queries so measurement does not
 Automated fixture starts explicitly select their scripted runtime profile or isolate detection; an installed real adapter must not become a fixture's default runtime. Native desktop agent integration tests bind `KUMIKO_HOST` to the bundled test host because their ACP runtime uses `--test-fixture`; the other native integration tests retain the release host.
 
 ## Desktop chat implementation
+
+Only the ordered event channel appends canonical user/reply/turn/notice transcript records. Priority turn-end control updates action and authentication metadata without synthesizing duplicate or out-of-order transcript entries. Native sign-in guidance is rendered outside the transcript, and Retry resends the original prompt without replacing an unsent draft.
+
+A split tab aggregates all contained agent statuses using explicit priority: Waiting for approval, Failed, Stopped or unknown, Stopping, Closing, Running, Starting, Idle, Saved/not running, Ended. An earlier idle pane cannot hide active or failed work in another pane, and status updates do not activate the tab.
 
 `AgentController` owns live pane links and the bounded, in-memory transcript. Control notifications determine state and permission choices; the event channel determines transcript order. Accepted user prompts enter history only through the host's canonical event, so local draft submission cannot duplicate a prompt or reorder it ahead of earlier channel data. Identical prompts in different turns remain distinct.
 

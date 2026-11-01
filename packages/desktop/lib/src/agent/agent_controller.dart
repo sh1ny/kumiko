@@ -235,16 +235,9 @@ class AgentController extends ChangeNotifier implements ViewCloser {
       final link = _bySession[event.sessionId];
       if (link == null) return;
       link.sending = false;
-      if (event.error != null ||
-          (event.stopReason != null &&
-              event.stopReason != 'end_turn' &&
-              event.stopReason != 'cancelled')) {
-        final message = event.error == ErrorCode.authRequired
-            ? '$agentAuthGuidance\n${event.message ?? ''}'
-            : event.message ?? 'Turn ended: ${event.stopReason ?? event.error}';
-        link.transcript.add(AgentEvent.notice(message));
-        if (event.error == ErrorCode.authRequired) link.errorCode = event.error;
-      }
+      // Priority control may overtake the canonical turn/notice data. Keep
+      // action metadata here; only the ordered channel appends the outcome.
+      if (event.error == ErrorCode.authRequired) link.errorCode = event.error;
       _changed();
     });
     listen(host.agentExits, _exited);
