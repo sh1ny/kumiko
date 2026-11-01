@@ -61,6 +61,73 @@ class _GatedReleaseHost extends FakeHostLink {
   }
 }
 
+/// Completes the RPC and dispatches its terminal notification in the same
+/// synchronous turn, as a protocol read containing both frames does.
+class _PendingContinueHost extends FakeHostLink {
+  _PendingContinueHost()
+    : super(hello: helloResult(capabilities: agentCapabilities)) {
+    storedLayout = jsonOf(
+      docOf([
+        tabOf(
+          'saved-tab',
+          paneOf(
+            'saved-pane',
+            kind: 'agent-chat',
+            ws: 'A',
+            item: 'saved-item',
+            state: {'sessionId': 'saved', 'runtimeName': 'Claude Code'},
+          ),
+        ),
+      ], selected: 'A'),
+    );
+    records.add(workspaceRecord('A'));
+    agentRecordMap['saved'] = const AgentRecord(
+      known: true,
+      workspaceAvailable: true,
+    );
+  }
+
+  final continueResult = Completer<AgentContinueResult>();
+  final releaseGate = Completer<void>();
+  bool _firstContinue = true;
+
+  @override
+  Future<AgentContinueResult> continueAgent(String id) {
+    if (!_firstContinue) return super.continueAgent(id);
+    _firstContinue = false;
+    calls.add('agent/continue $id');
+    return continueResult.future;
+  }
+
+  @override
+  Future<void> releaseAgent(String id) async {
+    await super.releaseAgent(id);
+    await releaseGate.future;
+  }
+
+  void completeWithFailedExit() {
+    continueResult.complete(
+      const AgentContinueResult(
+        eventChannel: 120,
+        adapter: AgentAdapter(name: 'scripted-acp', version: 'test-only'),
+        capabilities: ['load'],
+        mode: AgentContinueMode.load,
+      ),
+    );
+    agentExitSource.add(
+      AgentExitedParams(
+        sessionId: 'saved',
+        reason: AgentExitReason.failed,
+        eventCount: 0,
+        status: 1,
+        error: ErrorCode.resumeUnavailable,
+        resumeReason: ErrorCode.authRequired,
+        message: 'session/load native sign-in detail',
+      ),
+    );
+  }
+}
+
 class _RejectingPromptHost extends FakeHostLink {
   _RejectingPromptHost()
     : super(hello: helloResult(capabilities: agentCapabilities));
@@ -623,6 +690,137 @@ void main() {
       await flush(tester);
       expect(link.phase, AgentLinkPhase.live);
       expect(link.sessionId, id);
+    });
+
+    uiTest(
+      'pending Continue zero-event exit preserves failure and recovers only after release',
+      (tester) async {
+        final host = _PendingContinueHost();
+        addTearDown(() {
+          if (!host.releaseGate.isCompleted) host.releaseGate.complete();
+        });
+        final rig = await controllerRig(tester, host);
+        final controller = agents(rig);
+        final link = controller.linkOf('saved-pane')!;
+        final continuing = controller.continueSession(link.paneId);
+        expect(link.phase, AgentLinkPhase.pending);
+
+        host.completeWithFailedExit();
+        await continuing;
+        await tester.idle();
+
+        expect(link.phase, AgentLinkPhase.ended);
+        expect(link.state, AgentState.failed);
+        expect(link.statusLabel, 'Failed');
+        expect(link.errorCode, ErrorCode.resumeUnavailable);
+        expect(
+          link.error,
+          'resume-unavailable (status 1): auth-required: session/load native sign-in detail',
+        );
+        expect(link.streamFailed, isFalse);
+        expect(link.canSend, isFalse);
+        expect(link.canContinue, isFalse);
+        expect(link.canNewSession, isFalse);
+        expect(link.canRetry, isFalse);
+        expect(host.agentReleases, ['saved']);
+        expect(host.calls.where((c) => c.startsWith('agent/attach')), isEmpty);
+        expect(host.agentCloses, isEmpty);
+        await controller.continueSession(link.paneId);
+        await controller.newSession(link.paneId);
+        expect(
+          host.calls.where((c) => c == 'agent/continue saved'),
+          hasLength(1),
+        );
+        expect(host.agentStarts, isEmpty);
+
+        host.releaseGate.complete();
+        await tester.idle();
+        expect(link.canContinue, isTrue);
+        expect(link.canNewSession, isTrue);
+        expect(link.canRetry, isTrue);
+        expect(link.error, contains('session/load native sign-in detail'));
+
+        await controller.retry(link.paneId);
+        await tester.idle();
+        expect(link.phase, AgentLinkPhase.live);
+        expect(link.canSend, isTrue);
+        expect(link.error, isNull);
+        expect(link.sessionId, 'saved');
+        expect(host.agentReleases, ['saved']);
+        expect(
+          host.calls.where((c) => c == 'agent/attach saved'),
+          hasLength(1),
+        );
+        host.agentEvent('saved', AgentEvent.notice('new run stays subscribed'));
+        await tester.idle();
+        expect(link.transcript.plainText, 'new run stays subscribed');
+        expect(host.agentCloses, isEmpty);
+        expect(host.agentStarts, isEmpty);
+      },
+    );
+
+    uiTest(
+      'pending Continue zero-event exit remains dismissible while release is pending',
+      (tester) async {
+        final host = _PendingContinueHost();
+        addTearDown(() {
+          if (!host.releaseGate.isCompleted) host.releaseGate.complete();
+        });
+        final rig = await controllerRig(tester, host);
+        final controller = agents(rig);
+        final continuing = controller.continueSession('saved-pane');
+        host.completeWithFailedExit();
+        // Dismiss before the awaiting Continue can bind its returned channel.
+        final closing = rig.controller.requestClose([
+          'saved-pane',
+        ], (_) async => fail('an exited Continue must not warn'));
+        await continuing;
+        expect(host.calls.where((c) => c.startsWith('agent/attach')), isEmpty);
+        host.releaseGate.complete();
+        await closing;
+        await tester.idle();
+        expect(rig.layout.pane('saved-pane'), isNull);
+        expect(host.agentReleases, ['saved']);
+        expect(host.agentCloses, isEmpty);
+        expect(controller.linkOf('saved-pane'), isNull);
+      },
+    );
+
+    uiTest('pending Continue old release cannot cancel a recovered host run', (
+      tester,
+    ) async {
+      final host = _PendingContinueHost();
+      addTearDown(() {
+        if (!host.releaseGate.isCompleted) host.releaseGate.complete();
+      });
+      final rig = await controllerRig(tester, host);
+      final controller = agents(rig);
+      final continuing = controller.continueSession('saved-pane');
+      host.completeWithFailedExit();
+      await continuing;
+      rig.controller.detach();
+
+      final next = agentHost()
+        ..agentRecordMap['saved'] = const AgentRecord(
+          known: true,
+          workspaceAvailable: true,
+        );
+      await rig.controller.attach(next);
+      await controller.continueSession('saved-pane');
+      await tester.idle();
+      final link = controller.linkOf('saved-pane')!;
+      expect(link.canSend, isTrue);
+
+      host.releaseGate.complete();
+      await tester.idle();
+      host.agentState('saved', AgentState.failed, 99);
+      next.agentEvent('saved', AgentEvent.notice('replacement host output'));
+      expect(link.transcript.plainText, 'replacement host output');
+      expect(link.phase, AgentLinkPhase.live);
+      expect(link.canSend, isTrue);
+      expect(link.error, isNull);
+      expect(next.agentReleases, isEmpty);
+      expect(next.agentCloses, isEmpty);
     });
 
     uiTest(

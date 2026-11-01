@@ -478,7 +478,9 @@ class AgentController extends ChangeNotifier implements ViewCloser {
     try {
       final result = await host.continueAgent(id);
       if (!_current(host, generation) || !_owns(link)) {
-        if (!_disposed) _closeOrphan(host, id);
+        if (!_disposed && link.phase != AgentLinkPhase.ended) {
+          _closeOrphan(host, id);
+        }
         return;
       }
       link.adapter = result.adapter;
@@ -528,10 +530,22 @@ class AgentController extends ChangeNotifier implements ViewCloser {
   }
 
   void _bind(HostLink host, AgentLink link, int channel, int generation) {
+    // Continue's reserved session can exit before its RPC continuation runs.
+    // Never bind a released transport or replace its terminal diagnostic.
+    if (link._releasing != null) return;
+    final exit = link._exit;
+    if (exit != null) {
+      if (exit.reason == AgentExitReason.closed ||
+          link.streamFailed ||
+          exit.eventCount == 0) {
+        unawaited(_releaseExited(host, link));
+        return;
+      }
+    } else {
+      if (link.phase != AgentLinkPhase.pending) return;
+      link.phase = AgentLinkPhase.live;
+    }
     link._receivedEvents = 0;
-    link._exit = null;
-    link._releasing = null;
-    link.phase = AgentLinkPhase.live;
     link.saved = false;
     link.hostLost = false;
     _bySession[link.sessionId!] = link;
@@ -752,6 +766,7 @@ class AgentController extends ChangeNotifier implements ViewCloser {
     final link = _bySession[event.sessionId];
     final host = _host;
     if (link == null || host == null || link._exit != null) return;
+    final pending = link.phase == AgentLinkPhase.pending;
     link._exit = event;
     link.phase = AgentLinkPhase.ended;
     link.sending = false;
@@ -772,11 +787,16 @@ class AgentController extends ChangeNotifier implements ViewCloser {
             '${event.error ?? 'Agent failed'}${event.status == null ? '' : ' (status ${event.status})'}${event.resumeReason == null ? '' : ': ${event.resumeReason}'}${event.message == null ? '' : ': ${event.message}'}';
       }
     }
-    if (event.reason == AgentExitReason.closed || link.streamFailed) {
-      // Intentional close or a failed decoder cannot consume a final count.
-      unawaited(_releaseExited(host, link));
-    } else {
-      _drainExited(host, link);
+    // Keep the terminal notification reserved until Continue has returned its
+    // channel. Releasing sooner could enable another run before that earlier
+    // continuation binds. Explicit dismissal can still release immediately.
+    if (!pending) {
+      if (event.reason == AgentExitReason.closed || link.streamFailed) {
+        // Intentional close or a failed decoder cannot consume a final count.
+        unawaited(_releaseExited(host, link));
+      } else {
+        _drainExited(host, link);
+      }
     }
     if (dismiss) removePane(link.paneId);
     _changed();

@@ -61,6 +61,8 @@ Leader exit alone does not establish containment settlement: a surviving descend
 
 ## Continue and saved-record implementation
 
+The desktop reserves the saved session's notification ownership before awaiting Continue. A failed exit received before its response is bound remains terminal: a zero-event exit releases without attaching, while accepted final events attach only for draining and retain the failure diagnostic. Binding cannot revive the ended transport or erase its release ownership. Recovery waits for release; dismissal of an already-ended pending Continue sends no redundant close.
+
 `agent/records` reads the immutable native references without launching an adapter. Saved-record and Continue target-identity checks share the bounded off-isolate workspace resolver: four slots, a five-second timeout, and no synchronous filesystem fallback on the host isolate. A timed-out resolver retains its slot until its native call returns; saturation reports busy rather than queuing interactive requests. Continue checks the recorded target's identity and cleanup gate before resolving a profile or spawning, and reserves a pending record synchronously so simultaneous requests cannot create two owners. If its original profile was removed, it uses the current default without rewriting the saved row.
 
 The adapter initialized by the Continue run determines availability. A qualified, advertised load takes precedence over resume; neither path sends a prompt or falls back to `session/new`. Restoration starts only after attach and uses the ordinary bounded event relay. Load brackets the ordered history with replay markers; resume emits the earlier-messages-not-shown notice. Both deadlines count 60 active seconds, excluding bounded event-consumption pauses.
