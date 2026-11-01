@@ -110,36 +110,76 @@ void main() {
   }
 
   for (final start in [true, false]) {
-    test('${start ? 'Start' : 'Continue'} target replacement during executable resolution refuses before adapter spawn', () async {
-      final executable = testHostExecutable();
-      final launches = readHostLog(profile).where((row) => row['op'] == 'unit-launched').length;
-      final original = Directory('${savedWork.path}-original');
-      addTearDown(() => deleteTree(original));
-      await desktop.resolveFault(executable, hang: true);
-      final pending = rpcFailure(start
-          ? saved.call(Method.agentStart, AgentStartParams(workspaceId: savedWorkspaceId, runtimeProfileId: 'saved').toJson())
-          : saved.call(Method.agentContinue));
-      try {
-        await eventually(() async {
-          final stats = await desktop.connection.request('test/agent.stats', {}) as Json;
-          return (stats['heldResolutions'] as Json)[executable] == 1;
-        }, reason: 'executable probe must hold the already captured target');
-        savedWork.renameSync(original.path);
-        savedWork.createSync();
-        File(joinPath(original.path, 'saved.script.json')).copySync(joinPath(savedWork.path, 'saved.script.json'));
-        await controlResponds();
-      } finally {
-        await desktop.releaseResolve(executable);
-      }
-      final error = await pending;
-      expect(error.reason, start ? ErrorCode.workspaceUnavailable : ErrorCode.resumeUnavailable);
-      if (!start) expect(error.data['resumeReason'], 'target-changed');
-      expect(readHostLog(profile).where((row) => row['op'] == 'unit-launched').length, launches, reason: 'startup code must never execute in the replacement checkout');
-      expect(LedgerView(profile).units(), hasLength(1));
-      expect(agentRows(profile), hasLength(2));
-      expect(agentRows(profile).first, savedRow);
-      await live.close();
-    });
+    for (final outcome in ['replacement', 'missing', 'timeout']) {
+      test(
+        '${start ? 'Start' : 'Continue'} target $outcome during executable resolution refuses before adapter spawn',
+        () async {
+          final executable = testHostExecutable();
+          final launches = readHostLog(profile)
+              .where((row) => row['op'] == 'unit-launched')
+              .length;
+          final original = Directory('${savedWork.path}-original');
+          addTearDown(() => deleteTree(original));
+          await desktop.resolveFault(executable, hang: true);
+          final pending = rpcFailure(
+            start
+                ? saved.call(
+                    Method.agentStart,
+                    AgentStartParams(
+                      workspaceId: savedWorkspaceId,
+                      runtimeProfileId: 'saved',
+                    ).toJson(),
+                  )
+                : saved.call(Method.agentContinue),
+          );
+          try {
+            await eventually(() async {
+              final stats =
+                  await desktop.connection.request('test/agent.stats', {})
+                      as Json;
+              return (stats['heldResolutions'] as Json)[executable] == 1;
+            }, reason: 'executable probe must hold the already captured target');
+            if (outcome == 'timeout') {
+              await desktop.resolveFault(targetPath, delayMs: 3000);
+            } else {
+              savedWork.renameSync(original.path);
+              if (outcome == 'replacement') {
+                savedWork.createSync();
+                File(joinPath(original.path, 'saved.script.json')).copySync(
+                  joinPath(savedWork.path, 'saved.script.json'),
+                );
+              }
+            }
+            await controlResponds();
+          } finally {
+            await desktop.releaseResolve(executable);
+          }
+          final error = await pending.timeout(const Duration(seconds: 5));
+          expect(
+            error.reason,
+            start ? ErrorCode.workspaceUnavailable : ErrorCode.resumeUnavailable,
+          );
+          if (!start) {
+            expect(
+              error.data['resumeReason'],
+              outcome == 'replacement' ? 'target-changed' : 'target-missing',
+            );
+          }
+          if (outcome == 'timeout') expect(error.message, contains('did not answer'));
+          expect(
+            readHostLog(profile)
+                .where((row) => row['op'] == 'unit-launched')
+                .length,
+            launches,
+            reason: 'final target refusal must precede native startup',
+          );
+          expect(LedgerView(profile).units(), hasLength(1));
+          expect(agentRows(profile), hasLength(2));
+          expect(agentRows(profile).first, savedRow);
+          await live.close();
+        },
+      );
+    }
   }
 
   test('Start stalled workspace target leaves native controls responsive and creates no record', () async {

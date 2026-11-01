@@ -605,9 +605,8 @@ class AgentService {
     RuntimeProfile profile, {
     AgentSessionRecord? saved,
   }) async {
-    // Profile detection may have awaited. Recheck through the same bounded
-    // resolver before launch; UnitManager independently verifies the captured
-    // identity when it launches, and the result is compared below.
+    // Profile detection may have awaited. Continue rechecks through the bounded
+    // resolver; UnitManager verifies the captured identity before spawn for both.
     if (saved != null) await _checkContinueTarget(target);
     final executable = await _executables.resolve(profile.executable);
     _available();
@@ -706,12 +705,22 @@ class AgentService {
           'the workspace target changed while the adapter was starting',
         );
       }
-      if (saved != null &&
-          error is RpcException &&
-          error.reason == ErrorCode.cleanupUnresolved) {
-        throw _resumeUnavailable('cleanup-unresolved', error.message);
+      if (error is RpcException) {
+        if (error.reason == ErrorCode.targetUnavailable) {
+          if (saved != null) {
+            throw _resumeUnavailable('target-missing', error.message);
+          }
+          throw RpcException(
+            ErrorCode.workspaceUnavailable,
+            error.message,
+            error.data,
+          );
+        }
+        if (saved != null && error.reason == ErrorCode.cleanupUnresolved) {
+          throw _resumeUnavailable('cleanup-unresolved', error.message);
+        }
+        rethrow;
       }
-      if (error is RpcException) rethrow;
       if (error is AcpProtocolException) {
         throw RpcException(ErrorCode.adapterProtocol, error.message, {
           'stage': stage,
