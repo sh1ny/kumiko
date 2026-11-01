@@ -41,11 +41,15 @@ The POSIX process-backed stdin writer observes process exit separately from nati
 
 Turn-end and Stop-result display messages and stop reasons are bounded to 4 KiB of encoded JSON string content, including escaping. A recoverable oversized native error therefore cannot exceed the control-message limit or prevent the transition back to idle. Exact authentication matching uses the original native error; the separate native diagnostic retains its UTF-8 limit and explicit truncation flag.
 
+Prompt-error dispatch performs exact authentication classification synchronously, bounds the retained native message to 4 KiB UTF-8, and drops arbitrary native `error.data` before completing the request future. Credit-blocked turn handling retains only that bounded exception; completed turns do not retain a separate native-error snapshot.
+
 ## Host agent service implementation
 
 `AgentService` owns each live adapter unit, its reserved event channel and the private session record. Start validates the workspace and runtime before spawning, initializes ACP and creates the native session before inserting a record. Failures settle the process tree and release the channel without recording an incomplete session. Adapter stderr stays in a bounded memory ring; it is never written to the host log.
 
 Attach publishes the current sequenced state after the acknowledgement. The bounded event relay pauses adapter output instead of dropping events; Stop, permission replies and close remain on the control channel. Closing acknowledges entry into `closing` before cancellation, grace and containment settlement. A confirmed close retains the immutable native record but releases the live unit. Desktop or host loss uses the existing ledger reconciliation path, including adapter descendants.
+
+An initial attach remains valid during unexpected-failure settlement, preserving the pending diagnostic and accepted transcript until the final event count can be drained. Explicit close still refuses an initial attach. Complete ACP stdout EOF independently fails the session and starts containment settlement even when the adapter leader remains alive; real leader exit still drains accepted ACP output before sealing its final count.
 
 Unknown native errors retain their code and message in ordinary start/prompt results. Start errors and `agent/turnEnded` carry `nativeCode`, a `nativeMessage` bounded to 4 KiB UTF-8, and `nativeMessageTruncated` when shortened. Qualification rejects truncated diagnostics and waits for the actual prompt result, not its acceptance acknowledgement. An isolated session that starts successfully offers a separately approved minimal model request; a successful model turn is not authentication-failure evidence. Native authentication classification uses the real error recorded in `docs/qualification/claude-agent-acp.md`: an isolated `session/new` succeeded, then `session/prompt` returned code `-32000` and exact message `Authentication required`. The user confirmed both the authentication semantics and the saved evidence; synthetic errors test the classifier but do not establish that match.
 
@@ -57,7 +61,7 @@ Leader exit alone does not establish containment settlement: a surviving descend
 
 ## Continue and saved-record implementation
 
-`agent/records` reads the immutable native references without launching an adapter. Continue checks the recorded target's identity and cleanup gate before resolving a profile or spawning, and reserves a pending record synchronously so simultaneous requests cannot create two owners. If its original profile was removed, it uses the current default without rewriting the saved row.
+`agent/records` reads the immutable native references without launching an adapter. Saved-record and Continue target-identity checks share the bounded off-isolate workspace resolver: four slots, a five-second timeout, and no synchronous filesystem fallback on the host isolate. A timed-out resolver retains its slot until its native call returns; saturation reports busy rather than queuing interactive requests. Continue checks the recorded target's identity and cleanup gate before resolving a profile or spawning, and reserves a pending record synchronously so simultaneous requests cannot create two owners. If its original profile was removed, it uses the current default without rewriting the saved row.
 
 The adapter initialized by the Continue run determines availability. A qualified, advertised load takes precedence over resume; neither path sends a prompt or falls back to `session/new`. Restoration starts only after attach and uses the ordinary bounded event relay. Load brackets the ordered history with replay markers; resume emits the earlier-messages-not-shown notice. Both deadlines count 60 active seconds, excluding bounded event-consumption pauses.
 

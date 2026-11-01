@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:isolate';
 import 'dart:typed_data';
 
@@ -46,9 +47,15 @@ class HostFaults {
   /// Every kill the host would send fails.
   bool get killFails => _active.contains(TestFault.killFails);
 
-  /// Terminating a running unit never finishes, so ending it outlives any
-  /// deadline.
+  /// Terminating a running unit waits while enabled, outliving any deadline
+  /// unless the test explicitly releases it through the existing fault setter.
   bool get terminateHangs => _active.contains(TestFault.terminateHangs);
+  Completer<void>? _terminationRelease;
+
+  Future<void> waitForTerminationRelease() {
+    if (!terminateHangs) return Future<void>.value();
+    return (_terminationRelease ??= Completer<void>()).future;
+  }
 
   /// Writing a profile or the default profile fails.
   bool get profileWriteFails => _active.contains(TestFault.profileWriteFails);
@@ -103,6 +110,10 @@ class HostFaults {
       _active.add(fault);
     } else {
       _active.remove(fault);
+      if (fault == TestFault.terminateHangs) {
+        _terminationRelease?.complete();
+        _terminationRelease = null;
+      }
     }
   }
 }

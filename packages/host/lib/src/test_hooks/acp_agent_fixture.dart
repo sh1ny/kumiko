@@ -24,6 +24,7 @@ Future<int> runAcpAgentFixture(List<String> args) async {
       sink.add(bytes);
       await sink.flush();
     },
+    closeOutput: sink.close,
     writeError: stderr.writeln,
     environment: Platform.environment,
     cwd: Directory.current.path,
@@ -58,6 +59,7 @@ Future<int> runAcpAgentFixture(List<String> args) async {
 
 /// Script format (all optional): agentInfo, agentCapabilities, protocolVersion,
 /// nativeSessionId; errors maps ACP method -> {code,message,data?};
+/// afterNew actions run after the session/new result has been written.
 /// prompt/load/resume are ordered action arrays; cancel is honour|ignore|race;
 /// holdPrompt waits for cancel; reportLaunch + reportEnv:[names] report only
 /// requested metadata; reportFile receives test reports, never host logs.
@@ -66,7 +68,8 @@ Future<int> runAcpAgentFixture(List<String> args) async {
 /// stderr:string, report:true, oversizedBytes:int, exit:int, spawnTree:true,
 /// spawnPipeHolder:true (a sleeper inheriting the actual ACP output handles),
 /// stallStdin:true, flood:{count,update,indexPrefix?}, waitCancel:true,
-/// stopReason:string, gatedUpdate:{update,prefixBytes,releaseFile}.
+/// stopReason:string, gatedUpdate:{update,prefixBytes,releaseFile},
+/// waitFile:path, closeStdout:true (close output while remaining alive).
 /// An indexed flood prepends `<indexPrefix><index>:` to each text update.
 /// A gated update flushes its prefix, reports prefixWritten, then waits for the
 /// owned release file before writing the rest of the same actual ACP line.
@@ -89,6 +92,7 @@ Future<int> runAcpAgentScript({
   String cwd = '',
   Future<void> Function()? spawnTree,
   Future<void> Function()? spawnPipeHolder,
+  Future<void> Function()? closeOutput,
 }) async {
   final reader = StreamIterator<String>(
     input.transform(utf8.decoder).transform(const LineSplitter()),
@@ -216,6 +220,20 @@ Future<int> runAcpAgentScript({
             .writeAsStringSync(value['text'] as String);
       }
       if (action['report'] == true) report(launchReport());
+      if (action['waitFile'] case final String path) {
+        await waitForRelease(File(path));
+      }
+      if (action['closeStdout'] == true) {
+        if (closeOutput == null) {
+          throw StateError('closeStdout requires an output-close callback');
+        }
+        await closeOutput();
+        report({'stdoutClosed': true});
+        // EOF must not be confused with leader exit. Keep reading native
+        // stdin until containment or the test closes the fixture's input.
+        await closed.future;
+        return null;
+      }
       if (action['spawnTree'] == true) {
         if (spawnTree == null) {
           throw StateError('spawnTree requires a process fixture');
@@ -335,6 +353,7 @@ Future<int> runAcpAgentScript({
         report({'newCwd': params['cwd'], 'mcpServers': params['mcpServers']});
         await actions(script['new']);
         await result(id, {'sessionId': native});
+        await actions(script['afterNew']);
       case 'session/load' || 'session/resume':
         native = params['sessionId'] as String;
         report({'method': method, ...params});

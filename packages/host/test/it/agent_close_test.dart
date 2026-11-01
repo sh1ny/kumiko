@@ -432,6 +432,112 @@ void main() {
     },
   );
 
+  test('initial attach during held failure settlement preserves final output and native diagnostic', () async {
+    final (d, a, _) = await open(
+      attach: false,
+      script: {
+        'prompt': [
+          {'update': textUpdate('accepted before failure')},
+          {'oversizedBytes': 1},
+        ],
+      },
+    );
+    await d.setFault(TestFault.terminateHangs);
+    try {
+      await a.prompt('before first attach');
+      await a.wait(Method.agentState, where: (p) => p['state'] == 'failed');
+      await eventually(() async {
+        final stats =
+            await d.connection.request('test/agent.stats', {}) as Json;
+        return ((stats['sessions'] as Json)[a.id] as Json)['ending'] == true;
+      }, reason: 'failure never reached the held containment settlement');
+      expect(a.of(Method.agentExited), isEmpty);
+      expect(LedgerView(profile).units(), hasLength(1));
+      await a.attach();
+      await eventually(() => a.events.length == 2);
+      expect(a.events.last['text'], 'accepted before failure');
+      expect(a.of(Method.agentExited), isEmpty);
+    } finally {
+      await d.setFault(TestFault.terminateHangs, enabled: false);
+    }
+    final exit = await a.wait(
+      Method.agentExited,
+      where: (p) => p['reason'] == 'failed',
+    );
+    expect(exit['error'], ErrorCode.adapterProtocol);
+    expect(exit['message'], contains('FormatException'));
+    expect(exit['eventCount'], 2);
+    expect(a.events.first['text'], 'before first attach');
+    expect(LedgerView(profile).units(), isEmpty);
+    await a.call(Method.agentRelease);
+    expect(agentRows(profile).single['id'], a.id);
+  });
+
+  test(
+    'explicit close still refuses initial attach during held settlement',
+    () async {
+      final (d, a, _) = await open(attach: false);
+      await d.setFault(TestFault.terminateHangs);
+      try {
+        await a.call(Method.agentClose);
+        await eventually(() async {
+          final stats =
+              await d.connection.request('test/agent.stats', {}) as Json;
+          return ((stats['sessions'] as Json)[a.id] as Json)['ending'] == true;
+        });
+        await expectLater(
+          a.call(Method.agentAttach),
+          rpcCode(ErrorCode.unknownSession),
+        );
+      } finally {
+        await d.setFault(TestFault.terminateHangs, enabled: false);
+      }
+      await a.wait(Method.agentExited, where: (p) => p['reason'] == 'closed');
+      await a.call(Method.agentRelease);
+    },
+  );
+
+  for (final pending in [false, true]) {
+    test(
+      'stdout EOF settles a still-live adapter ${pending ? 'during prompt' : 'while idle'}',
+      () async {
+        final release = File(joinPath(work.path, 'close-stdout'));
+        final actions = [
+          if (!pending) {'waitFile': release.path},
+          if (pending) {'update': textUpdate('accepted before EOF')},
+          {'closeStdout': true},
+        ];
+        final (d, a, report) = await open(
+          script: {if (pending) 'prompt': actions else 'afterNew': actions},
+        );
+        final tree = await waitReports(work, 1);
+        if (pending) {
+          await a.prompt('pending at EOF');
+        } else {
+          release.writeAsStringSync('close');
+        }
+        await waitFixture(report, (p) => p['stdoutClosed'] == true);
+        await a.wait(Method.agentState, where: (p) => p['state'] == 'failed');
+        final exited = await a.wait(
+          Method.agentExited,
+          where: (p) => p['reason'] == 'failed',
+        );
+        expect(exited['error'], 'adapter-exited');
+        expect(exited['eventCount'], pending ? 2 : 0);
+        if (pending) {
+          await eventually(() => a.events.length == 2);
+          expect(a.events.last['text'], 'accepted before EOF');
+          expect(a.of(Method.agentTurnEnded), isEmpty);
+        }
+        await expectAllGone(tree);
+        expect(LedgerView(profile).units(), isEmpty);
+        await a.call(Method.agentRelease);
+        expect(agentRows(profile).single['id'], a.id);
+        expect(d.connection.isClosed, isFalse);
+      },
+    );
+  }
+
   test('release before exit is refused and double close while closing acknowledges without a second exit', () async {
     final (_, a, report) = await open(script: {'holdPrompt': true});
     await expectLater(

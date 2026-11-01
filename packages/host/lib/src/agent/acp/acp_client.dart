@@ -22,15 +22,39 @@ class AcpClosedException implements Exception {
 }
 
 class AcpRemoteException implements Exception {
-  AcpRemoteException(this.code, this.message, [this.data]);
+  AcpRemoteException(this.code, this.message, [this.data])
+    : isAuthenticationRequired =
+          code == -32000 && message == 'Authentication required',
+      messageTruncated = false;
+
+  // Prompt errors cross an asynchronous turn/event-enqueue boundary. Classify
+  // the original signature and discard arbitrary data before completing that
+  // Future, while dispatch still owns the large-line permit.
+  factory AcpRemoteException._prompt(int code, String message) {
+    final bounded = clampUtf8(message, 4096);
+    return AcpRemoteException._bounded(
+      code,
+      bounded,
+      code == -32000 && message == 'Authentication required',
+      bounded != message,
+    );
+  }
+
+  AcpRemoteException._bounded(
+    this.code,
+    this.message,
+    this.isAuthenticationRequired,
+    this.messageTruncated,
+  ) : data = null;
+
   final int code;
   final String message;
   final Object? data;
+  final bool messageTruncated;
 
-  /// Exact native signature observed with claude-agent-acp 0.99.1. Callers
-  /// classify it only for session/new, load, resume and prompt errors.
-  bool get isAuthenticationRequired =>
-      code == -32000 && message == 'Authentication required';
+  /// Exact native signature observed with claude-agent-acp 0.99.1, classified
+  /// before any prompt diagnostic truncation.
+  final bool isAuthenticationRequired;
 
   @override
   String toString() => 'ACP error $code: $message';
@@ -139,7 +163,7 @@ class AcpClient {
       expired?.completeError(
         TimeoutException('ACP $method timed out', timeout),
       );
-    });
+    }, prompt: method == 'session/prompt');
     _pending[id] = pending;
     if (!_consuming) pending.resume();
     _send({
@@ -363,7 +387,7 @@ class AcpClient {
       }
       if (!_closed) {
         if (length != 0) throw AcpProtocolException('output ended mid-line');
-        await close();
+        _fail(const AcpClosedException());
       }
     } on Object catch (error) {
       if (!_closed) {
@@ -448,11 +472,16 @@ class AcpClient {
     if (message.containsKey('error')) {
       if (error is! Json) throw AcpProtocolException('invalid error response');
       pending.completeError(
-        AcpRemoteException(
-          error['code']! as int,
-          error['message']! as String,
-          error['data'],
-        ),
+        pending.prompt
+            ? AcpRemoteException._prompt(
+                error['code']! as int,
+                error['message']! as String,
+              )
+            : AcpRemoteException(
+                error['code']! as int,
+                error['message']! as String,
+                error['data'],
+              ),
       );
     } else {
       pending.completer.complete(result as Json);
@@ -512,9 +541,10 @@ class AcpClient {
 }
 
 class _Pending {
-  _Pending(Duration? timeout, this._expired)
+  _Pending(Duration? timeout, this._expired, {required this.prompt})
     : _remaining = timeout,
       _active = timeout == null ? null : Stopwatch();
+  final bool prompt;
   final completer = Completer<Json>();
   Duration? _remaining;
   final void Function() _expired;

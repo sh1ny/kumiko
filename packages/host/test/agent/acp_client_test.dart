@@ -127,6 +127,89 @@ void main() {
     );
   }
 
+  test('consecutive prompt errors release payload ownership before future delivery', () async {
+    final permit = LargeLinePermit();
+    final peers = <AcpPeer>[];
+    final retained = <AcpRemoteException>[];
+    try {
+      for (var i = 0; i < 4; i++) {
+        final peer = AcpPeer(permit: permit);
+        peers.add(peer);
+        final message = i.isEven
+            ? 'Authentication required'
+            : 'Authentication required${'$i' * (1024 * 1024 + 64)}';
+        final outcome = peer.client
+            .prompt('native', 'prompt')
+            .then<Object?>((_) => null, onError: (Object error) => error);
+        final bytes = utf8.encode(
+          '${jsonEncode({
+            'jsonrpc': '2.0',
+            'id': peer.writes.single['id'],
+            'error': {
+              'code': -32000,
+              'message': message,
+              'data': {'unique': '$i' * (2 * 1024 * 1024)},
+            },
+          })}\n',
+        );
+        addChunks(peer, bytes);
+        final error = await outcome;
+        expect(error, isA<AcpRemoteException>());
+        final remote = error! as AcpRemoteException;
+        retained.add(remote);
+        expect(remote.code, -32000);
+        expect(remote.isAuthenticationRequired, i.isEven);
+        expect(remote.messageTruncated, i.isOdd);
+        expect(utf8.encode(remote.message).length, lessThanOrEqualTo(4096));
+        expect(
+          remote.data,
+          isNull,
+          reason: 'a completed prompt must not own arbitrary native data',
+        );
+        expect(peer.client.largeLineOwned, isFalse);
+        expect(peer.client.largeLineWaiting, isFalse);
+        expect(peer.client.isClosed, isFalse);
+      }
+      // Inspect the actual delivered owners, not process RSS or GC timing:
+      // earlier idle consumers coexist with each later large response.
+      expect(retained, hasLength(4));
+      expect(
+        retained.fold<int>(
+          0,
+          (bytes, error) => bytes + utf8.encode(error.message).length,
+        ),
+        lessThanOrEqualTo(4 * 4096),
+      );
+      expect(retained.map((error) => error.data), everyElement(isNull));
+    } finally {
+      for (final peer in peers) {
+        await peer.dispose();
+      }
+    }
+  });
+
+  for (final pending in [false, true]) {
+    test(
+      'complete stdout EOF reports failure ${pending ? 'with pending prompt' : 'while idle'}',
+      () async {
+        final failures = <Object>[];
+        p.client.onFailure = failures.add;
+        Future<Object?>? outcome;
+        if (pending) {
+          outcome = p.client
+              .prompt('native', 'prompt')
+              .then<Object?>((_) => null, onError: (Object error) => error);
+        }
+        await p.input.close();
+        await p.client.done;
+        expect(failures, hasLength(1));
+        expect(failures.single, isA<AcpClosedException>());
+        expect(p.client.failure, same(failures.single));
+        if (pending) expect(await outcome, same(failures.single));
+      },
+    );
+  }
+
   test('initialize advertises only reviewed v1 client capabilities', () async {
     final response = p.client.initialize();
     expect(p.writes.single['params'], {

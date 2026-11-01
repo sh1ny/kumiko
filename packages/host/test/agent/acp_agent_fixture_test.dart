@@ -270,6 +270,64 @@ void main() {
       });
     },
   );
+  test('script fixture closes stdout but keeps handling stdin until containment ends', () async {
+    final input = StreamController<List<int>>();
+    final output = StreamController<List<int>>();
+    final stdoutClosed = Completer<void>();
+    final cancelReceived = Completer<void>();
+    final errors = <String>[];
+    var finished = false;
+    final run =
+        runAcpAgentScript(
+          script: {
+            'prompt': [
+              {'closeStdout': true},
+            ],
+          },
+          args: [],
+          input: input.stream,
+          write: (bytes) async => output.add(bytes),
+          closeOutput: output.close,
+          writeError: errors.add,
+          report: (value) {
+            if (value['stdoutClosed'] == true) stdoutClosed.complete();
+            if (value['cancelReceived'] == true) cancelReceived.complete();
+          },
+        ).then((status) {
+          finished = true;
+          return status;
+        });
+    final client = AcpClient(
+      input: output.stream,
+      write: (bytes) async => input.add(bytes),
+    );
+    final prompt = client
+        .prompt('native', 'pending')
+        .then<Object?>((_) => null, onError: (Object error) => error);
+    try {
+      await stdoutClosed.future;
+      expect(await prompt, isA<AcpClosedException>());
+      expect(finished, isFalse);
+      input.add(
+        utf8.encode(
+          '${jsonEncode({
+            'jsonrpc': '2.0',
+            'method': 'session/cancel',
+            'params': {'sessionId': 'native'},
+          })}\n',
+        ),
+      );
+      await cancelReceived.future;
+      expect(finished, isFalse);
+      expect(errors, isEmpty);
+    } finally {
+      await client.close();
+      await input.close();
+      expect(await run, 0);
+      await output.close();
+    }
+  });
+
   test(
     'script fixture engine exit before initialize reports status and stderr',
     () async {

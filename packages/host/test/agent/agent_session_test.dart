@@ -256,10 +256,6 @@ void main() {
     expect(wire['nativeCode'], -9876);
     expect(wire['nativeMessage'], 'synthetic sign-in wording not real auth');
     expect(wire['nativeMessageTruncated'], isNot(true));
-    expect(
-      s.lastTurnError,
-      isA<AcpRemoteException>().having((e) => e.code, 'code', -9876),
-    );
     expect(events.first.text, 'hello');
   });
   test('observed prompt authentication error returns idle with auth-required and exact native diagnostics', () async {
@@ -272,12 +268,6 @@ void main() {
     expect(ends.single.nativeCode, -32000);
     expect(ends.single.nativeMessage, 'Authentication required');
     expect(ends.single.nativeMessageTruncated, isNot(isTrue));
-    expect(
-      s.lastTurnError,
-      isA<AcpRemoteException>()
-          .having((e) => e.code, 'code', -32000)
-          .having((e) => e.message, 'message', 'Authentication required'),
-    );
     expect(s.sessionId, 'host');
     expect(s.nativeSessionId, 'native');
     expect(p.client.isClosed, isFalse);
@@ -319,6 +309,18 @@ void main() {
     expect(ends.single.error, 'adapter-error');
     expect(s.state, AgentState.idle);
   });
+  test(
+    'stdout EOF fails an idle session without requiring another prompt',
+    () async {
+      await p.input.close();
+      await p.client.done;
+      expect(s.state, AgentState.failed);
+      expect(s.failure, isA<AcpClosedException>());
+      expect(ends, isEmpty);
+      expect(() => s.acceptPrompt('after EOF'), throwsA(isA<RpcException>()));
+    },
+  );
+
   test('more than 16 permissions cancels extra and emits notice', () async {
     s.acceptPrompt('hello');
     for (var i = 0; i < 17; i++) {

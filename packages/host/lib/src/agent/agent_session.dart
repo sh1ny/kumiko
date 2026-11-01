@@ -66,7 +66,6 @@ class AgentSession {
   String? _nativeSessionId;
   String? get nativeSessionId => _nativeSessionId;
   Object? failure;
-  Object? lastTurnError;
   final _permissions = <String, _Permission>{};
   int get pendingPermissionCount => _permissions.length;
   int _requestId = 0;
@@ -131,7 +130,6 @@ class AgentSession {
     _hasTurn = true;
     _stopped = false;
     _notConfirmed = false;
-    lastTurnError = null;
     _set(AgentState.running);
     _enqueue(encodeAgentEvent(AgentEvent.text(AgentEventKind.user, text)))
         .ignore();
@@ -172,7 +170,6 @@ class AgentSession {
 
   Future<void> _finish(int turn, String? reason, Object? error) async {
     if (!_hasTurn || turn != _turn || _disposed || _terminal) return;
-    lastTurnError = error;
     if (error != null && client.isClosed) {
       fail(error);
       return;
@@ -181,6 +178,12 @@ class AgentSession {
       encodeAgentEvent(
         reason != null
             ? AgentEvent.turn(reason)
+            : error is AcpRemoteException && error.messageTruncated
+            ? AgentEvent.fromJson({
+                'kind': AgentEventKind.notice.name,
+                'text': error.toString(),
+                'truncated': true,
+              })
             : AgentEvent.notice(error.toString()),
       ),
     );
@@ -188,8 +191,8 @@ class AgentSession {
     _deadline?.cancel();
     _deadline = null;
     // Display control fields have a small encoded budget, including JSON
-    // escaping. Keep the full native values for classification and diagnostics;
-    // the transcript event above has its own independent display bounds.
+    // escaping. Prompt errors were classified and bounded synchronously by ACP
+    // dispatch, so this credit-blocked frame never owns the native envelope.
     final stopReason = reason == null ? null : clampJsonString(reason, 4096);
     final message = error == null ? null : _message(error);
     if (_stopped) {
@@ -225,7 +228,8 @@ class AgentSession {
         nativeCode: error is AcpRemoteException ? error.code : null,
         nativeMessage: nativeMessage,
         nativeMessageTruncated:
-            error is AcpRemoteException && nativeMessage != error.message,
+            error is AcpRemoteException &&
+            (error.messageTruncated || nativeMessage != error.message),
       ),
     );
     _set(AgentState.idle);

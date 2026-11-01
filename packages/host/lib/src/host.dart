@@ -410,7 +410,8 @@ class Host {
           AgentSessionParams.fromJson(params),
         )).toJson();
       case Method.agentRecords:
-        return _agents!.records(AgentRecordsParams.fromJson(params)).toJson();
+        return (await _agents!.records(AgentRecordsParams.fromJson(params)))
+            .toJson();
       case Method.agentAttach:
         _agents!.attach(AgentSessionParams.fromJson(params));
         return <String, Object?>{};

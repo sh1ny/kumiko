@@ -14,6 +14,7 @@ import '../settler.dart';
 import '../store/store.dart';
 import '../unit_manager.dart';
 import '../workspace_service.dart';
+import '../workspace_resolver.dart';
 import 'acp/acp_client.dart';
 import 'agent_session.dart';
 import 'executable_resolver.dart';
@@ -296,6 +297,7 @@ class AgentService {
   Json snapshot() => {
     for (final entry in _agents.entries)
       entry.key: {
+        'ending': entry.value.ending,
         'paused': entry.value.relay.isPaused,
         'queuedBytes': entry.value.relay.queuedBytes,
         'channelQueuedBytes': entry.value.relay.channelQueuedBytes,
@@ -424,7 +426,7 @@ class AgentService {
     }
   }
 
-  AgentRecordsResult records(AgentRecordsParams params) {
+  Future<AgentRecordsResult> records(AgentRecordsParams params) async {
     _available();
     if (params.sessionIds.length > maxAgentRecordIds) {
       throw RpcException(
@@ -432,30 +434,54 @@ class AgentService {
         'at most $maxAgentRecordIds session ids',
       );
     }
-    final records = <String, AgentRecord>{};
-    for (final id in params.sessionIds) {
-      final record = _record(id);
-      final target = record == null
-          ? null
-          : directoryIdentity(record.target.path);
-      records[id] = AgentRecord(
+    // Start each check without queueing: the shared resolver admits at most
+    // four calls, including timed-out calls that still own their slots. A batch
+    // cannot multiply the timeout by its number of saved panes.
+    final records = await Future.wait([
+      for (final id in params.sessionIds.toSet()) _inspectRecord(id),
+    ]);
+    return AgentRecordsResult(Map.fromEntries(records));
+  }
+
+  Future<MapEntry<String, AgentRecord>> _inspectRecord(String id) async {
+    final record = _record(id);
+    final result = record == null
+        ? null
+        : await workspaces.resolver.resolve(record.target.path, queue: false);
+    return MapEntry(
+      id,
+      AgentRecord(
         known: record != null,
         targetPath: record?.target.path,
         adapterVersion: record?.adapter.version,
         workspaceAvailable:
-            target is ResolvedDirectory && target.id == record!.target.identity,
-      );
-    }
-    return AgentRecordsResult(records);
+            result is ResolveFound &&
+            result.directory.id == record!.target.identity,
+      ),
+    );
   }
 
-  void _checkContinueTarget(AgentTarget saved) {
-    final target = directoryIdentity(saved.path);
-    if (target is! ResolvedDirectory) {
-      throw _resumeUnavailable(
-        'target-missing',
-        'the saved session target is missing',
-      );
+  Future<void> _checkContinueTarget(AgentTarget saved) async {
+    final result = await workspaces.resolver.resolve(saved.path, queue: false);
+    final ResolvedDirectory target;
+    switch (result) {
+      case ResolveFound(:final directory):
+        target = directory;
+      case ResolveMissing():
+        throw _resumeUnavailable(
+          'target-missing',
+          'the saved session target is missing',
+        );
+      case ResolveTimedOut():
+        throw _resumeUnavailable(
+          'target-missing',
+          'the saved session target did not answer in time',
+        );
+      case ResolveBusy() || ResolveStarved():
+        throw RpcException(
+          ErrorCode.busy,
+          'the host is resolving too many folders',
+        );
     }
     if (target.id != saved.identity) {
       throw _resumeUnavailable(
@@ -480,7 +506,6 @@ class AgentService {
         'the saved session is unknown',
       );
     }
-    _checkContinueTarget(record.target);
     final previous = _agents[record.id];
     if (_continuing.contains(record.id) ||
         (previous != null && !previous.exited)) {
@@ -490,10 +515,12 @@ class AgentService {
         {'sessionId': record.id},
       );
     }
-    // Synchronous, before profile lookup's first await. A second request cannot
-    // spawn while this record is being initialized.
+    // Reserve before target resolution's first await. A second request cannot
+    // resolve or spawn while this record is being initialized.
     _continuing.add(record.id);
     try {
+      await _checkContinueTarget(record.target);
+      _available();
       if (previous != null) _forget(previous);
       var profile = record.runtimeProfileId == null
           ? null
@@ -565,9 +592,10 @@ class AgentService {
     RuntimeProfile profile, {
     AgentSessionRecord? saved,
   }) async {
-    // Profile detection may have awaited. Recheck synchronously immediately
-    // before the shared launch path can spawn in the captured directory.
-    if (saved != null) _checkContinueTarget(target);
+    // Profile detection may have awaited. Recheck through the same bounded
+    // resolver before launch; UnitManager independently verifies the captured
+    // identity when it launches, and the result is compared below.
+    if (saved != null) await _checkContinueTarget(target);
     final executable = ExecutableResolver().resolve(profile.executable);
     _available();
     final reservation = connection.reserveChannels(1);
@@ -787,8 +815,11 @@ class AgentService {
 
   void attach(AgentSessionParams params) {
     final a = _require(params.sessionId, allowExited: true);
-    final earlyExit =
-        !a.attached && a.exitNotification?.reason == AgentExitReason.failed;
+    // Failure settlement still owns the returned channel and its accepted
+    // transcript. The first attach is valid throughout that interval, not
+    // only after the final exit notification has been assembled. Explicit
+    // close transitions to closing and must continue to refuse attach.
+    final earlyExit = !a.attached && a.session.state == AgentState.failed;
     if (a.ending && !earlyExit) {
       throw RpcException(ErrorCode.unknownSession, 'session is closing');
     }
@@ -983,13 +1014,24 @@ class AgentService {
   }();
 
   Future<void> _watchExit(_Agent a) async {
+    // EOF is independently terminal even if the adapter keeps running, or if
+    // output closed just before AgentSession installed its failure callback.
+    // Explicit close/failure settlement already owns teardown when ending.
+    unawaited(
+      a.io.client.done.then((_) {
+        if (!_current(a) || a.ending) return;
+        final error = a.io.client.failure ?? const AcpClosedException();
+        a.session.fail(error);
+        _fail(a, error);
+      }),
+    );
     final status = await a.io.launch.unit.exitCode;
     a.io.status = status;
     if (!_current(a) || a.ending) return;
     // Native exit is authoritative even when ACP is still admitting an
     // expanded final update under backpressure. Fail control state now, but
     // keep the session's event FIFO and ACP reader alive for lossless drain.
-    // The AcpClosedException callback does not start active termination.
+    // Until EOF, this synthetic failure must not interrupt accepted output.
     a.session.fail(const AcpClosedException());
     // EOF owns the separate final-count lifecycle: buffered updates must
     // finish normalization/admission before sealing or disposing their pipes.
@@ -1000,9 +1042,15 @@ class AgentService {
 
   void _fail(_Agent a, Object error) {
     if (!_current(a) || a.ending || a.exited || a.closeFailed) return;
-    // EOF can precede process.exitCode by a scheduler turn. Its watcher owns
-    // the status-bearing exit; parse/write failures require active termination.
-    if (error is AcpClosedException) return;
+    // A real leader exit publishes Failed immediately, but its ACP reader may
+    // still be admitting accepted final updates under credit backpressure.
+    // Only that synthetic pre-EOF failure waits for lossless drain. Actual
+    // EOF (including a still-live leader) always starts containment settlement.
+    if (error is AcpClosedException &&
+        a.io.status != null &&
+        !a.io.client.isClosed) {
+      return;
+    }
     unawaited(_finishFailure(a, error));
   }
 

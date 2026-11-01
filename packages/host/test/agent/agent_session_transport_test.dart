@@ -140,6 +140,99 @@ void main() {
     expect(ends.last.error, isNull);
   }
 
+  test(
+    'different stalled and idle sessions keep only bounded prompt diagnostics',
+    () async {
+      final peers = <AcpPeer>[];
+      final sessions = <AgentSession>[];
+      final credits = <Completer<void>>[];
+      final completions = <List<AgentTurnEndedParams>>[];
+      try {
+        for (var i = 0; i < 4; i++) {
+          final nextPeer = AcpPeer();
+          peers.add(nextPeer);
+          final credit = Completer<void>();
+          credits.add(credit);
+          final completed = <AgentTurnEndedParams>[];
+          completions.add(completed);
+          final nextSession = AgentSession(
+            sessionId: 'session-$i',
+            client: nextPeer.client,
+            onState: (_) {},
+            onPermissionRequested: (_) {},
+            onPermissionResolved: (_) {},
+            onStopResult: (_) {},
+            onTurnEnded: completed.add,
+            enqueueEvents: (_) => credit.future,
+          )..ready(nativeSessionId: 'native');
+          sessions.add(nextSession);
+          nextSession.acceptPrompt('prompt $i');
+          nextPeer.send({
+            'jsonrpc': '2.0',
+            'id': nextPeer.writes.single['id'],
+            'error': {
+              'code': -32000,
+              'message': i.isEven
+                  ? 'Authentication required'
+                  : 'Authentication required${'$i' * (1024 * 1024 + 64)}',
+              'data': {'payload': '$i' * (2 * 1024 * 1024)},
+            },
+          });
+          await pumpAcp();
+          expect(nextPeer.client.largeLineOwned, isFalse);
+          expect(nextSession.state, AgentState.running);
+          expect(completed, isEmpty);
+          if (i.isEven) {
+            credit.complete();
+            await pumpAcp();
+            expect(nextSession.state, AgentState.idle);
+          }
+        }
+        // Hold earlier stalled sessions while later large errors complete.
+        // The transport regression inspects the bounded delivered exception;
+        // this checks the same path through credit-blocked turn ownership.
+        expect(sessions.map((s) => s.state), [
+          AgentState.idle,
+          AgentState.running,
+          AgentState.idle,
+          AgentState.running,
+        ]);
+        for (var i = 0; i < credits.length; i++) {
+          if (!credits[i].isCompleted) credits[i].complete();
+        }
+        await pumpAcp();
+        for (var i = 0; i < sessions.length; i++) {
+          final end = completions[i].single;
+          expect(sessions[i].state, AgentState.idle);
+          expect(
+            end.error,
+            i.isEven ? ErrorCode.authRequired : 'adapter-error',
+          );
+          expect(end.nativeMessageTruncated, i.isOdd);
+          expect(
+            utf8.encode(end.nativeMessage!).length,
+            lessThanOrEqualTo(4096),
+          );
+          expect(
+            utf8.encode(jsonEncode(end.message)).length - 2,
+            lessThanOrEqualTo(4096),
+          );
+          expect(peers[i].client.isClosed, isFalse);
+        }
+      } finally {
+        for (final credit in credits) {
+          if (!credit.isCompleted) credit.complete();
+        }
+        for (final nextSession in sessions) {
+          nextSession.dispose();
+        }
+        for (final nextPeer in peers) {
+          await nextPeer.dispose();
+        }
+      }
+    },
+  );
+
   for (final stopped in [false, true]) {
     for (final escaped in [false, true]) {
       test(
@@ -182,12 +275,11 @@ void main() {
             lessThanOrEqualTo(4096),
           );
           expect(
-            session.lastTurnError,
-            isA<AcpRemoteException>().having(
-              (e) => e.message,
-              'unmodified native source for exact authentication matching',
-              message,
-            ),
+            events
+                .where((e) => e.kind == AgentEventKind.notice)
+                .single
+                .truncated,
+            isTrue,
           );
           expect(events.first.text, 'first prompt');
           expect(events.any((e) => e.kind == AgentEventKind.notice), isTrue);
