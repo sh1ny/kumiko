@@ -85,6 +85,8 @@ Automated fixture starts explicitly select their scripted runtime profile or iso
 
 The ledger identity-failure fixture waits for explicit fault release before killing its leader. The test first observes all three process reports, then releases failure and verifies containment cleanup. Process startup speed is not assumed from a fixed one-second delay.
 
+The native agent harness settles focused text input before dispatching the real application-exit request, avoiding the observed disposed-listener failure during Flutter's snapshot-based asynchronous exit dispatch. Reopen verification still exercises application shutdown, immutable layout restoration, no automatic agent launch, and explicit history loading.
+
 ## Desktop chat implementation
 
 Only the ordered event channel appends canonical user/reply/turn/notice transcript records. Priority turn-end control updates action and authentication metadata without synthesizing duplicate or out-of-order transcript entries. Native sign-in guidance is rendered outside the transcript, and Retry resends the original prompt without replacing an unsent draft.

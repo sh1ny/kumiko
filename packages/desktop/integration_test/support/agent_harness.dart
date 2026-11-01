@@ -115,6 +115,10 @@ class AgentHarness {
   }
 
   Future<void> quit(WidgetTester tester) async {
+    // Settle text-input focus teardown before Flutter snapshots lifecycle
+    // observers for asynchronous exit dispatch.
+    FocusManager.instance.primaryFocus?.unfocus();
+    await tester.pumpAndSettle();
     expect(await tester.runAsync(tester.binding.handleRequestAppExit), AppExitResponse.exit);
     await tester.pumpWidget(const SizedBox());
     link = null;
