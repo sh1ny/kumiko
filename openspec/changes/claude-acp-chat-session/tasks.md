@@ -382,16 +382,20 @@ Test locations:
 
 ## 11. Integration checks and planning files
 
-- [ ] 11.1 Update `openspec/architecture.md`:
+- [x] 11.1 Update `openspec/architecture.md`:
   - replace the "Agent session events" resource-bound row with the real numbers (event channel, 1 MiB queue, 16 MiB line and the large-line permit, 256 KiB events, stop 10 s, start 60 s, desktop 2,000 entries or 8 MiB, the memory worst case);
   - add rows for the session record, runtime profiles and the adapter stderr ring;
   - add the adapter unit to the components table;
   - add `docs/qualification/` to the boundaries.
 
   Verify the rows match design.md Resource Bounds and State & Ownership.
-- [ ] 11.2 Set ADR 0012 to `Status: accepted` with the date and update its index row. Verify the ADR matches the built behaviour (D1, D4, D5, D10, D11).
+- [x] 11.2 Set ADR 0012 to `Status: accepted` with the date and update its index row. Verify the ADR matches the built behaviour (D1, D4, D5, D10, D11).
 - [ ] 11.3 Run the full CI workflow on Windows, Linux and macOS: audit with `check_qualification.dart`, analyze with `--fatal-infos`, every package's tests, the desktop integration tests, and the release build with the bundled host. Verify it is green and `openspec validate claude-acp-chat-session --strict` passes.
+  - Local Windows verification (2026-11-01): tool 105, domain 115, host_protocol 113 (1 platform skip), process_containment 41 (13 platform skips), host 350 (12 platform/qualification skips), desktop 251 passed. All eight native desktop integration files and the profile throughput run passed; the release desktop built with its bundled release host, ConPTY and OpenConsole.
+  - The stand-in now explicitly selects its scripted runtime profile, so detecting an installed real adapter cannot redirect the fixture prompt. The native agent integration files use the bundled test host; other native integration files retain the release host. Both failures were observed before the corrections, then the affected paths and the broader Windows pipeline passed.
+  - Owned `packages`/`tool` fatal-info analysis and desktop analysis passed. Root analysis also scans the unrelated, stale `houndshark` checkout and fails on its old `HostLink` fake; that checkout and analyzer configuration were left untouched. Linux/macOS CI has not run; this task remains incomplete.
 - [ ] 11.4 Confirm every test map row is green, or the qualification check passes for its user-verified part. Verify by reading the table against the test run output. M1 cannot close until `check_qualification.dart` prints QUALIFIED.
+  - The Windows map is verified; the two native POSIX detector rows remain red pending 11.3. The real-adapter audit prints ACCEPTED, with Linux/macOS user observations explicitly unproven; no M1 closure is claimed.
 
 ## Workflow follow-up
 
