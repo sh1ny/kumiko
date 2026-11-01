@@ -5,15 +5,16 @@ import 'dart:typed_data';
 
 import 'windows_pipe_io.dart';
 
-/// Maximum native read/write chunk, and maximum queued caller input.
+/// Maximum delivered output/write chunk, and maximum queued caller input.
 const unitPipeChunkSize = 64 * 1024;
 const unitPipeQueueLimit = 1024 * 1024;
 
 /// Caller-owned standard I/O of a unit launched with `pipes: true`.
 ///
 /// stdout and stderr are independent, single-subscription byte streams.
-/// Pausing either stream stops that pipe's reader; Windows permits only one
-/// 64 KiB native read in flight. Stdin writes are ordered, acknowledged only
+/// Output chunks are at most 64 KiB. Pausing either stream stops its reader;
+/// POSIX retains one SDK read while zero-copy views drain, and Windows permits
+/// only one 64 KiB native read in flight. Stdin writes are ordered, acknowledged only
 /// after the OS accepts them, and bounded to one native chunk plus 1 MiB of
 /// queued input. No bytes are logged or discarded by the unit manager.
 ///
@@ -260,6 +261,22 @@ class _Input {
   int offset = 0;
 }
 
+Stream<Uint8List> _chunks(Stream<List<int>> source) async* {
+  await for (final bytes in source) {
+    final data = bytes is Uint8List ? bytes : Uint8List.fromList(bytes);
+    if (data.length <= unitPipeChunkSize) {
+      yield data;
+      continue;
+    }
+    for (var offset = 0; offset < data.length; offset += unitPipeChunkSize) {
+      final end = data.length - offset > unitPipeChunkSize
+          ? offset + unitPipeChunkSize
+          : data.length;
+      yield Uint8List.sublistView(data, offset, end);
+    }
+  }
+}
+
 /// A forwarding subscription lets disposal also release never-listened pipes,
 /// without attempting a second listen on streams already consumed by callers.
 class _ProcessOutput {
@@ -267,12 +284,8 @@ class _ProcessOutput {
     _controller = StreamController<Uint8List>(
       sync: true,
       onListen: () {
-        _subscription = source.listen(
-          (bytes) {
-            _controller.add(
-              bytes is Uint8List ? bytes : Uint8List.fromList(bytes),
-            );
-          },
+        _subscription = _chunks(source).listen(
+          _controller.add,
           onError: _controller.addError,
           onDone: () {
             _ended = true;

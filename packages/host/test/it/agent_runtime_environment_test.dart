@@ -159,10 +159,11 @@ void main() {
           );
           expect(native['nativePath'], path);
           expect(
-            File((native['nodeProbe'] as Map)['executable'] as String)
-                .absolute
-                .path,
-            File(joinPath(bin.path, _nodeName)).absolute.path,
+            await FileSystemEntity.identical(
+              (native['nodeProbe'] as Map)['executable'] as String,
+              joinPath(bin.path, _nodeName),
+            ),
+            isTrue,
           );
           expect(
             (await waitFixture(report, (p) => p.containsKey('env')))['env'],

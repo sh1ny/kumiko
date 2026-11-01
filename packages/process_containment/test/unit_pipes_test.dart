@@ -6,6 +6,42 @@ import 'package:process_containment/process_containment.dart';
 import 'package:test/test.dart';
 
 void main() {
+  test('process output splits large SDK reads without reading ahead', () async {
+    final bytes = Uint8List.fromList(
+      List.generate(2 * unitPipeChunkSize + 17, (i) => i % 251),
+    );
+    var reads = 0;
+    Stream<List<int>> output() async* {
+      reads++;
+      yield bytes;
+      reads++;
+      yield [253, 254, 255];
+    }
+
+    final input = _BlockedClose()..release.complete();
+    final process = _ControlledProcess(IOSink(input), stdout: output());
+    final pipes = UnitPipes.process(process);
+    final chunks = StreamIterator(pipes.stdout);
+    addTearDown(() async {
+      await chunks.cancel();
+      process.exited.complete(0);
+      await pipes.close();
+    });
+    final received = BytesBuilder(copy: false);
+    for (final size in [unitPipeChunkSize, unitPipeChunkSize, 17]) {
+      expect(await chunks.moveNext(), isTrue);
+      expect(chunks.current.length, size);
+      expect(reads, 1);
+      received.add(chunks.current);
+    }
+    expect(await chunks.moveNext(), isTrue);
+    expect(chunks.current, [253, 254, 255]);
+    received.add(chunks.current);
+    expect(await chunks.moveNext(), isFalse);
+    expect(reads, 2);
+    expect(received.takeBytes(), [...bytes, 253, 254, 255]);
+  });
+
   test('process exit settles queued stdin writes when native flush never completes', () async {
     final input = _BlockedInput();
     final process = _ControlledProcess(IOSink(input));
@@ -60,14 +96,14 @@ void main() {
 /// Models the SDK's destroyed process socket: its outstanding operation can
 /// stay pending even though exitCode has already completed.
 class _ControlledProcess implements Process {
-  _ControlledProcess(this.stdin);
+  _ControlledProcess(this.stdin, {this.stdout = const Stream.empty()});
 
   final exited = Completer<int>();
 
   @override
   final IOSink stdin;
   @override
-  final Stream<List<int>> stdout = const Stream.empty();
+  final Stream<List<int>> stdout;
   @override
   final Stream<List<int>> stderr = const Stream.empty();
   @override
