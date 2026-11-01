@@ -105,6 +105,8 @@ Chat panes persist only `sessionId` and `runtimeName`. Restore reads saved recor
 
 The generic `ViewCloser` contract replaces the terminal-only close branch. Agent and terminal panes share one mixed-tab confirmation while retaining their own settlement behavior. The workspace-bound Claude Code launcher uses runtime profile selection and the editor's argv-only configuration; missing capability, profile or workspace remains visible instead of selecting a fallback.
 
+An outstanding prompt submission also requires close confirmation: the host may already have accepted it before the acknowledgement or sequenced Running state arrives. This conservative close policy does not change the displayed status. Cancel preserves the pane and sends no close or Stop; a rejected submission releases the sending latch and restores idle-close behavior.
+
 ## Protocol implementation
 
 `host_protocol` owns the runtime/agent control DTOs and `AgentEvent` codec. Events are UTF-8 newline-delimited JSON; use `encodeAgentEvent` to apply encoded-size bounds, and one `AgentEventDecoder` per received channel. Register the inbound channel before sending `agent/attach`, and grant its initial credit only after attach succeeds. Existing reservation and credit primitives provide the handshake without another transport abstraction.

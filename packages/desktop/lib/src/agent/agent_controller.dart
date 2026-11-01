@@ -752,6 +752,9 @@ class AgentController extends ChangeNotifier implements ViewCloser {
   String? warnsOnClose(String paneId) {
     final link = _links[paneId];
     if (link == null || !link.connected || !link.live) return null;
+    // Submission can already be accepted while its ACK/state is in flight.
+    // Preserve confirmation without deriving a speculative Running status.
+    if (link.sending) return agentCloseWarning;
     return switch (link.state) {
       AgentState.running ||
       AgentState.waitingApproval ||

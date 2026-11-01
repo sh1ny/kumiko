@@ -139,6 +139,18 @@ class _RejectingPromptHost extends FakeHostLink {
   }
 }
 
+class _PendingPromptHost extends FakeHostLink {
+  _PendingPromptHost()
+    : super(hello: helloResult(capabilities: agentCapabilities));
+  final acknowledgement = Completer<void>();
+
+  @override
+  Future<void> promptAgent(AgentPromptParams params) async {
+    await super.promptAgent(params);
+    await acknowledgement.future;
+  }
+}
+
 void main() {
   group('agent controller', () {
     uiTest(
@@ -913,6 +925,99 @@ void main() {
         expect(host.agentReleases, isEmpty);
       },
     );
+
+    uiTest(
+      'pending prompt submission requires pane and mixed-tab close confirmation',
+      (tester) async {
+        final host = _PendingPromptHost();
+        addTearDown(() {
+          if (!host.acknowledgement.isCompleted) {
+            host.acknowledgement.complete();
+          }
+        });
+        host.records.add(workspaceRecord('A'));
+        host.storedLayout = jsonOf(docOf([], selected: 'A'));
+        final rig = await controllerRig(tester, host);
+        await start(rig, tester);
+        final pane = chat(rig);
+        final id = session(rig);
+        final link = agents(rig).linkOf(pane.id)!;
+        final submitting = agents(rig)
+            .send(pane.id, 'work not yet acknowledged');
+        expect(link.sending, isTrue);
+        expect(link.state, AgentState.idle);
+        final before = jsonOf(rig.layout);
+        await rig.controller.requestClose([pane.id], (warnings) async {
+          expect(warnings.single.reason, agentCloseWarning);
+          return false;
+        });
+        expect(jsonOf(rig.layout), before);
+        expect(host.agentCloses, isEmpty);
+        expect(host.agentStops, isEmpty);
+        await rig.controller.splitWithTerminal(
+          pane.id,
+          SplitDirection.horizontal,
+        );
+        await flush(tester);
+        await rig.controller.requestClose(
+          rig.controller.panesOfTab(rig.layout.activeTab!),
+          (warnings) async {
+            expect(warnings, hasLength(2));
+            expect(
+              warnings.map((warning) => warning.reason),
+              contains(agentCloseWarning),
+            );
+            return false;
+          },
+        );
+        expect(host.agentCloses, isEmpty);
+        expect(host.closed, isEmpty);
+        host.acknowledgement.complete();
+        await submitting;
+        expect(link.sending, isTrue);
+        await rig.controller.requestClose(
+          rig.controller.panesOfTab(rig.layout.activeTab!),
+          (warnings) async {
+            expect(
+              warnings.map((warning) => warning.reason),
+              contains(agentCloseWarning),
+            );
+            return true;
+          },
+        );
+        expect(host.agentCloses, [id]);
+        expect(host.closed, hasLength(1));
+      },
+    );
+
+    uiTest('rejected pending prompt restores idle close without confirmation', (
+      tester,
+    ) async {
+      final host = _PendingPromptHost();
+      addTearDown(() {
+        if (!host.acknowledgement.isCompleted) host.acknowledgement.complete();
+      });
+      host.records.add(workspaceRecord('A'));
+      host.storedLayout = jsonOf(docOf([], selected: 'A'));
+      final rig = await controllerRig(tester, host);
+      await start(rig, tester);
+      final pane = chat(rig);
+      final id = session(rig);
+      final link = agents(rig).linkOf(pane.id)!;
+      link.prompt.text = 'rejected draft';
+      final submitting = agents(rig).send(pane.id, link.prompt.text);
+      host.acknowledgement.completeError(
+        RpcException(ErrorCode.invalidParams, 'rejected'),
+      );
+      await submitting;
+      expect(link.sending, isFalse);
+      expect(link.prompt.text, 'rejected draft');
+      await rig.controller.requestClose([
+        pane.id,
+      ], (_) async => fail('rejected idle work must not warn'));
+      expect(host.agentCloses, [id]);
+      expect(host.agentStops, isEmpty);
+    });
 
     for (final state in [
       AgentState.running,
