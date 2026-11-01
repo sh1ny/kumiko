@@ -10,6 +10,7 @@ import 'host_log.dart';
 import 'host_options.dart';
 import 'ledger.dart';
 import 'settler.dart';
+import 'workspace_resolver.dart';
 
 /// What the desktop told the host in `hello` that unit launches depend on.
 class DesktopInfo {
@@ -43,6 +44,7 @@ class UnitManager {
     required this.faults,
     required this.settler,
     required this.options,
+    required this.resolver,
   });
 
   final Ledger ledger;
@@ -50,6 +52,7 @@ class UnitManager {
   final HostFaults faults;
   final Settler settler;
   final HostOptions options;
+  final WorkspaceResolver resolver;
 
   /// Units with a handle: running, or unresolved and retryable.
   final Map<String, LiveUnit> live = {};
@@ -132,13 +135,27 @@ class UnitManager {
 
     _launching++;
     try {
-      final identity = directoryIdentity(target);
-      if (identity is! ResolvedDirectory) {
-        throw RpcException(
-          ErrorCode.targetUnavailable,
-          'cannot resolve target $target: ${(identity as TargetUnavailable).detail}',
-          {'target': target},
-        );
+      final resolved = await resolver.resolve(target, queue: false);
+      if (shuttingDown) {
+        throw RpcException(ErrorCode.shuttingDown, 'the host is shutting down');
+      }
+      if (reconciling) {
+        throw RpcException(ErrorCode.reconciling, 'the host is reconciling earlier units');
+      }
+      final ResolvedDirectory identity;
+      switch (resolved) {
+        case ResolveFound(:final directory):
+          identity = directory;
+        case ResolveBusy() || ResolveStarved():
+          throw RpcException(ErrorCode.busy, 'target resolution is busy', {'target': target});
+        case ResolveTimedOut():
+          throw RpcException(ErrorCode.targetUnavailable, 'target resolution did not answer', {'target': target});
+        case ResolveMissing(:final detail):
+          throw RpcException(
+            ErrorCode.targetUnavailable,
+            'cannot resolve target $target: $detail',
+            {'target': target},
+          );
       }
       if (ledger.isUnresolved(identity: identity.id, path: identity.realPath)) {
         throw RpcException(

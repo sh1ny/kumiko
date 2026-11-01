@@ -59,6 +59,8 @@ Future<int> runAcpAgentFixture(List<String> args) async {
 
 /// Script format (all optional): agentInfo, agentCapabilities, protocolVersion,
 /// nativeSessionId; errors maps ACP method -> {code,message,data?};
+/// newSessionUpdates is emitted atomically with the session/new result to
+/// exercise native messages coalesced into one read, before afterNew actions.
 /// afterNew actions run after the session/new result has been written.
 /// prompt/load/resume are ordered action arrays; cancel is honour|ignore|race;
 /// holdPrompt waits for cancel; reportLaunch + reportEnv:[names] report only
@@ -353,7 +355,19 @@ Future<int> runAcpAgentScript({
       case 'session/new':
         report({'newCwd': params['cwd'], 'mcpServers': params['mcpServers']});
         await actions(script['new']);
-        await result(id, {'sessionId': native});
+        final initial = script['newSessionUpdates'];
+        if (initial is List) {
+          final burst = StringBuffer()..writeln(jsonEncode({
+            'jsonrpc': '2.0', 'id': id, 'result': {'sessionId': native},
+          }));
+          for (final update in initial) {
+            burst.writeln(jsonEncode(updateMessage(update as Json)));
+          }
+          final data = utf8.encode(burst.toString());
+          await writeLine(() => bytes(data));
+        } else {
+          await result(id, {'sessionId': native});
+        }
         await actions(script['afterNew']);
       case 'session/load' || 'session/resume':
         native = params['sessionId'] as String;

@@ -92,6 +92,30 @@ void main() {
       await a.close();
     },
   );
+  test('coalesced session/new response and initial updates are retained in native order', () async {
+    final (_, a, _) = await session(script: {
+      'newSessionUpdates': [
+        textUpdate('initial message'),
+        {'sessionUpdate': 'plan', 'entries': [
+          {'content': 'Initial plan', 'priority': 'medium', 'status': 'pending'},
+        ]},
+        {'sessionUpdate': 'tool_call', 'toolCallId': 'initial-tool', 'title': 'Initial tool', 'status': 'pending'},
+        {'sessionUpdate': 'tool_call_update', 'toolCallId': 'initial-tool', 'status': 'completed'},
+      ],
+      'afterNew': [
+        {'update': textUpdate('later message')},
+      ],
+    });
+    await eventually(() => a.events.length == 5, within: const Duration(seconds: 3), reason: 'initial ACP updates were lost before session binding');
+    expect(a.events.map((event) => event['kind']), ['agentText', 'plan', 'tool', 'toolUpdate', 'agentText']);
+    expect(a.events.first['text'], 'initial message');
+    expect((a.events[1]['entries'] as List).single, containsPair('content', 'Initial plan'));
+    expect(a.events[2]['toolCallId'], 'initial-tool');
+    expect(a.events[3]['status'], 'completed');
+    expect(a.events.last['text'], 'later message');
+    await a.close();
+  });
+
   test('selecting workspace B then sending a prompt keeps cwd A and the stored target A', () async {
     final (d, a, report) = await session(
       script: {

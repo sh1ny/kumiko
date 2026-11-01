@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 
 import 'package:host/src/agent/acp/acp_client.dart';
+import 'package:host/src/agent/agent_session.dart';
 import 'package:host_protocol/host_protocol.dart';
 import 'package:test/test.dart';
 
@@ -50,6 +51,46 @@ void main() {
     expect(await b, {'text': '猫'});
     expect(await a, {'a': true});
   });
+  test('new-session binding owns updates following its response in the same input chunk', () async {
+    AgentSession? created;
+    addTearDown(() => created?.dispose());
+    final events = <AgentEvent>[];
+    final creation = p.client.newSession('/target', onCreated: (native) {
+      created = AgentSession(
+        sessionId: 'host',
+        client: p.client,
+        onState: (_) {},
+        onPermissionRequested: (_) {},
+        onPermissionResolved: (_) {},
+        onStopResult: (_) {},
+        onTurnEnded: (_) {},
+        enqueueEvents: (lines) {
+          final decoder = AgentEventDecoder();
+          for (final line in lines) {
+            events.addAll(decoder.add(line));
+          }
+          decoder.close();
+        },
+      )..ready(nativeSessionId: native);
+    });
+    p.input.add(utf8.encode([
+      jsonEncode({'jsonrpc': '2.0', 'id': p.writes.single['id'], 'result': {'sessionId': 'native'}}),
+      for (final text in ['first', 'second']) jsonEncode({
+        'jsonrpc': '2.0',
+        'method': 'session/update',
+        'params': {'sessionId': 'native', 'update': {
+          'sessionUpdate': 'agent_message_chunk',
+          'content': {'type': 'text', 'text': text},
+        }},
+      }),
+      '',
+    ].join('\n')));
+    expect(await creation, 'native');
+    await pumpAcp();
+    expect(events.map((event) => event.text), ['first', 'second']);
+    expect(created!.state, AgentState.idle);
+  });
+
   for (final mode in ['load', 'resume']) {
     test(
       'session/$mode deadline is 60 active seconds and excludes bounded event consumption pauses',

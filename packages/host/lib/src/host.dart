@@ -235,6 +235,10 @@ class Host {
       os: Platform.operatingSystem,
     );
     final settler = Settler(ledger: ledger, log: log, faults: faults);
+    final resolver = WorkspaceResolver(
+      faults: faults,
+      timeout: options.resolveTimeout,
+    );
     final units = _units =
         UnitManager(
             ledger: ledger,
@@ -242,6 +246,7 @@ class Host {
             faults: faults,
             settler: settler,
             options: options,
+            resolver: resolver,
           )
           ..desktop = DesktopInfo(
             pid: params.desktopPid,
@@ -253,10 +258,7 @@ class Host {
       ledger: ledger,
       log: log,
       options: options,
-      resolver: WorkspaceResolver(
-        faults: faults,
-        timeout: options.resolveTimeout,
-      ),
+      resolver: resolver,
       notify: _connection.notify,
     );
     final profiles = _profiles = ProfileService(

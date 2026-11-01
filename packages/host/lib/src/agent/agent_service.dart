@@ -353,12 +353,20 @@ class AgentService {
       );
     }
     final workspace = workspaces.row(params.workspaceId);
-    final resolved = workspace == null
-        ? null
-        : directoryIdentity(workspace.path);
     if (workspace == null ||
-        workspaces.record(workspace).availability == Availability.unavailable ||
-        resolved is! ResolvedDirectory) {
+        workspaces.record(workspace).availability == Availability.unavailable) {
+      throw RpcException(
+        ErrorCode.workspaceUnavailable,
+        'the selected workspace is unavailable',
+        {'workspaceId': params.workspaceId},
+      );
+    }
+    final resolved = await workspaces.resolver.resolve(workspace.path, queue: false);
+    _available();
+    if (resolved is ResolveBusy || resolved is ResolveStarved) {
+      throw RpcException(ErrorCode.busy, 'workspace resolution is busy');
+    }
+    if (resolved is! ResolveFound) {
       throw RpcException(
         ErrorCode.workspaceUnavailable,
         'the selected workspace is unavailable',
@@ -367,8 +375,8 @@ class AgentService {
     }
     final target = AgentTarget(
       workspaceId: workspace.id,
-      path: resolved.realPath,
-      identity: resolved.id,
+      path: resolved.directory.realPath,
+      identity: resolved.directory.id,
     );
     final String? profileId;
     if (params.runtimeProfileId != null) {
@@ -642,26 +650,32 @@ class AgentService {
         name: initialization.adapterName,
         version: initialization.adapterVersion ?? '',
       );
-      final AgentContinueMode? mode;
-      final AgentSessionRecord record;
+      late final _Agent a;
       if (saved == null) {
-        mode = null;
+        final startingIo = io;
         stage = 'session/new';
-        final native = await io.client.newSession(target.path);
-        _available();
-        final now = DateTime.now().toUtc().toIso8601String();
-        record = AgentSessionRecord(
-          id: _newId(),
-          runtimeKind: profile.runtimeKind,
-          runtimeProfileId: profile.id,
-          adapter: adapter,
-          nativeSessionId: native,
-          target: target,
-          createdAt: now,
-          updatedAt: now,
-        );
-        stage = 'record';
-        _insert(record);
+        await io.client.newSession(target.path, onCreated: (native) {
+          _available();
+          final now = DateTime.now().toUtc().toIso8601String();
+          final record = AgentSessionRecord(
+            id: _newId(),
+            runtimeKind: profile.runtimeKind,
+            runtimeProfileId: profile.id,
+            adapter: adapter,
+            nativeSessionId: native,
+            target: target,
+            createdAt: now,
+            updatedAt: now,
+          );
+          stage = 'record';
+          _insert(record);
+          a = _registerNativeSession(
+            record: record,
+            io: startingIo,
+            reservation: reservation,
+            claims: claims,
+          );
+        });
       } else {
         if (!claims.canLoad && !claims.canResume) {
           throw _resumeUnavailable(
@@ -669,59 +683,14 @@ class AgentService {
             'Adapter ${adapter.name} version ${adapter.version} cannot continue this session: ${claims.unavailableReason}.',
           );
         }
-        mode = claims.canLoad
-            ? AgentContinueMode.load
-            : AgentContinueMode.resume;
-        record = saved;
+        a = _registerNativeSession(
+          record: saved,
+          io: io,
+          reservation: reservation,
+          claims: claims,
+          mode: claims.canLoad ? AgentContinueMode.load : AgentContinueMode.resume,
+        );
       }
-      final a = _Agent(
-        record: record,
-        io: io,
-        reservation: reservation,
-        mode: mode,
-      );
-      _agents[record.id] = a;
-      a.relay.onFailure = (error) => _fail(a, error);
-      a.session = AgentSession(
-        sessionId: record.id,
-        client: io.client,
-        claims: claims,
-        nativeSessionId: record.nativeSessionId,
-        enqueueEvents: a.relay.enqueue,
-        onState: (p) {
-          _notify(a, Method.agentState, p.toJson());
-          if (p.state == AgentState.failed) {
-            // The constructor publishes starting before its assignment.
-            unawaited(
-              Future<void>(
-                () => _fail(a, a.session.failure ?? const AcpClosedException()),
-              ),
-            );
-          }
-        },
-        onPermissionRequested: (p) =>
-            _notify(a, Method.agentPermissionRequested, p.toJson()),
-        onPermissionResolved: (p) =>
-            _notify(a, Method.agentPermissionResolved, p.toJson()),
-        onStopResult: (p) => _notify(a, Method.agentStopResult, p.toJson()),
-        onTurnEnded: (p) => _notify(a, Method.agentTurnEnded, p.toJson()),
-      );
-      if (mode == null) {
-        a.session.ready(nativeSessionId: record.nativeSessionId);
-      }
-      a.attachTimer = Timer(options.attachTimeout, () {
-        if (!_current(a) || a.attached) return;
-        // Expiry owns abandonment even if failure settlement already owns
-        // teardown. Its completion must still relinquish this reservation.
-        a.consumerClosed = true;
-        a.relay.close();
-        if (a.exited || a.closeFailed) {
-          _forget(a);
-        } else {
-          _beginClose(a, attachTimeout: true);
-        }
-      });
-      unawaited(_watchExit(a));
       return (a, adapter, claims);
     } on Object catch (error) {
       if (io != null) {
@@ -786,6 +755,64 @@ class AgentService {
         },
       );
     }
+  }
+
+  _Agent _registerNativeSession({
+    required AgentSessionRecord record,
+    required _AgentIO io,
+    required ChannelReservation reservation,
+    required AdapterClaims claims,
+    AgentContinueMode? mode,
+  }) {
+    final a = _Agent(
+      record: record,
+      io: io,
+      reservation: reservation,
+      mode: mode,
+    );
+    _agents[record.id] = a;
+    a.relay.onFailure = (error) => _fail(a, error);
+    a.session = AgentSession(
+      sessionId: record.id,
+      client: io.client,
+      claims: claims,
+      nativeSessionId: record.nativeSessionId,
+      enqueueEvents: a.relay.enqueue,
+      onState: (p) {
+        _notify(a, Method.agentState, p.toJson());
+        if (p.state == AgentState.failed) {
+          // The constructor publishes starting before its assignment.
+          unawaited(
+            Future<void>(
+              () => _fail(a, a.session.failure ?? const AcpClosedException()),
+            ),
+          );
+        }
+      },
+      onPermissionRequested: (p) =>
+          _notify(a, Method.agentPermissionRequested, p.toJson()),
+      onPermissionResolved: (p) =>
+          _notify(a, Method.agentPermissionResolved, p.toJson()),
+      onStopResult: (p) => _notify(a, Method.agentStopResult, p.toJson()),
+      onTurnEnded: (p) => _notify(a, Method.agentTurnEnded, p.toJson()),
+    );
+    if (mode == null) {
+      a.session.ready(nativeSessionId: record.nativeSessionId);
+    }
+    a.attachTimer = Timer(options.attachTimeout, () {
+      if (!_current(a) || a.attached) return;
+      // Expiry owns abandonment even if failure settlement already owns
+      // teardown. Its completion must still relinquish this reservation.
+      a.consumerClosed = true;
+      a.relay.close();
+      if (a.exited || a.closeFailed) {
+        _forget(a);
+      } else {
+        _beginClose(a, attachTimeout: true);
+      }
+    });
+    unawaited(_watchExit(a));
+    return a;
   }
 
   void _insert(AgentSessionRecord r) {

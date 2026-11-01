@@ -19,6 +19,7 @@ void main() {
   late Json savedRow;
   late String targetPath;
   late String savedWorkspaceId;
+  late String savedWorkspacePath;
 
   setUp(() async {
     profile = tempDir('agent_target_profile_');
@@ -44,6 +45,7 @@ void main() {
     await desktop.waitState();
     final workspace = await desktop.openWorkspace(savedWork.path);
     savedWorkspaceId = workspace.workspace.id;
+    savedWorkspacePath = workspace.workspace.path;
     await saveAgentFixture(
       desktop,
       savedWork,
@@ -106,6 +108,35 @@ void main() {
     expect(stopClock.elapsed, lessThan(const Duration(milliseconds: 250)));
     expect((await live.wait(Method.agentStopResult))['outcome'], 'stopped');
   }
+
+  test('Start stalled workspace target leaves native controls responsive and creates no record', () async {
+    await desktop.resolveFault(savedWorkspacePath, delayMs: 3000);
+    final pending = rpcFailure(saved.call(Method.agentStart, AgentStartParams(
+      workspaceId: savedWorkspaceId,
+      runtimeProfileId: 'saved',
+    ).toJson()));
+    await desktop.listWorkspaces();
+    await controlResponds();
+    final error = await pending.timeout(const Duration(seconds: 5));
+    expect(error.reason, ErrorCode.workspaceUnavailable);
+    expect(LedgerView(profile).units(), hasLength(1));
+    expect(agentRows(profile), hasLength(2));
+    expect(agentRows(profile).first, savedRow);
+    await live.close();
+  });
+
+  test('unit launch target recheck remains bounded beside live native controls', () async {
+    await desktop.resolveFault(targetPath, delayMs: 3000);
+    final pending = rpcFailure(desktop.launch(Directory(targetPath), TestFixture.sleeper));
+    await desktop.listWorkspaces();
+    await controlResponds();
+    final error = await pending.timeout(const Duration(seconds: 5));
+    expect(error.reason, ErrorCode.targetUnavailable);
+    expect(error.message, contains('did not answer'));
+    expect(LedgerView(profile).units(), hasLength(1));
+    expect(agentRows(profile), hasLength(2));
+    await live.close();
+  });
 
   for (final start in [true, false]) {
     test('${start ? 'Start' : 'Continue'} stalled executable leaves native control responsive and times out before spawn', () async {

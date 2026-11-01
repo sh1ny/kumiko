@@ -180,7 +180,10 @@ class AcpClient {
   Object? Function(Object id, Json params)? onPermissionRequest;
   void Function(Object error)? onFailure;
 
-  Future<Json> request(String method, Json params, {Duration? timeout}) {
+  Future<Json> request(String method, Json params, {
+    Duration? timeout,
+    void Function(Json result)? onResult,
+  }) {
     if (_closed) return Future.error(failure ?? const AcpClosedException());
     final id = _nextId++;
     final pending = _Pending(timeout, () {
@@ -188,7 +191,7 @@ class AcpClient {
       expired?.completeError(
         TimeoutException('ACP $method timed out', timeout),
       );
-    }, prompt: method == 'session/prompt');
+    }, prompt: method == 'session/prompt', onResult: onResult);
     _pending[id] = pending;
     if (!_consuming) pending.resume();
     _send({
@@ -235,14 +238,20 @@ class AcpClient {
     }
   }
 
+  /// [onCreated] binds the new session synchronously during response dispatch,
+  /// before any following ACP line can consume its initial updates.
   Future<String> newSession(
     String cwd, {
     Duration timeout = const Duration(seconds: 60),
+    void Function(String nativeSessionId)? onCreated,
   }) async {
     final result = await request('session/new', {
       'cwd': cwd,
       'mcpServers': <Object>[],
-    }, timeout: timeout);
+    }, timeout: timeout, onResult: onCreated == null ? null : (result) {
+      final native = result['sessionId'];
+      if (native is String) onCreated(native);
+    });
     if (result['sessionId'] is! String) {
       _fail(AcpProtocolException('invalid session/new result'));
       throw failure!;
@@ -527,7 +536,15 @@ class AcpClient {
         AcpRemoteException(error['code']! as int, error['message']! as String),
       );
     } else {
-      pending.completer.complete(promptResult ?? result as Json);
+      final response = promptResult ?? result as Json;
+      try {
+        pending.onResult?.call(response);
+      } on Object catch (error, stack) {
+        // A local binding/storage refusal is not a native protocol failure.
+        pending.completeError(error, stack);
+        return null;
+      }
+      pending.completer.complete(response);
     }
     return null;
   }
@@ -584,10 +601,11 @@ class AcpClient {
 }
 
 class _Pending {
-  _Pending(Duration? timeout, this._expired, {required this.prompt})
+  _Pending(Duration? timeout, this._expired, {required this.prompt, this.onResult})
     : _remaining = timeout,
       _active = timeout == null ? null : Stopwatch();
   final bool prompt;
+  final void Function(Json result)? onResult;
   final completer = Completer<Json>();
   Duration? _remaining;
   final void Function() _expired;
