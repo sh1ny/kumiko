@@ -86,6 +86,11 @@ class AgentTranscript {
     if (prior != null) {
       bytes -= prior.bytes;
       // Sparse tool updates replace only supplied fields, not absent content.
+      if (fields.containsKey('content')) {
+        prior.fields
+          ..remove('truncated')
+          ..remove('omittedItems');
+      }
       prior.fields.addAll(fields);
       if (event.status case final status? when prior.statuses.lastOrNull != status) {
         prior.statuses.add(status);

@@ -130,6 +130,61 @@ void main() {
     expect(resolved, hasLength(2));
   });
 
+  test('permission reply queue refusal stays pending and retries after stdin drains', () async {
+    s.acceptPrompt('bounded permission replies');
+    await pumpAcp();
+    final option = 'o' * 65000;
+    final nativeIds = [for (var i = 0; i < 16; i++) '${'r' * 4090}-$i'];
+    for (final id in nativeIds) {
+      p.permission(id, optionId: option);
+    }
+    await pumpAcp();
+    expect(requests, hasLength(16));
+    p.blockedWrite = Completer<void>();
+    for (final request in requests.take(15)) {
+      s.permissionReply(request.requestId, option);
+    }
+    final last = requests.last.requestId;
+    expect(
+      () => s.permissionReply(last, option),
+      throwsA(isA<RpcException>().having((e) => e.reason, 'reason', ErrorCode.busy)),
+    );
+    await pumpAcp();
+    expect(s.pendingPermissionCount, 1);
+    expect(resolved.map((r) => r.requestId), requests.take(15).map((r) => r.requestId));
+    expect(s.state, AgentState.waitingApproval);
+    expect(s.failure, isNull);
+    expect(p.client.isClosed, isFalse);
+    p.blockedWrite!.complete();
+    p.blockedWrite = null;
+    await pumpAcp();
+    s.permissionReply(last, option);
+    await pumpAcp();
+    expect(s.pendingPermissionCount, 0);
+    expect(s.state, AgentState.running);
+    expect(resolved.last.requestId, last);
+    expect(resolved.every((r) => r.outcome == AgentPermissionOutcome.selected), isTrue);
+    final replies = p.writes.where((message) => message.containsKey('result'));
+    expect(replies.map((r) => r['id']), nativeIds);
+    expect(replies.map((r) => ((r['result'] as Json)['outcome'] as Json)['optionId']), everyElement(option));
+  });
+
+  test('an admitted permission reply still fails the session if native writing fails', () async {
+    s.acceptPrompt('native write failure');
+    await pumpAcp();
+    p.permission('native-write-failure');
+    await pumpAcp();
+    p.blockedWrite = Completer<void>();
+    s.permissionReply(requests.single.requestId, 'opaque/allow');
+    final failure = StateError('native stdin failed');
+    p.blockedWrite!.completeError(failure);
+    p.blockedWrite = null;
+    await pumpAcp();
+    expect(s.state, AgentState.failed);
+    expect(s.failure, same(failure));
+    expect(resolved.single.outcome, AgentPermissionOutcome.selected);
+  });
+
   test('bounded native permission IDs preserve exact selected and cancelled replies', () async {
     s.acceptPrompt('bounded permission IDs');
     final selectedId = 'x' * 4096;

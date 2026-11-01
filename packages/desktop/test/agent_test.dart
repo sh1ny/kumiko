@@ -288,6 +288,45 @@ void main() {
       },
     );
 
+    uiTest('replacement tool output clears obsolete loss markers while sparse status preserves them', (tester) async {
+      final host = agentHost();
+      final rig = await pumpRig(tester, host);
+      await start(rig, tester);
+      final id = session(rig);
+      host.agentEvent(id, AgentEvent.fromJson({
+        'kind': 'tool',
+        'toolCallId': 'replacement',
+        'title': 'Read result',
+        'status': 'in_progress',
+        'content': [
+          {'type': 'content', 'content': {'type': 'text', 'text': 'partial old output'}},
+        ],
+        'truncated': true,
+        'omittedItems': 2,
+      }));
+      await tester.pump();
+      expect(find.text('truncated · 2 items omitted'), findsOneWidget);
+      host.agentEvent(id, AgentEvent.tool(toolCallId: 'replacement', update: true, status: 'completed'));
+      await tester.pump();
+      expect(find.text('truncated · 2 items omitted'), findsOneWidget);
+      host.agentEvent(id, AgentEvent.tool(
+        toolCallId: 'replacement',
+        update: true,
+        content: [
+          {'type': 'content', 'content': {'type': 'text', 'text': 'complete replacement'}},
+        ],
+      ));
+      await tester.pump();
+      expect(find.text('complete replacement'), findsOneWidget);
+      expect(find.textContaining('truncated'), findsNothing);
+      expect(find.textContaining('items omitted'), findsNothing);
+      host.agentEvent(id, AgentEvent.tool(toolCallId: 'replacement', update: true, status: 'completed'));
+      await tester.pump();
+      expect(find.text('complete replacement'), findsOneWidget);
+      expect(find.textContaining('truncated'), findsNothing);
+      expect(agents(rig).linkOf(chat(rig).id)!.transcript.entries.single.statuses, ['in_progress', 'completed']);
+    });
+
     uiTest(
       'moving a running chat pane keeps link transcript session and pending permissions and sends nothing',
       (tester) async {

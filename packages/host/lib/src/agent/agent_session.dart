@@ -323,12 +323,13 @@ class AgentSession {
         'option was not offered by this request',
       );
     }
+    // Admission can refuse synchronously without consuming the user's choice.
+    // Accepted native-write failures still fail the session asynchronously.
+    final write = client.reply(permission.rpcId, {
+      'outcome': {'outcome': 'selected', 'optionId': optionId},
+    });
     _permissions.remove(requestId);
-    _observeWrite(
-      client.reply(permission.rpcId, {
-        'outcome': {'outcome': 'selected', 'optionId': optionId},
-      }),
-    );
+    _observeWrite(write);
     onPermissionResolved(
       AgentPermissionResolvedParams(
         sessionId: sessionId,
@@ -351,11 +352,19 @@ class AgentSession {
     );
   }
 
-  void _answerCancelled(Object rpcId) => _observeWrite(
-    client.reply(rpcId, {
-      'outcome': {'outcome': 'cancelled'},
-    }),
-  );
+  void _answerCancelled(Object rpcId) {
+    Future<void> write;
+    try {
+      write = client.reply(rpcId, {
+        'outcome': {'outcome': 'cancelled'},
+      });
+    } on Object catch (error, stack) {
+      // Automatic cancellation has no caller to receive an admission refusal.
+      // Observe it on the same asynchronous failure path as native I/O.
+      write = Future.error(error, stack);
+    }
+    _observeWrite(write);
+  }
   void _cancelPermissions() {
     final pending = Map<String, _Permission>.of(_permissions);
     _permissions.clear();

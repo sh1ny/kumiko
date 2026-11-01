@@ -10,6 +10,7 @@ const acpLargeLineThreshold = 1024 * 1024;
 // Retained native request IDs must fit every response, including cancellation.
 // This counts JSON string contents (escaping included), without truncating IDs.
 const _maxRequestIdBytes = 4096;
+const _maxAdapterIdentityBytes = 4096;
 
 class AcpProtocolException implements Exception {
   AcpProtocolException(this.message);
@@ -110,7 +111,20 @@ class AcpInitialization {
       adapterName =
           (json['agentInfo'] as Json?)?['name'] as String? ?? 'unknown',
       adapterVersion = (json['agentInfo'] as Json?)?['version'] as String?,
-      agentCapabilities = json['agentCapabilities'] as Json? ?? const {};
+      agentCapabilities = json['agentCapabilities'] as Json? ?? const {} {
+    _checkIdentity(adapterName);
+    _checkIdentity(adapterVersion);
+  }
+
+  static void _checkIdentity(String? value) {
+    if (value != null &&
+        (value.length > _maxAdapterIdentityBytes ||
+            clampJsonString(value, _maxAdapterIdentityBytes) != value)) {
+      throw AcpProtocolException(
+        'adapter identity exceeds $_maxAdapterIdentityBytes encoded bytes',
+      );
+    }
+  }
   final int protocolVersion;
   final String adapterName;
   final String? adapterVersion;
@@ -193,8 +207,10 @@ class AcpClient {
 
   Future<void> notify(String method, Json params) =>
       _send({'jsonrpc': '2.0', 'method': method, 'params': params});
+  /// Returns native write completion after synchronous queue admission.
+  /// A closed transport or full queue throws before accepting the reply.
   Future<void> reply(Object id, Json result) =>
-      _send({'jsonrpc': '2.0', 'id': id, 'result': result});
+      _admit({'jsonrpc': '2.0', 'id': id, 'result': result});
   Future<void> replyError(Object id, int code, String message) => _send({
     'jsonrpc': '2.0',
     'id': id,
@@ -259,12 +275,18 @@ class AcpClient {
   Future<void> cancel(String id) => notify('session/cancel', {'sessionId': id});
 
   Future<void> _send(Json message) {
-    if (_closed) return Future.error(failure ?? const AcpClosedException());
+    try {
+      return _admit(message);
+    } on Object catch (error, stack) {
+      return Future.error(error, stack);
+    }
+  }
+
+  Future<void> _admit(Json message) {
+    if (_closed) throw failure ?? const AcpClosedException();
     final bytes = utf8.encode('${jsonEncode(message)}\n');
     if (bytes.length > unitPipeQueueLimit - _writingBytes) {
-      return Future.error(
-        RpcException('busy', 'adapter stdin queue exceeds 1 MiB'),
-      );
+      throw RpcException('busy', 'adapter stdin queue exceeds 1 MiB');
     }
     _writingBytes += bytes.length;
     // Invoke the real bounded sink now, in call order. Never retain an

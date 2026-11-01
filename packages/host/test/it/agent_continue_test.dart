@@ -97,6 +97,33 @@ void main() {
             as Json,
       );
 
+  for (final identity in {
+    'multi-MiB name': {'name': 'n' * (2 * 1024 * 1024), 'version': 'test-only'},
+    'multi-MiB version': {'name': 'scripted-acp', 'version': 'v' * (2 * 1024 * 1024)},
+    'escaped version': {'name': 'scripted-acp', 'version': '\u0001' * 683},
+  }.entries) {
+    test('Continue rejects ${identity.key} without losing the host or saved record', () async {
+      final d = await desktop();
+      final (a, _, row) = await saved(d);
+      await saveAgentFixture(d, work, script: {
+        'agentInfo': identity.value,
+        'agentCapabilities': advertisedHistory,
+      });
+      final error = await rpcFailure(continuePeer(a, a.id));
+      expect(error.reason, ErrorCode.adapterProtocol);
+      expect(error.data['stage'], 'initialize');
+      expect(error.message, contains('adapter identity'));
+      expect(utf8.encode(jsonEncode(error.message)).length, lessThan(8192));
+      expect(agentRows(profile), [row]);
+      final inspected = (await records(d, [a.id])).records[a.id]!;
+      expect(inspected.known, isTrue);
+      expect(inspected.adapterVersion, 'test-only');
+      expect(inspected.workspaceAvailable, isTrue);
+      expect(LedgerView(profile).units(), isEmpty);
+      await expectAllGone(readReports(work));
+    });
+  }
+
   test('concurrent load and resume failures preserve inexact diagnostics after held cleanup', () async {
     final d = await desktop();
     final w = await d.openWorkspace(work.path);

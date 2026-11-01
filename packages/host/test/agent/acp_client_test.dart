@@ -421,6 +421,19 @@ void main() {
     });
     expect((await response).protocolVersion, 1);
   });
+  test('initialize preserves adapter identities at the escaped UTF-8 boundary', () async {
+    final name = '${'\u0001' * 682}tail';
+    final version = '${'界' * 1365}v';
+    final response = p.client.initialize();
+    p.result(p.writes.single['id']!, {
+      'protocolVersion': 1,
+      'agentInfo': {'name': name, 'version': version},
+    });
+    final initialized = await response;
+    expect(initialized.adapterName, name);
+    expect(initialized.adapterVersion, version);
+  });
+
   test('permission preserves opaque request id and unsupported requests get -32601', () async {
     p.client.onPermissionRequest = (id, params) {
       p.client.reply(id, {
