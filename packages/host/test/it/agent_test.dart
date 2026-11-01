@@ -113,6 +113,30 @@ void main() {
     expect(agentRows(profile).single, before);
     await a.close();
   });
+
+  test('oversized native permission ID fails visibly without publishing approval and keeps the saved record', () async {
+    final (d, a, report) = await session(
+      script: {
+        'prompt': [
+          {...permissionAction, 'rpcId': 'p' * (2 * 1024 * 1024)},
+        ],
+      },
+    );
+    final record = agentRows(profile).single;
+    await a.prompt('reject an undeliverable native permission');
+    final exit = await a.wait(Method.agentExited, within: const Duration(seconds: 3));
+    expect(exit['reason'], 'failed');
+    expect(exit['error'], ErrorCode.adapterProtocol);
+    expect(exit['message'], contains('request id'));
+    expect(a.of(Method.agentPermissionRequested), isEmpty);
+    expect(a.of(Method.agentPermissionResolved), isEmpty);
+    expect(fixtureReports(report).where((entry) => entry.containsKey('permissionOutcome')), isEmpty);
+    await eventually(() => LedgerView(profile).units().isEmpty);
+    await expectAllGone(readReports(work));
+    expect(agentRows(profile).single, record);
+    await a.call(Method.agentRelease);
+    expect(d.connection.isClosed, isFalse);
+  });
   test('agent/start requires workspaceId and refuses unknown workspace before spawn', () async {
     final d = await desktop();
     await expectLater(

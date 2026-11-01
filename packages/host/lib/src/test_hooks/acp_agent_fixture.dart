@@ -64,7 +64,8 @@ Future<int> runAcpAgentFixture(List<String> args) async {
 /// holdPrompt waits for cancel; reportLaunch + reportEnv:[names] report only
 /// requested metadata; reportFile receives test reports, never host logs.
 /// beforeInitializeExit:{status,stderr}, exitStatus ends after a prompt.
-/// Actions: update:{sessionUpdate,...}, permission:{toolCall,options},
+/// Actions: update:{sessionUpdate,...}, permission:{toolCall,options} with
+/// optional rpcId (the exact native JSON-RPC request identifier),
 /// stderr:string, report:true, oversizedBytes:int, exit:int, spawnTree:true,
 /// spawnPipeHolder:true (a sleeper inheriting the actual ACP output handles),
 /// stallStdin:true, flood:{count,update,indexPrefix?}, waitCancel:true,
@@ -249,7 +250,7 @@ Future<int> runAcpAgentScript({
         report({'spawnedPipeHolder': true});
       }
       if (action['permission'] case final Json permission) {
-        final id = 'fixture-permission-${nextId++}';
+        final id = action['rpcId'] ?? 'fixture-permission-${nextId++}';
         final response = Completer<Json>();
         pending[id] = response;
         await send({

@@ -129,6 +129,76 @@ void main() {
     expect(p.writes.last['id'], 2);
     expect(resolved, hasLength(2));
   });
+
+  test('bounded native permission IDs preserve exact selected and cancelled replies', () async {
+    s.acceptPrompt('bounded permission IDs');
+    final selectedId = 'x' * 4096;
+    final cancelledId = '${'\u0001' * 682}tail';
+    p.permission(selectedId);
+    p.permission(cancelledId);
+    await pumpAcp();
+    expect(requests, hasLength(2));
+    expect(s.pendingPermissionCount, 2);
+    s.permissionReply(requests.first.requestId, 'opaque/allow');
+    s.stop();
+    await pumpAcp();
+    final replies = p.writes.where((entry) => entry.containsKey('result')).toList();
+    expect(replies.map((entry) => entry['id']), [selectedId, cancelledId]);
+    expect(replies.map((entry) => (entry['result'] as Json)['outcome']), [
+      {'outcome': 'selected', 'optionId': 'opaque/allow'},
+      {'outcome': 'cancelled'},
+    ]);
+    expect(resolved.map((entry) => entry.outcome), [
+      AgentPermissionOutcome.selected,
+      AgentPermissionOutcome.cancelled,
+    ]);
+    expect(s.state, AgentState.stopping);
+    expect(p.client.isClosed, isFalse);
+    expect(p.writes.last['method'], 'session/cancel');
+  });
+
+  for (final entry in {
+    'multi-MiB': 'p' * (2 * 1024 * 1024),
+    'escaped over budget': '\u0001' * 683,
+    'UTF-8 over budget': '界' * 1366,
+  }.entries) {
+    test('${entry.key} native permission ID fails before publishing or retaining it', () async {
+      s.acceptPrompt('invalid permission ID');
+      p.permission(entry.value);
+      await pumpAcp();
+      expect(s.state, AgentState.failed);
+      expect(s.failure, isA<AcpProtocolException>());
+      expect(s.failure.toString(), contains('request id'));
+      expect(s.pendingPermissionCount, 0);
+      expect(requests, isEmpty);
+      expect(resolved, isEmpty);
+      expect(p.writes.where((message) => message.containsKey('result')), isEmpty);
+      expect(p.client.largeLineOwned, isFalse);
+      expect(p.client.largeLineWaiting, isFalse);
+    });
+  }
+
+  test('oversized native ID cannot accumulate behind existing pending permissions', () async {
+    s.acceptPrompt('multiple pending permissions');
+    p.permission('first');
+    p.permission('second');
+    await pumpAcp();
+    expect(s.pendingPermissionCount, 2);
+    p.permission('p' * (2 * 1024 * 1024));
+    await pumpAcp();
+    expect(s.state, AgentState.failed);
+    expect(requests, hasLength(2));
+    expect(s.pendingPermissionCount, 0);
+    expect(resolved.map((entry) => entry.outcome), [
+      AgentPermissionOutcome.cancelled,
+      AgentPermissionOutcome.cancelled,
+    ]);
+    expect(p.writes.where((message) => message.containsKey('result')), isEmpty);
+    expect(
+      () => s.permissionReply(requests.first.requestId, 'opaque/allow'),
+      throwsA(isA<RpcException>().having((error) => error.reason, 'reason', ErrorCode.unknownRequest)),
+    );
+  });
   test('a reply to a resolved request fails unknown-request and writes nothing to the transport', () async {
     s.acceptPrompt('hello');
     p.permission('p');

@@ -7,6 +7,9 @@ import 'package:process_containment/process_containment.dart';
 
 const acpLineLimit = 16 * 1024 * 1024;
 const acpLargeLineThreshold = 1024 * 1024;
+// Retained native request IDs must fit every response, including cancellation.
+// This counts JSON string contents (escaping included), without truncating IDs.
+const _maxRequestIdBytes = 4096;
 
 class AcpProtocolException implements Exception {
   AcpProtocolException(this.message);
@@ -425,6 +428,13 @@ class AcpClient {
     if (method != null) {
       if (method is! String || (id != null && id is! String && id is! int)) {
         throw AcpProtocolException('invalid request envelope');
+      }
+      if (id is String &&
+          (id.length > _maxRequestIdBytes ||
+              clampJsonString(id, _maxRequestIdBytes) != id)) {
+        throw AcpProtocolException(
+          'native request id exceeds $_maxRequestIdBytes encoded bytes',
+        );
       }
       final params = message['params'];
       if (params != null && params is! Json) {
