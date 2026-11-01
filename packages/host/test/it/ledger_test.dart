@@ -89,19 +89,19 @@ void main() {
     final desktop = await Desktop.start(profile);
     addTearDown(desktop.dispose);
     await desktop.waitState();
-    // The pid write fails after 1 s, once the tree has started its
-    // descendants, including one outside the unit's POSIX session.
+    // Release the injected write failure only after the whole native tree
+    // reports readiness, including the escaped POSIX descendant.
     await desktop.setFault(TestFault.runningWriteFails);
-
-    expect(
-      await desktop.launchRefusal(target, TestFixture.tree),
-      ErrorCode.storeError,
-    );
-
-    final reports = await waitReports(target, 3);
+    final refusal = desktop.launchRefusal(target, TestFixture.tree);
+    late List<FixtureProcess> reports;
+    try {
+      reports = await waitReports(target, 3);
+    } finally {
+      await desktop.setFault(TestFault.runningWriteFails, enabled: false);
+    }
+    expect(await refusal, ErrorCode.storeError);
     await expectAllGone(reports);
     expect(LedgerView(profile).units(), isEmpty);
-    await desktop.setFault(TestFault.runningWriteFails, enabled: false);
     await desktop.launch(target, TestFixture.sleeper); // not gated
   });
 

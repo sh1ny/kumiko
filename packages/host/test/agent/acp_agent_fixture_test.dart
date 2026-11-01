@@ -279,7 +279,6 @@ void main() {
   test('script fixture closes stdout but keeps handling stdin until containment ends', () async {
     final input = StreamController<List<int>>();
     final output = StreamController<List<int>>();
-    final stdoutClosed = Completer<void>();
     final cancelReceived = Completer<void>();
     final errors = <String>[];
     var finished = false;
@@ -296,7 +295,6 @@ void main() {
           closeOutput: output.close,
           writeError: errors.add,
           report: (value) {
-            if (value['stdoutClosed'] == true) stdoutClosed.complete();
             if (value['cancelReceived'] == true) cancelReceived.complete();
           },
         ).then((status) {
@@ -311,7 +309,6 @@ void main() {
         .prompt('native', 'pending')
         .then<Object?>((_) => null, onError: (Object error) => error);
     try {
-      await stdoutClosed.future;
       expect(await prompt, isA<AcpClosedException>());
       expect(finished, isFalse);
       input.add(

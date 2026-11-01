@@ -70,7 +70,12 @@ class UnitPipes {
     final stdout = WindowsPipeReader(output);
     final stderr = WindowsPipeReader(errors);
     unawaited(
-      exit.then((_) => sink.close()).then<void>((_) {}, onError: (Object _) {}),
+      exit
+          .then((_) {
+            writer.processExited();
+            return sink.close();
+          })
+          .then<void>((_) {}, onError: (Object _) {}),
     );
     return UnitPipes._(sink, stdout.stream, stderr.stream, () async {
       await Future.wait([stdout.close(), stderr.close(), sink._abortInput()]);

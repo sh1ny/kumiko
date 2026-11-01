@@ -187,6 +187,7 @@ class UnitManager {
       );
       if (faults.crashAfterPendingWrite) _crash();
 
+      final failRunningWrite = faults.runningWriteFails;
       final ContainedUnit unit;
       ContainedUnit? spawned;
       try {
@@ -217,9 +218,8 @@ class UnitManager {
       if (faults.crashAfterSpawnBeforePid) _crash();
 
       try {
-        if (faults.runningWriteFails) {
-          // Late enough that the unit has started its descendants.
-          await Future<void>.delayed(const Duration(seconds: 1));
+        if (failRunningWrite) {
+          await faults.waitForRunningWriteFailureRelease();
           throw RpcException(
             ErrorCode.storeError,
             'injected running write failure',

@@ -559,7 +559,6 @@ void main() {
         return ((stats['sessions'] as Json)[a.id] as Json)['paused'] == true;
       }, reason: 'canonical user enqueue never blocked on withheld credit');
       eof.writeAsStringSync('fail');
-      await waitFixture(report, (p) => p['stdoutClosed'] == true);
       await a.wait(Method.agentState, where: (p) => p['state'] == 'failed');
       await eventually(
         () => LedgerView(profile).units().isEmpty,
@@ -663,7 +662,7 @@ void main() {
           if (pending) {'update': textUpdate('accepted before EOF')},
           {'closeStdout': true},
         ];
-        final (d, a, report) = await open(
+        final (d, a, _) = await open(
           script: {if (pending) 'prompt': actions else 'afterNew': actions},
         );
         final tree = await waitReports(work, 1);
@@ -672,7 +671,6 @@ void main() {
         } else {
           release.writeAsStringSync('close');
         }
-        await waitFixture(report, (p) => p['stdoutClosed'] == true);
         await a.wait(Method.agentState, where: (p) => p['state'] == 'failed');
         final exited = await a.wait(
           Method.agentExited,

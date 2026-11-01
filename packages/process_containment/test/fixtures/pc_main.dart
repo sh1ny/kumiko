@@ -83,6 +83,19 @@ Future<void> main(List<String> args) async {
         _report('child');
         await Process.start(_self, ['--fixture', 'sleeper']);
         _stayAlive();
+      case 'pipes-inherited-stdin':
+        await Process.start(_self, [
+          '--fixture',
+          'pipes-inherited-stdin-child',
+        ], mode: ProcessStartMode.inheritStdio);
+        _report('leader');
+        _stayAlive();
+      case 'pipes-inherited-stdin-child':
+        _windowsHandles();
+        stdout.writeln();
+        await stdout.flush();
+        _report('inherited-stdin');
+        _stayAlive();
       case 'pipes-windows-handles':
         _windowsHandles();
         await stdout.flush();

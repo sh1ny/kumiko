@@ -33,8 +33,15 @@ class HostFaults {
 
   bool get pendingWriteFails => _active.contains(TestFault.pendingWriteFails);
 
-  /// The write of a spawned unit's pid and start time fails, after 1 s.
+  /// The spawned unit's pid write fails after disabling this held fault.
   bool get runningWriteFails => _active.contains(TestFault.runningWriteFails);
+  Completer<void>? _runningWriteFailureRelease;
+
+  Future<void> waitForRunningWriteFailureRelease() {
+    if (!runningWriteFails) return Future<void>.value();
+    return (_runningWriteFailureRelease ??= Completer<void>()).future;
+  }
+
   bool get crashAfterPendingWrite =>
       _active.contains(TestFault.crashAfterPendingWrite);
   bool get crashAfterSpawnBeforePid =>
@@ -125,6 +132,10 @@ class HostFaults {
       if (fault == TestFault.terminateHangs) {
         _terminationRelease?.complete();
         _terminationRelease = null;
+      }
+      if (fault == TestFault.runningWriteFails) {
+        _runningWriteFailureRelease?.complete();
+        _runningWriteFailureRelease = null;
       }
       if (fault == TestFault.identityReadFails) {
         _identityFailureRelease?.complete();

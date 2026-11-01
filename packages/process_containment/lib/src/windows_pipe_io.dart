@@ -105,20 +105,48 @@ class WindowsPipeWriter {
         }
       }
     });
-    _worker.ready.ignore();
+    unawaited(
+      _worker.ready.then<void>(
+        (_) {
+          if (!_ready.isCompleted) _ready.complete();
+        },
+        onError: (Object error, StackTrace stack) {
+          if (!_ready.isCompleted) _ready.completeError(error, stack);
+        },
+      ),
+    );
+    _ready.future.ignore();
     unawaited(
       _worker.done.then((_) {
         _pending?.completeError(StateError('pipe writer ended'));
         _pending = null;
+        final closing = _closing;
+        if (closing != null && !closing.isCompleted) closing.complete();
       }),
     );
   }
   late final _Worker _worker;
+  final Completer<void> _ready = Completer<void>();
   Completer<void>? _pending;
+  Completer<void>? _closing;
   bool _closed = false;
+  bool _exited = false;
+
+  /// Settles callers at leader exit without closing a live native handle.
+  void processExited() {
+    if (_exited) return;
+    _exited = true;
+    _closed = true;
+    if (!_ready.isCompleted) _ready.complete();
+    _pending?.completeError(StateError('pipe stdin closed on process exit'));
+    _pending = null;
+    final closing = _closing;
+    if (closing != null && !closing.isCompleted) closing.complete();
+    unawaited(_worker.stop());
+  }
 
   Future<void> write(Uint8List bytes) async {
-    await _worker.ready;
+    await _ready.future;
     if (_closed || _worker.ended) throw StateError('pipe writer is closed');
     if (_pending != null) {
       throw StateError('only one pipe chunk may be in flight');
@@ -131,12 +159,24 @@ class WindowsPipeWriter {
     await pending.future;
   }
 
-  Future<void> close() async {
+  Future<void> close() {
+    final existing = _closing;
+    if (existing != null) return existing.future;
     _closed = true;
-    await _worker.stop();
+    final closing = _closing = Completer<void>();
+    if (_exited || _worker.ended) {
+      closing.complete();
+    } else {
+      unawaited(_worker.stop());
+    }
+    return closing.future;
   }
 
-  Future<void> abort() => close();
+  /// Joins native handle release after containment termination.
+  Future<void> abort() {
+    _closed = true;
+    return _worker.stop();
+  }
 }
 
 /// The worker exclusively owns the pipe handle after Isolate.spawn succeeds.

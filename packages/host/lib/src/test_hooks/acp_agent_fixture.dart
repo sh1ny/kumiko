@@ -231,7 +231,6 @@ Future<int> runAcpAgentScript({
           throw StateError('closeStdout requires an output-close callback');
         }
         await closeOutput();
-        report({'stdoutClosed': true});
         // EOF must not be confused with leader exit. Keep reading native
         // stdin until containment or the test closes the fixture's input.
         await closed.future;

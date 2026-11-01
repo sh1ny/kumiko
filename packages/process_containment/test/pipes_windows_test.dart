@@ -2,15 +2,18 @@
 @Timeout(Duration(minutes: 5))
 library;
 
+import 'dart:async';
 import 'dart:convert';
 import 'dart:ffi';
 import 'dart:io';
+import 'dart:typed_data';
 
 import 'package:ffi/ffi.dart';
 import 'package:process_containment/process_containment.dart';
 import 'package:test/test.dart';
 
 import 'support/fixture_harness.dart';
+import 'support/fixture_lines.dart';
 
 void main() {
   late Directory tmp;
@@ -72,6 +75,71 @@ void main() {
       expect(inherited, isNot(contains(sentinel)));
       expect(result['stdTypes'], [3, 3, 3], reason: 'FILE_TYPE_PIPE');
       expect(result['stdInheritable'], [true, true, true]);
+    },
+  );
+
+  test(
+    'leader exit settles stdin writes and close while a descendant holds stdin',
+    () async {
+      final out = File('${tmp.path}/inherited-stdin.txt');
+      final unit = spawnWindowsUnit(
+        executable: exe,
+        args: ['--fixture', 'pipes-inherited-stdin'],
+        containmentId: 'pipes-inherited-stdin',
+        environment: {'PC_FIXTURE_OUT': out.path},
+        pipes: true,
+      );
+      units.add(unit);
+      final output = StreamIterator(
+        utf8.decoder.bind(unit.pipes!.stdout).transform(const LineSplitter()),
+      );
+      final errors = unit.pipes!.stderr.drain<void>();
+      expect(await output.moveNext(), isTrue);
+      final handles = jsonDecode(output.current) as Map<String, dynamic>;
+      expect(
+        (handles['stdTypes'] as List).first,
+        3,
+        reason: 'inherited stdin is a pipe',
+      );
+      final child = (await waitForLines(
+        out,
+        2,
+      )).singleWhere((line) => line.role == 'inherited-stdin');
+      final childStart = processStartTime(child.pid)!;
+      final queued = <Future<Object?>>[];
+      for (var i = 0; i < 16; i++) {
+        queued.add(
+          unit.pipes!.stdin
+              .write(Uint8List(unitPipeChunkSize))
+              .then<Object?>((_) => null, onError: (Object error) => error),
+        );
+      }
+      final outcomes = Future.wait(queued);
+      await expectLater(
+        outcomes.timeout(const Duration(milliseconds: 200)),
+        throwsA(isA<TimeoutException>()),
+      );
+      final closing = unit.pipes!.stdin.close();
+      expect(Process.killPid(unit.pid), isTrue);
+      await unit.exitCode.timeout(const Duration(seconds: 5));
+      expect(isProcessAlive(child.pid, childStart), isTrue);
+
+      expect(
+        await outcomes.timeout(const Duration(seconds: 1)),
+        everyElement(isA<StateError>()),
+      );
+      await closing.timeout(const Duration(seconds: 1));
+      await expectLater(
+        unit.pipes!.stdin.write([1]),
+        throwsA(isA<StateError>()),
+      );
+      expect(isProcessAlive(child.pid, childStart), isTrue);
+
+      expect((await unit.terminate()).terminated, isTrue);
+      await unit.pipes!.close().timeout(const Duration(seconds: 10));
+      await output.cancel();
+      await errors;
+      expect(isProcessAlive(child.pid, childStart), isFalse);
     },
   );
 
