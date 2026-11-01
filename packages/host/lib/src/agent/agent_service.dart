@@ -707,6 +707,10 @@ class AgentService {
       }
       a.attachTimer = Timer(options.attachTimeout, () {
         if (!_current(a) || a.attached) return;
+        // Expiry owns abandonment even if failure settlement already owns
+        // teardown. Its completion must still relinquish this reservation.
+        a.consumerClosed = true;
+        a.relay.close();
         if (a.exited || a.closeFailed) {
           _forget(a);
         } else {
@@ -822,7 +826,7 @@ class AgentService {
     // only after the final exit notification has been assembled. Explicit
     // close transitions to closing and must continue to refuse attach.
     final earlyExit = !a.attached && a.session.state == AgentState.failed;
-    if (a.ending && !earlyExit) {
+    if (a.consumerClosed || (a.ending && !earlyExit)) {
       throw RpcException(ErrorCode.unknownSession, 'session is closing');
     }
     if (a.attached) {

@@ -49,27 +49,44 @@ class _PromptRig {
   );
   final attached = Completer<void>();
   final prompts = <AgentPromptParams>[];
+  final calls = <String>[];
+  int starts = 0;
   late final Connection host;
   late final Connection desktop;
   late final AgentController controller;
 
-  Future<void> start() async {
+  Future<void> start({bool earlyCloseFailure = false}) async {
+    var failStart = earlyCloseFailure;
     host = Connection(
       input: toHost.controller.stream,
       output: toDesktop,
       capabilities: const {Capability.agent},
       onHello: (_, _) => const HelloInfo.ready('host-1'),
       onRequest: (method, params) {
+        calls.add(method);
         switch (method) {
           case Method.agentStart:
+            final id = 'agent-${++starts}';
+            final channel = host.openOutbound().id;
+            if (failStart) {
+              failStart = false;
+              host.notify(
+                Method.agentCloseFailed,
+                AgentCloseFailedParams(
+                  sessionId: id,
+                  reason: 'cleanup-unresolved',
+                  message: 'early native cleanup could not be confirmed',
+                ).toJson(),
+              );
+            }
             return AgentStartResult(
-              sessionId: 'agent-1',
-              eventChannel: host.openOutbound().id,
+              sessionId: id,
+              eventChannel: channel,
               adapter: const AgentAdapter(name: 'scripted', version: 'test'),
               capabilities: const [],
             ).toJson();
           case Method.agentAttach:
-            attached.complete();
+            if (!attached.isCompleted) attached.complete();
             return <String, Object?>{};
           case Method.agentPrompt:
             prompts.add(AgentPromptParams.fromJson(params));
@@ -100,6 +117,10 @@ class _PromptRig {
       workspaceId: 'workspace',
       runtimeName: 'Claude Code',
     );
+    if (earlyCloseFailure) {
+      await desktop.request(Method.agentRecords, {'sessionIds': <String>[]});
+      return;
+    }
     await attached.future;
     host.notify(
       Method.agentState,
@@ -136,6 +157,47 @@ class _PromptRig {
 }
 
 void main() {
+  test(
+    'early new-start close failure stays terminal over the real wire',
+    () async {
+      final rig = _PromptRig();
+      await rig.start(earlyCloseFailure: true);
+      addTearDown(rig.close);
+      final link = rig.link;
+      expect(link.phase, AgentLinkPhase.ended);
+      expect(link.state, AgentState.failed);
+      expect(
+        link.error,
+        contains('early native cleanup could not be confirmed'),
+      );
+      expect(link.known, isTrue);
+      expect(link.canContinue, isTrue);
+      expect(link.canNewSession, isTrue);
+      expect(link.canSend, isFalse);
+      expect(rig.calls, isNot(contains(Method.agentAttach)));
+      expect(rig.calls, isNot(contains(Method.agentClose)));
+      expect(rig.calls, isNot(contains(Method.agentRelease)));
+
+      await rig.controller.newSession('pane');
+      await rig.attached.future;
+      rig.host.notify(
+        Method.agentState,
+        AgentStateParams(
+          sessionId: rig.link.sessionId!,
+          state: AgentState.idle,
+          seq: 1,
+        ).toJson(),
+      );
+      await rig.desktop.request(Method.agentRecords, {
+        'sessionIds': <String>[],
+      });
+      expect(rig.link.sessionId, 'agent-2');
+      expect(rig.link.canSend, isTrue);
+      expect(rig.link.error, isNull);
+      await rig.proveRecovery();
+    },
+  );
+
   test('with no profile directory the connector fails to start, naming the '
       'variable to set', () async {
     final error = await noProfileDirConnector(

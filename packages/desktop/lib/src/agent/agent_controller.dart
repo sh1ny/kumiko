@@ -165,6 +165,8 @@ class AgentController extends ChangeNotifier implements ViewCloser {
   final void Function(String paneId) focusPane;
   final Map<String, AgentLink> _links = {};
   final Map<String, AgentLink> _bySession = {};
+  final _pendingStarts = <AgentLink>{};
+  final _earlyCloseFailures = <String, AgentCloseFailedParams>{};
   final List<StreamSubscription<Object?>> _subscriptions = [];
   final Set<StreamSubscription<AgentExitedParams>> _orphanSubscriptions = {};
   HostLink? _host;
@@ -242,27 +244,38 @@ class AgentController extends ChangeNotifier implements ViewCloser {
       _changed();
     });
     listen(host.agentExits, _exited);
-    listen(host.agentCloseFailures, (event) {
-      final link = _bySession.remove(event.sessionId);
-      if (link == null) return;
-      unawaited(link._events?.cancel());
-      link._events = null;
-      link.closeRequested = false;
-      // The service relinquished transport ownership, but the durable cleanup
-      // gate still owns any survivors. Never restore a fictitious live session
-      // or describe this as a successful close.
-      link.phase = AgentLinkPhase.ended;
-      link.state = AgentState.failed;
-      link.sending = false;
-      link.stopping = false;
-      link._exit = null;
-      link.errorCode = event.reason;
-      _disablePermissions(link);
-      final failure =
-          'Agent termination not confirmed: ${event.reason}${event.message == null ? '' : ': ${event.message}'}';
-      link.error = link.streamFailed ? '${link.error}\n$failure' : failure;
-      _changed();
-    });
+    listen(host.agentCloseFailures, _closeFailed);
+  }
+
+  void _closeFailed(AgentCloseFailedParams event) {
+    final link = _bySession.remove(event.sessionId);
+    if (link == null) {
+      // A start response and its terminal notification can share one read,
+      // before the awaiting start binds the newly allocated session ID.
+      // Every live native session owns a channel, so retain at most that cap.
+      if (_pendingStarts.isNotEmpty &&
+          _earlyCloseFailures.length < maxChannels) {
+        _earlyCloseFailures[event.sessionId] = event;
+      }
+      return;
+    }
+    unawaited(link._events?.cancel());
+    link._events = null;
+    link.closeRequested = false;
+    // The service relinquished transport ownership, but the durable cleanup
+    // gate still owns any survivors. Never restore a fictitious live session
+    // or describe this as a successful close.
+    link.phase = AgentLinkPhase.ended;
+    link.state = AgentState.failed;
+    link.sending = false;
+    link.stopping = false;
+    link._exit = null;
+    link.errorCode = event.reason;
+    _disablePermissions(link);
+    final failure =
+        'Agent termination not confirmed: ${event.reason}${event.message == null ? '' : ': ${event.message}'}';
+    link.error = link.streamFailed ? '${link.error}\n$failure' : failure;
+    _changed();
   }
 
   void detach() {
@@ -272,6 +285,8 @@ class AgentController extends ChangeNotifier implements ViewCloser {
     }
     _subscriptions.clear();
     _bySession.clear();
+    _pendingStarts.clear();
+    _earlyCloseFailures.clear();
     _host = null;
     for (final link in _links.values) {
       unawaited(link._events?.cancel());
@@ -412,6 +427,7 @@ class AgentController extends ChangeNotifier implements ViewCloser {
           ..connected = true
           ..runtimeProfileId = runtimeProfileId;
     _links[paneId] = link;
+    _pendingStarts.add(link);
     if (previous != null) _disposeLink(previous);
     savePaneState(paneId, {'runtimeName': runtimeName});
     _changed();
@@ -431,7 +447,13 @@ class AgentController extends ChangeNotifier implements ViewCloser {
       link.known = true;
       link.adapter = result.adapter;
       link.capabilities = result.capabilities;
-      _bind(host, link, result.eventChannel, generation);
+      final earlyFailure = _earlyCloseFailures.remove(result.sessionId);
+      if (earlyFailure != null) {
+        _bySession[result.sessionId] = link;
+        _closeFailed(earlyFailure);
+      } else {
+        _bind(host, link, result.eventChannel, generation);
+      }
       savePaneState(paneId, {
         'sessionId': result.sessionId,
         'runtimeName': runtimeName,
@@ -440,6 +462,9 @@ class AgentController extends ChangeNotifier implements ViewCloser {
       if (_current(host, generation) && _owns(link)) _failed(link, e);
     } on ConnectionClosedException {
       if (_current(host, generation) && _owns(link)) detach();
+    } finally {
+      _pendingStarts.remove(link);
+      if (_pendingStarts.isEmpty) _earlyCloseFailures.clear();
     }
     _changed();
   }

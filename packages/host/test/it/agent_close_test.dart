@@ -126,6 +126,47 @@ void main() {
       );
     }
   });
+
+  test('attach expiry during held failure settlement frees its reservation', () async {
+    final (d, a, _) = await open(
+      attach: false,
+      env: {
+        'KUMIKO_TEST_ATTACH_TIMEOUT_MS': '500',
+        'KUMIKO_TEST_SETTLE_DEADLINE_MS': '5000',
+      },
+      script: {
+        'prompt': [{'oversizedBytes': 1}],
+      },
+    );
+    await d.setFault(TestFault.terminateHangs);
+    try {
+      await a.prompt('fail before attaching');
+      await a.wait(Method.agentState, where: (p) => p['state'] == 'failed');
+      await eventually(() async {
+        final stats = await d.connection.request('test/agent.stats', {}) as Json;
+        return ((stats['sessions'] as Json)[a.id] as Json)['ending'] == true;
+      });
+      await Future<void>.delayed(const Duration(milliseconds: 650));
+      expect(a.of(Method.agentExited), isEmpty);
+    } finally {
+      await d.setFault(TestFault.terminateHangs, enabled: false);
+    }
+    await a.wait(Method.agentExited);
+    await eventually(() => LedgerView(profile).units().isEmpty);
+    await expectAllGone(readReports(work));
+    expect(agentRows(profile).single['id'], a.id);
+    await expectLater(
+      a.call(Method.agentAttach),
+      rpcCode(ErrorCode.unknownSession),
+    );
+    for (var i = 0; i < maxChannels; i++) {
+      await d.connection.request(
+        Method.testChannelOpen,
+        const TestChannelOpenParams(0),
+      );
+    }
+    expect(d.connection.isClosed, isFalse);
+  });
   test('cleanup failure reports closeFailed never false exited and preserves unresolved launch gate', () async {
     final (d, a, _) = await open(
       env: {'KUMIKO_TEST_SETTLE_DEADLINE_MS': '250'},
