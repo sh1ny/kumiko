@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 
 import 'package:host/src/agent/acp/acp_client.dart';
 import 'package:host/src/test_hooks/acp_agent_fixture.dart';
@@ -140,6 +141,114 @@ void main() {
         expect(await prompt, mode == 'honour' ? 'cancelled' : 'end_turn');
       });
     });
+  }
+  for (final waitPermission in [true, false]) {
+    for (final responseFirst in [true, false]) {
+      test('script fixture records coalesced permission response and cancel in '
+          'wire order (waitPermission: $waitPermission, '
+          'responseFirst: $responseFirst)', () async {
+        final input = StreamController<List<int>>();
+        final permissionWritten = Completer<Json>();
+        final releasePermissionWrite = Completer<void>();
+        final cancelReceived = Completer<void>();
+        final promptResult = Completer<Json>();
+        final reports = <Json>[];
+        final errors = <String>[];
+        final run = runAcpAgentScript(
+          script: {
+            'prompt': [
+              {
+                'permission': {
+                  'toolCall': {'toolCallId': 't'},
+                  'options': [
+                    {
+                      'optionId': 'opaque',
+                      'name': 'Allow',
+                      'kind': 'allow_once',
+                    },
+                  ],
+                },
+                'waitPermission': waitPermission,
+              },
+            ],
+            'holdPrompt': true,
+          },
+          args: [],
+          input: input.stream,
+          write: (bytes) async {
+            final message = jsonDecode(utf8.decode(bytes)) as Json;
+            if (message['method'] == 'session/request_permission') {
+              permissionWritten.complete(message);
+              // A peer can reply after receiving the bytes but before the
+              // fixture's asynchronous write/flush has completed.
+              await releasePermissionWrite.future;
+            } else if (message['id'] == 'prompt') {
+              promptResult.complete(message['result'] as Json);
+            }
+          },
+          writeError: errors.add,
+          report: (value) {
+            reports.add(value);
+            if (value['cancelReceived'] == true) {
+              cancelReceived.complete();
+            }
+          },
+        );
+        try {
+          input.add(
+            utf8.encode(
+              '${jsonEncode({
+                'jsonrpc': '2.0',
+                'id': 'prompt',
+                'method': 'session/prompt',
+                'params': {'sessionId': 'native', 'prompt': <Object?>[]},
+              })}\n',
+            ),
+          );
+          final permission = await permissionWritten.future;
+          final response = {
+            'jsonrpc': '2.0',
+            'id': permission['id'],
+            'result': {
+              'outcome': {'outcome': 'cancelled'},
+            },
+          };
+          final cancel = {
+            'jsonrpc': '2.0',
+            'method': 'session/cancel',
+            'params': {'sessionId': 'native'},
+          };
+          final messages = responseFirst
+              ? [response, cancel]
+              : [cancel, response];
+          // One input chunk, not separate stream events or timed writes.
+          input.add(utf8.encode('${messages.map(jsonEncode).join('\n')}\n'));
+          await cancelReceived.future;
+          releasePermissionWrite.complete();
+          expect(await promptResult.future, {'stopReason': 'cancelled'});
+          final observations = reports.where(
+            (value) =>
+                value.containsKey('permissionOutcome') ||
+                value.containsKey('cancelReceived'),
+          );
+          final outcome = {
+            'permissionOutcome': {'outcome': 'cancelled'},
+          };
+          final cancellation = {'cancelReceived': true};
+          expect(
+            observations,
+            responseFirst ? [outcome, cancellation] : [cancellation, outcome],
+          );
+          expect(errors, isEmpty);
+        } finally {
+          if (!releasePermissionWrite.isCompleted) {
+            releasePermissionWrite.complete();
+          }
+          await input.close();
+          expect(await run, 0);
+        }
+      });
+    }
   }
   test(
     'script fixture ignore cancel does not invent a prompt result',

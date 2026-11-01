@@ -34,7 +34,10 @@ void main() {
     units.clear();
   });
 
-  Future<ContainedUnit> start(List<String> args) async {
+  Future<ContainedUnit> start(
+    List<String> args, {
+    String? workingDirectory,
+  }) async {
     final environment = {'PC_FIXTURE_OUT': out.path};
     final ContainedUnit unit;
     if (Platform.isWindows) {
@@ -43,7 +46,7 @@ void main() {
         args: ['--fixture', ...args],
         containmentId: 'pipes-$sequence',
         environment: environment,
-        workingDirectory: tmp.path,
+        workingDirectory: workingDirectory ?? tmp.path,
         pipes: true,
       );
     } else {
@@ -52,7 +55,7 @@ void main() {
         argv: [exe, '--fixture', ...args],
         containmentId: 'pipes-$sequence',
         environment: environment,
-        workingDirectory: tmp.path,
+        workingDirectory: workingDirectory ?? tmp.path,
         pipes: true,
       );
     }
@@ -81,19 +84,87 @@ void main() {
     expect(await unit.exitCode, 0);
   });
 
+  Future<void> expectWorkingDirectory(
+    String reported,
+    String requested,
+    String other,
+  ) async {
+    final expected = directoryIdentity(requested);
+    final actual = directoryIdentity(reported);
+    final different = directoryIdentity(other);
+    final evidence =
+        'requested=$requested; reported=$reported; other=$other; '
+        'requested identity=$expected; reported identity=$actual; '
+        'other identity=$different';
+    expect(expected, isA<ResolvedDirectory>(), reason: evidence);
+    expect(actual, isA<ResolvedDirectory>(), reason: evidence);
+    expect(different, isA<ResolvedDirectory>(), reason: evidence);
+    expect(
+      (actual as ResolvedDirectory).id,
+      (expected as ResolvedDirectory).id,
+      reason: evidence,
+    );
+    expect(
+      actual.id,
+      isNot((different as ResolvedDirectory).id),
+      reason: evidence,
+    );
+  }
+
   test('pipes pass environment and working directory unchanged', () async {
     final unit = await start(['pipes-options']);
     final output = utf8.decoder.bind(unit.pipes!.stdout).join();
     final errors = unit.pipes!.stderr.drain<void>();
     final values = jsonDecode(await output) as Map<String, dynamic>;
     expect(values['out'], out.path);
-    expect(
-      p.equals(values['cwd'] as String, tmp.resolveSymbolicLinksSync()),
-      isTrue,
-    );
+    final other = Directory(p.join(tmp.path, 'not-cwd'))..createSync();
+    await expectWorkingDirectory(values['cwd'] as String, tmp.path, other.path);
     await errors;
     expect(await unit.exitCode, 0);
   });
+
+  test(
+    'Windows piped cwd preserves directory identity through a junction alias',
+    () async {
+      final target = Directory(p.join(tmp.path, 'cwd-target'))..createSync();
+      final other = Directory(p.join(tmp.path, 'cwd-other'))..createSync();
+      final junction = p.join(tmp.path, 'cwd-junction');
+      final created = await Process.run('cmd', [
+        '/c',
+        'mklink',
+        '/J',
+        junction,
+        target.path,
+      ]);
+      expect(created.exitCode, 0, reason: '${created.stdout}${created.stderr}');
+      addTearDown(() async {
+        final removed = await Process.run('cmd', ['/c', 'rmdir', junction]);
+        expect(
+          removed.exitCode,
+          0,
+          reason: '${removed.stdout}${removed.stderr}',
+        );
+      });
+
+      final unit = await start(['pipes-options'], workingDirectory: junction);
+      final output = utf8.decoder.bind(unit.pipes!.stdout).join();
+      final errors = unit.pipes!.stderr.drain<void>();
+      final values = jsonDecode(await output) as Map<String, dynamic>;
+      final reported = values['cwd'] as String;
+      expect(values['out'], out.path);
+      // GetCurrentDirectoryW preserves the junction spelling, whereas link
+      // resolution returns its target. Lexical equality is not cwd identity.
+      expect(
+        p.equals(reported, target.resolveSymbolicLinksSync()),
+        isFalse,
+        reason: 'junction=$junction; reported=$reported; target=${target.path}',
+      );
+      await expectWorkingDirectory(reported, target.path, other.path);
+      await errors;
+      expect(await unit.exitCode, 0);
+    },
+    skip: !Platform.isWindows ? 'Windows junction cwd spelling' : false,
+  );
 
   test(
     'pipes reach EOF after child exit without explicit pipe close',

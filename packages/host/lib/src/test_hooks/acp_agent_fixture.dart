@@ -72,6 +72,8 @@ Future<int> runAcpAgentFixture(List<String> args) async {
 /// owned release file before writing the rest of the same actual ACP line.
 /// Permission actions wait for their actual JSON-RPC outcomes before advancing;
 /// waitPermission:false permits a batch of outstanding requests (cap tests).
+/// Permission outcomes are reported when their responses are read, in wire
+/// order with cancellation, not when an action's asynchronous wait resumes.
 /// blockedWriteAfterMs arms an external report during an unaccepted write;
 /// its matching writeCompleted report distinguishes a completed write.
 /// Injected bytes are for cheap fixture-contract tests; production smoke uses
@@ -239,12 +241,7 @@ Future<int> runAcpAgentScript({
           'params': {'sessionId': native, ...permission},
         });
         if (action['waitPermission'] != false) {
-          final answer = await response.future;
-          report({'permissionOutcome': answer['outcome']});
-        } else {
-          response.future.then(
-            (answer) => report({'permissionOutcome': answer['outcome']}),
-          );
+          await response.future;
         }
       }
       if (action['oversizedBytes'] case final int count) {
@@ -297,7 +294,14 @@ Future<int> runAcpAgentScript({
     final method = message['method'];
     final params = message['params'] as Json? ?? {};
     if (method == null && id != null) {
-      pending.remove(id)?.complete(message['result'] as Json? ?? {});
+      final response = pending.remove(id);
+      if (response != null) {
+        final answer = message['result'] as Json? ?? {};
+        // The next line may already be buffered. Observe receipt before
+        // completing the future: its action can still be awaiting send/flush.
+        report({'permissionOutcome': answer['outcome']});
+        response.complete(answer);
+      }
       return;
     }
     if (method == 'session/cancel') {

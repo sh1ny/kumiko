@@ -19,39 +19,30 @@ const unitPipeQueueLimit = 1024 * 1024;
 ///
 /// Keep this endpoint even after the unit leaves the manager's live map.
 /// Process exit does NOT close the output streams: consume them through EOF
-/// to receive trailing bytes. Close stdin to send EOF without killing the
-/// child. After terminating the containment, call [close] to abandon any
-/// unread output and release all remaining pipe resources. Closing a unit's
-/// job/process handles alone does not take ownership of these streams.
+/// to receive trailing bytes. Pending stdin writes fail at process exit even
+/// if the native flush never completes. Close stdin to send EOF without
+/// killing the child. After terminating the containment, call [close] to
+/// abandon any unread output and release all remaining pipe resources.
+/// Closing a unit's job/process handles alone does not take ownership of
+/// these streams.
 class UnitPipes {
   UnitPipes._(this.stdin, this.stdout, this.stderr, this._dispose);
 
   /// Wraps the existing POSIX Process pipes; never reads the shim's stdout
   /// as an exec-status channel. Intended for the spawn implementation.
   factory UnitPipes.process(Process process) {
-    // Each write reports its own failure. Also observe IOSink.done so a
-    // broken pipe cannot become an unrelated unhandled asynchronous error.
-    process.stdin.done.ignore();
+    final writer = _ProcessPipeWriter(process.stdin);
     final input = UnitPipeSink._(
-      (chunk) async {
-        process.stdin.add(chunk);
-        await process.stdin.flush();
-      },
-      () async {
-        await process.stdin.close();
-      },
-      abort: () async {
-        try {
-          await process.stdin.close();
-        } on IOException {
-          // Abort deliberately abandons input after termination. The pending
-          // write still reports the broken pipe to its original caller.
-        }
-      },
+      writer.write,
+      writer.close,
+      abort: writer.close,
     );
     unawaited(
       process.exitCode
-          .then((_) => input.close())
+          .then((_) {
+            writer.processExited();
+            return input.close();
+          })
           .then<void>((_) {}, onError: (Object _) {}),
     );
     final output = _ProcessOutput(process.stdout);
@@ -192,6 +183,67 @@ class UnitPipeSink {
       }
     } else {
       await _running;
+    }
+  }
+}
+
+/// The SDK destroys a process's stdin socket at exit. If that cancels a
+/// blocked socket consumer before EPIPE arrives, its flush/close future may
+/// never settle. Keep one outstanding acknowledgement, completed by either
+/// the native operation or process exit, without adding an exit listener for
+/// every write. The SDK has already released the native socket at exit.
+class _ProcessPipeWriter {
+  _ProcessPipeWriter(this._input) {
+    // Native errors are forwarded to the operation's original caller below.
+    _input.done.ignore();
+  }
+
+  final IOSink _input;
+  Completer<void>? _pending;
+  bool _exited = false;
+  bool _closing = false;
+
+  void processExited() {
+    _exited = true;
+    final pending = _pending;
+    if (pending == null || pending.isCompleted) return;
+    if (_closing) {
+      pending.complete();
+    } else {
+      pending.completeError(StateError('pipe stdin closed on process exit'));
+    }
+  }
+
+  Future<void> write(Uint8List bytes) {
+    if (_exited) {
+      return Future.error(StateError('pipe stdin closed on process exit'));
+    }
+    _input.add(bytes);
+    return _wait(_input.flush());
+  }
+
+  Future<void> close() {
+    _closing = true;
+    if (_exited) return Future.value();
+    return _wait(_input.close());
+  }
+
+  Future<void> _wait(Future<dynamic> native) async {
+    final pending = _pending = Completer<void>();
+    unawaited(
+      native.then<void>(
+        (_) {
+          if (!pending.isCompleted) pending.complete();
+        },
+        onError: (Object error, StackTrace stack) {
+          if (!pending.isCompleted) pending.completeError(error, stack);
+        },
+      ),
+    );
+    try {
+      await pending.future;
+    } finally {
+      _pending = null;
     }
   }
 }
