@@ -18,20 +18,13 @@ class AdapterDetectionConfig {
     String? os,
     this.pathDirs,
     this.wellKnownDirs,
-    String? inheritedPath,
     Map<String, String>? environment,
   }) : os = os ?? Platform.operatingSystem,
-       environment = environment ?? Platform.environment,
-       inheritedPath =
-           inheritedPath ??
-           (environment ?? Platform.environment)['PATH'] ??
-           (environment ?? Platform.environment)['Path'] ??
-           '';
+       environment = environment ?? Platform.environment;
 
   final String os;
   final List<String>? pathDirs;
   final List<String>? wellKnownDirs;
-  final String inheritedPath;
   final Map<String, String> environment;
 }
 
@@ -166,8 +159,6 @@ AdapterDetectionResult detectAdapter(AdapterDetectionConfig config) {
       environment: config.environment,
     );
     final node = resolver.resolve(windows ? 'node.exe' : 'node');
-    final nodeDir = File(node).parent.path;
-    final separator = windows ? ';' : ':';
     return AdapterDetectionResult(
       profile: RuntimeProfile(
         id: builtinClaudeRuntimeId,
@@ -175,10 +166,6 @@ AdapterDetectionResult detectAdapter(AdapterDetectionConfig config) {
         runtimeKind: 'claude-code',
         executable: node,
         args: [File(script).absolute.path],
-        env: {
-          'PATH':
-              '$nodeDir${config.inheritedPath.isEmpty ? '' : '$separator${config.inheritedPath}'}',
-        },
       ),
     );
   } on RpcException catch (error) {

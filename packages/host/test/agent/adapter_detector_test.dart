@@ -27,7 +27,6 @@ void main() {
     os: os ?? Platform.operatingSystem,
     pathDirs: path ?? [root.path],
     wellKnownDirs: known,
-    inheritedPath: '/inherited/bin',
   );
 
   test('Windows npm layout (fixture dir with claude-agent-acp.cmd, node_modules/.../dist/index.js, node.exe) yields node.exe + absolute index.js', () async {
@@ -43,7 +42,7 @@ void main() {
     expect(p.isBuiltin, isTrue);
     expect(p.executable, node);
     expect(p.args, [script]);
-    expect(p.env['PATH'], '${File(node).parent.path};/inherited/bin');
+    expect(p.env, isEmpty);
     expect(result.reason, isNull);
   });
   test(
@@ -58,7 +57,7 @@ void main() {
       final result = await AdapterDetector(config(path: [bin.path])).detect();
       expect(result.profile!.executable, node);
       expect(result.profile!.args, [File(script).resolveSymbolicLinksSync()]);
-      expect(result.profile!.env['PATH'], '${bin.path}:/inherited/bin');
+      expect(result.profile!.env, isEmpty);
     },
     skip: Platform.isWindows
         ? 'POSIX npm symlink layout, pending three-OS CI'
@@ -88,7 +87,7 @@ void main() {
           .detect();
       expect(result.profile!.executable, node);
       expect(result.profile!.args, [File(script).resolveSymbolicLinksSync()]);
-      expect(result.profile!.env['PATH'], '${bin.path}:/inherited/bin');
+      expect(result.profile!.env, isEmpty);
       expect(result.reason, isNull);
     },
     skip: Platform.isWindows

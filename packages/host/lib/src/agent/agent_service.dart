@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:collection';
 import 'dart:convert';
+import 'dart:io';
 import 'dart:math';
 import 'dart:typed_data';
 
@@ -526,6 +527,37 @@ class AgentService {
     }
   }
 
+  /// Node-based Claude runtimes need their resolved Node directory on PATH,
+  /// including editable copies of detected profiles under a minimal desktop
+  /// environment. Keep inherited PATH host-private rather than serializing it
+  /// into a bounded profile. Explicit overrides retain their normal authority.
+  Map<String, String> _launchEnvironment(
+    RuntimeProfile profile,
+    String executable,
+  ) {
+    if (profile.runtimeKind != 'claude-code') return profile.env;
+    final windows = Platform.isWindows;
+    final name = executable.substring(
+      max(executable.lastIndexOf('/'), executable.lastIndexOf('\\')) + 1,
+    );
+    if (windows ? name.toLowerCase() != 'node.exe' : name != 'node') {
+      return profile.env;
+    }
+    for (final key in profile.env.keys) {
+      if (windows ? key.toUpperCase() == 'PATH' : key == 'PATH') {
+        return profile.env;
+      }
+    }
+    final inherited =
+        Platform.environment['PATH'] ?? Platform.environment['Path'] ?? '';
+    final nodeDir = File(executable).parent.path;
+    final separator = windows ? ';' : ':';
+    return {
+      'PATH': '$nodeDir${inherited.isEmpty ? '' : '$separator$inherited'}',
+      ...profile.env,
+    };
+  }
+
   /// Start and Continue share exactly the contained launch, initialization,
   /// reservation, callback ownership and failed-attempt cleanup path.
   Future<(_Agent, AgentAdapter, AdapterClaims)> _open(
@@ -547,7 +579,7 @@ class AgentService {
         kind: 'agent',
         argv: [executable, ...profile.args],
         workingDirectory: target.path,
-        environment: profile.env,
+        environment: _launchEnvironment(profile, executable),
         pipes: true,
       );
       io = _AgentIO(launch);
