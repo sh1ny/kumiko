@@ -585,7 +585,19 @@ class AgentController extends ChangeNotifier implements ViewCloser {
             link.state = AgentState.failed;
             _disablePermissions(link);
             unawaited(link._events?.cancel());
-            if (link._exit != null) {
+            if (error is RpcException &&
+                error.reason == ErrorCode.unknownSession) {
+              // Attachment expiry can overtake a new start's binding. The
+              // refusal proves there is no host owner to close or release.
+              if (identical(_bySession[link.sessionId], link)) {
+                _bySession.remove(link.sessionId);
+              }
+              link.phase = AgentLinkPhase.ended;
+              link.sending = false;
+              link.stopping = false;
+              link._exit = null;
+              link.errorCode = error.reason;
+            } else if (link._exit != null) {
               unawaited(_releaseExited(host, link));
             } else {
               unawaited(

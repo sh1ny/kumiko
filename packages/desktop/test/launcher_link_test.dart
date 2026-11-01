@@ -50,13 +50,18 @@ class _PromptRig {
   final attached = Completer<void>();
   final prompts = <AgentPromptParams>[];
   final calls = <String>[];
+  final removed = <String>[];
   int starts = 0;
   late final Connection host;
   late final Connection desktop;
   late final AgentController controller;
 
-  Future<void> start({bool earlyCloseFailure = false}) async {
+  Future<void> start({
+    bool earlyCloseFailure = false,
+    bool expiredAttach = false,
+  }) async {
     var failStart = earlyCloseFailure;
+    var expiredOwner = expiredAttach;
     host = Connection(
       input: toHost.controller.stream,
       output: toDesktop,
@@ -79,6 +84,16 @@ class _PromptRig {
                 ).toJson(),
               );
             }
+            if (expiredOwner) {
+              host.notify(
+                Method.agentExited,
+                AgentExitedParams(
+                  sessionId: id,
+                  reason: AgentExitReason.closed,
+                  eventCount: 0,
+                ).toJson(),
+              );
+            }
             return AgentStartResult(
               sessionId: id,
               eventChannel: channel,
@@ -86,7 +101,29 @@ class _PromptRig {
               capabilities: const [],
             ).toJson();
           case Method.agentAttach:
+            if (expiredOwner) {
+              throw RpcException(
+                ErrorCode.unknownSession,
+                'initial attachment expired',
+              );
+            }
             if (!attached.isCompleted) attached.complete();
+            return <String, Object?>{};
+          case Method.agentContinue:
+            expiredOwner = false;
+            return AgentContinueResult(
+              eventChannel: host.openOutbound().id,
+              adapter: const AgentAdapter(name: 'scripted', version: 'test'),
+              capabilities: const ['resume'],
+              mode: AgentContinueMode.resume,
+            ).toJson();
+          case Method.agentClose:
+            if (expiredOwner) {
+              throw RpcException(
+                ErrorCode.unknownSession,
+                'owner already expired',
+              );
+            }
             return <String, Object?>{};
           case Method.agentPrompt:
             prompts.add(AgentPromptParams.fromJson(params));
@@ -105,7 +142,7 @@ class _PromptRig {
     );
     final hello = await desktop.hello();
     controller = AgentController(
-      removePane: (_) {},
+      removePane: removed.add,
       savePaneState: (_, _) {},
       focusPane: (_) {},
     );
@@ -117,8 +154,9 @@ class _PromptRig {
       workspaceId: 'workspace',
       runtimeName: 'Claude Code',
     );
-    if (earlyCloseFailure) {
+    if (earlyCloseFailure || expiredAttach) {
       await desktop.request(Method.agentRecords, {'sessionIds': <String>[]});
+      await pumpEventQueue();
       return;
     }
     await attached.future;
@@ -197,6 +235,49 @@ void main() {
       await rig.proveRecovery();
     },
   );
+
+  test('expired initial attachment preserves saved identity and can Continue on the real wire', () async {
+    final rig = _PromptRig();
+    await rig.start(expiredAttach: true);
+    addTearDown(rig.close);
+    final link = rig.link;
+    expect(link.phase, AgentLinkPhase.ended);
+    expect(link.statusLabel, 'Failed');
+    expect(link.error, contains('initial attachment expired'));
+    expect(link.known, isTrue);
+    expect(link.canSend, isFalse);
+    expect(link.canContinue, isTrue);
+    expect(link.canNewSession, isTrue);
+    expect(rig.calls, isNot(contains(Method.agentClose)));
+    expect(rig.calls, isNot(contains(Method.agentRelease)));
+
+    await rig.controller.continueSession('pane');
+    await rig.attached.future;
+    rig.host.notify(
+      Method.agentState,
+      AgentStateParams(
+        sessionId: 'agent-1',
+        state: AgentState.idle,
+        seq: 1,
+      ).toJson(),
+    );
+    await rig.desktop.request(Method.agentRecords, {'sessionIds': <String>[]});
+    expect(link.sessionId, 'agent-1');
+    expect(rig.starts, 1);
+    expect(link.canSend, isTrue);
+    expect(link.error, isNull);
+    await rig.proveRecovery();
+  });
+
+  test('expired initial attachment remains dismissible without closing its forgotten owner', () async {
+    final rig = _PromptRig();
+    await rig.start(expiredAttach: true);
+    addTearDown(rig.close);
+    await rig.controller.closeConfirmed('pane');
+    expect(rig.removed, ['pane']);
+    expect(rig.calls, isNot(contains(Method.agentClose)));
+    expect(rig.calls, isNot(contains(Method.agentRelease)));
+  });
 
   test('with no profile directory the connector fails to start, naming the '
       'variable to set', () async {
