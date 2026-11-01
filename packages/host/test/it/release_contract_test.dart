@@ -7,6 +7,8 @@ import 'package:process_containment/process_containment.dart';
 import 'package:test/test.dart';
 
 import 'support/harness.dart';
+import 'support/agent_support.dart';
+import 'support/terminal_support.dart' show rpcFailure;
 
 /// Every file under [dir] with its bytes, so any write is visible.
 Map<String, String> snapshot(Directory dir) {
@@ -102,6 +104,7 @@ void main() {
       ['escaper'],
       ['sleeper'],
       ['stubborn'],
+      ['acp-agent'],
       ['lock-holder', profile.path],
     ]) {
       final result = await Process.run(releaseHostExecutable(), [
@@ -131,6 +134,65 @@ void main() {
     // No fixture took the lock either: the profile is still free.
     await withStore(profile, (store) {});
   });
+
+  test(
+    'release ignores qualification override environment for ordinary Continue',
+    () async {
+      await buildTestHost();
+      final desktop = await Desktop.start(
+        profile,
+        capabilities: {...testCapabilities, Capability.agent},
+        environment: {'KUMIKO_TEST_RUNTIME_PATH': ''},
+      );
+      late String id;
+      late Json row;
+      try {
+        await desktop.waitState();
+        final workspace = await desktop.openWorkspace(cwd.path);
+        await saveAgentFixture(
+          desktop,
+          cwd,
+          script: {
+            'agentCapabilities': {
+              'loadSession': true,
+              'sessionCapabilities': {'resume': <String, Object?>{}},
+            },
+          },
+        );
+        final peer = AgentPeer(desktop);
+        await peer.start(workspace.workspace.id);
+        id = peer.id;
+        await peer.attach();
+        row = agentRows(profile).single;
+        await peer.close();
+      } finally {
+        await desktop.dispose();
+      }
+      final session = await HostLauncher(
+        executable: releaseHostExecutable(),
+        profileDir: profile.path,
+        capabilities: {Capability.agent, Capability.workbench},
+        environment: {
+          'KUMIKO_TEST_QUALIFIED_ADAPTERS':
+              '[["scripted-acp","test-only",["load","resume"]]]',
+        },
+      ).start();
+      try {
+        final error = await rpcFailure(
+          session.connection.request(
+            Method.agentContinue,
+            AgentSessionParams(id),
+          ),
+        );
+        expect(error.reason, ErrorCode.resumeUnavailable);
+        expect(error.data['resumeReason'], 'not-qualified');
+        expect(agentRows(profile).single, row);
+        expect(LedgerView(profile).units(), isEmpty);
+      } finally {
+        await session.quit();
+      }
+    },
+  );
 
   group('unit-exec', () {
     final skip = Platform.isWindows ? 'unit-exec is POSIX only' : null;

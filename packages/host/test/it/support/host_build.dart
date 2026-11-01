@@ -41,6 +41,14 @@ String terminalFixtureExecutable() =>
 String testHostExecutable() =>
     _built ?? (throw StateError('call buildTestHost() in setUpAll first'));
 
+/// Built only by the native runtime-environment tests, not every host test.
+Future<String> buildNodeAgentFixture() => _compile(
+  Directory.current,
+  'test/it/fixtures/node_agent_fixture.dart',
+  'build/node-agent-fixture',
+  'node_agent_fixture',
+);
+
 /// The built release host executable. Call `buildReleaseHost` first.
 String releaseHostExecutable() =>
     _releaseBuilt ??
@@ -127,7 +135,7 @@ Future<String> _compile(
   if (!stale) {
     final built = exe.lastModifiedSync();
     stale = source.lastModifiedSync().isAfter(built);
-    for (final root in ['host_protocol', 'process_containment']) {
+    for (final root in ['host', 'host_protocol', 'process_containment']) {
       for (final e in Directory(
         '${packageDir.path}/../$root/lib',
       ).listSync(recursive: true)) {

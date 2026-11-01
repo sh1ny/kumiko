@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:isolate';
 import 'dart:typed_data';
 
@@ -32,23 +33,43 @@ class HostFaults {
 
   bool get pendingWriteFails => _active.contains(TestFault.pendingWriteFails);
 
-  /// The write of a spawned unit's pid and start time fails, after 1 s.
+  /// The spawned unit's pid write fails after disabling this held fault.
   bool get runningWriteFails => _active.contains(TestFault.runningWriteFails);
+  Completer<void>? _runningWriteFailureRelease;
+
+  Future<void> waitForRunningWriteFailureRelease() {
+    if (!runningWriteFails) return Future<void>.value();
+    return (_runningWriteFailureRelease ??= Completer<void>()).future;
+  }
+
   bool get crashAfterPendingWrite =>
       _active.contains(TestFault.crashAfterPendingWrite);
   bool get crashAfterSpawnBeforePid =>
       _active.contains(TestFault.crashAfterSpawnBeforePid);
 
   /// The spawn fails after the unit started, as when its start time cannot
-  /// be read: after 1 s the leader is killed and the spawn throws.
+  /// be read. Disabling the fault releases the leader kill, so tests can
+  /// observe descendant readiness before triggering failure.
   bool get identityReadFails => _active.contains(TestFault.identityReadFails);
+  Completer<void>? _identityFailureRelease;
+
+  Future<void> waitForIdentityFailureRelease() {
+    if (!identityReadFails) return Future<void>.value();
+    return (_identityFailureRelease ??= Completer<void>()).future;
+  }
 
   /// Every kill the host would send fails.
   bool get killFails => _active.contains(TestFault.killFails);
 
-  /// Terminating a running unit never finishes, so ending it outlives any
-  /// deadline.
+  /// Terminating a running unit waits while enabled, outliving any deadline
+  /// unless the test explicitly releases it through the existing fault setter.
   bool get terminateHangs => _active.contains(TestFault.terminateHangs);
+  Completer<void>? _terminationRelease;
+
+  Future<void> waitForTerminationRelease() {
+    if (!terminateHangs) return Future<void>.value();
+    return (_terminationRelease ??= Completer<void>()).future;
+  }
 
   /// Writing a profile or the default profile fails.
   bool get profileWriteFails => _active.contains(TestFault.profileWriteFails);
@@ -75,6 +96,11 @@ class HostFaults {
 
   final Map<String, ResolveFault> _resolve = {};
   final Map<String, List<SendPort>> _hung = {};
+
+  /// Existing held-fault state, observed only by the test host's stats seam.
+  Map<String, int> get heldResolutions => {
+    for (final entry in _hung.entries) entry.key: entry.value.length,
+  };
 
   /// Takes the fault set for the next resolution of [path], if any.
   ResolveFault? takeResolveFault(String path) => _resolve.remove(path);
@@ -103,6 +129,18 @@ class HostFaults {
       _active.add(fault);
     } else {
       _active.remove(fault);
+      if (fault == TestFault.terminateHangs) {
+        _terminationRelease?.complete();
+        _terminationRelease = null;
+      }
+      if (fault == TestFault.runningWriteFails) {
+        _runningWriteFailureRelease?.complete();
+        _runningWriteFailureRelease = null;
+      }
+      if (fault == TestFault.identityReadFails) {
+        _identityFailureRelease?.complete();
+        _identityFailureRelease = null;
+      }
     }
   }
 }

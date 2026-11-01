@@ -51,6 +51,24 @@ bool chmodPath(String path, int mode) {
   }
 }
 
+final int Function(Pointer<Utf8>, int) _access = libc
+    .lookupFunction<
+      Int32 Function(Pointer<Utf8>, Int32),
+      int Function(Pointer<Utf8>, int)
+    >('access', isLeaf: true);
+
+/// Whether the current user may execute [path], using POSIX `access(X_OK)`.
+/// Unlike testing mode bits this accounts for directory search permissions
+/// and the caller's access. POSIX only; importing on Windows loads no binding.
+bool canExecutePath(String path) {
+  final native = path.toNativeUtf8();
+  try {
+    return _access(native, 1) == 0;
+  } finally {
+    malloc.free(native);
+  }
+}
+
 final int Function(int) _getsid = libc
     .lookupFunction<Int32 Function(Int32), int Function(int)>('getsid');
 

@@ -266,7 +266,13 @@ void main() {
       final before = await ptysHeldBy(desktop.session.pid);
       await desktop.setFault(TestFault.runningWriteFails);
 
-      final e = await rpcFailure(desktop.openTerminalRaw('fixture'));
+      final refusal = rpcFailure(desktop.openTerminalRaw('fixture'));
+      try {
+        await waitReports(work, 1);
+      } finally {
+        await desktop.setFault(TestFault.runningWriteFails, enabled: false);
+      }
+      final e = await refusal;
 
       expect(e.reason, ErrorCode.storeError);
       expect(LedgerView(profile).units(), isEmpty);

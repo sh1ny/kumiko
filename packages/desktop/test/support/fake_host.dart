@@ -489,6 +489,226 @@ class FakeHostLink implements HostLink {
     TerminalCloseFailed(terminalId: terminalId, reason: reason),
   );
 
+  // Agent RPCs are scripted independently of terminal RPCs.
+  RuntimeListResult runtimes = const RuntimeListResult(
+    profiles: [
+      RuntimeProfile(
+        id: 'runtime-1',
+        name: 'Claude Code',
+        runtimeKind: 'claude-code',
+        executable: '/bin/node',
+      ),
+    ],
+    defaultAvailable: true,
+    defaultId: 'runtime-1',
+  );
+  final Queue<Object> agentStartAnswers = Queue();
+  final Queue<Object> agentContinueAnswers = Queue();
+  Completer<void>? agentStartGate;
+  final List<AgentStartParams> agentStarts = [];
+  final List<AgentPromptParams> agentPrompts = [];
+  final List<AgentPermissionReplyParams> agentReplies = [];
+  final List<String> agentStops = [];
+  final List<String> agentCloses = [];
+  final List<String> agentReleases = [];
+  final Map<String, AgentRecord> agentRecordMap = {};
+  final Map<String, StreamController<AgentEvent>> agentChannels = {};
+  final Map<String, int> _agentEventCounts = {};
+  final StreamController<AgentStateParams> agentStateSource =
+      StreamController.broadcast(sync: true);
+  final StreamController<AgentPermissionRequestedParams> agentRequestSource =
+      StreamController.broadcast(sync: true);
+  final StreamController<AgentPermissionResolvedParams> agentResolvedSource =
+      StreamController.broadcast(sync: true);
+  final StreamController<AgentStopResultParams> agentStopSource =
+      StreamController.broadcast(sync: true);
+  final StreamController<AgentTurnEndedParams> agentTurnSource =
+      StreamController.broadcast(sync: true);
+  final StreamController<AgentExitedParams> agentExitSource =
+      StreamController.broadcast(sync: true);
+  final StreamController<AgentCloseFailedParams> agentCloseFailureSource =
+      StreamController.broadcast(sync: true);
+
+  @override
+  Stream<AgentStateParams> get agentStates => agentStateSource.stream;
+  @override
+  Stream<AgentPermissionRequestedParams> get agentPermissionRequests =>
+      agentRequestSource.stream;
+  @override
+  Stream<AgentPermissionResolvedParams> get agentPermissionResolutions =>
+      agentResolvedSource.stream;
+  @override
+  Stream<AgentStopResultParams> get agentStopResults => agentStopSource.stream;
+  @override
+  Stream<AgentTurnEndedParams> get agentTurnEnds => agentTurnSource.stream;
+  @override
+  Stream<AgentExitedParams> get agentExits => agentExitSource.stream;
+  @override
+  Stream<AgentCloseFailedParams> get agentCloseFailures =>
+      agentCloseFailureSource.stream;
+
+  @override
+  Future<RuntimeListResult> runtimeList() async {
+    calls.add('runtime/list');
+    return runtimes;
+  }
+
+  @override
+  Future<RuntimeProfile> saveRuntimeProfile(RuntimeProfile profile) async {
+    calls.add('runtime/save ${profile.id}');
+    if (profile.isBuiltin) throw RpcException(ErrorCode.profileLocked);
+    runtimes = RuntimeListResult(
+      profiles: [
+        for (final p in runtimes.profiles)
+          if (p.id != profile.id) p,
+        profile,
+      ],
+      defaultId: runtimes.defaultId ?? profile.id,
+      defaultAvailable: true,
+    );
+    return profile;
+  }
+
+  @override
+  Future<void> removeRuntimeProfile(String id) async {
+    calls.add('runtime/remove $id');
+    runtimes = RuntimeListResult(
+      profiles: [
+        for (final p in runtimes.profiles)
+          if (p.id != id) p,
+      ],
+      defaultId: runtimes.defaultId,
+      defaultAvailable: runtimes.defaultAvailable && runtimes.defaultId != id,
+    );
+  }
+
+  @override
+  Future<void> setDefaultRuntimeProfile(String id) async {
+    calls.add('runtime/setDefault $id');
+    runtimes = RuntimeListResult(
+      profiles: runtimes.profiles,
+      defaultId: id,
+      defaultAvailable: runtimes.profiles.any((p) => p.id == id),
+    );
+  }
+
+  @override
+  Future<AgentStartResult> startAgent(AgentStartParams params) async {
+    calls.add('agent/start ${params.workspaceId}');
+    agentStarts.add(params);
+    return _answer(agentStartAnswers, agentStartGate, () {
+      final id = 'agent-${agentStarts.length}';
+      agentRecordMap[id] = const AgentRecord(
+        known: true,
+        workspaceAvailable: true,
+      );
+      return AgentStartResult(
+        sessionId: id,
+        eventChannel: 100 + agentStarts.length,
+        adapter: const AgentAdapter(name: 'scripted-acp', version: 'test-only'),
+        capabilities: const [],
+      );
+    });
+  }
+
+  @override
+  Future<AgentContinueResult> continueAgent(String id) async {
+    calls.add('agent/continue $id');
+    return _answer(
+      agentContinueAnswers,
+      null,
+      () => const AgentContinueResult(
+        eventChannel: 120,
+        adapter: AgentAdapter(name: 'scripted-acp', version: 'test-only'),
+        capabilities: ['load'],
+        mode: AgentContinueMode.load,
+      ),
+    );
+  }
+
+  @override
+  Stream<AgentEvent> attachAgent(String id, int channel) {
+    calls.add('agent/attach $id');
+    final source = StreamController<AgentEvent>(
+      sync: true,
+      onListen: () =>
+          scheduleMicrotask(() => agentState(id, AgentState.idle, 0)),
+      // Keep cancellation completion in the test's zone rather than the
+      // SDK's shared root-zone completed future, which pump cannot flush.
+      onCancel: () => Future<void>.value(),
+    );
+    // Allocate done before close cancels the synchronous subscription;
+    // otherwise close can also return the root-zone completed future.
+    unawaited(source.done);
+    agentChannels[id] = source;
+    _agentEventCounts[id] = 0;
+    return source.stream;
+  }
+
+  @override
+  Future<void> promptAgent(AgentPromptParams params) async {
+    calls.add('agent/prompt ${params.sessionId}');
+    agentPrompts.add(params);
+  }
+
+  @override
+  Future<void> stopAgent(String id) async {
+    calls.add('agent/stop $id');
+    agentStops.add(id);
+  }
+
+  @override
+  Future<void> replyAgentPermission(AgentPermissionReplyParams params) async {
+    calls.add('agent/permissionReply ${params.requestId}');
+    agentReplies.add(params);
+  }
+
+  @override
+  Future<void> closeAgent(String id) async {
+    calls.add('agent/close $id');
+    agentCloses.add(id);
+  }
+
+  @override
+  Future<void> releaseAgent(String id) async {
+    calls.add('agent/release $id');
+    agentReleases.add(id);
+  }
+
+  @override
+  Future<AgentRecordsResult> agentRecords(List<String> ids) async {
+    calls.add('agent/records ${ids.join(",")}');
+    return AgentRecordsResult({
+      for (final id in ids)
+        id:
+            agentRecordMap[id] ??
+            const AgentRecord(known: false, workspaceAvailable: false),
+    });
+  }
+
+  void agentState(String id, AgentState state, [int seq = 1]) =>
+      agentStateSource.add(
+        AgentStateParams(sessionId: id, seq: seq, state: state),
+      );
+
+  void agentEvent(String id, AgentEvent event) {
+    _agentEventCounts[id] = (_agentEventCounts[id] ?? 0) + 1;
+    agentChannels[id]!.add(event);
+  }
+
+  void agentExit(
+    String id, {
+    AgentExitReason reason = AgentExitReason.closed,
+    int? status,
+  }) => agentExitSource.add(
+    AgentExitedParams(
+      sessionId: id,
+      reason: reason,
+      eventCount: _agentEventCounts[id] ?? 0,
+      status: status,
+    ),
+  );
+
   @override
   Future<void> quit() async => quitCalled = true;
 }

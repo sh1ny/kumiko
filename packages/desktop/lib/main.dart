@@ -49,6 +49,7 @@ Future<void> main() async {
             profileDir: profileDir,
             capabilities: {
               Capability.workbench,
+              Capability.agent,
               if (surfaceFactory != null) Capability.terminal,
             },
           ),

@@ -198,9 +198,11 @@ class Desktop {
     Map<String, String>? environment,
     Set<String> capabilities = testCapabilities,
     String? executable,
+    Duration quitTimeout = defaultQuitTimeout,
   }) => HostLauncher(
     executable: executable ?? testHostExecutable(),
     profileDir: profile.path,
+    quitTimeout: quitTimeout,
     capabilities: capabilities,
     environment: environment,
   );
@@ -209,11 +211,13 @@ class Desktop {
     Directory profile, {
     Map<String, String>? environment,
     Set<String> capabilities = testCapabilities,
+    Duration quitTimeout = defaultQuitTimeout,
   }) async {
     final launcher = newLauncher(
       profile,
       environment: environment,
       capabilities: capabilities,
+      quitTimeout: quitTimeout,
     );
     final session = await launcher.start();
     return Desktop._(launcher, session, profile).._listen();

@@ -1,5 +1,6 @@
 import 'package:host_protocol/host_protocol.dart';
 
+import 'agent/agent_service.dart';
 import 'host_faults.dart';
 import 'host_options.dart';
 import 'unit_manager.dart';
@@ -15,6 +16,9 @@ abstract interface class HostExtension {
   /// Settings that make timing deterministic in tests.
   HostOptions get options;
 
+  /// Exact qualification candidates, available only in a test build.
+  List<(String, String, List<String>)>? get qualifiedAdaptersOverride;
+
   /// Runs a `--test-fixture` mode: [args] are the mode and its arguments.
   /// Returns the process exit code.
   Future<int> runFixture(List<String> args);
@@ -29,9 +33,11 @@ class HostServices {
     required this.units,
     required this.faults,
     required this.connection,
+    required this.agents,
   });
 
   final UnitManager units;
   final HostFaults faults;
   final Connection connection;
+  final AgentService agents;
 }

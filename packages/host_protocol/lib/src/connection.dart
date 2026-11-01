@@ -206,13 +206,31 @@ class Connection {
 
   /// Sends a request and returns its result. An error answer throws
   /// [RpcException]; a connection that ends first throws
-  /// [ConnectionClosedException].
+  /// [ConnectionClosedException]. Requests exceeding [maxControlMessage] after
+  /// JSON encoding throw [RpcException] (`invalid-params`) before submission.
   Future<Object?> request(String method, [Object? params]) {
     final reason = _reason;
     if (reason != null) return Future.error(ConnectionClosedException(reason));
     final id = _nextRequestId++;
+    // Admission uses the actual serialized envelope, including JSON escapes.
+    // Encoding can fail; do not own a pending future until it has succeeded.
+    final bytes = utf8.encode(
+      jsonEncode({
+        'jsonrpc': '2.0',
+        'id': id,
+        'method': method,
+        'params': ?params,
+      }),
+    );
+    if (bytes.length > maxControlMessage) {
+      throw RpcException(
+        ErrorCode.invalidParams,
+        'encoded request exceeds $maxControlMessage bytes; '
+        'please shorten the request text and try again',
+      );
+    }
     final pending = _pending[id] = _Pending(method);
-    _send({'jsonrpc': '2.0', 'id': id, 'method': method, 'params': ?params});
+    _writer.sendControl(bytes);
     return pending.completer.future;
   }
 

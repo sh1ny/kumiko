@@ -42,6 +42,63 @@ Future<void> main(List<String> args) async {
         await _tty(args.sublist(2));
       case 'flood':
         await _flood();
+      case 'pipes-echo':
+        stderr.writeln('separate stderr');
+        await stderr.flush();
+        await stdout.addStream(stdin);
+        await stdout.flush();
+      case 'pipes-argv':
+        stdout.write(jsonEncode(args.sublist(2)));
+        await stdout.flush();
+      case 'pipes-options':
+        stdout.write(
+          jsonEncode({
+            'cwd': Directory.current.path,
+            'out': Platform.environment[outVariable],
+          }),
+        );
+        await stdout.flush();
+      case 'pipes-output':
+        stderr.writeln('output-started');
+        await stderr.flush();
+        final chunk = List<int>.filled(64 * 1024, 120);
+        for (var i = 0; i < 64; i++) {
+          stdout.add(chunk);
+          await stdout.flush();
+        }
+        _report('output-finished');
+        stderr.writeln('output-finished');
+        await stderr.flush();
+      case 'pipes-no-read':
+        stdout.writeln('ready');
+        await stdout.flush();
+        stdout.writeln('responsive');
+        await stdout.flush();
+        _stayAlive();
+      case 'pipes-tree':
+        _report('tree');
+        await Process.start(_self, ['--fixture', 'pipes-tree-child']);
+        _stayAlive();
+      case 'pipes-tree-child':
+        _report('child');
+        await Process.start(_self, ['--fixture', 'sleeper']);
+        _stayAlive();
+      case 'pipes-inherited-stdin':
+        await Process.start(_self, [
+          '--fixture',
+          'pipes-inherited-stdin-child',
+        ], mode: ProcessStartMode.inheritStdio);
+        _report('leader');
+        _stayAlive();
+      case 'pipes-inherited-stdin-child':
+        _windowsHandles();
+        stdout.writeln();
+        await stdout.flush();
+        _report('inherited-stdin');
+        _stayAlive();
+      case 'pipes-windows-handles':
+        _windowsHandles();
+        await stdout.flush();
       default:
         stderr.writeln('unknown fixture ${args[1]}');
         exit(64);
@@ -186,6 +243,77 @@ Future<void> _tty(List<String> rest) async {
     stdout.write('SIZE:${stdout.terminalColumns}x${stdout.terminalLines};');
     await stdout.flush();
     await Future<void>.delayed(const Duration(milliseconds: 100));
+  }
+}
+
+/// Native inventory of every inheritable handle in this process. Windows'
+/// ProcessHandleInformation (51) snapshots the full handle table, including
+/// handles whose numerical value is outside a guessed probing range.
+void _windowsHandles() {
+  final kernel = DynamicLibrary.open('kernel32.dll');
+  final query = DynamicLibrary.open('ntdll.dll')
+      .lookupFunction<
+        Int32 Function(IntPtr, Uint32, Pointer<Void>, Uint32, Pointer<Uint32>),
+        int Function(int, int, Pointer<Void>, int, Pointer<Uint32>)
+      >('NtQueryInformationProcess');
+  final getInfo = kernel
+      .lookupFunction<
+        Int32 Function(IntPtr, Pointer<Uint32>),
+        int Function(int, Pointer<Uint32>)
+      >('GetHandleInformation');
+  final getStd = kernel
+      .lookupFunction<IntPtr Function(Uint32), int Function(int)>(
+        'GetStdHandle',
+      );
+  final getType = kernel
+      .lookupFunction<Uint32 Function(IntPtr), int Function(int)>(
+        'GetFileType',
+      );
+  final consoleWindow = kernel
+      .lookupFunction<IntPtr Function(), int Function()>('GetConsoleWindow');
+  final needed = calloc<Uint32>();
+  final flags = calloc<Uint32>();
+  Pointer<Uint8> snapshot = nullptr;
+  try {
+    var size = 4096;
+    while (true) {
+      snapshot = calloc<Uint8>(size);
+      final status = query(-1, 51, snapshot.cast<Void>(), size, needed);
+      if (status == 0) break;
+      calloc.free(snapshot);
+      snapshot = nullptr;
+      if (status != -1073741820) {
+        // STATUS_INFO_LENGTH_MISMATCH
+        throw StateError('NtQueryInformationProcess: $status');
+      }
+      size = needed.value > size ? needed.value : size * 2;
+    }
+    final inherited = <int>[];
+    final count = snapshot.cast<UintPtr>().value;
+    for (var i = 0; i < count; i++) {
+      // PROCESS_HANDLE_SNAPSHOT_INFORMATION starts with two ULONG_PTRs;
+      // PROCESS_HANDLE_TABLE_ENTRY_INFO occupies 40 bytes on Windows x64.
+      final handle = (snapshot + 16 + i * 40).cast<IntPtr>().value;
+      if (getInfo(handle, flags) != 0 && (flags.value & 1) != 0) {
+        inherited.add(handle);
+      }
+    }
+    final std = [getStd(0xfffffff6), getStd(0xfffffff5), getStd(0xfffffff4)];
+    stdout.write(
+      jsonEncode({
+        'inherited': inherited,
+        'std': std,
+        'stdTypes': std.map(getType).toList(),
+        'stdInheritable': std
+            .map((h) => getInfo(h, flags) != 0 && (flags.value & 1) != 0)
+            .toList(),
+        'consoleWindow': consoleWindow(),
+      }),
+    );
+  } finally {
+    if (snapshot != nullptr) calloc.free(snapshot);
+    calloc.free(needed);
+    calloc.free(flags);
   }
 }
 

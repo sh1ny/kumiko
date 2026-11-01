@@ -24,13 +24,11 @@ github:
     after_fixes: false
 
 review:
-  # Design and pre-ship reviews prefer a reviewer CLI other than the harness
-  # you run in (routes below). false = always use the fresh-context
-  # specwright-reviewer agent instead.
-  cross_model: false
-  # Reviewer CLIs tried in order; the current harness is skipped, and the
-  # first one installed (OMP: whose model resolves) runs the review.
-  order: [codex, claude, omp]
+  # Reviews are external Claude workers, always launched through the Orca
+  # skills in a fresh tab/pane with structured report-back to the coordinator.
+  # No in-process reviewer or alternate-provider fallback.
+  cross_model: true
+  order: [claude]
   # Model per route. Omit = the CLI's default; OMP takes a role (@slow) or a
   # provider/id, and defaults to @default.
   # models:
@@ -82,17 +80,9 @@ pr:
   # that commit only archives the change; reviews of the head before it carry
   # over. true = re-request review on the archive head too (0.1.13 behaviour).
   review_after_archive: false
-  # Reviewers keyed by login (without [bot]). role: required | advisory,
-  # timeout: wait per head (default 20m), request: comment that triggers a
-  # reviewer that only runs when tagged. Replaces github.review_request.
-  # reviewers:
-  #   chatgpt-codex-connector: { role: required, request: "@codex review" }
-  #   my-review-bot: { role: advisory, timeout: 15m }
-  reviewers:
-    chatgpt-codex-connector: { role: required, request: "@codex review" }
-  # Account that posts the requests. Default: review_request.login, else
-  # github.login.
-  request_as: sh1ny
+  # Reviews use external Claude through Orca and its validated pre-ship receipt.
+  # Do not request an additional GitHub review bot.
+  reviewers: {}
   # Who merges a ready PR. user = you merge on GitHub; watch reports ready
   # and stops. agent = with finish: pr, watch archives the change without
   # asking, merges the PR at the head it reported ready and cleans up (ADR

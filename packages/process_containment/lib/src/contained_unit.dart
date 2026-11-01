@@ -1,3 +1,5 @@
+import 'unit_pipes.dart';
+
 /// Outcome of ending a unit's containment.
 class TerminationResult {
   const TerminationResult.terminated() : terminated = true, reason = null;
@@ -30,6 +32,10 @@ abstract interface class ContainedUnit {
 
   /// Completes with the unit process's exit code.
   Future<int> get exitCode;
+
+  /// Caller-owned standard I/O, present only with `pipes: true`.
+  /// Keep the endpoint through output EOF, independently of unit settlement.
+  UnitPipes? get pipes;
 
   /// Terminates the containment. Idempotent; safe after the unit exited.
   Future<TerminationResult> terminate();

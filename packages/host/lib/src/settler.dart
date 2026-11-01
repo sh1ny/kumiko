@@ -127,7 +127,17 @@ class Settler {
     WindowsEvidence evidence,
   ) async {
     if (live != null) {
-      if (faults.terminateHangs) await Completer<void>().future;
+      if (faults.terminateHangs) {
+        await faults.waitForTerminationRelease();
+        // A deadline may already have retired this settlement attempt and
+        // handed ownership to explicit cleanup retry. Releasing the test
+        // fault must not resurrect that abandoned attempt, terminate its unit
+        // or remove the unresolved row behind the retry's back.
+        final current = ledger.unit(row.containmentId);
+        if (current == null || current.state == 'unresolved') {
+          await Completer<void>().future;
+        }
+      }
       if (faults.killFails) return _faultedTerminate(live);
       final result = await live.unit.terminate();
       return result.terminated ? null : result.reason;

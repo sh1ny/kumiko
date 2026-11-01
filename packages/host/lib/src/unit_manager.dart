@@ -10,6 +10,7 @@ import 'host_log.dart';
 import 'host_options.dart';
 import 'ledger.dart';
 import 'settler.dart';
+import 'workspace_resolver.dart';
 
 /// What the desktop told the host in `hello` that unit launches depend on.
 class DesktopInfo {
@@ -20,6 +21,21 @@ class DesktopInfo {
   final bool outerJobHeld;
 }
 
+/// Launch result retains the handle and caller-owned I/O even if a short-lived
+/// child exits and settlement removes it from [UnitManager.live].
+class UnitLaunch {
+  const UnitLaunch({
+    required this.id,
+    required this.unit,
+    required this.target,
+  });
+
+  final String id;
+  final ContainedUnit unit;
+  final ResolvedDirectory target;
+  UnitPipes? get pipes => unit.pipes;
+}
+
 /// Starts, tracks and ends this host instance's units (design D2-D4).
 class UnitManager {
   UnitManager({
@@ -28,6 +44,7 @@ class UnitManager {
     required this.faults,
     required this.settler,
     required this.options,
+    required this.resolver,
   });
 
   final Ledger ledger;
@@ -35,6 +52,7 @@ class UnitManager {
   final HostFaults faults;
   final Settler settler;
   final HostOptions options;
+  final WorkspaceResolver resolver;
 
   /// Units with a handle: running, or unresolved and retryable.
   final Map<String, LiveUnit> live = {};
@@ -66,7 +84,7 @@ class UnitManager {
   }
 
   /// Launches a unit running [argv] (the program first) with [target] as its
-  /// working directory, and returns its containment id.
+  /// working directory, and returns its containment id, handle and endpoints.
   ///
   /// Order (design D4): refusals that need no I/O, identity resolution, the
   /// gate, the pending row committed, the spawn, pid and start time recorded.
@@ -76,14 +94,26 @@ class UnitManager {
   /// [target]. [environment] overrides variables for this unit only. With
   /// [pty] the unit runs on a pseudo-terminal (its handles are in the live
   /// unit); a [SpawnFailed] is rethrown once the unit has been settled.
-  Future<String> launch({
+  /// With [pipes], the caller owns [UnitLaunch.pipes]: neither output stream
+  /// is drained here, and settlement leaves it alive for trailing bytes/EOF.
+  /// Capture the result rather than looking up an already-exited unit in
+  /// [live]. Terminate the unit before abandoning blocked I/O, then close
+  /// its pipes. [pipes] and [pty] are mutually exclusive.
+  /// [expectedIdentity] additionally requires the captured canonical [target]
+  /// and its identity to match before any pending row or native spawn.
+  Future<UnitLaunch> launch({
     required String target,
     required String kind,
     required List<String> argv,
+    String? expectedIdentity,
     String? workingDirectory,
     Map<String, String>? environment,
     PtyOptions? pty,
+    bool pipes = false,
   }) async {
+    if (pipes && pty != null) {
+      throw ArgumentError('pipes and pty are mutually exclusive');
+    }
     if (shuttingDown) {
       throw RpcException(ErrorCode.shuttingDown, 'the host is shutting down');
     }
@@ -108,13 +138,31 @@ class UnitManager {
 
     _launching++;
     try {
-      final identity = directoryIdentity(target);
-      if (identity is! ResolvedDirectory) {
-        throw RpcException(
-          ErrorCode.targetUnavailable,
-          'cannot resolve target $target: ${(identity as TargetUnavailable).detail}',
-          {'target': target},
-        );
+      final resolved = await resolver.resolve(target, queue: false);
+      if (shuttingDown) {
+        throw RpcException(ErrorCode.shuttingDown, 'the host is shutting down');
+      }
+      if (reconciling) {
+        throw RpcException(ErrorCode.reconciling, 'the host is reconciling earlier units');
+      }
+      final ResolvedDirectory identity;
+      switch (resolved) {
+        case ResolveFound(:final directory):
+          identity = directory;
+        case ResolveBusy() || ResolveStarved():
+          throw RpcException(ErrorCode.busy, 'target resolution is busy', {'target': target});
+        case ResolveTimedOut():
+          throw RpcException(ErrorCode.targetUnavailable, 'target resolution did not answer', {'target': target});
+        case ResolveMissing(:final detail):
+          throw RpcException(
+            ErrorCode.targetUnavailable,
+            'cannot resolve target $target: $detail',
+            {'target': target},
+          );
+      }
+      if (expectedIdentity != null &&
+          (identity.id != expectedIdentity || identity.realPath != target)) {
+        throw const UnitTargetChanged();
       }
       if (ledger.isUnresolved(identity: identity.id, path: identity.realPath)) {
         throw RpcException(
@@ -139,6 +187,7 @@ class UnitManager {
       );
       if (faults.crashAfterPendingWrite) _crash();
 
+      final failRunningWrite = faults.runningWriteFails;
       final ContainedUnit unit;
       ContainedUnit? spawned;
       try {
@@ -148,20 +197,29 @@ class UnitManager {
           workingDirectory ?? identity.realPath,
           environment,
           pty,
+          pipes,
         );
         if (faults.identityReadFails) await _failIdentity(unit);
       } on Object catch (e) {
-        if (spawned != null) await _releasePty(spawned);
-        await _settleFailedSpawn(id, e);
+        if (spawned != null && spawned.pipes == null) {
+          await _releaseUnclaimedIo(spawned);
+        }
+        try {
+          // A piped descendant can retain a write end outside the leader's
+          // session. Complete the existing marker scan before joining readers.
+          if (spawned?.pipes != null) await spawned!.terminate();
+          await _settleFailedSpawn(id, e);
+        } finally {
+          if (spawned?.pipes != null) await _releaseUnclaimedIo(spawned!);
+        }
         if (e is SpawnFailed || e is ProcessException) rethrow;
         throw RpcException(ErrorCode.internalError, 'spawn failed: $e');
       }
       if (faults.crashAfterSpawnBeforePid) _crash();
 
       try {
-        if (faults.runningWriteFails) {
-          // Late enough that the unit has started its descendants.
-          await Future<void>.delayed(const Duration(seconds: 1));
+        if (failRunningWrite) {
+          await faults.waitForRunningWriteFailureRelease();
           throw RpcException(
             ErrorCode.storeError,
             'injected running write failure',
@@ -179,8 +237,8 @@ class UnitManager {
           // The row stays pending; the next host reconciles it.
           log.event('unit-end-failed', ids: {'unit': id});
         }
-        // Nobody took the pseudo-terminal yet: it goes with the launch.
-        await _releasePty(unit);
+        // Nobody took the I/O endpoints yet: they go with the failed launch.
+        await _releaseUnclaimedIo(unit);
         rethrow;
       }
       final entry = live[id] = LiveUnit(unit);
@@ -197,7 +255,7 @@ class UnitManager {
         }),
       );
       log.event('unit-launched', ids: {'unit': id});
-      return id;
+      return UnitLaunch(id: id, unit: unit, target: identity);
     } finally {
       _launching--;
     }
@@ -209,6 +267,7 @@ class UnitManager {
     String workingDirectory,
     Map<String, String>? environment,
     PtyOptions? pty,
+    bool pipes,
   ) async {
     if (Platform.isWindows) {
       return spawnWindowsUnit(
@@ -218,6 +277,7 @@ class UnitManager {
         workingDirectory: workingDirectory,
         environment: environment,
         pty: pty,
+        pipes: pipes,
       );
     }
     final unit = await spawnPosixUnit(
@@ -227,10 +287,11 @@ class UnitManager {
       workingDirectory: workingDirectory,
       environment: environment,
       pty: pty,
+      pipes: pipes,
     );
-    // A PTY unit's stdio is the terminal, and its pipes were consumed by the
-    // spawn. Otherwise nobody reads the unit's stdio; keep its pipes empty.
-    if (pty == null) {
+    // A PTY consumed its shim pipes during spawn. Piped units hand both
+    // outputs to the caller. Plain units retain the existing discard drain.
+    if (pty == null && !pipes) {
       unit.process.stdout.drain<void>();
       unit.process.stderr.drain<void>();
     }
@@ -263,11 +324,17 @@ class UnitManager {
     }
   }
 
-  /// Closes the pseudo-terminal of a unit whose launch failed after the
-  /// spawn, before a terminal took its handles: the console close starts
-  /// (Windows), then both handles close, which also lets a console close
-  /// waiting for undrained output return, as a terminal's abandoned open does.
-  static Future<void> _releasePty(ContainedUnit unit) async {
+  /// Releases unclaimed I/O after a failed launch. Pipes are joined only
+  /// after termination/settlement closes the child ends. For a PTY, start
+  /// console close first, then close both handles as an abandoned open does.
+  static Future<void> _releaseUnclaimedIo(ContainedUnit unit) async {
+    // Launch failed before a caller could take these endpoints. Settlement
+    // must kill the unit before disposal can join blocked native I/O.
+    final pipes = unit.pipes;
+    if (pipes != null) {
+      await unit.terminate();
+      await pipes.close();
+    }
     final pty = switch (unit) {
       PosixUnit(:final pty) => pty,
       WindowsUnit(:final pty) => pty,
@@ -286,7 +353,7 @@ class UnitManager {
   /// it started are not (test faults only). On Windows the unit's job ends
   /// with the spawn, as it does when `spawnWindowsUnit` fails.
   Future<Never> _failIdentity(ContainedUnit unit) async {
-    await Future<void>.delayed(const Duration(seconds: 1));
+    await faults.waitForIdentityFailureRelease();
     if (unit is WindowsUnit) {
       await unit.terminate();
       unit.close();
@@ -392,4 +459,9 @@ class UnitManager {
       log.event('shutdown-deadline', ids: {'units': ids.length});
     }
   }
+}
+
+/// A captured target no longer denotes the same canonical directory.
+class UnitTargetChanged implements Exception {
+  const UnitTargetChanged();
 }

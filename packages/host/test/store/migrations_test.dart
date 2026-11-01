@@ -28,12 +28,212 @@ void main() {
       .map((e) => e.uri.pathSegments.where((s) => s.isNotEmpty).last)
       .toSet();
 
+  group('v5 runtime schema', () {
+    List<MigrationStep> v4() => schemaMigrations.take(4).toList();
+
+    void seedV4() {
+      Store.open(profile, lock, migrations: v4())
+        ..execute(
+          "INSERT INTO host_instance VALUES (3, 1, 'a', NULL, NULL, 'x', 'a', 0)",
+        )
+        ..execute(
+          "INSERT INTO unit VALUES ('c', 3, 'terminal', '/p', 'i', 'running', NULL, NULL, NULL, 'a', 'a')",
+        )
+        ..execute("INSERT INTO workspace VALUES ('w', '/p', 'i', 'label', 'a')")
+        ..execute(
+          "UPDATE working_set SET layout = '{\"format\":2}', layout_format = 2, revision = 7",
+        )
+        ..execute(
+          "INSERT INTO shell_profile VALUES ('s', 'shell', 'sh', '[]', NULL, '{}', 'a', 'a')",
+        )
+        ..execute("INSERT INTO setting VALUES ('default_profile', 's')")
+        ..close();
+    }
+
+    Map<String, List<List<Object?>>> oldRows(Store store) => {
+      for (final table in [
+        'host_instance',
+        'unit',
+        'workspace',
+        'working_set',
+        'shell_profile',
+        'setting',
+      ])
+        table: [
+          for (final row in store.select('SELECT * FROM $table ORDER BY 1'))
+            row.values,
+        ],
+    };
+
+    test('v4 migrates to v5 preserving every old row and exact new schema', () {
+      seedV4();
+      final old = Store.open(profile, lock, migrations: v4());
+      final before = oldRows(old);
+      old.close();
+      final store = Store.open(profile, lock);
+      addTearDown(store.close);
+      expect(store.userVersion, 5);
+      expect(currentSchemaVersion, 5);
+      expect(oldRows(store), before);
+      expect(
+        store
+            .select("SELECT name FROM sqlite_master WHERE type='table'")
+            .map((r) => r['name'])
+            .toSet(),
+        {...before.keys, 'runtime_profile', 'agent_session'},
+      );
+      expect(
+        store
+            .select('PRAGMA table_info(runtime_profile)')
+            .map((r) => r['name']),
+        [
+          'id',
+          'name',
+          'runtime_kind',
+          'executable',
+          'args_json',
+          'env_json',
+          'created_at',
+          'updated_at',
+        ],
+      );
+      expect(
+        store.select('PRAGMA table_info(agent_session)').map((r) => r['name']),
+        [
+          'id',
+          'runtime_kind',
+          'runtime_profile_id',
+          'adapter_name',
+          'adapter_version',
+          'native_session_id',
+          'role',
+          'target_host',
+          'target_path',
+          'target_identity',
+          'workspace_id',
+          'created_at',
+          'updated_at',
+        ],
+      );
+      for (final table in ['runtime_profile', 'agent_session']) {
+        expect(
+          store
+              .select('PRAGMA table_info($table)')
+              .where((r) => r['pk'] == 1)
+              .map((r) => r['name']),
+          ['id'],
+        );
+      }
+      expect(
+        store
+            .select('PRAGMA table_info(agent_session)')
+            .where(
+              (r) =>
+                  r['name'] == 'runtime_profile_id' ||
+                  r['name'] == 'workspace_id',
+            )
+            .map((r) => r['notnull']),
+        [0, 0],
+      );
+    });
+
+    test('v5 role check accepts coding only and profile deletion keeps native record', () {
+      final store = Store.open(profile, lock);
+      addTearDown(store.close);
+      store.execute(
+        "INSERT INTO runtime_profile VALUES ('r', 'Claude', 'claude-code', 'node', '[]', '{}', 'a', 'a')",
+      );
+      void insert(String id, String role) => store.execute(
+        'INSERT INTO agent_session VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+        [
+          id,
+          'claude-code',
+          'r',
+          'adapter',
+          '0.99.1',
+          'native',
+          role,
+          'local',
+          '/p',
+          'i',
+          null,
+          'a',
+          'a',
+        ],
+      );
+      insert('s', 'coding');
+      final before = store.select('SELECT * FROM agent_session').single.values;
+      expect(() => insert('bad', 'chat'), throwsA(isA<SqliteException>()));
+      store.execute("DELETE FROM runtime_profile WHERE id = 'r'");
+      expect(store.select('SELECT * FROM agent_session').single.values, before);
+    });
+
+    test('fault inside v5 rolls back schema data and user_version to v4', () {
+      seedV4();
+      final old = Store.open(profile, lock, migrations: v4());
+      final before = oldRows(old);
+      old.close();
+      expect(
+        () => Store.open(
+          profile,
+          lock,
+          migrations: [
+            ...v4(),
+            (db) {
+              schemaMigrations[4](db);
+              db.execute("DELETE FROM shell_profile");
+              throw StateError('injected v5 fault');
+            },
+          ],
+        ),
+        throwsA(
+          isA<StoreMigrationFailed>()
+              .having((e) => e.fromVersion, 'from', 4)
+              .having((e) => e.toVersion, 'to', 5)
+              .having(
+                (e) => e.cause,
+                'injected fault after the actual v5 step',
+                isA<StateError>().having(
+                  (e) => e.message,
+                  'message',
+                  'injected v5 fault',
+                ),
+              ),
+        ),
+      );
+      final store = Store.open(profile, lock, migrations: v4());
+      addTearDown(store.close);
+      expect(store.userVersion, 4);
+      expect(oldRows(store), before);
+      expect(
+        store.select(
+          "SELECT name FROM sqlite_master WHERE name IN ('runtime_profile','agent_session')",
+        ),
+        isEmpty,
+      );
+    });
+
+    test('v4-only reader refuses v5 with database bytes unchanged', () {
+      Store.open(profile, lock).close();
+      final before = dbFile().readAsBytesSync();
+      expect(
+        () => Store.open(profile, lock, migrations: v4()),
+        throwsA(
+          isA<StoreNewer>()
+              .having((e) => e.storeVersion, 'store', 5)
+              .having((e) => e.supportedVersion, 'supported', 4),
+        ),
+      );
+      expect(dbFile().readAsBytesSync(), before);
+    });
+  });
+
   test('fresh store created at current version', () {
     final store = Store.open(profile, lock);
     addTearDown(store.close);
 
     expect(store.userVersion, currentSchemaVersion);
-    expect(currentSchemaVersion, 4);
+    expect(currentSchemaVersion, 5);
     expect(store.pragma('journal_mode'), 'wal');
     expect(store.pragma('synchronous'), 2); // FULL
     final tables = store
@@ -131,13 +331,13 @@ void main() {
       () => Store.open(profile, lock, migrations: steps),
       throwsA(
         isA<StoreMigrationFailed>()
-            .having((e) => e.fromVersion, 'from', 5)
-            .having((e) => e.toVersion, 'to', 6),
+            .having((e) => e.fromVersion, 'from', 6)
+            .having((e) => e.toVersion, 'to', 7),
       ),
     );
     final db = sqlite3.open(dbFile().path);
     addTearDown(db.close);
-    expect(db.select('PRAGMA user_version').single.values.first, 5);
+    expect(db.select('PRAGMA user_version').single.values.first, 6);
   });
 
   test('newer user_version is refused unchanged', () {
@@ -154,7 +354,7 @@ void main() {
         isA<StoreNewer>()
             .having((e) => e.code, 'code', 'store-newer')
             .having((e) => e.storeVersion, 'store', 9)
-            .having((e) => e.supportedVersion, 'supported', 4),
+            .having((e) => e.supportedVersion, 'supported', 5),
       ),
     );
 
@@ -326,7 +526,11 @@ void main() {
           .single['updated_at'];
       before.close();
 
-      final store = Store.open(profile, lock);
+      final store = Store.open(
+        profile,
+        lock,
+        migrations: schemaMigrations.take(4).toList(),
+      );
       addTearDown(store.close);
 
       expect(store.userVersion, 4);
@@ -347,7 +551,11 @@ void main() {
       final othersBefore = others(before);
       before.close();
 
-      final store = Store.open(profile, lock);
+      final store = Store.open(
+        profile,
+        lock,
+        migrations: schemaMigrations.take(4).toList(),
+      );
       addTearDown(store.close);
 
       expect(store.userVersion, 4);
@@ -357,7 +565,11 @@ void main() {
 
     test('a step list ending at v3 refuses the v4 store unchanged', () {
       seedV3(layout: '{"format":1}', format: 1, revision: 1);
-      Store.open(profile, lock).close();
+      Store.open(
+        profile,
+        lock,
+        migrations: schemaMigrations.take(4).toList(),
+      ).close();
       final before = dbFile().readAsBytesSync();
 
       expect(
@@ -400,7 +612,11 @@ void main() {
       expect(row['revision'], 5);
       raw.close();
 
-      final store = Store.open(profile, lock);
+      final store = Store.open(
+        profile,
+        lock,
+        migrations: schemaMigrations.take(4).toList(),
+      );
       addTearDown(store.close);
       expect(store.userVersion, 4);
       final ws = store.select('SELECT * FROM working_set').single;

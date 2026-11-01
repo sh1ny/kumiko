@@ -10,6 +10,8 @@ class HostOptions {
     this.resolveTimeout = defaultResolveTimeout,
     this.shellSearchPath,
     this.shellWellKnownDirs,
+    this.runtimeSearchPath,
+    this.runtimeWellKnownDirs,
     this.attachTimeout = defaultAttachTimeout,
     this.settleDeadline = defaultSettleDeadline,
     this.consoleCloseTimeout = defaultConsoleCloseTimeout,
@@ -56,6 +58,10 @@ class HostOptions {
   /// The install locations shell detection searches after the path; empty
   /// disables them (tests only).
   final List<String>? shellWellKnownDirs;
+
+  /// Independent runtime detection search overrides for test hosts.
+  final List<String>? runtimeSearchPath;
+  final List<String>? runtimeWellKnownDirs;
 
   final Duration attachTimeout;
   final Duration settleDeadline;

@@ -93,12 +93,14 @@ Future<bool> showCloseWarning(
     context: context,
     builder: (context) => AlertDialog(
       key: const Key('close-warning'),
-      title: const Text('Close running terminals?'),
+      title: Text(warnings.any((w) => w.reason == 'Are you sure you want to stop the running agent?')
+          ? 'Close running work?' : 'Close running terminals?'),
       content: Column(
         mainAxisSize: MainAxisSize.min,
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          const Text('Closing ends their shells:'),
+          Text(warnings.any((w) => w.reason == 'Are you sure you want to stop the running agent?')
+              ? 'Closing ends the named running work:' : 'Closing ends their shells:'),
           // Closing the workbench can name every terminal: the list scrolls.
           Flexible(
             child: SingleChildScrollView(

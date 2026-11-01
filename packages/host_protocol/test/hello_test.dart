@@ -28,6 +28,68 @@ void main() {
     expect(host.negotiated?.capabilities, {Capability.testChannels});
   });
 
+  test(
+    'oversized encoded request is refused locally and connection stays usable',
+    () async {
+      final calls = <String>[];
+      final (desktop, host) = connectedPair(
+        capabilitiesA: {Capability.testUnits},
+        capabilitiesB: {Capability.testUnits},
+        onRequestB: (method, params) {
+          calls.add(method);
+          return <String, Object?>{};
+        },
+      );
+      addTearDown(host.close);
+      addTearDown(desktop.close);
+      await desktop.hello();
+
+      await expectLater(
+        Future.sync(
+          () => desktop.request(Method.testUnitEnd, {
+            'text': '\u0001' * (200 * 1024),
+          }),
+        ),
+        throwsA(
+          isA<RpcException>()
+              .having(
+                (error) => error.reason,
+                'reason',
+                ErrorCode.invalidParams,
+              )
+              .having(
+                (error) => error.message,
+                'message',
+                allOf(contains('encoded'), contains('shorten')),
+              ),
+        ),
+      );
+
+      expect(calls, isEmpty);
+      expect(desktop.isClosed, isFalse);
+      await desktop.request(Method.testUnitEnd, {'containmentId': 'valid'});
+      expect(calls, [Method.testUnitEnd]);
+      // Closing must not complete a leaked, unobserved pending request.
+      await desktop.close();
+    },
+  );
+
+  test('JSON encoding failure never takes pending request ownership', () async {
+    final (desktop, host) = connectedPair();
+    addTearDown(host.close);
+    addTearDown(desktop.close);
+    await desktop.hello();
+
+    expect(
+      () => desktop.request(Method.testUnitEnd, {'notJson': Object()}),
+      throwsA(isA<JsonUnsupportedObjectError>()),
+    );
+
+    // The failed request has no future returned to its caller. A pending
+    // entry here would surface an unhandled ConnectionClosedException.
+    await desktop.close();
+  });
+
   test('negotiate is pure', () {
     final n = negotiate(
       const VersionRange(1, 2),

@@ -5,6 +5,7 @@ import 'dart:isolate';
 import 'package:process_containment/process_containment.dart';
 
 import '../profile_lock.dart';
+import 'acp_agent_fixture.dart';
 
 /// Where fixtures report themselves: each process writes one
 /// `role pid startTime marker sid` line to its own
@@ -23,6 +24,9 @@ Future<int> runTestFixture(List<String> args) async {
     return 64;
   }
   switch (args.first) {
+    case 'acp-agent':
+      _report('acp-agent');
+      return runAcpAgentFixture(args.sublist(1));
     case 'tree':
       _report('tree');
       await _startChild('tree-child');

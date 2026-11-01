@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:typed_data';
 
+import 'package:desktop/src/agent/agent_controller.dart';
 import 'package:desktop/src/launcher_link.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:host_protocol/host_protocol.dart';
@@ -22,7 +23,275 @@ class _Pipe implements ByteSink {
   Future<void> flush() => Future.value();
 }
 
+/// Only process ownership is substituted: SessionLink and both wire endpoints
+/// are real, so JSON escaping and request admission remain in the test path.
+class _MemorySession implements HostSession {
+  _MemorySession(this.connection, this.hello, this.notifications);
+
+  @override
+  final Connection connection;
+  @override
+  final HelloResult hello;
+  @override
+  final Stream<HostNotification> notifications;
+  @override
+  Stream<CleanupState> get cleanupStates => const Stream.empty();
+
+  @override
+  dynamic noSuchMethod(Invocation invocation) => super.noSuchMethod(invocation);
+}
+
+class _PromptRig {
+  final toHost = _Pipe();
+  final toDesktop = _Pipe();
+  final notifications = StreamController<HostNotification>.broadcast(
+    sync: true,
+  );
+  final attached = Completer<void>();
+  final prompts = <AgentPromptParams>[];
+  final calls = <String>[];
+  final removed = <String>[];
+  int starts = 0;
+  late final Connection host;
+  late final Connection desktop;
+  late final AgentController controller;
+
+  Future<void> start({
+    bool earlyCloseFailure = false,
+    bool expiredAttach = false,
+  }) async {
+    var failStart = earlyCloseFailure;
+    var expiredOwner = expiredAttach;
+    host = Connection(
+      input: toHost.controller.stream,
+      output: toDesktop,
+      capabilities: const {Capability.agent},
+      onHello: (_, _) => const HelloInfo.ready('host-1'),
+      onRequest: (method, params) {
+        calls.add(method);
+        switch (method) {
+          case Method.runtimeList:
+            return RuntimeListResult(
+              profiles: [
+                RuntimeProfile(
+                  id: 'scripted',
+                  name: 'Scripted ACP',
+                  runtimeKind: 'claude-code',
+                  executable: 'scripted-acp',
+                ),
+              ],
+              defaultAvailable: true,
+              defaultId: 'scripted',
+            ).toJson();
+          case Method.agentStart:
+            final id = 'agent-${++starts}';
+            final channel = host.openOutbound().id;
+            if (failStart) {
+              failStart = false;
+              host.notify(
+                Method.agentCloseFailed,
+                AgentCloseFailedParams(
+                  sessionId: id,
+                  reason: 'cleanup-unresolved',
+                  message: 'early native cleanup could not be confirmed',
+                ).toJson(),
+              );
+            }
+            if (expiredOwner) {
+              host.notify(
+                Method.agentExited,
+                AgentExitedParams(
+                  sessionId: id,
+                  reason: AgentExitReason.closed,
+                  eventCount: 0,
+                ).toJson(),
+              );
+            }
+            return AgentStartResult(
+              sessionId: id,
+              eventChannel: channel,
+              adapter: const AgentAdapter(name: 'scripted', version: 'test'),
+              capabilities: const [],
+            ).toJson();
+          case Method.agentAttach:
+            if (expiredOwner) {
+              throw RpcException(
+                ErrorCode.unknownSession,
+                'initial attachment expired',
+              );
+            }
+            if (!attached.isCompleted) attached.complete();
+            return <String, Object?>{};
+          case Method.agentContinue:
+            expiredOwner = false;
+            return AgentContinueResult(
+              eventChannel: host.openOutbound().id,
+              adapter: const AgentAdapter(name: 'scripted', version: 'test'),
+              capabilities: const ['resume'],
+              mode: AgentContinueMode.resume,
+            ).toJson();
+          case Method.agentClose:
+            if (expiredOwner) {
+              throw RpcException(
+                ErrorCode.unknownSession,
+                'owner already expired',
+              );
+            }
+            return <String, Object?>{};
+          case Method.agentPrompt:
+            prompts.add(AgentPromptParams.fromJson(params));
+            return <String, Object?>{};
+          default:
+            return <String, Object?>{};
+        }
+      },
+    );
+    desktop = Connection(
+      input: toDesktop.controller.stream,
+      output: toHost,
+      capabilities: const {Capability.agent},
+      onNotification: (method, params) =>
+          notifications.add(HostNotification(method, params)),
+    );
+    final hello = await desktop.hello();
+    controller = AgentController(
+      removePane: removed.add,
+      savePaneState: (_, _) {},
+      focusPane: (_) {},
+    );
+    controller.attach(
+      SessionLink(_MemorySession(desktop, hello, notifications.stream)),
+    );
+    await controller.start(
+      'pane',
+      workspaceId: 'workspace',
+      runtimeName: 'Claude Code',
+    );
+    if (earlyCloseFailure || expiredAttach) {
+      await desktop.request(Method.agentRecords, {'sessionIds': <String>[]});
+      await pumpEventQueue();
+      return;
+    }
+    await attached.future;
+    host.notify(
+      Method.agentState,
+      AgentStateParams(
+        sessionId: 'agent-1',
+        state: AgentState.idle,
+        seq: 1,
+      ).toJson(),
+    );
+    // The reply follows all prior host control records on the same wire.
+    await desktop.request(Method.agentRecords, {'sessionIds': <String>[]});
+    expect(link.canSend, isTrue);
+  }
+
+  AgentLink get link => controller.linkOf('pane')!;
+
+  Future<void> close() async {
+    controller.dispose();
+    await desktop.close();
+    await host.close();
+    await notifications.close();
+    await toHost.controller.close();
+    await toDesktop.controller.close();
+  }
+
+  Future<void> proveRecovery() async {
+    link.prompt.text = 'smaller prompt';
+    await controller.send('pane', link.prompt.text);
+    expect(prompts.map((prompt) => prompt.text), ['smaller prompt']);
+    expect(link.prompt.text, isEmpty);
+    expect(link.error, isNull);
+    expect(desktop.isClosed, isFalse);
+  }
+}
+
 void main() {
+  test(
+    'early new-start close failure stays terminal over the real wire',
+    () async {
+      final rig = _PromptRig();
+      await rig.start(earlyCloseFailure: true);
+      addTearDown(rig.close);
+      final link = rig.link;
+      expect(link.phase, AgentLinkPhase.ended);
+      expect(link.state, AgentState.failed);
+      expect(
+        link.error,
+        contains('early native cleanup could not be confirmed'),
+      );
+      expect(link.known, isTrue);
+      expect(link.canContinue, isTrue);
+      expect(link.canNewSession, isTrue);
+      expect(link.canSend, isFalse);
+      expect(rig.calls, isNot(contains(Method.agentAttach)));
+      expect(rig.calls, isNot(contains(Method.agentClose)));
+      expect(rig.calls, isNot(contains(Method.agentRelease)));
+
+      await rig.controller.newSession('pane');
+      await rig.attached.future;
+      rig.host.notify(
+        Method.agentState,
+        AgentStateParams(
+          sessionId: rig.link.sessionId!,
+          state: AgentState.idle,
+          seq: 1,
+        ).toJson(),
+      );
+      await rig.desktop.request(Method.agentRecords, {
+        'sessionIds': <String>[],
+      });
+      expect(rig.link.sessionId, 'agent-2');
+      expect(rig.link.canSend, isTrue);
+      expect(rig.link.error, isNull);
+      await rig.proveRecovery();
+    },
+  );
+
+  test('expired initial attachment preserves saved identity and can Continue on the real wire', () async {
+    final rig = _PromptRig();
+    await rig.start(expiredAttach: true);
+    addTearDown(rig.close);
+    final link = rig.link;
+    expect(link.phase, AgentLinkPhase.ended);
+    expect(link.statusLabel, 'Failed');
+    expect(link.error, contains('initial attachment expired'));
+    expect(link.known, isTrue);
+    expect(link.canSend, isFalse);
+    expect(link.canContinue, isTrue);
+    expect(link.canNewSession, isTrue);
+    expect(rig.calls, isNot(contains(Method.agentClose)));
+    expect(rig.calls, isNot(contains(Method.agentRelease)));
+
+    await rig.controller.continueSession('pane');
+    await rig.attached.future;
+    rig.host.notify(
+      Method.agentState,
+      AgentStateParams(
+        sessionId: 'agent-1',
+        state: AgentState.idle,
+        seq: 1,
+      ).toJson(),
+    );
+    await rig.desktop.request(Method.agentRecords, {'sessionIds': <String>[]});
+    expect(link.sessionId, 'agent-1');
+    expect(rig.starts, 1);
+    expect(link.canSend, isTrue);
+    expect(link.error, isNull);
+    await rig.proveRecovery();
+  });
+
+  test('expired initial attachment remains dismissible without closing its forgotten owner', () async {
+    final rig = _PromptRig();
+    await rig.start(expiredAttach: true);
+    addTearDown(rig.close);
+    await rig.controller.closeConfirmed('pane');
+    expect(rig.removed, ['pane']);
+    expect(rig.calls, isNot(contains(Method.agentClose)));
+    expect(rig.calls, isNot(contains(Method.agentRelease)));
+  });
+
   test('with no profile directory the connector fails to start, naming the '
       'variable to set', () async {
     final error = await noProfileDirConnector(
@@ -84,6 +353,92 @@ void main() {
     expect(hostCalls, contains(Method.terminalClose));
     await desktop.close();
     await host.close();
+  });
+
+  group('agent prompt size admission over SessionLink and Connection', () {
+    for (final entry in {
+      'exact raw UTF-8 ceiling': 'é' * (maxAgentPromptBytes ~/ 2),
+      'escaped text within the control ceiling': '\u0001' * (170 * 1024),
+    }.entries) {
+      test('${entry.key} remains accepted', () async {
+        final rig = _PromptRig();
+        await rig.start();
+        addTearDown(rig.close);
+        rig.link.prompt.text = entry.value;
+
+        await rig.controller.send('pane', entry.value);
+
+        expect(rig.prompts.single.text, entry.value);
+        expect(rig.link.prompt.text, isEmpty);
+        expect(rig.link.error, isNull);
+        expect(rig.link.sending, isTrue);
+        expect(rig.desktop.isClosed, isFalse);
+      });
+    }
+
+    for (final entry in {
+      'raw UTF-8 over 256 KiB': 'é' * (maxAgentPromptBytes ~/ 2 + 1),
+      'raw text over the control ceiling': 'x' * (maxControlMessage + 1),
+    }.entries) {
+      test(
+        '${entry.key} is refused before sending and preserves the draft',
+        () async {
+          final rig = _PromptRig();
+          await rig.start();
+          addTearDown(rig.close);
+          final sendingStates = <bool>[];
+          rig.controller.addListener(() => sendingStates.add(rig.link.sending));
+          rig.link.prompt.text = entry.value;
+
+          await rig.controller.send('pane', entry.value);
+
+          expect(rig.prompts, isEmpty);
+          expect(sendingStates, everyElement(isFalse));
+          expect(rig.link.sending, isFalse);
+          expect(rig.link.canSend, isTrue);
+          expect(rig.link.state, AgentState.idle);
+          expect(rig.link.prompt.text, entry.value);
+          expect(rig.link.errorCode, ErrorCode.invalidParams);
+          expect(
+            rig.link.error,
+            allOf(contains('256 KiB'), contains('shorten')),
+          );
+          expect(
+            rig.link.transcript.entries.every(
+              (entry) => entry.kind == AgentEventKind.notice,
+            ),
+            isTrue,
+          );
+          await rig.proveRecovery();
+        },
+      );
+    }
+
+    test('JSON-escaped prompt over control ceiling is refused without latching '
+        'sending or creating a turn', () async {
+      final rig = _PromptRig();
+      await rig.start();
+      addTearDown(rig.close);
+      final text = '\u0001' * (200 * 1024);
+      rig.link.prompt.text = text;
+
+      await rig.controller.send('pane', text);
+
+      expect(rig.prompts, isEmpty);
+      expect(rig.link.sending, isFalse);
+      expect(rig.link.canSend, isTrue);
+      expect(rig.link.state, AgentState.idle);
+      expect(rig.link.prompt.text, text);
+      expect(rig.link.errorCode, ErrorCode.invalidParams);
+      expect(rig.link.error, allOf(contains('encoded'), contains('shorten')));
+      expect(
+        rig.link.transcript.entries.every(
+          (entry) => entry.kind == AgentEventKind.notice,
+        ),
+        isTrue,
+      );
+      await rig.proveRecovery();
+    });
   });
 
   group('cleanup state replay', () {

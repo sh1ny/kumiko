@@ -12,6 +12,7 @@ import 'process_table.dart';
 import 'pty.dart';
 import 'pty_io.dart' show closePtyHandle;
 import 'unit_exec.dart';
+import 'unit_pipes.dart';
 
 /// The start time of [pid] on POSIX (Linux `/proc/<pid>/stat`, macOS
 /// `proc_pidinfo`), or null when it is gone or cannot be read. Opaque: only
@@ -77,12 +78,22 @@ KillOutcome killProcessGroup(int leaderPid, int startTime, int signal) {
 /// A unit on Linux or macOS: the leader of its own session, started through
 /// the `--unit-exec` shim.
 class PosixUnit implements ContainedUnit {
-  PosixUnit._(this.process, this.startTime, this.containmentId, [this.pty]);
+  PosixUnit._(
+    this.process,
+    this.startTime,
+    this.containmentId, [
+    this.pty,
+    this.pipes,
+  ]);
+
+  @override
+  final UnitPipes? pipes;
 
   /// The unit's pseudo-terminal handles when it was spawned with `pty`.
   final PtyHandles? pty;
 
-  /// The `dart:io` handle; callers own its stdio.
+  /// The `dart:io` handle. With [pipes], use that endpoint rather than listening
+  /// to Process stdio a second time; otherwise callers own the raw stdio.
   final Process process;
 
   @override
@@ -163,6 +174,11 @@ class PosixUnit implements ContainedUnit {
 /// ([PtyHandles.readHandle]), and the unit's `Process.stdout` has been
 /// consumed. A setup or `execve` failure, or no answer within 5 s, settles the
 /// unit, closes the master and throws [SpawnFailed].
+///
+/// With [pipes], the existing Process pipes are handed to the caller in
+/// [PosixUnit.pipes], without reading stdout as shim status. Exec failures
+/// therefore remain exit 126/127 with stderr. [pipes] and [pty] are mutually
+/// exclusive; plain units retain their existing Process stdio behavior.
 Future<PosixUnit> spawnPosixUnit({
   required String shimExecutable,
   List<String> shimArgs = const [],
@@ -171,7 +187,11 @@ Future<PosixUnit> spawnPosixUnit({
   Map<String, String>? environment,
   String? workingDirectory,
   PtyOptions? pty,
+  bool pipes = false,
 }) async {
+  if (pipes && pty != null) {
+    throw ArgumentError('pipes and pty are mutually exclusive');
+  }
   final master = pty == null ? null : _openMaster(pty.size);
   final Process process;
   try {
@@ -204,7 +224,13 @@ Future<PosixUnit> spawnPosixUnit({
         'could be read',
       );
     }
-    return PosixUnit._(process, startTime, containmentId);
+    return PosixUnit._(
+      process,
+      startTime,
+      containmentId,
+      null,
+      pipes ? UnitPipes.process(process) : null,
+    );
   }
 
   // The start time does not change at `execve`, so reading it before the

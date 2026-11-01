@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 import 'dart:math' as math;
 import 'dart:typed_data';
@@ -16,7 +17,10 @@ import 'fixtures.dart';
 /// `tool/kumiko_host_test.dart` imports this library, so only the test
 /// executable contains it.
 class TestHostExtension implements HostExtension {
-  TestHostExtension({this.options = const HostOptions()});
+  TestHostExtension({
+    this.options = const HostOptions(),
+    this.qualifiedAdaptersOverride,
+  });
 
   /// Options from `KUMIKO_TEST_*` variables, which make timing deterministic:
   /// `UNIT_CAP`, `RECONCILE_DELAY_MS`, `RETRY_DELAY_MS`,
@@ -26,6 +30,8 @@ class TestHostExtension implements HostExtension {
   /// `KUMIKO_TEST_SHELL_PATH` replaces `PATH` for shell detection (entries
   /// split by the platform's path separator) and switches the well-known
   /// install locations off; `KUMIKO_TEST_SHELL_DIRS` lists them instead.
+  /// `KUMIKO_TEST_RUNTIME_PATH` / `KUMIKO_TEST_RUNTIME_DIRS` independently
+  /// override adapter detection using the same convention.
   factory TestHostExtension.fromEnvironment(Map<String, String> env) {
     int? number(String name) => int.tryParse(env['KUMIKO_TEST_$name'] ?? '');
     Duration? millis(String name) {
@@ -35,8 +41,26 @@ class TestHostExtension implements HostExtension {
 
     final separator = Platform.isWindows ? ';' : ':';
     final shellPath = env['KUMIKO_TEST_SHELL_PATH'];
+    final runtimePath = env['KUMIKO_TEST_RUNTIME_PATH'];
+    final candidates = env['KUMIKO_TEST_QUALIFIED_ADAPTERS'];
     return TestHostExtension(
+      qualifiedAdaptersOverride: candidates == null
+          ? null
+          : [
+              for (final triple in jsonDecode(candidates) as List)
+                (
+                  (triple as List)[0] as String,
+                  triple[1] as String,
+                  (triple[2] as List).cast<String>(),
+                ),
+            ],
       options: HostOptions(
+        runtimeSearchPath: runtimePath == null
+            ? null
+            : splitSearchPath(runtimePath, separator),
+        runtimeWellKnownDirs: runtimePath == null
+            ? null
+            : splitSearchPath(env['KUMIKO_TEST_RUNTIME_DIRS'] ?? '', separator),
         shellSearchPath: shellPath == null
             ? null
             : splitSearchPath(shellPath, separator),
@@ -71,6 +95,9 @@ class TestHostExtension implements HostExtension {
   final HostOptions options;
 
   @override
+  final List<(String, String, List<String>)>? qualifiedAdaptersOverride;
+
+  @override
   Set<String> get capabilities => const {
     Capability.testUnits,
     Capability.testChannels,
@@ -85,12 +112,12 @@ class TestHostExtension implements HostExtension {
     switch (method) {
       case Method.testUnitLaunch:
         final p = TestUnitLaunchParams.fromJson(params);
-        final id = await host.units.launch(
+        final launched = await host.units.launch(
           target: p.target,
           kind: 'test',
           argv: [Platform.resolvedExecutable, '--test-fixture', p.fixture.name],
         );
-        return TestUnitLaunchResult(id).toJson();
+        return TestUnitLaunchResult(launched.id).toJson();
       case Method.testUnitEnd:
         final p = TestUnitEndParams.fromJson(params);
         final outcome = await host.units.end(p.containmentId);
@@ -119,6 +146,12 @@ class TestHostExtension implements HostExtension {
           TestResolveReleaseParams.fromJson(params).path,
         );
         return <String, Object?>{};
+      case 'test/agent.stats':
+        EmptyParams.fromJson(params);
+        return {
+          'sessions': host.agents.snapshot(),
+          'heldResolutions': host.faults.heldResolutions,
+        };
       case Method.testChannelOpen:
         final p = TestChannelOpenParams.fromJson(params);
         final channel = host.connection.openOutbound();

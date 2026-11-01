@@ -4,6 +4,8 @@ import 'dart:io';
 import 'package:host_protocol/host_protocol.dart';
 import 'package:process_containment/process_containment.dart';
 
+import 'agent/agent_service.dart';
+import 'agent/runtime_profile_service.dart';
 import 'cleanup_service.dart';
 import 'host_extension.dart';
 import 'host_faults.dart';
@@ -77,7 +79,9 @@ class Host {
   WorkspaceService? _workspaces;
   WorkbenchService? _workbench;
   ProfileService? _profiles;
+  RuntimeProfileService? _runtimeProfiles;
   TerminalService? _terminals;
+  AgentService? _agents;
   bool _stopping = false;
 
   /// Runs until the desktop goes away; returns the exit code.
@@ -91,6 +95,7 @@ class Host {
       capabilities: {
         Capability.workbench,
         Capability.terminal,
+        Capability.agent,
         ...?extension?.capabilities,
       },
       onHello: _onHello,
@@ -230,6 +235,10 @@ class Host {
       os: Platform.operatingSystem,
     );
     final settler = Settler(ledger: ledger, log: log, faults: faults);
+    final resolver = WorkspaceResolver(
+      faults: faults,
+      timeout: options.resolveTimeout,
+    );
     final units = _units =
         UnitManager(
             ledger: ledger,
@@ -237,6 +246,7 @@ class Host {
             faults: faults,
             settler: settler,
             options: options,
+            resolver: resolver,
           )
           ..desktop = DesktopInfo(
             pid: params.desktopPid,
@@ -248,13 +258,16 @@ class Host {
       ledger: ledger,
       log: log,
       options: options,
-      resolver: WorkspaceResolver(
-        faults: faults,
-        timeout: options.resolveTimeout,
-      ),
+      resolver: resolver,
       notify: _connection.notify,
     );
     final profiles = _profiles = ProfileService(
+      store: store,
+      log: log,
+      faults: faults,
+      options: options,
+    );
+    _runtimeProfiles = RuntimeProfileService(
       store: store,
       log: log,
       faults: faults,
@@ -268,6 +281,15 @@ class Host {
       faults: faults,
       options: options,
       log: log,
+    );
+    _agents = AgentService(
+      connection: _connection,
+      units: units,
+      workspaces: workspaces,
+      profiles: _runtimeProfiles!,
+      store: store,
+      options: options,
+      qualifiedAdaptersOverride: extension?.qualifiedAdaptersOverride,
     );
     _workbench = WorkbenchService(
       store: store,
@@ -342,6 +364,23 @@ class Host {
         return <String, Object?>{};
     }
     switch (method) {
+      case Method.runtimeList:
+        EmptyParams.fromJson(params);
+        return (await _runtimeProfiles!.list()).toJson();
+      case Method.runtimeSave:
+        return (await _runtimeProfiles!.save(
+          RuntimeSaveParams.fromJson(params),
+        )).toJson();
+      case Method.runtimeRemove:
+        return (await _runtimeProfiles!.remove(
+          RuntimeRemoveParams.fromJson(params),
+        )).toJson();
+      case Method.runtimeSetDefault:
+        return (await _runtimeProfiles!.setDefault(
+          RuntimeSetDefaultParams.fromJson(params),
+        )).toJson();
+    }
+    switch (method) {
       case Method.terminalOpen:
         final p = TerminalOpenParams.fromJson(params);
         return (await _terminals!.open(p)).toJson();
@@ -358,9 +397,50 @@ class Host {
         _terminals!.release(TerminalReleaseParams.fromJson(params));
         return <String, Object?>{};
     }
+    switch (method) {
+      case Method.agentStart:
+        if (params['workspaceId'] == null || params['workspaceId'] == '') {
+          throw RpcException(
+            ErrorCode.workspaceRequired,
+            'an agent needs a workspace',
+          );
+        }
+        return (await _agents!.start(AgentStartParams.fromJson(params)))
+            .toJson();
+      case Method.agentContinue:
+        return (await _agents!.continueSession(
+          AgentSessionParams.fromJson(params),
+        )).toJson();
+      case Method.agentRecords:
+        return (await _agents!.records(AgentRecordsParams.fromJson(params)))
+            .toJson();
+      case Method.agentAttach:
+        _agents!.attach(AgentSessionParams.fromJson(params));
+        return <String, Object?>{};
+      case Method.agentPrompt:
+        _agents!.prompt(AgentPromptParams.fromJson(params));
+        return <String, Object?>{};
+      case Method.agentStop:
+        _agents!.stop(AgentSessionParams.fromJson(params));
+        return <String, Object?>{};
+      case Method.agentPermissionReply:
+        _agents!.permissionReply(AgentPermissionReplyParams.fromJson(params));
+        return <String, Object?>{};
+      case Method.agentClose:
+        _agents!.close(AgentSessionParams.fromJson(params));
+        return <String, Object?>{};
+      case Method.agentRelease:
+        _agents!.release(AgentSessionParams.fromJson(params));
+        return <String, Object?>{};
+    }
     if (method.startsWith('test/') && extension != null) {
       return extension!.handle(
-        HostServices(units: _units!, faults: faults, connection: _connection),
+        HostServices(
+          units: _units!,
+          faults: faults,
+          connection: _connection,
+          agents: _agents!,
+        ),
         method,
         params,
       );
@@ -384,6 +464,7 @@ class Host {
     if (_stopping) return;
     final units = _units;
     _terminals?.dispose();
+    _agents?.dispose();
     if (units != null) {
       _log?.event('shutdown', code: reason.kind);
       await _cleanup?.reconciliation?.timeout(
@@ -391,6 +472,7 @@ class Host {
         onTimeout: () {},
       );
       await units.shutdown(options.shutdownDeadline);
+      await _agents?.finishShutdown();
     }
     await _finish(code);
   }
