@@ -78,6 +78,11 @@ class AgentSession {
   AgentDeadline? _deadline;
   Future<void> _events = Future.value();
 
+  /// Accepted local and adapter events have entered the bounded relay.
+  /// After failing the session and closing ACP, the service awaits this before
+  /// freezing the final event count; this does not wait for desktop delivery.
+  Future<void> get eventsEnqueued => _events;
+
   void _publish() => onState(
     AgentStateParams(sessionId: sessionId, seq: ++_seq, state: _state),
   );
@@ -182,6 +187,11 @@ class AgentSession {
     if (!_hasTurn || turn != _turn || _disposed || _terminal) return;
     _deadline?.cancel();
     _deadline = null;
+    // Display control fields have a small encoded budget, including JSON
+    // escaping. Keep the full native values for classification and diagnostics;
+    // the transcript event above has its own independent display bounds.
+    final stopReason = reason == null ? null : clampJsonString(reason, 4096);
+    final message = error == null ? null : _message(error);
     if (_stopped) {
       onStopResult(
         AgentStopResultParams(
@@ -191,8 +201,8 @@ class AgentSession {
               : reason == 'cancelled'
               ? AgentStopOutcome.stopped
               : AgentStopOutcome.finishedFirst,
-          stopReason: reason,
-          message: error == null ? null : _message(error),
+          stopReason: stopReason,
+          message: message,
           late: _notConfirmed,
         ),
       );
@@ -205,13 +215,13 @@ class AgentSession {
     onTurnEnded(
       AgentTurnEndedParams(
         sessionId: sessionId,
-        stopReason: reason,
+        stopReason: stopReason,
         error: error == null
             ? null
             : error is AcpRemoteException && error.isAuthenticationRequired
             ? ErrorCode.authRequired
             : 'adapter-error',
-        message: error == null ? null : _message(error),
+        message: message,
         nativeCode: error is AcpRemoteException ? error.code : null,
         nativeMessage: nativeMessage,
         nativeMessageTruncated:
@@ -221,8 +231,10 @@ class AgentSession {
     _set(AgentState.idle);
   }
 
-  String _message(Object error) =>
-      error is AcpRemoteException ? error.message : error.toString();
+  String _message(Object error) => clampJsonString(
+    error is AcpRemoteException ? error.message : error.toString(),
+    4096,
+  );
   bool get _terminal =>
       _state == AgentState.closing ||
       _state == AgentState.ended ||

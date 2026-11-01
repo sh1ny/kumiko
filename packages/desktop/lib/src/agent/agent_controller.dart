@@ -77,6 +77,10 @@ class AgentLink {
   String? lastPrompt;
   AgentStopResultParams? stopResult;
   StreamSubscription<AgentEvent>? _events;
+  int _receivedEvents = 0;
+  AgentExitedParams? _exit;
+  Future<void>? _releasing;
+  bool get _draining => _exit != null || _releasing != null;
 
   bool get canSend =>
       connected &&
@@ -89,17 +93,20 @@ class AgentLink {
       phase == AgentLinkPhase.live &&
       !stopping &&
       (state == AgentState.running || state == AgentState.waitingApproval);
-  bool get canContinue => connected && known && phase == AgentLinkPhase.ended;
+  bool get canContinue =>
+      connected && known && phase == AgentLinkPhase.ended && !_draining;
   bool get canRetry =>
       connected &&
       ((phase == AgentLinkPhase.ended &&
               state == AgentState.failed &&
+              !_draining &&
               (!known || errorCode == ErrorCode.authRequired)) ||
           (phase == AgentLinkPhase.live &&
               state == AgentState.idle &&
               errorCode == ErrorCode.authRequired &&
               lastPrompt != null));
-  bool get canNewSession => connected && phase == AgentLinkPhase.ended;
+  bool get canNewSession =>
+      connected && phase == AgentLinkPhase.ended && !_draining;
   bool get live =>
       phase == AgentLinkPhase.live || phase == AgentLinkPhase.closing;
   String get statusLabel {
@@ -181,7 +188,12 @@ class AgentController extends ChangeNotifier implements ViewCloser {
 
     listen(host.agentStates, (event) {
       final link = _bySession[event.sessionId];
-      if (link == null || event.seq <= link.seq || link.streamFailed) return;
+      if (link == null ||
+          event.seq <= link.seq ||
+          link.streamFailed ||
+          link._exit != null) {
+        return;
+      }
       link.seq = event.seq;
       link.state = event.state;
       _changed();
@@ -231,12 +243,23 @@ class AgentController extends ChangeNotifier implements ViewCloser {
     });
     listen(host.agentExits, _exited);
     listen(host.agentCloseFailures, (event) {
-      final link = _bySession[event.sessionId];
+      final link = _bySession.remove(event.sessionId);
       if (link == null) return;
+      unawaited(link._events?.cancel());
+      link._events = null;
       link.closeRequested = false;
-      link.phase = AgentLinkPhase.live;
+      // The service relinquished transport ownership, but the durable cleanup
+      // gate still owns any survivors. Never restore a fictitious live session
+      // or describe this as a successful close.
+      link.phase = AgentLinkPhase.ended;
+      link.state = AgentState.failed;
+      link.sending = false;
+      link.stopping = false;
+      link._exit = null;
+      link.errorCode = event.reason;
+      _disablePermissions(link);
       final failure =
-          'Could not close the agent: ${event.reason}${event.message == null ? '' : ': ${event.message}'}';
+          'Agent termination not confirmed: ${event.reason}${event.message == null ? '' : ': ${event.message}'}';
       link.error = link.streamFailed ? '${link.error}\n$failure' : failure;
       _changed();
     });
@@ -253,6 +276,8 @@ class AgentController extends ChangeNotifier implements ViewCloser {
     for (final link in _links.values) {
       unawaited(link._events?.cancel());
       link._events = null;
+      link._exit = null;
+      link._releasing = null;
       link.connected = false;
       link.hostLost = true;
       link.saved = false;
@@ -293,7 +318,13 @@ class AgentController extends ChangeNotifier implements ViewCloser {
       if (link.sessionId case final id?) {
         if (identical(_bySession[id], link)) _bySession.remove(id);
         final host = _host;
-        if (host != null && link.live) _closeOrphan(host, id);
+        if (host != null) {
+          if (link._exit != null) {
+            unawaited(_releaseExited(host, link));
+          } else if (link.live) {
+            _closeOrphan(host, id);
+          }
+        }
       }
       _disposeLink(link);
     }
@@ -365,7 +396,9 @@ class AgentController extends ChangeNotifier implements ViewCloser {
     }
     final previous = _links[paneId];
     if (previous != null &&
-        (previous.live || previous.phase == AgentLinkPhase.pending)) {
+        (previous.live ||
+            previous.phase == AgentLinkPhase.pending ||
+            previous._draining)) {
       return;
     }
     final link =
@@ -488,6 +521,9 @@ class AgentController extends ChangeNotifier implements ViewCloser {
   }
 
   void _bind(HostLink host, AgentLink link, int channel, int generation) {
+    link._receivedEvents = 0;
+    link._exit = null;
+    link._releasing = null;
     link.phase = AgentLinkPhase.live;
     link.saved = false;
     link.hostLost = false;
@@ -498,6 +534,8 @@ class AgentController extends ChangeNotifier implements ViewCloser {
           (event) {
             if (!_current(host, generation) || !_owns(link)) return;
             link.transcript.add(event);
+            link._receivedEvents++;
+            _drainExited(host, link);
             _changed();
           },
           onError: (Object error) {
@@ -507,11 +545,41 @@ class AgentController extends ChangeNotifier implements ViewCloser {
             link.state = AgentState.failed;
             _disablePermissions(link);
             unawaited(link._events?.cancel());
-            unawaited(
-              host
-                  .closeAgent(link.sessionId!)
-                  .then<void>((_) {}, onError: (Object _) {}),
-            );
+            if (link._exit != null) {
+              unawaited(_releaseExited(host, link));
+            } else {
+              unawaited(
+                host
+                    .closeAgent(link.sessionId!)
+                    .then<void>((_) {}, onError: (Object _) {}),
+              );
+            }
+            _changed();
+          },
+          onDone: () {
+            if (!_current(host, generation) || !_owns(link)) return;
+            if (link._releasing != null) return;
+            final exit = link._exit;
+            if (exit != null && link._receivedEvents >= exit.eventCount) {
+              _drainExited(host, link);
+              return;
+            }
+            // A normal failed exit is complete at its final record count,
+            // before release closes this channel. EOF before that count is
+            // evidence of missing data, not successful draining.
+            link.streamFailed = true;
+            link.error = 'event stream ended before final transcript delivery';
+            link.state = AgentState.failed;
+            _disablePermissions(link);
+            if (exit != null) {
+              unawaited(_releaseExited(host, link));
+            } else {
+              unawaited(
+                host
+                    .closeAgent(link.sessionId!)
+                    .then<void>((_) {}, onError: (Object _) {}),
+              );
+            }
             _changed();
           },
         );
@@ -637,6 +705,15 @@ class AgentController extends ChangeNotifier implements ViewCloser {
   Future<void> closeConfirmed(String paneId) async {
     final link = _links[paneId];
     final host = _host;
+    if (link != null && host != null && link._draining) {
+      // Explicit dismissal may discard the transcript; the native process
+      // already exited, so release rather than send close to a dead session.
+      await link._events?.cancel();
+      link._events = null;
+      await _releaseExited(host, link);
+      if (_owns(link) && !link._draining) removePane(paneId);
+      return;
+    }
     if (link == null || host == null || !link.live) {
       removePane(paneId);
       return;
@@ -664,37 +741,79 @@ class AgentController extends ChangeNotifier implements ViewCloser {
   }
 
   void _exited(AgentExitedParams event) {
-    final link = _bySession.remove(event.sessionId);
+    final link = _bySession[event.sessionId];
     final host = _host;
-    if (link == null || host == null) return;
-    unawaited(link._events?.cancel());
-    link._events = null;
+    if (link == null || host == null || link._exit != null) return;
+    link._exit = event;
     link.phase = AgentLinkPhase.ended;
     link.sending = false;
     link.stopping = false;
     link.saved = false;
     _disablePermissions(link);
-    unawaited(
-      host
-          .releaseAgent(event.sessionId)
-          .then<void>((_) {}, onError: (Object _) {}),
-    );
-    if (link.closeRequested && event.reason == AgentExitReason.closed) {
-      removePane(link.paneId);
-    } else {
-      link.closeRequested = false;
-      if (!link.streamFailed) {
-        link.state = event.reason == AgentExitReason.failed
-            ? AgentState.failed
-            : AgentState.ended;
-        if (event.reason == AgentExitReason.failed) {
-          link.errorCode = event.error;
-          link.error =
-              '${event.error ?? 'Agent failed'}${event.status == null ? '' : ' (status ${event.status})'}${event.resumeReason == null ? '' : ': ${event.resumeReason}'}${event.message == null ? '' : ': ${event.message}'}';
-        }
+    final dismiss =
+        link.closeRequested && event.reason == AgentExitReason.closed;
+    link.closeRequested = false;
+    if (!link.streamFailed) {
+      link.state = event.reason == AgentExitReason.failed
+          ? AgentState.failed
+          : AgentState.ended;
+      if (event.reason == AgentExitReason.failed) {
+        link.errorCode = event.error;
+        link.error =
+            '${event.error ?? 'Agent failed'}${event.status == null ? '' : ' (status ${event.status})'}${event.resumeReason == null ? '' : ': ${event.resumeReason}'}${event.message == null ? '' : ': ${event.message}'}';
       }
     }
+    if (event.reason == AgentExitReason.closed || link.streamFailed) {
+      // Intentional close or a failed decoder cannot consume a final count.
+      unawaited(_releaseExited(host, link));
+    } else {
+      _drainExited(host, link);
+    }
+    if (dismiss) removePane(link.paneId);
     _changed();
+  }
+
+  void _drainExited(HostLink host, AgentLink link) {
+    final exit = link._exit;
+    if (exit != null && link._receivedEvents >= exit.eventCount) {
+      unawaited(_releaseExited(host, link));
+    }
+  }
+
+  Future<void> _releaseExited(HostLink host, AgentLink link) {
+    final releasing = link._releasing;
+    if (releasing != null) return releasing;
+    final exit = link._exit;
+    if (exit == null) return Future.value();
+    final generation = _generation;
+    return link._releasing =
+        () async {
+          try {
+            await host.releaseAgent(exit.sessionId);
+          } on RpcException catch (error) {
+            // Consumer cancellation may already have relinquished the host owner.
+            if (error.reason != ErrorCode.unknownSession) {
+              if (_current(host, generation)) link.error = _describe(error);
+              return;
+            }
+          } on ConnectionClosedException {
+            if (_current(host, generation)) detach();
+            return;
+          }
+          if (!_current(host, generation)) return;
+          if (identical(_bySession[exit.sessionId], link)) {
+            _bySession.remove(exit.sessionId);
+          }
+          link._exit = null;
+          final events = link._events;
+          link._events = null;
+          await events?.cancel();
+        }().whenComplete(() {
+          if (_current(host, generation)) {
+            link._releasing = null;
+            _changed();
+          }
+        });
   }
 
   void _failed(AgentLink link, RpcException error) {

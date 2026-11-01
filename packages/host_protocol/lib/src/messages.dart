@@ -2191,6 +2191,7 @@ class AgentExitedParams {
   const AgentExitedParams({
     required this.sessionId,
     required this.reason,
+    required this.eventCount,
     this.status,
     this.error,
     this.resumeReason,
@@ -2199,6 +2200,7 @@ class AgentExitedParams {
   factory AgentExitedParams.fromJson(Json json) => AgentExitedParams(
     sessionId: _req<String>(json, 'sessionId'),
     reason: _enum(AgentExitReason.values, json, 'reason'),
+    eventCount: _finalEventCount(json),
     status: _opt<int>(json, 'status'),
     error: _opt<String>(json, 'error'),
     resumeReason: _opt<String>(json, 'resumeReason'),
@@ -2206,6 +2208,11 @@ class AgentExitedParams {
   );
   final String sessionId;
   final AgentExitReason reason;
+
+  /// Final number of accepted NDJSON records on this run's event channel.
+  /// Failed exit is priority control; release waits for this many consumed
+  /// events, not for channel close (which deliberately discards queued data).
+  final int eventCount;
   final int? status;
   final String? error;
   final String? resumeReason;
@@ -2213,11 +2220,23 @@ class AgentExitedParams {
   Json toJson() => {
     'sessionId': sessionId,
     'reason': reason.name,
+    'eventCount': eventCount,
     'status': ?status,
     'error': ?error,
     'resumeReason': ?resumeReason,
     'message': ?message,
   };
+}
+
+int _finalEventCount(Json json) {
+  final count = _req<int>(json, 'eventCount');
+  if (count < 0) {
+    throw RpcException(
+      ErrorCode.invalidParams,
+      'eventCount must be nonnegative',
+    );
+  }
+  return count;
 }
 
 class AgentCloseFailedParams {

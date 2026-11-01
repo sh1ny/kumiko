@@ -132,6 +132,9 @@ class AgentEventRelay {
   Completer<void>? _space;
   bool _pumping = false;
   bool _closed = false;
+  bool _sealed = false;
+  int _eventCount = 0;
+  int get eventCount => _eventCount;
   void Function(Object)? onFailure;
   bool _paused = false;
   bool get isPaused => _paused;
@@ -146,7 +149,7 @@ class AgentEventRelay {
   }
 
   Future<void> _admit() async {
-    while (!_closed && _bytes >= 1024 * 1024) {
+    while (!_closed && !_sealed && _bytes >= 1024 * 1024) {
       _pause(true);
       await (_space ??= Completer<void>()).future;
     }
@@ -154,11 +157,12 @@ class AgentEventRelay {
   }
 
   Future<void> enqueue(Iterable<Uint8List> lines) async {
-    if (_closed) return;
+    if (_closed || _sealed) return;
     for (final line in lines) {
       await _admit();
-      if (_closed) return;
+      if (_closed || _sealed) return;
       _queue.add(line);
+      _eventCount++;
       _bytes += line.length;
       _pump();
     }
@@ -217,6 +221,15 @@ class AgentEventRelay {
     }
   }
 
+  /// Freeze the final accepted-record count without discarding queued output.
+  /// A failed producer may have an admission waiting for room; it owns no
+  /// accepted record until insertion into the queue above.
+  void seal() {
+    _sealed = true;
+    _pause(false);
+    _wake();
+  }
+
   void close() {
     _closed = true;
     _queue.clear();
@@ -246,6 +259,7 @@ class _Agent {
   bool ending = false;
   bool exited = false;
   bool closeFailed = false;
+  bool consumerClosed = false;
   bool callbacks = true;
   AgentExitedParams? exitNotification;
   int get channel => reservation.ids.single;
@@ -753,7 +767,22 @@ class AgentService {
     }
     a.attached = true;
     a.attachTimer?.cancel();
-    a.relay.attach(connection.attachOutbound(a.channel));
+    final writer = connection.attachOutbound(a.channel);
+    a.relay.attach(writer);
+    unawaited(
+      writer.closed.then((_) {
+        if (!identical(_agents[a.record.id], a) || _disposed) return;
+        a.consumerClosed = true;
+        a.relay.close();
+        // A receiver may intentionally cancel after every byte was flushed,
+        // leaving no failed write to reveal that it abandoned this channel.
+        if (a.exited || a.closeFailed) {
+          _forget(a);
+        } else if (!a.ending) {
+          _beginClose(a, attachTimeout: true);
+        }
+      }),
+    );
     unawaited(
       Future<void>(() {
         if (!_current(a)) return;
@@ -866,10 +895,11 @@ class AgentService {
             AgentExitedParams(
               sessionId: a.record.id,
               reason: AgentExitReason.closed,
+              eventCount: a.relay.eventCount,
               status: a.io.status,
             ).toJson(),
           );
-          if (attachTimeout) _forget(a);
+          if (attachTimeout || a.consumerClosed) _forget(a);
         } else {
           a.closeFailed = true;
           _notify(
@@ -973,10 +1003,18 @@ class AgentService {
       );
       _forget(a);
     } else {
+      // ACP EOF joins adapter updates, but canonical user/turn/notice records
+      // also use the session's FIFO. Join accepted work before sealing the
+      // count. Enqueue errors remain failures, not false successful exits.
+      await a.session.eventsEnqueued.then<void>((_) {}, onError: (Object _) {});
+      if (!_current(a)) return;
       a.exited = true;
+      a.session.dispose();
+      a.relay.seal();
       final exited = a.exitNotification = AgentExitedParams(
         sessionId: a.record.id,
         reason: AgentExitReason.failed,
+        eventCount: a.relay.eventCount,
         status: a.io.status,
         error: restoring
             ? ErrorCode.resumeUnavailable
@@ -998,6 +1036,7 @@ class AgentService {
             : null,
       );
       _notify(a, Method.agentExited, exited.toJson());
+      if (a.consumerClosed) _forget(a);
     }
     if (a.attached) {
       a.callbacks = false;

@@ -49,6 +49,17 @@ Future<Rig> controllerRig(WidgetTester tester, FakeHostLink host) async {
   return Rig(controller, host, surfaces);
 }
 
+class _GatedReleaseHost extends FakeHostLink {
+  _GatedReleaseHost()
+    : super(hello: helloResult(capabilities: agentCapabilities));
+  final releaseGate = Completer<void>();
+  @override
+  Future<void> releaseAgent(String id) async {
+    await releaseGate.future;
+    await super.releaseAgent(id);
+  }
+}
+
 class _RejectingPromptHost extends FakeHostLink {
   _RejectingPromptHost()
     : super(hello: helloResult(capabilities: agentCapabilities));
@@ -460,7 +471,7 @@ void main() {
     }
 
     uiTest(
-      'idle close sends close without dialog and pane closes only on exited closed',
+      'close failure ends transport ownership and remains dismissible without a fabricated exit',
       (tester) async {
         final host = agentHost();
         final rig = await controllerRig(tester, host);
@@ -481,10 +492,215 @@ void main() {
           agents(rig).linkOf(pane.id)!.error,
           contains('cleanup-unresolved'),
         );
+        final link = agents(rig).linkOf(pane.id)!;
+        expect(link.phase, AgentLinkPhase.ended);
+        expect(link.state, AgentState.failed);
+        expect(link.canSend, isFalse);
+        expect(link.canContinue, isTrue);
+        expect(link.canNewSession, isTrue);
+        expect(link.known, isTrue);
         await rig.controller.requestClose([pane.id], (_) async => true);
-        host.agentExit(id);
         expect(rig.layout.pane(pane.id), isNull);
+        expect(host.agentCloses, [
+          id,
+        ], reason: 'the service has forgotten this transport');
+        expect(host.agentReleases, isEmpty);
+      },
+    );
+
+    uiTest(
+      'close-failed saved session can retry Continue after cleanup gate is resolved',
+      (tester) async {
+        final host = agentHost();
+        final rig = await controllerRig(tester, host);
+        await start(rig, tester);
+        final pane = chat(rig).id;
+        final id = session(rig);
+        await agents(rig).closeConfirmed(pane);
+        host.agentCloseFailureSource.add(
+          AgentCloseFailedParams(sessionId: id, reason: 'cleanup-unresolved'),
+        );
+        host.agentContinueAnswers.add(
+          resumeUnavailable(
+            'cleanup-unresolved',
+            detail: 'cleanup is required',
+          ),
+        );
+        await agents(rig).continueSession(pane);
+        final link = agents(rig).linkOf(pane)!;
+        expect(link.phase, AgentLinkPhase.ended);
+        expect(link.error, contains('cleanup-unresolved'));
+        expect(link.known, isTrue);
+        expect(
+          host.agentStarts,
+          hasLength(1),
+          reason: 'no substitute conversation',
+        );
+        await agents(rig).continueSession(pane);
+        await flush(tester);
+        expect(link.phase, AgentLinkPhase.live);
+        expect(link.sessionId, id);
+        expect(host.agentCloses, [id]);
+        expect(host.agentReleases, isEmpty);
+      },
+    );
+
+    uiTest(
+      'unexpected exit reports Failed immediately but drains final events before release and Continue',
+      (tester) async {
+        final host = agentHost();
+        final rig = await controllerRig(tester, host);
+        await start(rig, tester);
+        final id = session(rig);
+        final link = agents(rig).linkOf(chat(rig).id)!;
+        host.agentExitSource.add(
+          AgentExitedParams.fromJson({
+            'sessionId': id,
+            'reason': 'failed',
+            'status': 7,
+            'eventCount': 1,
+          }),
+        );
+        expect(link.statusLabel, 'Failed');
+        expect(
+          link.canContinue,
+          isFalse,
+          reason: 'recovery must not replace a draining stream',
+        );
+        expect(host.agentReleases, isEmpty);
+        host.agentEvent(
+          id,
+          AgentEvent.text(AgentEventKind.agentText, 'final output'),
+        );
+        expect(link.transcript.plainText, 'final output');
+        await flush(tester);
+        expect(link.streamFailed, isFalse);
         expect(host.agentReleases, [id]);
+        expect(link.canContinue, isTrue);
+        await agents(rig).continueSession(link.paneId);
+        await flush(tester);
+        expect(link.phase, AgentLinkPhase.live);
+        expect(link.sessionId, id);
+        expect(
+          host.calls.where((call) => call == 'agent/continue $id'),
+          hasLength(1),
+        );
+      },
+    );
+
+    uiTest('Continue waits for host release after final event consumption', (
+      tester,
+    ) async {
+      final host = _GatedReleaseHost()
+        ..storedLayout = jsonOf(docOf([], selected: 'A'))
+        ..records.addAll([workspaceRecord('A'), workspaceRecord('B')]);
+      final rig = await controllerRig(tester, host);
+      await start(rig, tester);
+      final id = session(rig);
+      final link = agents(rig).linkOf(chat(rig).id)!;
+      host.agentExitSource.add(
+        AgentExitedParams.fromJson({
+          'sessionId': id,
+          'reason': 'failed',
+          'eventCount': 1,
+        }),
+      );
+      host.agentEvent(id, AgentEvent.notice('last'));
+      await flush(tester);
+      expect(host.agentReleases, isEmpty);
+      expect(link.canContinue, isFalse);
+      await agents(rig).continueSession(link.paneId);
+      expect(
+        host.calls.where((call) => call.startsWith('agent/continue')),
+        isEmpty,
+      );
+      host.releaseGate.complete();
+      await flush(tester);
+      expect(host.agentReleases, [id]);
+      expect(link.canContinue, isTrue);
+      await agents(rig).continueSession(link.paneId);
+      await flush(tester);
+      expect(link.phase, AgentLinkPhase.live);
+      expect(link.sessionId, id);
+    });
+
+    uiTest(
+      'premature EOF while draining is a stream failure and releases exited ownership',
+      (tester) async {
+        final host = agentHost();
+        final rig = await controllerRig(tester, host);
+        await start(rig, tester);
+        final id = session(rig);
+        final link = agents(rig).linkOf(chat(rig).id)!;
+        host.agentExitSource.add(
+          AgentExitedParams.fromJson({
+            'sessionId': id,
+            'reason': 'failed',
+            'eventCount': 1,
+          }),
+        );
+        await host.agentChannels[id]!.close();
+        await flush(tester);
+        expect(link.streamFailed, isTrue);
+        expect(link.statusLabel, 'Failed');
+        expect(link.error, contains('event stream'));
+        expect(host.agentReleases, [id]);
+        expect(host.agentCloses, isEmpty);
+        expect(link.canContinue, isTrue);
+        await agents(rig).continueSession(link.paneId);
+        await flush(tester);
+        expect(link.phase, AgentLinkPhase.live);
+        expect(link.streamFailed, isFalse);
+      },
+    );
+
+    uiTest(
+      'explicit close during unexpected-exit drain releases without waiting for more credit',
+      (tester) async {
+        final host = agentHost();
+        final rig = await controllerRig(tester, host);
+        await start(rig, tester);
+        final id = session(rig);
+        final pane = chat(rig).id;
+        host.agentExitSource.add(
+          AgentExitedParams.fromJson({
+            'sessionId': id,
+            'reason': 'failed',
+            'status': 7,
+            'eventCount': 1,
+          }),
+        );
+        expect(host.agentReleases, isEmpty);
+        await rig.controller.requestClose([pane], (_) async => true);
+        await flush(tester);
+        expect(rig.layout.pane(pane), isNull);
+        expect(host.agentCloses, isEmpty, reason: 'process already exited');
+        expect(host.agentReleases, [id]);
+      },
+    );
+
+    uiTest(
+      'host loss during unexpected-exit drain does not release through the lost host',
+      (tester) async {
+        final host = agentHost();
+        final rig = await controllerRig(tester, host);
+        await start(rig, tester);
+        final id = session(rig);
+        final link = agents(rig).linkOf(chat(rig).id)!;
+        host.agentExitSource.add(
+          AgentExitedParams.fromJson({
+            'sessionId': id,
+            'reason': 'failed',
+            'status': 7,
+            'eventCount': 1,
+          }),
+        );
+        expect(host.agentReleases, isEmpty);
+        rig.controller.detach();
+        await host.agentChannels[id]!.close();
+        await flush(tester);
+        expect(link.statusLabel, 'Stopped or unknown');
+        expect(host.agentReleases, isEmpty);
       },
     );
 
@@ -631,6 +847,7 @@ void main() {
         await start(rig, tester);
         final id = session(rig);
         host.agentExit(id, reason: AgentExitReason.ended);
+        await flush(tester);
         await agents(rig).continueSession(chat(rig).id);
         host.agentEvent(id, AgentEvent.replay(AgentReplayPhase.start));
         host.agentEvent(
@@ -648,6 +865,7 @@ void main() {
         expect(transcript(rig), contains('Replay'));
         expect(host.agentPrompts, isEmpty);
         host.agentExit(id, reason: AgentExitReason.ended);
+        await flush(tester);
         host.agentContinueAnswers.add(
           const AgentContinueResult(
             eventChannel: 121,
@@ -670,6 +888,7 @@ void main() {
         await start(rig, tester);
         final old = session(rig);
         host.agentExit(old, reason: AgentExitReason.ended);
+        await flush(tester);
         host.agentContinueAnswers.add(
           resumeUnavailable('not-qualified', detail: 'test-only'),
         );
@@ -700,6 +919,7 @@ void main() {
         expect(host.agentCloses, [id]);
         expect(agents(rig).linkOf(pane)!.canContinue, isFalse);
         host.agentExit(id);
+        await flush(tester);
         expect(rig.layout.pane(pane), isNotNull);
         expect(agents(rig).linkOf(pane)!.canContinue, isTrue);
       },

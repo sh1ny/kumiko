@@ -218,6 +218,7 @@ void main() {
       const AgentExitedParams(
         sessionId: 's',
         reason: AgentExitReason.failed,
+        eventCount: 17,
         status: 1,
         error: 'resume-unavailable',
         resumeReason: 'adapter-error',
@@ -234,6 +235,30 @@ void main() {
       (j) => AgentCloseFailedParams.fromJson(j).toJson(),
     );
   });
+
+  test(
+    'agent exit requires a nonnegative final event count and preserves it',
+    () {
+      final wire = <String, Object?>{
+        'sessionId': 's',
+        'reason': 'failed',
+        'status': 1,
+        'eventCount': 17,
+      };
+      expect(AgentExitedParams.fromJson(wire).toJson()['eventCount'], 17);
+      for (final invalid in <Object?>[null, -1, 1.5, '17']) {
+        expect(
+          () => AgentExitedParams.fromJson({...wire, 'eventCount': invalid}),
+          throwsA(isA<RpcException>()),
+        );
+      }
+      final missing = Map<String, Object?>.of(wire)..remove('eventCount');
+      expect(
+        () => AgentExitedParams.fromJson(missing),
+        throwsA(isA<RpcException>()),
+      );
+    },
+  );
 
   test('new error codes preserve structured data and reserved reason', () {
     final reasons = {

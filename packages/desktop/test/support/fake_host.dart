@@ -513,6 +513,7 @@ class FakeHostLink implements HostLink {
   final List<String> agentReleases = [];
   final Map<String, AgentRecord> agentRecordMap = {};
   final Map<String, StreamController<AgentEvent>> agentChannels = {};
+  final Map<String, int> _agentEventCounts = {};
   final StreamController<AgentStateParams> agentStateSource =
       StreamController.broadcast(sync: true);
   final StreamController<AgentPermissionRequestedParams> agentRequestSource =
@@ -572,7 +573,10 @@ class FakeHostLink implements HostLink {
   Future<void> removeRuntimeProfile(String id) async {
     calls.add('runtime/remove $id');
     runtimes = RuntimeListResult(
-      profiles: [for (final p in runtimes.profiles) if (p.id != id) p],
+      profiles: [
+        for (final p in runtimes.profiles)
+          if (p.id != id) p,
+      ],
       defaultId: runtimes.defaultId,
       defaultAvailable: runtimes.defaultAvailable && runtimes.defaultId != id,
     );
@@ -610,12 +614,16 @@ class FakeHostLink implements HostLink {
   @override
   Future<AgentContinueResult> continueAgent(String id) async {
     calls.add('agent/continue $id');
-    return _answer(agentContinueAnswers, null, () => const AgentContinueResult(
-      eventChannel: 120,
-      adapter: AgentAdapter(name: 'scripted-acp', version: 'test-only'),
-      capabilities: ['load'],
-      mode: AgentContinueMode.load,
-    ));
+    return _answer(
+      agentContinueAnswers,
+      null,
+      () => const AgentContinueResult(
+        eventChannel: 120,
+        adapter: AgentAdapter(name: 'scripted-acp', version: 'test-only'),
+        capabilities: ['load'],
+        mode: AgentContinueMode.load,
+      ),
+    );
   }
 
   @override
@@ -623,9 +631,17 @@ class FakeHostLink implements HostLink {
     calls.add('agent/attach $id');
     final source = StreamController<AgentEvent>(
       sync: true,
-      onListen: () => scheduleMicrotask(() => agentState(id, AgentState.idle, 0)),
+      onListen: () =>
+          scheduleMicrotask(() => agentState(id, AgentState.idle, 0)),
+      // Keep cancellation completion in the test's zone rather than the
+      // SDK's shared root-zone completed future, which pump cannot flush.
+      onCancel: () => Future<void>.value(),
     );
+    // Allocate done before close cancels the synchronous subscription;
+    // otherwise close can also return the root-zone completed future.
+    unawaited(source.done);
     agentChannels[id] = source;
+    _agentEventCounts[id] = 0;
     return source.stream;
   }
 
@@ -664,22 +680,34 @@ class FakeHostLink implements HostLink {
     calls.add('agent/records ${ids.join(",")}');
     return AgentRecordsResult({
       for (final id in ids)
-        id: agentRecordMap[id] ?? const AgentRecord(
-          known: false,
-          workspaceAvailable: false,
-        ),
+        id:
+            agentRecordMap[id] ??
+            const AgentRecord(known: false, workspaceAvailable: false),
     });
   }
 
   void agentState(String id, AgentState state, [int seq = 1]) =>
-      agentStateSource.add(AgentStateParams(sessionId: id, seq: seq, state: state));
-
-  void agentEvent(String id, AgentEvent event) => agentChannels[id]!.add(event);
-
-  void agentExit(String id, {AgentExitReason reason = AgentExitReason.closed,
-      int? status}) => agentExitSource.add(
-        AgentExitedParams(sessionId: id, reason: reason, status: status),
+      agentStateSource.add(
+        AgentStateParams(sessionId: id, seq: seq, state: state),
       );
+
+  void agentEvent(String id, AgentEvent event) {
+    _agentEventCounts[id] = (_agentEventCounts[id] ?? 0) + 1;
+    agentChannels[id]!.add(event);
+  }
+
+  void agentExit(
+    String id, {
+    AgentExitReason reason = AgentExitReason.closed,
+    int? status,
+  }) => agentExitSource.add(
+    AgentExitedParams(
+      sessionId: id,
+      reason: reason,
+      eventCount: _agentEventCounts[id] ?? 0,
+      status: status,
+    ),
+  );
 
   @override
   Future<void> quit() async => quitCalled = true;

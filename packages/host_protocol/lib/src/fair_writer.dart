@@ -47,6 +47,11 @@ class ChannelWriter {
   final Queue<_Chunk> _chunks = Queue();
   int _credit = 0;
   bool _closed = false;
+  final Completer<void> _closedSignal = Completer<void>();
+
+  /// Completes when this channel is closed, including consumer cancellation.
+  /// This signals ownership loss, not successful delivery of queued bytes.
+  Future<void> get closed => _closedSignal.future;
   int _queued = 0;
   int _sentBytes = 0;
 
@@ -152,6 +157,7 @@ class ChannelWriter {
 
   void _close() {
     _closed = true;
+    if (!_closedSignal.isCompleted) _closedSignal.complete();
     _queued = 0;
     _wake();
     for (final chunk in _chunks) {
