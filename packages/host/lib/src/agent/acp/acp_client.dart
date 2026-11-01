@@ -11,6 +11,7 @@ const acpLargeLineThreshold = 1024 * 1024;
 // This counts JSON string contents (escaping included), without truncating IDs.
 const _maxRequestIdBytes = 4096;
 const _maxAdapterIdentityBytes = 4096;
+const _maxSessionIdBytes = 4096;
 
 class AcpProtocolException implements Exception {
   AcpProtocolException(this.message);
@@ -184,22 +185,35 @@ class AcpClient {
     Duration? timeout,
     void Function(Json result)? onResult,
   }) {
-    if (_closed) return Future.error(failure ?? const AcpClosedException());
+    try {
+      return _request(method, params, timeout: timeout, onResult: onResult);
+    } on Object catch (error, stack) {
+      return Future.error(error, stack);
+    }
+  }
+
+  /// Synchronous stdin admission precedes pending-request ownership.
+  Future<Json> _request(String method, Json params, {
+    Duration? timeout,
+    void Function(Json result)? onResult,
+  }) {
+    if (_closed) throw failure ?? const AcpClosedException();
     final id = _nextId++;
+    final write = _admit({
+      'jsonrpc': '2.0',
+      'id': id,
+      'method': method,
+      'params': params,
+    });
     final pending = _Pending(timeout, () {
       final expired = _pending.remove(id);
       expired?.completeError(
         TimeoutException('ACP $method timed out', timeout),
       );
-    }, prompt: method == 'session/prompt', onResult: onResult);
+    }, prompt: method == 'session/prompt', newSession: method == 'session/new', onResult: onResult);
     _pending[id] = pending;
     if (!_consuming) pending.resume();
-    _send({
-      'jsonrpc': '2.0',
-      'id': id,
-      'method': method,
-      'params': params,
-    }).then<void>(
+    write.then<void>(
       (_) {},
       onError: (Object error, StackTrace stack) {
         if (_pending.remove(id) == pending) pending.completeError(error, stack);
@@ -249,13 +263,8 @@ class AcpClient {
       'cwd': cwd,
       'mcpServers': <Object>[],
     }, timeout: timeout, onResult: onCreated == null ? null : (result) {
-      final native = result['sessionId'];
-      if (native is String) onCreated(native);
+      onCreated(result['sessionId']! as String);
     });
-    if (result['sessionId'] is! String) {
-      _fail(AcpProtocolException('invalid session/new result'));
-      throw failure!;
-    }
     return result['sessionId']! as String;
   }
 
@@ -271,15 +280,14 @@ class AcpClient {
     {'sessionId': id, 'cwd': cwd, 'mcpServers': <Object>[]},
     timeout: const Duration(seconds: 60),
   );
-  Future<AcpPromptResult> prompt(String id, String text) async {
-    final result = await request('session/prompt', {
-      'sessionId': id,
-      'prompt': [
-        {'type': 'text', 'text': text},
-      ],
-    });
-    return AcpPromptResult._(result);
-  }
+  /// Throws local queue-admission refusals before accepting the prompt.
+  Future<AcpPromptResult> prompt(String id, String text) =>
+      _request('session/prompt', {
+        'sessionId': id,
+        'prompt': [
+          {'type': 'text', 'text': text},
+        ],
+      }).then(AcpPromptResult._);
 
   Future<void> cancel(String id) => notify('session/cancel', {'sessionId': id});
 
@@ -537,6 +545,7 @@ class AcpClient {
       return null; // Unknown/late response cannot finish a turn twice.
     }
     Json? promptResult;
+    Json? creationResult;
     if (!message.containsKey('error') && pending.prompt) {
       final reason = (result as Json)['stopReason'];
       if (reason is! String) {
@@ -552,6 +561,20 @@ class AcpClient {
         'truncated': bounded != reason,
       };
     }
+    if (!message.containsKey('error') && pending.newSession) {
+      final native = (result as Json)['sessionId'];
+      if (native is! String) {
+        throw AcpProtocolException('invalid session/new session id');
+      }
+      if (native.length > _maxSessionIdBytes ||
+          clampJsonString(native, _maxSessionIdBytes) != native) {
+        throw AcpProtocolException(
+          'native session id exceeds $_maxSessionIdBytes encoded bytes',
+        );
+      }
+      // No arbitrary native result metadata crosses the binding/Future seam.
+      creationResult = {'sessionId': native};
+    }
     _pending.remove(id);
     pending.pause();
     if (message.containsKey('error')) {
@@ -560,7 +583,7 @@ class AcpClient {
         AcpRemoteException(error['code']! as int, error['message']! as String),
       );
     } else {
-      final response = promptResult ?? result as Json;
+      final response = promptResult ?? creationResult ?? result as Json;
       try {
         pending.onResult?.call(response);
       } on Object catch (error, stack) {
@@ -625,10 +648,11 @@ class AcpClient {
 }
 
 class _Pending {
-  _Pending(Duration? timeout, this._expired, {required this.prompt, this.onResult})
+  _Pending(Duration? timeout, this._expired, {required this.prompt, required this.newSession, this.onResult})
     : _remaining = timeout,
       _active = timeout == null ? null : Stopwatch();
   final bool prompt;
+  final bool newSession;
   final void Function(Json result)? onResult;
   final completer = Completer<Json>();
   Duration? _remaining;

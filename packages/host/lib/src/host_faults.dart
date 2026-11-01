@@ -90,6 +90,11 @@ class HostFaults {
   final Map<String, ResolveFault> _resolve = {};
   final Map<String, List<SendPort>> _hung = {};
 
+  /// Existing held-fault state, observed only by the test host's stats seam.
+  Map<String, int> get heldResolutions => {
+    for (final entry in _hung.entries) entry.key: entry.value.length,
+  };
+
   /// Takes the fault set for the next resolution of [path], if any.
   ResolveFault? takeResolveFault(String path) => _resolve.remove(path);
 

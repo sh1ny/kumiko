@@ -617,6 +617,7 @@ class AgentService {
     try {
       final launch = await units.launch(
         target: target.path,
+        expectedIdentity: target.identity,
         kind: 'agent',
         argv: [executable, ...profile.args],
         workingDirectory: target.path,
@@ -626,19 +627,6 @@ class AgentService {
       io = _AgentIO(launch);
       _io.add(io);
       _available();
-      if (launch.target.id != target.identity ||
-          launch.target.realPath != target.path) {
-        if (saved != null) {
-          throw _resumeUnavailable(
-            'target-changed',
-            'the saved session target changed while the adapter was starting',
-          );
-        }
-        throw RpcException(
-          ErrorCode.workspaceUnavailable,
-          'the workspace target changed while the adapter was starting',
-        );
-      }
       stage = 'initialize';
       final initialization = await io.client.initialize();
       _available();
@@ -706,6 +694,18 @@ class AgentService {
         }
       }
       reservation.release();
+      if (error is UnitTargetChanged) {
+        if (saved != null) {
+          throw _resumeUnavailable(
+            'target-changed',
+            'the saved session target changed while the adapter was starting',
+          );
+        }
+        throw RpcException(
+          ErrorCode.workspaceUnavailable,
+          'the workspace target changed while the adapter was starting',
+        );
+      }
       if (saved != null &&
           error is RpcException &&
           error.reason == ErrorCode.cleanupUnresolved) {

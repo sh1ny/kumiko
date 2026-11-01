@@ -126,6 +126,7 @@ class AgentSession {
     if (utf8.encode(text).length > 256 * 1024) {
       throw RpcException(ErrorCode.invalidParams, 'prompt exceeds 256 KiB');
     }
+    final completion = client.prompt(_nativeSessionId!, text);
     final turn = ++_turn;
     _hasTurn = true;
     _stopped = false;
@@ -133,9 +134,7 @@ class AgentSession {
     _set(AgentState.running);
     _enqueue(encodeAgentEvent(AgentEvent.text(AgentEventKind.user, text)))
         .ignore();
-    client
-        .prompt(_nativeSessionId!, text)
-        .then<void>(
+    completion.then<void>(
           (result) => _finish(turn, result, null),
           onError: (Object error, StackTrace stack) =>
               _finish(turn, null, error),

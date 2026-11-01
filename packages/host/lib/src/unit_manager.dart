@@ -99,10 +99,13 @@ class UnitManager {
   /// Capture the result rather than looking up an already-exited unit in
   /// [live]. Terminate the unit before abandoning blocked I/O, then close
   /// its pipes. [pipes] and [pty] are mutually exclusive.
+  /// [expectedIdentity] additionally requires the captured canonical [target]
+  /// and its identity to match before any pending row or native spawn.
   Future<UnitLaunch> launch({
     required String target,
     required String kind,
     required List<String> argv,
+    String? expectedIdentity,
     String? workingDirectory,
     Map<String, String>? environment,
     PtyOptions? pty,
@@ -156,6 +159,10 @@ class UnitManager {
             'cannot resolve target $target: $detail',
             {'target': target},
           );
+      }
+      if (expectedIdentity != null &&
+          (identity.id != expectedIdentity || identity.realPath != target)) {
+        throw const UnitTargetChanged();
       }
       if (ledger.isUnresolved(identity: identity.id, path: identity.realPath)) {
         throw RpcException(
@@ -452,4 +459,9 @@ class UnitManager {
       log.event('shutdown-deadline', ids: {'units': ids.length});
     }
   }
+}
+
+/// A captured target no longer denotes the same canonical directory.
+class UnitTargetChanged implements Exception {
+  const UnitTargetChanged();
 }

@@ -92,6 +92,38 @@ void main() {
       await a.close();
     },
   );
+  for (final id in {
+    'large ASCII': 's' * (2 * 1024 * 1024),
+    'ASCII over limit': 's' * 4097,
+    'escaped over limit': '\u0001' * 683,
+    'UTF-8 over limit': '界' * 1366,
+  }.entries) {
+    test('native session ID ${id.key} is refused before saved-record creation', () async {
+      final d = await desktop();
+      final workspace = await d.openWorkspace(work.path);
+      await saveAgentFixture(d, work, script: {'nativeSessionId': id.value});
+      final error = await rpcFailure(d.connection.request(Method.agentStart, AgentStartParams(workspaceId: workspace.workspace.id)));
+      expect(error.reason, ErrorCode.adapterProtocol);
+      expect(error.data['stage'], 'session/new');
+      expect(error.message, contains('session id'));
+      noResources();
+      expect(d.connection.isClosed, isFalse);
+    });
+  }
+  for (final id in {
+    'ASCII boundary': 's' * 4096,
+    'escaped boundary': '${'\u0001' * 682}tail',
+    'UTF-8 boundary': '${'界' * 1365}x',
+  }.entries) {
+    test('native session ID ${id.key} remains exact and usable', () async {
+      final (_, a, _) = await session(script: {'nativeSessionId': id.value});
+      expect(agentRows(profile).single['native_session_id'], id.value);
+      await a.prompt('bounded native identity');
+      expect((await a.wait(Method.agentTurnEnded))['stopReason'], 'end_turn');
+      await a.close();
+    });
+  }
+
   test('coalesced session/new response and initial updates are retained in native order', () async {
     final (_, a, _) = await session(script: {
       'newSessionUpdates': [

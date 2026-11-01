@@ -148,7 +148,10 @@ class TestHostExtension implements HostExtension {
         return <String, Object?>{};
       case 'test/agent.stats':
         EmptyParams.fromJson(params);
-        return {'sessions': host.agents.snapshot()};
+        return {
+          'sessions': host.agents.snapshot(),
+          'heldResolutions': host.faults.heldResolutions,
+        };
       case Method.testChannelOpen:
         final p = TestChannelOpenParams.fromJson(params);
         final channel = host.connection.openOutbound();

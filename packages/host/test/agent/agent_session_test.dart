@@ -74,6 +74,26 @@ void main() {
     p.result(getPromptId(), {'stopReason': reason});
     await pumpAcp();
   }
+  Future<void> saturatePermissionReplies() async {
+    await pumpAcp();
+    final ids = [for (var i = 0; i < 16; i++) '${'r' * 4090}-$i'];
+    final options = <String>[];
+    var remaining = 1024 * 1024;
+    for (var i = 0; i < ids.length; i++) {
+      final emptyReply = {'jsonrpc': '2.0', 'id': ids[i], 'result': {'outcome': {'outcome': 'selected', 'optionId': ''}}};
+      final overhead = utf8.encode('${jsonEncode(emptyReply)}\n').length;
+      final option = 'o' * (i < 15 ? 65000 : remaining - overhead);
+      options.add(option);
+      remaining -= overhead + option.length;
+      p.permission(ids[i], optionId: option);
+    }
+    expect(remaining, 0);
+    await pumpAcp();
+    p.blockedWrite = Completer<void>();
+    for (var i = 0; i < requests.length; i++) {
+      s.permissionReply(requests[i].requestId, options[i]);
+    }
+  }
 
   test(
     'prompt acceptance does not await result; running then idle after enqueue',
@@ -188,24 +208,7 @@ void main() {
 
   test('Stop refuses saturated stdin without resolving choices or failing and retries after drain', () async {
     s.acceptPrompt('saturated Stop');
-    await pumpAcp();
-    final ids = [for (var i = 0; i < 16; i++) '${'r' * 4090}-$i'];
-    final options = <String>[];
-    var remaining = 1024 * 1024;
-    for (var i = 0; i < ids.length; i++) {
-      final emptyReply = {'jsonrpc': '2.0', 'id': ids[i], 'result': {'outcome': {'outcome': 'selected', 'optionId': ''}}};
-      final overhead = utf8.encode('${jsonEncode(emptyReply)}\n').length;
-      final option = 'o' * (i < 15 ? 65000 : remaining - overhead);
-      options.add(option);
-      remaining -= overhead + option.length;
-      p.permission(ids[i], optionId: option);
-    }
-    expect(remaining, 0);
-    await pumpAcp();
-    p.blockedWrite = Completer<void>();
-    for (var i = 0; i < requests.length; i++) {
-      s.permissionReply(requests[i].requestId, options[i]);
-    }
+    await saturatePermissionReplies();
     expect(() => s.stop(), throwsA(isA<RpcException>().having((e) => e.reason, 'reason', ErrorCode.busy)));
     await pumpAcp();
     expect(s.state, AgentState.running);
