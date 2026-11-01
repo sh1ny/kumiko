@@ -283,6 +283,26 @@ class AcpClient {
 
   Future<void> cancel(String id) => notify('session/cancel', {'sessionId': id});
 
+  /// Atomically admits pending permission cancellations before session/cancel.
+  /// A local refusal throws before any message is accepted; the returned Future
+  /// observes native I/O only, so callers can commit their Stop state afterward.
+  Future<void> cancelWithPermissions(String id, Iterable<Object> permissionIds) {
+    if (_closed) throw failure ?? const AcpClosedException();
+    final cancel = {'jsonrpc': '2.0', 'method': 'session/cancel', 'params': {'sessionId': id}};
+    final ids = permissionIds.iterator;
+    if (!ids.moveNext()) return _admit(cancel);
+    final lines = StringBuffer();
+    do {
+      lines.writeln(jsonEncode({
+        'jsonrpc': '2.0',
+        'id': ids.current,
+        'result': {'outcome': {'outcome': 'cancelled'}},
+      }));
+    } while (ids.moveNext());
+    lines.writeln(jsonEncode(cancel));
+    return _admitBytes(utf8.encode(lines.toString()));
+  }
+
   Future<void> _send(Json message) {
     try {
       return _admit(message);
@@ -293,7 +313,11 @@ class AcpClient {
 
   Future<void> _admit(Json message) {
     if (_closed) throw failure ?? const AcpClosedException();
-    final bytes = utf8.encode('${jsonEncode(message)}\n');
+    return _admitBytes(utf8.encode('${jsonEncode(message)}\n'));
+  }
+
+  Future<void> _admitBytes(List<int> bytes) {
+    if (_closed) throw failure ?? const AcpClosedException();
     if (bytes.length > unitPipeQueueLimit - _writingBytes) {
       throw RpcException('busy', 'adapter stdin queue exceeds 1 MiB');
     }

@@ -302,6 +302,7 @@ void main() {
           {'type': 'content', 'content': {'type': 'text', 'text': 'partial old output'}},
         ],
         'truncated': true,
+        'contentTruncated': true,
         'omittedItems': 2,
       }));
       await tester.pump();
@@ -325,6 +326,54 @@ void main() {
       expect(find.text('complete replacement'), findsOneWidget);
       expect(find.textContaining('truncated'), findsNothing);
       expect(agents(rig).linkOf(chat(rig).id)!.transcript.entries.single.statuses, ['in_progress', 'completed']);
+    });
+
+    uiTest('sparse tool updates preserve loss only for fields not completely replaced', (tester) async {
+      final host = agentHost();
+      final rig = await pumpRig(tester, host);
+      await start(rig, tester);
+      final id = session(rig);
+      void emit(AgentEvent event) {
+        final decoder = AgentEventDecoder();
+        for (final line in encodeAgentEvent(event)) {
+          for (final bounded in decoder.add(line)) {
+            host.agentEvent(id, bounded);
+          }
+        }
+        decoder.close();
+      }
+      emit(AgentEvent.tool(
+        toolCallId: 'located',
+        title: 'Located output',
+        locations: [for (var i = 0; i < 65; i++) {'path': 'file-$i.dart', 'line': i + 1}],
+        content: [{'type': 'content', 'content': {'type': 'text', 'text': 'initial complete content'}}],
+      ));
+      await tester.pump();
+      expect(find.text('truncated'), findsOneWidget);
+      emit(AgentEvent.tool(
+        toolCallId: 'located', update: true,
+        content: [{'type': 'content', 'content': {'type': 'text', 'text': 'complete replacement'}}],
+      ));
+      await tester.pump();
+      expect(find.text('complete replacement'), findsOneWidget);
+      expect(find.text('truncated'), findsOneWidget);
+      emit(AgentEvent.tool(toolCallId: 'located', update: true, status: 'completed'));
+      await tester.pump();
+      expect(find.text('truncated'), findsOneWidget);
+      emit(AgentEvent.tool(toolCallId: 'located', update: true, locations: [{'path': 'complete.dart', 'line': 1}]));
+      await tester.pump();
+      expect(find.text('truncated'), findsNothing);
+      emit(AgentEvent.tool(toolCallId: 'located', update: true, content: [
+        {'type': 'content', 'content': {'type': 'text', 'text': 'x' * (maxAgentToolItemBytes + 1)}},
+      ]));
+      await tester.pump();
+      expect(find.text('truncated'), findsOneWidget);
+      emit(AgentEvent.tool(toolCallId: 'located', update: true, locations: [{'path': 'replacement.dart'}]));
+      await tester.pump();
+      expect(find.text('truncated'), findsOneWidget);
+      emit(AgentEvent.tool(toolCallId: 'located', update: true, content: []));
+      await tester.pump();
+      expect(find.text('truncated'), findsNothing);
     });
 
     uiTest(
@@ -1636,6 +1685,7 @@ void main() {
             'title': 'Edit a.dart',
             'status': 'completed',
             'truncated': true,
+            'contentTruncated': true,
             'content': [
               {
                 'type': 'diff',

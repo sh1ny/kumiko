@@ -88,10 +88,16 @@ class AgentTranscript {
       // Sparse tool updates replace only supplied fields, not absent content.
       if (fields.containsKey('content')) {
         prior.fields
-          ..remove('truncated')
+          ..remove('contentTruncated')
           ..remove('omittedItems');
       }
+      if (fields.containsKey('locations')) prior.fields.remove('locationsTruncated');
       prior.fields.addAll(fields);
+      if (prior.fields['contentTruncated'] == true || prior.fields['locationsTruncated'] == true) {
+        prior.fields['truncated'] = true;
+      } else {
+        prior.fields.remove('truncated');
+      }
       if (event.status case final status? when prior.statuses.lastOrNull != status) {
         prior.statuses.add(status);
         // Runtime status history is display metadata and is bounded too.

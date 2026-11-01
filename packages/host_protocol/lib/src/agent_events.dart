@@ -31,6 +31,9 @@ enum AgentReplayPhase { start, end }
 /// Normalized transcript event, independent of ACP. No session id is needed:
 /// the channel identifies its session. Optional tool fields retain partial
 /// updates; content and locations are JSON objects (text/diff/resource data).
+/// Tool `contentTruncated` and `locationsTruncated` identify independent loss;
+/// `truncated` is their aggregate indicator. Sparse replacement clears only
+/// the loss metadata belonging to the field it replaces.
 /// Use [encodeAgentEvent], not [toJson], when writing to a channel: it applies
 /// the host's size policy. [fromJson] validates a received wire event.
 class AgentEvent {
@@ -98,8 +101,10 @@ class AgentEvent {
         json['phase'] != 'end') {
       throw const FormatException('invalid replay phase');
     }
-    if (json.containsKey('truncated') && json['truncated'] is! bool) {
-      throw const FormatException('invalid truncated marker');
+    for (final key in const ['truncated', 'contentTruncated', 'locationsTruncated']) {
+      if (json.containsKey(key) && json[key] is! bool) {
+        throw FormatException('invalid $key marker');
+      }
     }
     if (json.containsKey('omittedItems') &&
         (json['omittedItems'] is! int || (json['omittedItems']! as int) < 0)) {
@@ -211,16 +216,19 @@ Iterable<Uint8List> encodeAgentEvent(AgentEvent event) sync* {
     final plan = event.kind == AgentEventKind.plan;
     final key = plan ? 'entries' : 'content';
     final input = plan ? event.entries : event.content;
-    var truncated = event.truncated;
+    var truncated = plan ? event.truncated : json['contentTruncated'] == true;
+    var locationsTruncated = !plan && json['locationsTruncated'] == true;
     if (!plan && json.containsKey('locations')) {
       if (event.locations.length > maxAgentLocations) {
         json['locations'] = event.locations.take(maxAgentLocations).toList();
-        truncated = true;
+        locationsTruncated = true;
       }
     }
     final hasItems = plan || json.containsKey(key);
     final base = {...json, if (hasItems) key: <Json>[]}
       ..remove('truncated')
+      ..remove('contentTruncated')
+      ..remove('locationsTruncated')
       ..remove('omittedItems');
     final baseBytes = utf8.encode(jsonEncode(base)).length;
     final candidates = <Json>[];
@@ -248,9 +256,12 @@ Iterable<Uint8List> encodeAgentEvent(AgentEvent event) sync* {
     int omittedAt(int n) => input.length - n + event.omittedItems;
     int sizeAt(int n) {
       final omitted = omittedAt(n);
+      final contentTruncated = prefixTruncated[n] || omitted > 0;
       return baseBytes +
           prefixBytes[n] +
-          (prefixTruncated[n] || omitted > 0 ? ',"truncated":true'.length : 0) +
+          (contentTruncated || locationsTruncated ? ',"truncated":true'.length : 0) +
+          (!plan && contentTruncated ? ',"contentTruncated":true'.length : 0) +
+          (locationsTruncated ? ',"locationsTruncated":true'.length : 0) +
           (omitted > 0 ? ',"omittedItems":$omitted'.length : 0);
     }
 
@@ -274,7 +285,9 @@ Iterable<Uint8List> encodeAgentEvent(AgentEvent event) sync* {
         key: selected == candidates.length
             ? candidates
             : candidates.sublist(0, selected),
-      if (truncated) 'truncated': true,
+      if (truncated || locationsTruncated) 'truncated': true,
+      if (!plan && truncated) 'contentTruncated': true,
+      if (locationsTruncated) 'locationsTruncated': true,
       if (omitted > 0) 'omittedItems': omitted,
     };
   }

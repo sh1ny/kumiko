@@ -111,6 +111,8 @@ void main() {
     expect(lines.single.length - 1, lessThanOrEqualTo(256 * 1024));
     final back = _round(event).single;
     expect(back.truncated, isTrue);
+    expect(back.toJson()['contentTruncated'], isTrue);
+    expect(back.toJson()['locationsTruncated'], isTrue);
     expect(back.omittedItems, greaterThan(0));
     expect(back.content.length + back.omittedItems, 10);
     for (var i = 0; i < back.content.length; i++) {
@@ -122,6 +124,21 @@ void main() {
     }
     expect(back.locations, hasLength(64));
     expect(_round(AgentEvent.notice('later')).single.text, 'later');
+  });
+
+  test('locations-only truncation stays distinct from complete content through re-encoding', () {
+    final back = _round(AgentEvent.tool(
+      toolCallId: 'located',
+      content: [{'type': 'text', 'text': 'complete content'}],
+      locations: [for (var i = 0; i < 65; i++) {'path': 'file-$i.dart'}],
+    )).single;
+    expect(back.locations, hasLength(64));
+    expect(back.content.single['text'], 'complete content');
+    expect(back.truncated, isTrue);
+    expect(back.toJson()['locationsTruncated'], isTrue);
+    expect(back.toJson()['contentTruncated'], isNot(true));
+    expect(back.omittedItems, 0);
+    expect(_round(back).single.toJson(), back.toJson());
   });
 
   test(
@@ -219,6 +236,8 @@ void main() {
       '{}\n',
       '{"kind":"alien"}\n',
       '{"kind":"agentText","text":3}\n',
+      '{"kind":"tool","toolCallId":"t","contentTruncated":"yes"}\n',
+      '{"kind":"toolUpdate","toolCallId":"t","locationsTruncated":1}\n',
       'not json\n',
     ]) {
       expect(

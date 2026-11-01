@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 
 import 'package:host/src/agent/acp/acp_client.dart';
 import 'package:host/src/agent/agent_session.dart';
@@ -183,6 +184,77 @@ void main() {
     expect(s.state, AgentState.failed);
     expect(s.failure, same(failure));
     expect(resolved.single.outcome, AgentPermissionOutcome.selected);
+  });
+
+  test('Stop refuses saturated stdin without resolving choices or failing and retries after drain', () async {
+    s.acceptPrompt('saturated Stop');
+    await pumpAcp();
+    final ids = [for (var i = 0; i < 16; i++) '${'r' * 4090}-$i'];
+    final options = <String>[];
+    var remaining = 1024 * 1024;
+    for (var i = 0; i < ids.length; i++) {
+      final emptyReply = {'jsonrpc': '2.0', 'id': ids[i], 'result': {'outcome': {'outcome': 'selected', 'optionId': ''}}};
+      final overhead = utf8.encode('${jsonEncode(emptyReply)}\n').length;
+      final option = 'o' * (i < 15 ? 65000 : remaining - overhead);
+      options.add(option);
+      remaining -= overhead + option.length;
+      p.permission(ids[i], optionId: option);
+    }
+    expect(remaining, 0);
+    await pumpAcp();
+    p.blockedWrite = Completer<void>();
+    for (var i = 0; i < requests.length; i++) {
+      s.permissionReply(requests[i].requestId, options[i]);
+    }
+    expect(() => s.stop(), throwsA(isA<RpcException>().having((e) => e.reason, 'reason', ErrorCode.busy)));
+    await pumpAcp();
+    expect(s.state, AgentState.running);
+    expect(s.failure, isNull);
+    expect(clock.action, isNull);
+    expect(stops, isEmpty);
+    p.permission('late-native-permission');
+    await pumpAcp();
+    final pending = requests.last.requestId;
+    expect(s.pendingPermissionCount, 1);
+    expect(() => s.stop(), throwsA(isA<RpcException>().having((e) => e.reason, 'reason', ErrorCode.busy)));
+    await pumpAcp();
+    expect(s.state, AgentState.waitingApproval);
+    expect(s.pendingPermissionCount, 1);
+    expect(resolved.where((r) => r.requestId == pending), isEmpty);
+    expect(s.failure, isNull);
+    expect(p.client.isClosed, isFalse);
+    p.blockedWrite!.complete();
+    p.blockedWrite = null;
+    await pumpAcp();
+    s.stop();
+    await pumpAcp();
+    expect(s.state, AgentState.stopping);
+    expect(s.pendingPermissionCount, 0);
+    expect(resolved.last.requestId, pending);
+    expect(resolved.last.outcome, AgentPermissionOutcome.cancelled);
+    expect(p.writes[p.writes.length - 2]['id'], 'late-native-permission');
+    expect(p.writes.last['method'], 'session/cancel');
+    clock.fire();
+    expect(stops.single.outcome, AgentStopOutcome.notConfirmed);
+    expect(s.state, AgentState.stopping);
+    expect(p.client.isClosed, isFalse);
+    await finish('cancelled');
+    expect(s.state, AgentState.idle);
+    expect(stops.last.outcome, AgentStopOutcome.stopped);
+    expect(stops.last.late, isTrue);
+  });
+
+  test('an admitted Stop still fails on actual native stdin I/O error', () async {
+    s.acceptPrompt('Stop write failure');
+    await pumpAcp();
+    p.blockedWrite = Completer<void>();
+    s.stop();
+    final failure = StateError('native cancel write failed');
+    p.blockedWrite!.completeError(failure);
+    p.blockedWrite = null;
+    await pumpAcp();
+    expect(s.state, AgentState.failed);
+    expect(s.failure, same(failure));
   });
 
   test('bounded native permission IDs preserve exact selected and cancelled replies', () async {

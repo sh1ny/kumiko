@@ -365,11 +365,11 @@ class AgentSession {
     }
     _observeWrite(write);
   }
-  void _cancelPermissions() {
+  void _cancelPermissions({bool answer = true}) {
     final pending = Map<String, _Permission>.of(_permissions);
     _permissions.clear();
     for (final entry in pending.entries) {
-      _answerCancelled(entry.value.rpcId);
+      if (answer) _answerCancelled(entry.value.rpcId);
       onPermissionResolved(
         AgentPermissionResolvedParams(
           sessionId: sessionId,
@@ -380,8 +380,8 @@ class AgentSession {
     }
   }
 
-  /// Synchronous ACK seam: enqueues all permission answers before cancel in
-  /// stdin call order, without awaiting native write, prompt result or credit.
+  /// Admits all cancellation messages before mutating Stop or permission state.
+  /// Local saturation is a retryable RPC refusal, never native I/O failure.
   void stop() {
     if (_disposed || _terminal) return;
     if (!_hasTurn) {
@@ -394,8 +394,12 @@ class AgentSession {
       return;
     }
     if (_stopped) return;
+    final write = client.cancelWithPermissions(
+      _nativeSessionId!,
+      _permissions.values.map((permission) => permission.rpcId),
+    );
     _stopped = true;
-    _cancelPermissions();
+    _cancelPermissions(answer: false);
     _set(AgentState.stopping);
     _deadline = _deadlineFactory(const Duration(seconds: 10), () {
       if (!_hasTurn || _terminal || _disposed || _notConfirmed) return;
@@ -407,7 +411,7 @@ class AgentSession {
         ),
       );
     });
-    _observeWrite(client.cancel(_nativeSessionId!));
+    _observeWrite(write);
   }
 
   /// Immediate close transition; the service owns cancel grace and settlement.
