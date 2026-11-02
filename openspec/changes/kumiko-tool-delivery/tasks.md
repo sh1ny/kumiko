@@ -54,8 +54,8 @@
 
 ## 2. Windows named-pipe endpoint (process_containment)
 
-- [ ] 2.1 Write failing `packages/process_containment/test/pipe_server_windows_test.dart`. It covers: owner-only DACL read back (current user SID and SYSTEM only); `PIPE_REJECT_REMOTE_CLIENTS` set; first-instance squatting refused; a client that connects and stays silent is disconnected by a host-signalled stop within 1 s and the worker joined; byte round trip both ways; `openWindowsPipe` client connect, busy retry 2 s, and missing pipe errors. Verify: `dart test` fails on the missing API (skipped off Windows).
-- [ ] 2.2 Implement `windows_pipe_server.dart` and the client per design D2. Use overlapped `ConnectNamedPipe`/`ReadFile`/`WriteFile`, a stop event, `CancelIoEx`, then `GetOverlappedResult(wait)`, then `DisconnectNamedPipe`/`CloseHandle`. Use one worker isolate per connection and an SDDL security descriptor built from the token user SID. Add the needed `windows_api.dart` bindings. Verify: 2.1 passes on Windows, existing `pipes_windows_test.dart` still passes; flip rows green.
+- [x] 2.1 Write failing `packages/process_containment/test/pipe_server_windows_test.dart`. It covers: owner-only DACL read back (current user SID and SYSTEM only); `PIPE_REJECT_REMOTE_CLIENTS` set; first-instance squatting refused; a client that connects and stays silent is disconnected by a host-signalled stop within 1 s and the worker joined; byte round trip both ways; `openWindowsPipe` client connect, busy retry 2 s, and missing pipe errors. Verify: `dart test` fails on the missing API (skipped off Windows).
+- [x] 2.2 Implement `windows_pipe_server.dart` and the client per design D2. Use overlapped `ConnectNamedPipe`/`ReadFile`/`WriteFile`, a stop event, `CancelIoEx`, then `GetOverlappedResult(wait)`, then `DisconnectNamedPipe`/`CloseHandle`. Use one worker isolate per connection and an SDDL security descriptor built from the token user SID. Add the needed `windows_api.dart` bindings. Verify: 2.1 passes on Windows, existing `pipes_windows_test.dart` still passes; flip rows green.
 
 ## 3. Tool service, endpoint and handshake (host)
 

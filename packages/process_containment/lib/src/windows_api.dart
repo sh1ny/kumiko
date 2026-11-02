@@ -261,6 +261,251 @@ writeFileNative = _kernel32
       int Function(int, Pointer<Uint8>, int, Pointer<Uint32>, Pointer<Void>)
     >('WriteFile');
 
+/// Named pipe server and overlapped I/O entry points (design D2 of
+/// `kumiko-tool-delivery`).
+final int Function(Pointer<Utf16>, int, int, int, int, int, int, Pointer<Void>)
+createNamedPipeW = _kernel32
+    .lookupFunction<
+      IntPtr Function(
+        Pointer<Utf16>,
+        Uint32,
+        Uint32,
+        Uint32,
+        Uint32,
+        Uint32,
+        Uint32,
+        Pointer<Void>,
+      ),
+      int Function(Pointer<Utf16>, int, int, int, int, int, int, Pointer<Void>)
+    >('CreateNamedPipeW', isLeaf: true);
+
+final int Function(int) disconnectNamedPipe = _kernel32
+    .lookupFunction<Int32 Function(IntPtr), int Function(int)>(
+      'DisconnectNamedPipe',
+    );
+
+final int Function(Pointer<Utf16>, int) waitNamedPipeW = _kernel32
+    .lookupFunction<
+      Int32 Function(Pointer<Utf16>, Uint32),
+      int Function(Pointer<Utf16>, int)
+    >('WaitNamedPipeW');
+
+final int Function(Pointer<Void>, int, int, Pointer<Utf16>) createEventW =
+    _kernel32.lookupFunction<
+      IntPtr Function(Pointer<Void>, Int32, Int32, Pointer<Utf16>),
+      int Function(Pointer<Void>, int, int, Pointer<Utf16>)
+    >('CreateEventW');
+
+final int Function(int) setEvent = _kernel32
+    .lookupFunction<Int32 Function(IntPtr), int Function(int)>('SetEvent');
+
+final int Function(int) resetEvent = _kernel32
+    .lookupFunction<Int32 Function(IntPtr), int Function(int)>('ResetEvent');
+
+final int Function(int, Pointer<IntPtr>, int, int) waitForMultipleObjects =
+    _kernel32.lookupFunction<
+      Uint32 Function(Uint32, Pointer<IntPtr>, Int32, Uint32),
+      int Function(int, Pointer<IntPtr>, int, int)
+    >('WaitForMultipleObjects');
+
+final int Function(int, Pointer<Void>) cancelIoEx = _kernel32
+    .lookupFunction<
+      Int32 Function(IntPtr, Pointer<Void>),
+      int Function(int, Pointer<Void>)
+    >('CancelIoEx');
+
+/// Blocking form (`bWait` TRUE) for the wait after `CancelIoEx`: not a leaf
+/// call, so it never stalls the isolate group's safepoints.
+final int Function(int, Pointer<Void>, Pointer<Uint32>, int)
+getOverlappedResult = _kernel32
+    .lookupFunction<
+      Int32 Function(IntPtr, Pointer<Void>, Pointer<Uint32>, Int32),
+      int Function(int, Pointer<Void>, Pointer<Uint32>, int)
+    >('GetOverlappedResult');
+
+// Non-blocking and their error is read right after, so a leaf call (a
+// non-leaf transition can clobber the thread's last error).
+
+final int Function(Pointer<Utf16>, int, int, Pointer<Void>, int, int, int)
+createFileLeaf = _kernel32
+    .lookupFunction<
+      IntPtr Function(
+        Pointer<Utf16>,
+        Uint32,
+        Uint32,
+        Pointer<Void>,
+        Uint32,
+        Uint32,
+        IntPtr,
+      ),
+      int Function(Pointer<Utf16>, int, int, Pointer<Void>, int, int, int)
+    >('CreateFileW', isLeaf: true);
+
+final DynamicLibrary _ntdll = DynamicLibrary.open('ntdll.dll');
+
+/// The `Nt*` I/O calls return the `NTSTATUS` directly. Overlapped pipe I/O
+/// uses them instead of `ReadFile`/`WriteFile`/`ConnectNamedPipe` because the
+/// Win32 wrappers report their outcome through the thread's last error, which
+/// the VM can clear between the call and `GetLastError` (a lost
+/// `ERROR_PIPE_CONNECTED` would hang an accept). The `IO_STATUS_BLOCK` is the
+/// first 16 bytes of the `OVERLAPPED`.
+final int Function(
+  int,
+  int,
+  Pointer<Void>,
+  Pointer<Void>,
+  Pointer<Void>,
+  int,
+  Pointer<Void>,
+  int,
+  Pointer<Void>,
+  int,
+)
+ntFsControlFile = _ntdll
+    .lookupFunction<
+      Int32 Function(
+        IntPtr,
+        IntPtr,
+        Pointer<Void>,
+        Pointer<Void>,
+        Pointer<Void>,
+        Uint32,
+        Pointer<Void>,
+        Uint32,
+        Pointer<Void>,
+        Uint32,
+      ),
+      int Function(
+        int,
+        int,
+        Pointer<Void>,
+        Pointer<Void>,
+        Pointer<Void>,
+        int,
+        Pointer<Void>,
+        int,
+        Pointer<Void>,
+        int,
+      )
+    >('NtFsControlFile');
+
+final int Function(
+  int,
+  int,
+  Pointer<Void>,
+  Pointer<Void>,
+  Pointer<Void>,
+  Pointer<Uint8>,
+  int,
+  Pointer<Void>,
+  Pointer<Void>,
+)
+ntReadFile = _ntdll
+    .lookupFunction<
+      Int32 Function(
+        IntPtr,
+        IntPtr,
+        Pointer<Void>,
+        Pointer<Void>,
+        Pointer<Void>,
+        Pointer<Uint8>,
+        Uint32,
+        Pointer<Void>,
+        Pointer<Void>,
+      ),
+      int Function(
+        int,
+        int,
+        Pointer<Void>,
+        Pointer<Void>,
+        Pointer<Void>,
+        Pointer<Uint8>,
+        int,
+        Pointer<Void>,
+        Pointer<Void>,
+      )
+    >('NtReadFile');
+
+final int Function(
+  int,
+  int,
+  Pointer<Void>,
+  Pointer<Void>,
+  Pointer<Void>,
+  Pointer<Uint8>,
+  int,
+  Pointer<Void>,
+  Pointer<Void>,
+)
+ntWriteFile = _ntdll
+    .lookupFunction<
+      Int32 Function(
+        IntPtr,
+        IntPtr,
+        Pointer<Void>,
+        Pointer<Void>,
+        Pointer<Void>,
+        Pointer<Uint8>,
+        Uint32,
+        Pointer<Void>,
+        Pointer<Void>,
+      ),
+      int Function(
+        int,
+        int,
+        Pointer<Void>,
+        Pointer<Void>,
+        Pointer<Void>,
+        Pointer<Uint8>,
+        int,
+        Pointer<Void>,
+        Pointer<Void>,
+      )
+    >('NtWriteFile');
+
+final int Function() getCurrentProcess = _kernel32
+    .lookupFunction<IntPtr Function(), int Function()>('GetCurrentProcess');
+
+final Pointer<Void> Function(Pointer<Void>) localFree = _kernel32
+    .lookupFunction<
+      Pointer<Void> Function(Pointer<Void>),
+      Pointer<Void> Function(Pointer<Void>)
+    >('LocalFree');
+
+final DynamicLibrary _advapi32 = DynamicLibrary.open('advapi32.dll');
+
+final int Function(int, int, Pointer<IntPtr>) openProcessToken = _advapi32
+    .lookupFunction<
+      Int32 Function(IntPtr, Uint32, Pointer<IntPtr>),
+      int Function(int, int, Pointer<IntPtr>)
+    >('OpenProcessToken');
+
+final int Function(int, int, Pointer<Void>, int, Pointer<Uint32>)
+getTokenInformation = _advapi32
+    .lookupFunction<
+      Int32 Function(IntPtr, Int32, Pointer<Void>, Uint32, Pointer<Uint32>),
+      int Function(int, int, Pointer<Void>, int, Pointer<Uint32>)
+    >('GetTokenInformation');
+
+final int Function(Pointer<Void>, Pointer<Pointer<Utf16>>)
+convertSidToStringSidW = _advapi32
+    .lookupFunction<
+      Int32 Function(Pointer<Void>, Pointer<Pointer<Utf16>>),
+      int Function(Pointer<Void>, Pointer<Pointer<Utf16>>)
+    >('ConvertSidToStringSidW');
+
+final int Function(Pointer<Utf16>, int, Pointer<Pointer<Void>>, Pointer<Uint32>)
+convertStringSecurityDescriptorToSecurityDescriptorW = _advapi32
+    .lookupFunction<
+      Int32 Function(
+        Pointer<Utf16>,
+        Uint32,
+        Pointer<Pointer<Void>>,
+        Pointer<Uint32>,
+      ),
+      int Function(Pointer<Utf16>, int, Pointer<Pointer<Void>>, Pointer<Uint32>)
+    >('ConvertStringSecurityDescriptorToSecurityDescriptorW');
+
 /// The bundled open-source ConPTY (design D2; `hook/build.dart`).
 const String _conptyAsset = 'package:process_containment/conpty';
 
@@ -341,3 +586,14 @@ const int processSetQuota = 0x0100;
 const int processQueryLimitedInformation = 0x1000;
 const int stillActive = 259;
 const int infinite = 0xFFFFFFFF;
+
+const int errorFileNotFound = 2;
+const int errorAccessDenied = 5;
+const int errorPipeBusy = 231;
+const int errorPipeNotConnected = 233;
+const int errorPipeConnected = 535;
+const int errorOperationAborted = 995;
+const int errorIoPending = 997;
+const int waitObject0 = 0;
+const int waitTimeout = 258;
+const int waitFailed = 0xFFFFFFFF;
