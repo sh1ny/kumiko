@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:io';
 
 // Root-only tooling intentionally consumes the workspace's public protocol API
 // without adding a production dependency to the workspace root.
@@ -10,6 +11,11 @@ import '../check_qualification.dart';
 import '../qualification_support.dart';
 
 const candidate = ('observed-adapter', '0.99.1');
+const _noFailures =
+    'const toolDeliveryFailures = <(String, String, String)>[];';
+const _emptySource =
+    'const qualifiedAdapters = <(String, String, List<String>)>[];\n'
+    '$_noFailures';
 
 Map<String, QualificationObservation> observations({String os = 'windows'}) => {
   for (final item in qualificationItems(os))
@@ -544,7 +550,7 @@ void main() {
         expect(
           checkQualification(
             updated,
-            'const qualifiedAdapters = <(String, String, List<String>)>[];',
+            _emptySource,
           ).failures,
           isEmpty,
         );
@@ -572,11 +578,12 @@ void main() {
         final report = checkQualification(
           text,
           "const qualifiedAdapters = <(String, String, List<String>)>["
-          "('observed-adapter', '0.99.1', <String>['load', 'resume']),];",
+          "('observed-adapter', '0.99.1', <String>['load', 'resume']),];"
+          "\n$_noFailures",
         );
         expect(report.failures, isEmpty);
         expect(report.verdict, 'ACCEPTED');
-        expect(report.unproven, hasLength(19));
+        expect(report.unproven, hasLength(21));
         expect(text, contains('| auth-required observed | user | pass |'));
         expect(text, contains('-32123 | Observed signed-out error'));
       },
@@ -648,5 +655,120 @@ void main() {
         );
       },
     );
+  });
+
+  group('kumiko tool call qualification', () {
+    const connected = AgentTools(AgentToolsStatus.connected);
+    const ended = AgentTurnEndedParams(
+      sessionId: 'tool',
+      stopReason: 'end_turn',
+    );
+
+    test('item is part of every OS item list and the tool prompt names the tool', () {
+      for (final os in qualificationOses) {
+        expect(qualificationItems(os), contains('kumiko tool call'));
+      }
+      expect(toolCallQualificationItem, 'kumiko tool call');
+      expect(qualificationToolPrompt, contains(qualificationToolName));
+      expect(qualificationToolName, 'kumiko_session_info');
+    });
+
+    test('connected status after a clean turn passes and names the tool', () {
+      final result = evaluateQualificationToolCall(
+        tools: connected,
+        toolTitles: ['mcp__kumiko__kumiko_session_info'],
+        turn: ended,
+      );
+      expect(result.passed, isTrue);
+      expect(result.detail, contains('connected'));
+      expect(result.detail, contains('mcp__kumiko__kumiko_session_info'));
+    });
+
+    test('any other status or a failed turn is a failure with checker-safe text', () {
+      for (final (tools, turn) in [
+        (const AgentTools(AgentToolsStatus.notYetUsed), ended),
+        (const AgentTools(AgentToolsStatus.notStarted), ended),
+        (const AgentTools(AgentToolsStatus.unknown), ended),
+        (null, ended),
+        (connected, null),
+        (
+          connected,
+          const AgentTurnEndedParams(sessionId: 'tool', error: 'acp-error'),
+        ),
+        (
+          const AgentTools(
+            AgentToolsStatus.unavailable,
+            reason: 'endpoint-unavailable: it\'s "bad" | \\ \$x\nnext',
+          ),
+          ended,
+        ),
+      ]) {
+        final result = evaluateQualificationToolCall(
+          tools: tools,
+          toolTitles: const [],
+          turn: turn,
+        );
+        expect(result.passed, isFalse, reason: '$tools $turn');
+        expect(result.observed, isNotEmpty);
+        expect(result.observed, isNot(matches(RegExp(r'''['"|\\$\x00-\x1f]'''))));
+        expect(result.observed.length, lessThanOrEqualTo(200));
+      }
+    });
+
+    test('failure observed text is recorded in Notes and accepted by the checker', () {
+      const text = 'tools status notStarted; adapter did not start the entry';
+      final rows = observations()
+        ..[toolCallQualificationItem] = QualificationObservation.confirmed(
+          passed: false,
+          confirmed: true,
+          observed: text,
+        );
+      final recorded = merge('# Evidence\n', 'windows', rows);
+      expect(recorded, contains('observed: "$text"'));
+      final report = checkQualification(
+        recorded,
+        "const qualifiedAdapters = <(String, String, List<String>)>["
+        "('observed-adapter', '0.99.1', <String>['load', 'resume']),];\n"
+        "const toolDeliveryFailures = <(String, String, String)>["
+        "('observed-adapter', '0.99.1', '$text'),];",
+      );
+      expect(report.failures, isEmpty);
+      expect(report.verdict, 'ACCEPTED');
+    });
+
+    test('a failed tool call without observed text, or with unsafe text, cannot be recorded', () {
+      for (final observed in ['', 'has "quote"', 'a|b', 'multi\nline']) {
+        final rows = observations()
+          ..[toolCallQualificationItem] = QualificationObservation.confirmed(
+            passed: false,
+            confirmed: true,
+            observed: observed,
+          );
+        expect(
+          () => merge('# Evidence\n', 'windows', rows),
+          throwsA(anyOf(isA<StateError>(), isA<FormatException>())),
+          reason: observed,
+        );
+      }
+    });
+
+    test('dry run records kumiko tool call pass from the fixture', () async {
+      var flutterRoot = Platform.environment['FLUTTER_ROOT'];
+      if (flutterRoot == null || flutterRoot.isEmpty) {
+        // <flutter>/bin/cache/dart-sdk/bin/dart
+        flutterRoot = File(Platform.resolvedExecutable).parent.parent.parent
+            .parent.parent.path;
+      }
+      final result = await Process.run(
+        Platform.resolvedExecutable,
+        ['tool/qualify_claude_acp.dart', '--dry-run'],
+        environment: {'FLUTTER_ROOT': flutterRoot},
+      );
+      final output = '${result.stdout}\n${result.stderr}';
+      expect(result.exitCode, 0, reason: output);
+      expect(output, contains('FIXTURE kumiko tool call: pass'));
+      expect(output, contains('DRY-RUN PASSED'));
+      expect(output, isNot(contains('FIXTURE kumiko tool call: fail')));
+    }, timeout: const Timeout(Duration(minutes: 15)));
   });
 }

@@ -16,19 +16,36 @@ const _items = <String>[
   'load',
   'resume',
   'auth-required observed',
+  'kumiko tool call',
 ];
+const _toolItem = 'kumiko tool call';
 const _finder = 'launch from Finder or the Dock';
 const _oses = <String>['windows', 'linux', 'macos'];
 
 String _source({
   String entries = "('$_name', '$_version', <String>['load', 'resume']),",
+  String? failures = '',
 }) =>
-    'const qualifiedAdapters = <(String, String, List<String>)>[\n$entries\n];\n';
+    'const qualifiedAdapters = <(String, String, List<String>)>[\n$entries\n];\n'
+    '${failures == null ? '' : 'const toolDeliveryFailures = <(String, String, String)>[\n$failures\n];\n'}';
+
+String _failure(
+  String text, {
+  String name = _name,
+  String version = _version,
+}) => "('$name', '$version', '$text'),";
+
+/// A results document whose [os] tool call row is a `fail`.
+String _toolFail(String os, String notes, {String others = 'pass'}) => _results(
+  result: (o, i) => i == _toolItem ? (o == os ? 'fail' : others) : 'pass',
+  notes: (o, i) => i == _toolItem && o == os ? notes : 'synthetic fixture',
+);
 
 String _results({
   String name = _name,
   String version = _version,
   String Function(String os, String item)? result,
+  String Function(String os, String item)? notes,
   bool Function(String os, String item)? omit,
 }) {
   final out = StringBuffer(
@@ -43,7 +60,7 @@ String _results({
       final auth = item == 'auth-required observed';
       out.writeln(
         '| $item | user | ${result?.call(os, item) ?? 'pass'} | '
-        'synthetic fixture observation | ${auth ? '-32000' : ''} | '
+        '${notes?.call(os, item) ?? 'synthetic fixture observation'} | ${auth ? '-32000' : ''} | '
         '${auth ? 'fixture sign-in required' : ''} |',
       );
     }
@@ -390,6 +407,196 @@ void main() {
         final report = checkQualification(text, _source(entries: ''));
         expect(report.failures, isEmpty);
         expect(report.verdict, 'NO CLAIMS (no adapter qualified)');
+      }
+    });
+  });
+
+  group('kumiko tool call', () {
+    const text = 'adapter ignored the kumiko entry';
+    final observed = 'Real run; observed: "$text"; user confirmed fail.';
+
+    test('missing kumiko tool call fails naming version, OS, item', () {
+      for (final os in _oses) {
+        _fails(
+          checkQualification(
+            _results(omit: (o, i) => o == os && i == _toolItem),
+            _source(),
+          ),
+          [_name, _version, os, _toolItem],
+        );
+      }
+    });
+
+    test('linux and macOS tool call may be unproven, Windows may not', () {
+      final report = checkQualification(
+        _oneCell('linux', _toolItem, 'unproven'),
+        _source(),
+      );
+      expect(report.failures, isEmpty);
+      expect(report.verdict, 'ACCEPTED');
+      expect(report.unproven, ['$_name $_version: linux: $_toolItem']);
+      _fails(
+        checkQualification(
+          _oneCell('windows', _toolItem, 'unproven'),
+          _source(),
+        ),
+        [_name, _version, 'windows', _toolItem],
+      );
+    });
+
+    test('fail without observed text fails', () {
+      for (final notes in [
+        'synthetic fixture observation',
+        'observed: ""',
+        'observed:"$text"',
+        'observed: $text',
+      ]) {
+        _fails(
+          checkQualification(
+            _toolFail('windows', notes),
+            _source(failures: _failure(text)),
+          ),
+          [_name, _version, 'windows', _toolItem, 'observed'],
+        );
+      }
+    });
+
+    test('matched failure is QUALIFIED and printed', () {
+      final report = checkQualification(
+        _toolFail('windows', observed),
+        _source(failures: _failure(text)),
+      );
+      expect(report.failures, isEmpty);
+      expect(report.exitCode, 0);
+      expect(report.verdict, 'QUALIFIED');
+      expect(report.unproven, isEmpty);
+      final dir = Directory.systemTemp.createTempSync('qualification_');
+      addTearDown(() => dir.deleteSync(recursive: true));
+      final results = File.fromUri(dir.uri.resolve('results.md'))
+        ..writeAsStringSync(_toolFail('windows', observed));
+      final source = File.fromUri(dir.uri.resolve('qualified_adapters.dart'))
+        ..writeAsStringSync(_source(failures: _failure(text)));
+      final out = StringBuffer();
+      expect(
+        runQualificationCheck([results.path, source.path], out: out),
+        0,
+      );
+      expect(
+        out.toString(),
+        contains(
+          'TOOL DELIVERY FAILURE RECORDED: $_name $_version windows: $text',
+        ),
+      );
+      expect(out.toString(), contains('QUALIFIED'));
+      expect(out.toString(), isNot(contains('FAILED')));
+    });
+
+    test('accepted failure with allowed unproven remains ACCEPTED', () {
+      final report = checkQualification(
+        _toolFail('windows', observed, others: 'unproven'),
+        _source(failures: _failure(text)),
+      );
+      // Windows items other than the tool call are pass; the other OSes'
+      // tool call rows are unproven, which is allowed there.
+      expect(report.failures, isEmpty);
+      expect(report.verdict, 'ACCEPTED');
+    });
+
+    test('unlisted fail fails', () {
+      for (final failures in ['', _failure(text, version: '9.9.9')]) {
+        _fails(
+          checkQualification(
+            _toolFail('windows', observed),
+            _source(failures: failures),
+          ),
+          [_name, _version, 'windows', _toolItem],
+        );
+      }
+    });
+
+    test('list entry with pass or different text fails', () {
+      // pass
+      _fails(
+        checkQualification(_results(), _source(failures: _failure(text))),
+        [_name, _version, 'windows'],
+      );
+      // unproven everywhere it is allowed
+      _fails(
+        checkQualification(
+          _results(
+            result: (o, i) =>
+                i == _toolItem && o != 'windows' ? 'unproven' : 'pass',
+          ),
+          _source(failures: _failure(text)),
+        ),
+        [_name, _version, 'windows'],
+      );
+      // missing evidence
+      _fails(
+        checkQualification(
+          _results(omit: (o, i) => i == _toolItem),
+          _source(failures: _failure(text)),
+        ),
+        [_name, _version, 'windows', _toolItem],
+      );
+      // different text
+      _fails(
+        checkQualification(
+          _toolFail('windows', observed),
+          _source(failures: _failure('some other failure')),
+        ),
+        [_name, _version, 'windows', _toolItem],
+      );
+    });
+
+    test('toolDeliveryFailures literal accepts spaces and an empty list', () {
+      expect(
+        checkQualification(_results(), _source(failures: '')).failures,
+        isEmpty,
+      );
+      expect(
+        checkQualification(
+          _toolFail('windows', observed),
+          _source(failures: '// recorded\n${_failure(text)}\n'),
+        ).verdict,
+        'QUALIFIED',
+      );
+    });
+
+    test('missing toolDeliveryFailures literal fails the checker', () {
+      _fails(checkQualification(_results(), _source(failures: null)), [
+        'source',
+        'toolDeliveryFailures',
+      ]);
+    });
+
+    test('unparseable toolDeliveryFailures literal fails the checker', () {
+      for (final failures in [
+        "('$_name', '$_version'),",
+        "('$_name', '$_version', 'it\\'s'),",
+        "('$_name', '$_version', 'it's'),",
+        "('$_name', '$_version', 'a\\\\b'),",
+        "('$_name', '$_version', 'two\nlines'),",
+        "('$_name', '$_version', ''),",
+        "('$_name', '$_version', 'a' + 'b'),",
+        _failure(text) + _failure(text),
+      ]) {
+        _fails(
+          checkQualification(_results(), _source(failures: failures)),
+          ['source', 'toolDeliveryFailures'],
+        );
+      }
+      for (final source in [
+        'const qualifiedAdapters = <(String, String, List<String>)>[];\n'
+            'const toolDeliveryFailures = someList;\n',
+        'const qualifiedAdapters = <(String, String, List<String>)>[];\n'
+            'const toolDeliveryFailures = <(String, String, String)>[];\n'
+            'const extra = 1;\n',
+      ]) {
+        _fails(checkQualification(_results(), source), [
+          'source',
+          'toolDeliveryFailures',
+        ]);
       }
     });
   });
