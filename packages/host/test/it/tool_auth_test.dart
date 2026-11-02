@@ -338,6 +338,9 @@ void main() {
           // permission request's title and preview, then fails the turn.
           'prompt': [
             {'update': textUpdate('chunk secret=<kumiko-secret>')},
+            // Streamed in two chunks: neither holds the whole secret.
+            {'update': textUpdate('split <kumiko-secret-head>')},
+            {'update': textUpdate('<kumiko-secret-tail> end')},
             {
               'permission': {
                 'toolCall': {
@@ -397,6 +400,13 @@ void main() {
       final ended = await a.wait(Method.agentTurnEnded);
       expect(ended['nativeMessage'], 'prompt failed, secret=<redacted>');
       expect(ended['message'], 'prompt failed, secret=<redacted>');
+      final streamed = [
+        for (final e in a.events)
+          if (e['kind'] == 'agentText' && e['text'] is String)
+            e['text']! as String,
+      ].join();
+      expect(streamed, contains('split <redacted> end'));
+      expect(streamed, isNot(contains(secret)));
       await a.close();
 
       final surfaces = <String, String>{

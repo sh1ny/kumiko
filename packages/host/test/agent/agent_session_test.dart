@@ -690,4 +690,87 @@ void main() {
     expect(ends, hasLength(1));
     expect(s.state, AgentState.idle);
   });
+
+  group('secret split across streamed text chunks', () {
+    const secret = 'abcdefghijklmnopqrstuvwxyz0123456789ABCDEFG';
+    setUp(() {
+      s.dispose();
+      s = AgentSession(
+        sessionId: 'host',
+        client: p.client,
+        onState: states.add,
+        onPermissionRequested: requests.add,
+        onPermissionResolved: resolved.add,
+        onStopResult: stops.add,
+        onTurnEnded: ends.add,
+        redact: (text) => text.replaceAll(secret, '<redacted>'),
+        secrets: () => const [secret],
+        enqueueEvents: (lines) {
+          final decoder = AgentEventDecoder();
+          for (final line in lines) {
+            events.addAll(decoder.add(line));
+          }
+          decoder.close();
+        },
+      );
+      s.ready(nativeSessionId: 'native');
+    });
+    void chunk(String kind, String text) => p.update({
+      'sessionUpdate': kind,
+      'content': {'type': 'text', 'text': text},
+    });
+    List<(AgentEventKind, String?)> streamed() => [
+      for (final e in events)
+        if (e.kind != AgentEventKind.user) (e.kind, e.text),
+    ];
+
+    test('is redacted once joined', () async {
+      s.acceptPrompt('hello');
+      chunk('agent_message_chunk', 'key ${secret.substring(0, 20)}');
+      chunk('agent_message_chunk', '${secret.substring(20)} done');
+      await finish('end_turn');
+      final text = streamed()
+          .where((e) => e.$1 == AgentEventKind.agentText)
+          .map((e) => e.$2)
+          .join();
+      expect(text, 'key <redacted> done');
+    });
+
+    test('a short held tail is released as text before the turn ends',
+        () async {
+      s.acceptPrompt('hello');
+      chunk('agent_message_chunk', 'see abc');
+      await finish('end_turn');
+      expect(streamed(), [
+        (AgentEventKind.agentText, 'see '),
+        (AgentEventKind.agentText, 'abc'),
+        (AgentEventKind.turn, null),
+      ]);
+    });
+
+    test('a long held tail at turn end is a cut-off secret and redacted',
+        () async {
+      s.acceptPrompt('hello');
+      chunk('agent_message_chunk', 'key ${secret.substring(0, 30)}');
+      await finish('end_turn');
+      expect(streamed(), [
+        (AgentEventKind.agentText, 'key '),
+        (AgentEventKind.agentText, '<redacted>'),
+        (AgentEventKind.turn, null),
+      ]);
+    });
+
+    test('another update releases the held tail first, in order', () async {
+      s.acceptPrompt('hello');
+      chunk('agent_message_chunk', 'hi ab');
+      chunk('agent_thought_chunk', 'think');
+      await finish('end_turn');
+      expect(streamed(), [
+        (AgentEventKind.agentText, 'hi '),
+        (AgentEventKind.agentText, 'ab'),
+        (AgentEventKind.thought, 'think'),
+        (AgentEventKind.turn, null),
+      ]);
+    });
+  });
 }

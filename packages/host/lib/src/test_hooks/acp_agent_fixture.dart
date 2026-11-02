@@ -257,9 +257,19 @@ Future<int> runAcpAgentScript({
   // Scripted adapter output may echo the Kumiko secret, as a careless
   // adapter might: <kumiko-secret> in any string of an error, update or
   // permission request becomes the mcpServers entry's secret.
+  // <kumiko-secret-head> and <kumiko-secret-tail> are its first 20
+  // characters and the rest, to split it across streamed chunks.
   Object? secretIn(Object? value) => switch (value) {
-    final String s when s.contains('<kumiko-secret>') =>
-      s.replaceAll('<kumiko-secret>', kumikoSecret(mcpServers)),
+    final String s when s.contains('<kumiko-secret') => s
+        .replaceAll(
+          '<kumiko-secret-head>',
+          kumikoSecret(mcpServers).substring(0, 20),
+        )
+        .replaceAll(
+          '<kumiko-secret-tail>',
+          kumikoSecret(mcpServers).substring(20),
+        )
+        .replaceAll('<kumiko-secret>', kumikoSecret(mcpServers)),
     final Map<Object?, Object?> m => <String, Object?>{
       for (final e in m.entries) e.key! as String: secretIn(e.value),
     },

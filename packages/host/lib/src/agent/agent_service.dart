@@ -330,15 +330,18 @@ class AgentService {
   /// revocations may meanwhile have evicted it from the recent ones.
   String _redact(String text, [ToolGrant? own]) {
     var out = text;
-    for (final secret in [
-      ?own?.secret,
-      for (final g in _grants) g.secret,
-      ..._revokedSecrets,
-    ]) {
+    for (final secret in _secretsFor(own)) {
       out = out.replaceAll(secret, '<redacted>');
     }
     return out;
   }
+
+  /// Every secret [_redact] removes: the run's own, live and kept revoked.
+  List<String> _secretsFor(ToolGrant? own) => [
+    ?own?.secret,
+    for (final g in _grants) g.secret,
+    ..._revokedSecrets,
+  ];
 
   /// Read only on demand by the test extension; no transcript or new counters.
   Json snapshot() => {
@@ -886,6 +889,7 @@ class AgentService {
       tools: _startTools(grant, record.adapter),
       toolsAuthenticated: grant?.everAuthenticated ?? false,
       redact: (text) => _redact(text, grant),
+      secrets: () => _secretsFor(grant),
       enqueueEvents: a.relay.enqueue,
       onState: (p) {
         _notify(a, Method.agentState, p.toJson());

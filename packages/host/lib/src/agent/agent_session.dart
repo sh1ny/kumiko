@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:math';
 import 'dart:typed_data';
 
 import 'package:host_protocol/host_protocol.dart';
@@ -43,10 +44,12 @@ class AgentSession {
     AgentTools? tools,
     bool toolsAuthenticated = false,
     String Function(String)? redact,
+    Iterable<String> Function()? secrets,
     this.claims,
     this._nativeSessionId,
   }) : _deadlineFactory = deadlineFactory ?? _TimerDeadline.new,
        _redact = redact ?? _unredacted,
+       _secrets = secrets ?? _noSecrets,
        // ignore: prefer_initializing_formals
        _tools = tools,
        // ignore: prefer_initializing_formals
@@ -64,6 +67,13 @@ class AgentSession {
   /// (transcript notices, turn-end and stop messages).
   final String Function(String) _redact;
   static String _unredacted(String text) => text;
+
+  /// The secrets [_redact] removes, so a text chunk ending in the start of
+  /// one can be held until the next chunk shows whether it continues.
+  final Iterable<String> Function() _secrets;
+  static Iterable<String> _noSecrets() => const [];
+  String? _heldKind;
+  String _held = '';
   final AdapterClaims? claims;
   final void Function(AgentStateParams) onState;
   final void Function(AgentPermissionRequestedParams) onPermissionRequested;
@@ -157,8 +167,13 @@ class AgentSession {
   /// on the same ordered, bounded event path before transitioning to idle.
   Future<void> replayStarted() =>
       _enqueue(encodeAgentEvent(AgentEvent.replay(AgentReplayPhase.start)));
-  Future<void> replayEnded() =>
-      _enqueue(encodeAgentEvent(AgentEvent.replay(AgentReplayPhase.end)));
+  Future<void> replayEnded() {
+    final held = _flushHeld();
+    if (held.isNotEmpty) _enqueue(held).ignore();
+    return _enqueue(
+      encodeAgentEvent(AgentEvent.replay(AgentReplayPhase.end)),
+    );
+  }
   Future<void> notice(String text) =>
       _enqueue(encodeAgentEvent(AgentEvent.notice(text)));
 
@@ -194,7 +209,74 @@ class AgentSession {
     if (params['sessionId'] != _nativeSessionId) return null;
     final update = params['update'];
     if (update is! Json) throw AcpProtocolException('invalid session/update');
-    return normalizeAcpUpdate(_redactJson(update)! as Json);
+    final kind = update['sessionUpdate'];
+    final content = update['content'];
+    if (_textChunkKinds.contains(kind) &&
+        content is Json &&
+        content['type'] == 'text' &&
+        content['text'] is String) {
+      // A secret streamed across chunks is redacted once joined: carry the
+      // held tail of the previous chunk of this kind, and hold back any tail
+      // of this one that could be the start of a secret.
+      final continues = kind == _heldKind;
+      final flushed = continues ? const <Uint8List>[] : _flushHeld();
+      final carry = _redact(
+        '${continues ? _held : ''}${content['text']! as String}',
+      );
+      final hold = _secretPrefixAtEnd(carry);
+      _held = carry.substring(carry.length - hold);
+      _heldKind = hold == 0 ? null : kind! as String;
+      final emit = carry.substring(0, carry.length - hold);
+      return [
+        ...flushed,
+        if (emit.isNotEmpty)
+          ...normalizeAcpUpdate(
+            _redactJson({
+              ...update,
+              'content': {...content, 'text': emit},
+            })! as Json,
+          ),
+      ];
+    }
+    return [
+      ..._flushHeld(),
+      ...normalizeAcpUpdate(_redactJson(update)! as Json),
+    ];
+  }
+
+  static const _textChunkKinds = {
+    'user_message_chunk',
+    'agent_message_chunk',
+    'agent_thought_chunk',
+  };
+
+  /// Length of the longest tail of [text] that is a proper prefix of a
+  /// secret.
+  int _secretPrefixAtEnd(String text) {
+    var best = 0;
+    for (final secret in _secrets()) {
+      for (var k = min(secret.length - 1, text.length); k > best; k--) {
+        if (text.endsWith(secret.substring(0, k))) {
+          best = k;
+          break;
+        }
+      }
+    }
+    return best;
+  }
+
+  /// Releases a held chunk tail as its own chunk. A tail of 8 or more
+  /// characters is a secret cut short, not text, and is redacted.
+  List<Uint8List> _flushHeld() {
+    final kind = _heldKind;
+    if (kind == null) return const [];
+    final text = _held.length >= 8 ? '<redacted>' : _held;
+    _heldKind = null;
+    _held = '';
+    return normalizeAcpUpdate({
+      'sessionUpdate': kind,
+      'content': {'type': 'text', 'text': text},
+    }).toList();
   }
 
   /// [_redact] applied to every string in adapter JSON before any of it
@@ -232,6 +314,8 @@ class AgentSession {
       fail(error);
       return;
     }
+    final held = _flushHeld();
+    if (held.isNotEmpty) await _enqueue(held);
     await _enqueue(
       encodeAgentEvent(
         result != null
