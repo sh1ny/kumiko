@@ -339,6 +339,31 @@ void main() {
       },
     );
 
+    test('a request ID already in flight is rejected, not replaced', () async {
+      c.send(callReq(1, 'kumiko_session_info', <String, Object?>{}));
+      for (var i = 0; i < 10; i++) {
+        c.send(callReq(1, 'kumiko_session_info', <String, Object?>{}));
+        final r = await c.next();
+        expect(r['id'], 1);
+        expect((r['error'] as Map)['code'], -32600);
+      }
+      // The first call still holds its slot: seven more fit, the ninth not.
+      for (var i = 2; i <= 8; i++) {
+        c.send(callReq(i, 'kumiko_session_info', <String, Object?>{}));
+      }
+      c.send(callReq(9, 'kumiko_session_info', <String, Object?>{}));
+      final r = await c.next();
+      expect(r['id'], 9);
+      expect((r['error'] as Map)['message'], 'too many concurrent calls');
+      grant
+        ..setAdapter('a', '1')
+        ..bind('s');
+      final ids = [for (var i = 0; i < 8; i++) (await c.next())['id']];
+      expect(ids.toSet(), {1, 2, 3, 4, 5, 6, 7, 8});
+      await c.settle();
+      expect(c.unread, isEmpty);
+    });
+
     test(
       'cancelled calls waiting on the binding still count until they settle',
       () async {

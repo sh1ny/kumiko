@@ -517,12 +517,6 @@ QualificationReport checkQualification(
     final rows = {
       for (final os in _oses) os: evidence[listed.key]?[os]?[toolCallItem],
     };
-    final observedFail = rows.values.any(
-      (row) =>
-          row != null &&
-          row.result == 'fail' &&
-          _observedText(row.notes) == listed.value,
-    );
     for (final os in _oses) {
       final row = rows[os];
       final where = _where(listed.key, os, toolCallItem);
@@ -533,14 +527,10 @@ QualificationReport checkQualification(
         failures.add(
           '$where: observed text differs from the toolDeliveryFailures entry',
         );
-      } else if (row != null && row.result == 'pass') {
+      } else if (row == null || row.result != 'fail') {
         // Checked per OS: the entry reports the version unavailable on every
-        // OS, so a pass anywhere contradicts it.
-        failures.add(
-          '$where: toolDeliveryFailures lists this version but the evidence is '
-          'pass',
-        );
-      } else if (!observedFail && (row == null || row.result != 'fail')) {
+        // OS, so each OS needs the observed failure; pass, unproven or
+        // missing evidence anywhere contradicts it.
         failures.add(
           '$where: toolDeliveryFailures lists this version but the evidence is '
           '${row == null ? 'missing' : row.result.isEmpty ? 'blank' : row.result}',

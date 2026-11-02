@@ -497,15 +497,35 @@ void main() {
       expect(out.toString(), isNot(contains('FAILED')));
     });
 
-    test('accepted failure with allowed unproven remains ACCEPTED', () {
-      final report = checkQualification(
-        _toolFail('windows', observed, others: 'unproven'),
-        _source(failures: _failure(text)),
-      );
-      // Windows items other than the tool call are pass; the other OSes'
-      // tool call rows are unproven, which is allowed there.
-      expect(report.failures, isEmpty);
-      expect(report.verdict, 'ACCEPTED');
+    test('listed failure with unproven or missing on another OS fails', () {
+      // A failure-list entry needs the observed failure on every OS: unproven
+      // or missing evidence elsewhere fails, even though unproven is
+      // otherwise allowed for the tool call on Linux and macOS.
+      for (final os in ['linux', 'macos']) {
+        _fails(
+          checkQualification(
+            _results(
+              result: (o, i) =>
+                  i == _toolItem ? (o == os ? 'unproven' : 'fail') : 'pass',
+              notes: (o, i) =>
+                  i == _toolItem && o != os ? observed : 'synthetic fixture',
+            ),
+            _source(failures: _failure(text)),
+          ),
+          [_name, _version, os, _toolItem, 'unproven'],
+        );
+        _fails(
+          checkQualification(
+            _results(
+              result: (o, i) => i == _toolItem ? 'fail' : 'pass',
+              notes: (o, i) => i == _toolItem ? observed : 'synthetic fixture',
+              omit: (o, i) => i == _toolItem && o == os,
+            ),
+            _source(failures: _failure(text)),
+          ),
+          [_name, _version, os, _toolItem, 'missing'],
+        );
+      }
     });
 
     test('unlisted fail fails', () {

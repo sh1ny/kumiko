@@ -526,6 +526,11 @@ class ToolService {
       c.send(_error(id, -32602, 'invalid arguments: $invalid'));
       return;
     }
+    if (c.inFlight.containsKey(id)) {
+      // Replacing the entry would orphan the running call and its slot.
+      c.send(_error(id, -32600, 'invalid request: request id already in use'));
+      return;
+    }
     final call = _Call();
     c.inFlight[id] = call;
     unawaited(_runCall(c, grant, id, call));

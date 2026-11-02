@@ -717,13 +717,18 @@ void main() {
 
     test('failure observed text is recorded in Notes and accepted by the checker', () {
       const text = 'tools status notStarted; adapter did not start the entry';
-      final rows = observations()
-        ..[toolCallQualificationItem] = QualificationObservation.confirmed(
-          passed: false,
-          confirmed: true,
-          observed: text,
-        );
-      final recorded = merge('# Evidence\n', 'windows', rows);
+      Map<String, QualificationObservation> rows(String os) =>
+          observations(os: os)
+            ..[toolCallQualificationItem] = QualificationObservation.confirmed(
+              passed: false,
+              confirmed: true,
+              observed: text,
+            );
+      // A listed failure needs the observation on every OS (design D8).
+      var recorded = '# Evidence\n';
+      for (final os in ['windows', 'linux', 'macos']) {
+        recorded = merge(recorded, os, rows(os));
+      }
       expect(recorded, contains('observed: "$text"'));
       final report = checkQualification(
         recorded,
@@ -733,7 +738,7 @@ void main() {
         "('observed-adapter', '0.99.1', '$text'),];",
       );
       expect(report.failures, isEmpty);
-      expect(report.verdict, 'ACCEPTED');
+      expect(report.verdict, 'QUALIFIED');
     });
 
     test('a failed tool call without observed text, or with unsafe text, cannot be recorded', () {
