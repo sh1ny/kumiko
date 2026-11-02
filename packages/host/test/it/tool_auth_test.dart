@@ -334,11 +334,35 @@ void main() {
         work,
         script: {
           'reportLaunch': true,
-          'errors': {
-            'session/prompt': {
-              'code': -32000,
-              'message': 'prompt failed, secret=<kumiko-secret>',
+          // The adapter echoes the secret in a message chunk and in a
+          // permission request's title and preview, then fails the turn.
+          'prompt': [
+            {'update': textUpdate('chunk secret=<kumiko-secret>')},
+            {
+              'permission': {
+                'toolCall': {
+                  'toolCallId': 'tool-<kumiko-secret>',
+                  'title': 'Run env: <kumiko-secret>',
+                  'content': [
+                    {
+                      'type': 'content',
+                      'content': {
+                        'type': 'text',
+                        'text': 'KUMIKO_TOOL_SECRET=<kumiko-secret>',
+                      },
+                    },
+                  ],
+                },
+                'options': [
+                  {'optionId': 'yes', 'name': 'Allow once', 'kind': 'allow_once'},
+                ],
+              },
+              'waitPermission': false,
             },
+          ],
+          'promptErrorAfterActions': {
+            'code': -32000,
+            'message': 'prompt failed, secret=<kumiko-secret>',
           },
         },
       );
@@ -347,6 +371,9 @@ void main() {
       await a.attach();
       final secret = secretIn(report);
       await a.prompt();
+      final asked = await a.wait(Method.agentPermissionRequested);
+      expect(asked['title'], 'Run env: <redacted>');
+      expect(asked['preview'], 'KUMIKO_TOOL_SECRET=<redacted>');
       final ended = await a.wait(Method.agentTurnEnded);
       expect(ended['nativeMessage'], 'prompt failed, secret=<redacted>');
       expect(ended['message'], 'prompt failed, secret=<redacted>');

@@ -254,15 +254,19 @@ Future<int> runAcpAgentScript({
     });
   }
 
-  // A scripted error message may echo the Kumiko secret, as a careless
-  // adapter might: <kumiko-secret> becomes the mcpServers entry's secret.
-  Json withSecret(Json error) => switch (error['message']) {
-    final String m when m.contains('<kumiko-secret>') => {
-      ...error,
-      'message': m.replaceAll('<kumiko-secret>', kumikoSecret(mcpServers)),
+  // Scripted adapter output may echo the Kumiko secret, as a careless
+  // adapter might: <kumiko-secret> in any string of an error, update or
+  // permission request becomes the mcpServers entry's secret.
+  Object? secretIn(Object? value) => switch (value) {
+    final String s when s.contains('<kumiko-secret>') =>
+      s.replaceAll('<kumiko-secret>', kumikoSecret(mcpServers)),
+    final Map<Object?, Object?> m => <String, Object?>{
+      for (final e in m.entries) e.key! as String: secretIn(e.value),
     },
-    _ => error,
+    final List<Object?> l => [for (final v in l) secretIn(v)],
+    _ => value,
   };
+  Json withSecret(Json error) => secretIn(error)! as Json;
   Json launchReport() => {
     'argv': args,
     'cwd': cwd,
@@ -277,7 +281,9 @@ Future<int> runAcpAgentScript({
     for (final value in source) {
       if (ended) return null;
       final action = value as Json;
-      if (action['update'] case final Json value) await update(value);
+      if (action['update'] case final Json value) {
+        await update(withSecret(value));
+      }
       if (action['gatedUpdate'] case final Json gate) {
         await gatedUpdate(gate);
       }
@@ -327,7 +333,7 @@ Future<int> runAcpAgentScript({
           'jsonrpc': '2.0',
           'id': id,
           'method': 'session/request_permission',
-          'params': {'sessionId': native, ...permission},
+          'params': {'sessionId': native, ...withSecret(permission)},
         });
         if (action['waitPermission'] != false) {
           await response.future;
@@ -468,6 +474,11 @@ Future<int> runAcpAgentScript({
         report({'prompt': params['prompt'], 'sessionId': native});
         if (kumikoTool?.when == 'prompt') await kumikoTool!.run(mcpServers);
         final reason = await actions(script['prompt']);
+        if (script['promptErrorAfterActions'] case final Json error) {
+          await send({'jsonrpc': '2.0', 'id': id, 'error': withSecret(error)});
+          promptId = null;
+          return;
+        }
         if (script['holdPrompt'] == true && !cancelledTurn) {
           await cancelled!.future;
         }

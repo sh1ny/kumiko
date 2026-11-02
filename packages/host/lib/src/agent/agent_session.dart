@@ -194,8 +194,19 @@ class AgentSession {
     if (params['sessionId'] != _nativeSessionId) return null;
     final update = params['update'];
     if (update is! Json) throw AcpProtocolException('invalid session/update');
-    return normalizeAcpUpdate(update);
+    return normalizeAcpUpdate(_redactJson(update)! as Json);
   }
+
+  /// [_redact] applied to every string in adapter JSON before any of it
+  /// reaches the transcript or the desktop.
+  Object? _redactJson(Object? value) => switch (value) {
+    final String s => _redact(s),
+    final Map<Object?, Object?> m => <String, Object?>{
+      for (final e in m.entries) e.key! as String: _redactJson(e.value),
+    },
+    final List<Object?> l => [for (final v in l) _redactJson(v)],
+    _ => value,
+  };
 
   Future<void> _consume(Object value) => _enqueue(value as Iterable<Uint8List>);
   Future<void> _enqueue(Iterable<Uint8List> lines) {
@@ -320,7 +331,7 @@ class AgentSession {
         ),
       );
     }
-    final tool = params['toolCall'];
+    final tool = _redactJson(params['toolCall']);
     final options = params['options'];
     if (tool is! Json || options is! List) {
       throw AcpProtocolException('invalid permission request');
@@ -337,8 +348,13 @@ class AgentSession {
           'Permission requested',
       preview: _permissionPreview(tool),
       options: [
+        // Labels are redacted; the option id goes back to the adapter as is.
         for (final option in options)
-          if (option is Json) AgentPermissionOption.fromJson(option),
+          if (option is Json)
+            AgentPermissionOption.fromJson({
+              ...(_redactJson(option)! as Json),
+              'optionId': ?option['optionId'],
+            }),
       ],
     );
     _permissions[id] = _Permission(
