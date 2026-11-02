@@ -210,6 +210,58 @@ void main() {
       );
     });
 
+    uiTest('stale tools status ignored by sequence', (tester) async {
+      final host = agentHost();
+      final rig = await pumpRig(tester, host);
+      await start(rig, tester);
+      final id = session(rig);
+      final pane = chat(rig).id;
+      host.agentState(
+        id,
+        AgentState.idle,
+        6,
+        const AgentTools(AgentToolsStatus.connected),
+      );
+      await tester.pump();
+      expect(find.text('Kumiko tools: connected'), findsOneWidget);
+      // An older message, including its tools status, is ignored whole.
+      host.agentState(
+        id,
+        AgentState.running,
+        5,
+        const AgentTools(AgentToolsStatus.notStarted),
+      );
+      await tester.pump();
+      expect(find.text('Kumiko tools: connected'), findsOneWidget);
+      expect(find.byKey(Key('agent-tools-$pane')), findsOneWidget);
+      expect(agents(rig).linkOf(pane)!.statusLabel, 'Idle');
+      // A repeat of the current sequence is stale too.
+      host.agentState(
+        id,
+        AgentState.idle,
+        6,
+        const AgentTools(AgentToolsStatus.notStarted),
+      );
+      await tester.pump();
+      expect(find.text('Kumiko tools: connected'), findsOneWidget);
+    });
+
+    uiTest('start and Continue results seed the tools status', (tester) async {
+      final host = agentHost();
+      host.agentStartAnswers.add(
+        const AgentStartResult(
+          sessionId: 'agent-x',
+          eventChannel: 101,
+          adapter: AgentAdapter(name: 'scripted-acp', version: 'test-only'),
+          capabilities: [],
+          tools: AgentTools(AgentToolsStatus.notYetUsed),
+        ),
+      );
+      final rig = await pumpRig(tester, host);
+      await start(rig, tester);
+      expect(find.text('Kumiko tools: not yet used'), findsOneWidget);
+    });
+
     uiTest(
       '40 scripted chunks arrive as ordered agentText events; final text equals concatenation',
       (tester) async {

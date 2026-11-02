@@ -1768,28 +1768,64 @@ int _eventChannel(Json json) {
   return id;
 }
 
+/// Kumiko tools status of one live session run. `unknown` is only ever a
+/// decode result for a status string this build does not recognise.
+enum AgentToolsStatus { notYetUsed, connected, notStarted, unavailable, unknown }
+
+/// Additive `tools: {status, reason?}` object. Decoding never throws: a
+/// missing, malformed or unrecognised value must not break agent control.
+class AgentTools {
+  const AgentTools(this.status, {this.reason});
+  final AgentToolsStatus status;
+  final String? reason;
+
+  static AgentTools? fromJsonField(Json json) {
+    final Object? raw = json['tools'];
+    if (raw == null) return null;
+    if (raw is! Map<String, Object?>) {
+      return const AgentTools(AgentToolsStatus.unknown);
+    }
+    final name = raw['status'];
+    final reason = raw['reason'];
+    return AgentTools(
+      AgentToolsStatus.values
+              .where((s) => s != AgentToolsStatus.unknown)
+              .where((s) => s.name == name)
+              .firstOrNull ??
+          AgentToolsStatus.unknown,
+      reason: reason is String ? reason : null,
+    );
+  }
+
+  Json toJson() => {'status': status.name, 'reason': ?reason};
+}
+
 class AgentStartResult {
   const AgentStartResult({
     required this.sessionId,
     required this.eventChannel,
     required this.adapter,
     required this.capabilities,
+    this.tools,
   });
   factory AgentStartResult.fromJson(Json json) => AgentStartResult(
     sessionId: _req<String>(json, 'sessionId'),
     eventChannel: _eventChannel(json),
     adapter: AgentAdapter.fromJson(_req<Json>(json, 'adapter')),
     capabilities: _list<String>(json, 'capabilities'),
+    tools: AgentTools.fromJsonField(json),
   );
   final String sessionId;
   final int eventChannel;
   final AgentAdapter adapter;
   final List<String> capabilities;
+  final AgentTools? tools;
   Json toJson() => {
     'sessionId': sessionId,
     'eventChannel': eventChannel,
     'adapter': adapter.toJson(),
     'capabilities': capabilities,
+    'tools': ?tools?.toJson(),
   };
 }
 
@@ -1801,22 +1837,26 @@ class AgentContinueResult {
     required this.adapter,
     required this.capabilities,
     required this.mode,
+    this.tools,
   });
   factory AgentContinueResult.fromJson(Json json) => AgentContinueResult(
     eventChannel: _eventChannel(json),
     adapter: AgentAdapter.fromJson(_req<Json>(json, 'adapter')),
     capabilities: _list<String>(json, 'capabilities'),
     mode: _enum(AgentContinueMode.values, json, 'mode'),
+    tools: AgentTools.fromJsonField(json),
   );
   final int eventChannel;
   final AgentAdapter adapter;
   final List<String> capabilities;
   final AgentContinueMode mode;
+  final AgentTools? tools;
   Json toJson() => {
     'eventChannel': eventChannel,
     'adapter': adapter.toJson(),
     'capabilities': capabilities,
     'mode': mode.name,
+    'tools': ?tools?.toJson(),
   };
 }
 
@@ -1936,16 +1976,24 @@ class AgentStateParams {
     required this.sessionId,
     required this.seq,
     required this.state,
+    this.tools,
   });
   factory AgentStateParams.fromJson(Json json) => AgentStateParams(
     sessionId: _req<String>(json, 'sessionId'),
     seq: _req<int>(json, 'seq'),
     state: _enum(AgentState.values, json, 'state'),
+    tools: AgentTools.fromJsonField(json),
   );
   final String sessionId;
   final int seq;
   final AgentState state;
-  Json toJson() => {'sessionId': sessionId, 'seq': seq, 'state': state.name};
+  final AgentTools? tools;
+  Json toJson() => {
+    'sessionId': sessionId,
+    'seq': seq,
+    'state': state.name,
+    'tools': ?tools?.toJson(),
+  };
 }
 
 class AgentPermissionOption {

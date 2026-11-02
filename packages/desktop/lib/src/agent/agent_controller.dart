@@ -63,6 +63,32 @@ class AgentLink {
 
   AgentLinkPhase phase = AgentLinkPhase.ended;
   AgentState state = AgentState.ended;
+
+  /// Latest Kumiko tools status reported by the host for the live run, ordered
+  /// with [seq]. Null until reported, and after host loss or a fresh restore.
+  AgentTools? tools;
+  String? get toolsLabel {
+    final t = tools;
+    if (t == null || hostLost || saved || phase == AgentLinkPhase.ended) {
+      return null;
+    }
+    return switch (t.status) {
+      AgentToolsStatus.notYetUsed => 'Kumiko tools: not yet used',
+      AgentToolsStatus.connected => 'Kumiko tools: connected',
+      AgentToolsStatus.notStarted => 'Kumiko tools: not started by the adapter',
+      // The host sends a recorded adapter-version failure as
+      // `for <adapter> <version>: <failure>` (spec: *Kumiko tools unavailable
+      // for <adapter> <version>: <recorded failure>*), and an endpoint failure
+      // as `endpoint-unavailable: <cause>`.
+      AgentToolsStatus.unavailable => switch (t.reason) {
+        null || '' => 'Kumiko tools unavailable',
+        final r when r.startsWith('for ') => 'Kumiko tools unavailable $r',
+        final r => 'Kumiko tools unavailable: $r',
+      },
+      AgentToolsStatus.unknown => null,
+    };
+  }
+
   int seq = -1;
   bool connected = false;
   bool known = false;
@@ -206,6 +232,8 @@ class AgentController extends ChangeNotifier implements ViewCloser {
       }
       link.seq = event.seq;
       link.state = event.state;
+      // Tools status rides the same sequence; a message without it changes nothing.
+      if (event.tools != null) link.tools = event.tools;
       _changed();
     });
     listen(host.agentPermissionRequests, (event) {
@@ -359,6 +387,7 @@ class AgentController extends ChangeNotifier implements ViewCloser {
       link.connected = true;
       link.hostLost = false;
       link.seq = -1;
+      link.tools = null;
       link.closeRequested = false;
       link.state = AgentState.ended;
       link.known = false;
@@ -449,6 +478,7 @@ class AgentController extends ChangeNotifier implements ViewCloser {
       link.known = true;
       link.adapter = result.adapter;
       link.capabilities = result.capabilities;
+      link.tools = result.tools;
       final earlyFailure = _earlyCloseFailures.remove(result.sessionId);
       if (earlyFailure != null) {
         _bySession[result.sessionId] = link;
@@ -499,6 +529,7 @@ class AgentController extends ChangeNotifier implements ViewCloser {
     link.transcript.clear();
     link._pendingPermissions.clear();
     link.stopResult = null;
+    link.tools = null;
     final generation = _generation;
     _changed();
     try {
@@ -511,6 +542,7 @@ class AgentController extends ChangeNotifier implements ViewCloser {
       }
       link.adapter = result.adapter;
       link.capabilities = result.capabilities;
+      link.tools = result.tools;
       _bind(host, link, result.eventChannel, generation);
     } on RpcException catch (e) {
       if (!_current(host, generation) || !_owns(link)) return;

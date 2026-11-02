@@ -43,8 +43,8 @@
 | agent-runtimes → Kumiko tool delivery is qualified per adapter version | Evidence failure without a list entry | tool/test/check_qualification_test.dart | unlisted fail fails | red |
 | agent-runtimes → Kumiko tool delivery is qualified per adapter version | List entry contradicts the evidence | tool/test/check_qualification_test.dart | list entry with pass or different text fails | red |
 | desktop-host-protocol → Agent control carries the Kumiko tools status | Status change reaches the desktop | packages/host/test/it/agent_tools_test.dart | first successful call publishes state seq+1 with tools connected | red |
-| desktop-host-protocol → Agent control carries the Kumiko tools status | Stale status message | packages/desktop/test/agent_test.dart | stale tools status ignored by sequence | red |
-| desktop-host-protocol → Agent control carries the Kumiko tools status | Older desktop | packages/host_protocol/test/agent_messages_test.dart | state without or with an unknown tools field round-trips | red |
+| desktop-host-protocol → Agent control carries the Kumiko tools status | Stale status message | packages/desktop/test/agent_test.dart | stale tools status ignored by sequence | green |
+| desktop-host-protocol → Agent control carries the Kumiko tools status | Older desktop | packages/host_protocol/test/agent_messages_test.dart | state without or with an unknown tools field round-trips | green |
 | desktop-host-protocol → Tool traffic never uses the desktop connection | Tool call under saturated output | packages/host/test/it/agent_qualification_test.dart | tool call answered within the control-latency bound under saturation | red |
 | desktop-host-protocol → Tool traffic never uses the desktop connection | Busy tool clients do not delay Stop | packages/host/test/it/agent_qualification_test.dart | Stop acknowledged within bound while a client holds max in-flight calls | red |
 
@@ -76,8 +76,8 @@
 
 ## 6. Protocol and desktop
 
-- [ ] 6.1 Write failing `host_protocol` tests in `agent_messages_test.dart`: an optional `tools {status, reason?}` on `AgentStateParams`, `AgentStartResult` and the Continue result, round-tripping with the field absent or present, an unknown status tolerated as unknown, and an older-desktop decode. Write failing desktop tests in `agent_test.dart` and `workbench_agent_status_test.dart`: the pane shows each of the four status texts, the *unavailable* reason, and ignores a stale sequence. Verify: the tests fail.
-- [ ] 6.2 Implement the additive protocol fields and the chat pane status line in `agent_pane_view.dart` and `agent_controller.dart`. Verify: 6.1 passes along with `flutter test` in `packages/desktop`; flip rows green.
+- [x] 6.1 Write failing `host_protocol` tests in `agent_messages_test.dart`: an optional `tools {status, reason?}` on `AgentStateParams`, `AgentStartResult` and the Continue result, round-tripping with the field absent or present, an unknown status tolerated as unknown, and an older-desktop decode. Write failing desktop tests in `agent_test.dart` and `workbench_agent_status_test.dart`: the pane shows each of the four status texts, the *unavailable* reason, and ignores a stale sequence. Verify: the tests fail.
+- [x] 6.2 Implement the additive protocol fields and the chat pane status line in `agent_pane_view.dart` and `agent_controller.dart`. Verify: 6.1 passes along with `flutter test` in `packages/desktop`; flip rows green.
 
 ## 7. Fairness under saturation
 
