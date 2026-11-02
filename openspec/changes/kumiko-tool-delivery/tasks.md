@@ -50,7 +50,7 @@
 
 ## 1. ADR and architecture
 
-- [ ] 1.1 Write `docs/adr/0013-kumiko-tool-endpoint-bridge-and-catalog.md` per design D10: D2 endpoint, ACL and cancellable Windows I/O; D3 handshake; D5 catalog and MCP subset; D6 status; D8 additive amendment of ADR 0012 decision 7. Status `accepted (<date>)`, refining ADR 0005. Add its row to the in-force index in `openspec/architecture.md` and update the Kumiko tools contract line and the tool-service row. Verify: the file exists, and `grep 0013 openspec/architecture.md` shows the index row.
+- [x] 1.1 Write `docs/adr/0013-kumiko-tool-endpoint-bridge-and-catalog.md` per design D10: D2 endpoint, ACL and cancellable Windows I/O; D3 handshake; D5 catalog and MCP subset; D6 status; D8 additive amendment of ADR 0012 decision 7. Status `accepted (<date>)`, refining ADR 0005. Add its row to the in-force index in `openspec/architecture.md` and update the Kumiko tools contract line and the tool-service row. Verify: the file exists, and `grep 0013 openspec/architecture.md` shows the index row.
 
 ## 2. Windows named-pipe endpoint (process_containment)
 
