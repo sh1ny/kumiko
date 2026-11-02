@@ -28,7 +28,7 @@ review:
   # skills in a fresh tab/pane with structured report-back to the coordinator.
   # No in-process reviewer or alternate-provider fallback.
   cross_model: true
-  order: [claude]
+  order: [codex, omp, claude]
   # Model per route. Omit = the CLI's default; OMP takes a role (@slow) or a
   # provider/id, and defaults to @default.
   # models:

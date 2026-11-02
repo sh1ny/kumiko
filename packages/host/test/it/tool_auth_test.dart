@@ -304,8 +304,9 @@ void main() {
   test(
     'secret absent from records, control messages and redacted stderr tails',
     () async {
-      // A successful session: the secret exists only in the adapter's launch
-      // data, never in the store, the log or any control message.
+      // A session whose prompt fails with an error message echoing the
+      // secret: the secret exists only in the adapter's launch data, never in
+      // the store, the log or any control message (turn end included).
       final prof = tempDir('toolauth_secret_profile_');
       final work = tempDir('toolauth_secret_work_');
       addTearDown(() async {
@@ -327,14 +328,24 @@ void main() {
       final report = await saveAgentFixture(
         d,
         work,
-        script: {'reportLaunch': true},
+        script: {
+          'reportLaunch': true,
+          'errors': {
+            'session/prompt': {
+              'code': -32000,
+              'message': 'prompt failed, secret=<kumiko-secret>',
+            },
+          },
+        },
       );
       final a = AgentPeer(d);
       await a.start(w.workspace.id);
       await a.attach();
       final secret = secretIn(report);
       await a.prompt();
-      await a.wait(Method.agentTurnEnded);
+      final ended = await a.wait(Method.agentTurnEnded);
+      expect(ended['nativeMessage'], 'prompt failed, secret=<redacted>');
+      expect(ended['message'], 'prompt failed, secret=<redacted>');
       await a.close();
 
       final surfaces = <String, String>{
@@ -349,8 +360,9 @@ void main() {
         expect(entry.value, isNot(contains(secret)), reason: entry.key);
       }
 
-      // A failed start: the adapter echoes the secret on stderr, the host
-      // reports the tail with the secret redacted.
+      // A failed start: the adapter echoes the secret on stderr and in its
+      // error message; the host reports both with the secret redacted,
+      // nativeMessage included.
       final failWork = tempDir('toolauth_secret_fail_');
       addTearDown(() async {
         killReported(failWork);
@@ -365,7 +377,10 @@ void main() {
           'new': [
             {'stderrSecret': true},
           ],
-          'newErrorAfterActions': {'code': -32000, 'message': 'rejected'},
+          'newErrorAfterActions': {
+            'code': -32000,
+            'message': 'rejected secret=<kumiko-secret>',
+          },
         },
       );
       final b = AgentPeer(d);
@@ -383,6 +398,7 @@ void main() {
       });
       expect(text, isNot(contains(failedSecret)));
       expect(text, contains('<redacted>'));
+      expect(failure.data['nativeMessage'], 'rejected secret=<redacted>');
     },
   );
 }

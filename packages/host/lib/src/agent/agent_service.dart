@@ -808,7 +808,7 @@ class AgentService {
         rethrow;
       }
       if (error is AcpProtocolException) {
-        throw RpcException(ErrorCode.adapterProtocol, error.message, {
+        throw RpcException(ErrorCode.adapterProtocol, _redact(error.message), {
           'stage': stage,
         });
       }
@@ -830,7 +830,7 @@ class AgentService {
         error is AcpRemoteException ? error.message : error.toString(),
       );
       final nativeMessage = error is AcpRemoteException
-          ? clampUtf8(error.message, 4096)
+          ? clampUtf8(_redact(error.message), 4096)
           : null;
       throw RpcException(
         reason,
@@ -845,7 +845,8 @@ class AgentService {
           if (error is AcpRemoteException) 'nativeCode': error.code,
           'nativeMessage': ?nativeMessage,
           if (error is AcpRemoteException &&
-              (error.messageTruncated || nativeMessage != error.message))
+              (error.messageTruncated ||
+                  nativeMessage != _redact(error.message)))
             'nativeMessageTruncated': true,
         },
       );
@@ -879,6 +880,7 @@ class AgentService {
       nativeSessionId: record.nativeSessionId,
       tools: _startTools(grant, record.adapter),
       toolsAuthenticated: grant?.everAuthenticated ?? false,
+      redact: _redact,
       enqueueEvents: a.relay.enqueue,
       onState: (p) {
         _notify(a, Method.agentState, p.toJson());
@@ -1286,15 +1288,17 @@ class AgentService {
             : null,
         message: restoring
             ? error is AcpRemoteException && error.messageTruncated
-                  ? '${clampUtf8(error.message, 4096 - ' [truncated]'.length)} [truncated]'
+                  ? '${clampUtf8(_redact(error.message), 4096 - ' [truncated]'.length)} [truncated]'
                   : clampUtf8(
-                      error is AcpRemoteException
-                          ? error.message
-                          : error.toString(),
+                      _redact(
+                        error is AcpRemoteException
+                            ? error.message
+                            : error.toString(),
+                      ),
                       4096,
                     )
             : error is AcpProtocolException
-            ? error.message
+            ? _redact(error.message)
             : null,
       );
       _notify(a, Method.agentExited, exited.toJson());

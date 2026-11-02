@@ -42,9 +42,11 @@ class AgentSession {
     AgentDeadlineFactory? deadlineFactory,
     AgentTools? tools,
     bool toolsAuthenticated = false,
+    String Function(String)? redact,
     this.claims,
     this._nativeSessionId,
   }) : _deadlineFactory = deadlineFactory ?? _TimerDeadline.new,
+       _redact = redact ?? _unredacted,
        // ignore: prefer_initializing_formals
        _tools = tools,
        // ignore: prefer_initializing_formals
@@ -57,6 +59,11 @@ class AgentSession {
   }
   final String sessionId;
   final AcpClient client;
+
+  /// Removes Kumiko tool secrets from adapter text before it leaves the host
+  /// (transcript notices, turn-end and stop messages).
+  final String Function(String) _redact;
+  static String _unredacted(String text) => text;
   final AdapterClaims? claims;
   final void Function(AgentStateParams) onState;
   final void Function(AgentPermissionRequestedParams) onPermissionRequested;
@@ -225,10 +232,10 @@ class AgentSession {
             : error is AcpRemoteException && error.messageTruncated
             ? AgentEvent.fromJson({
                 'kind': AgentEventKind.notice.name,
-                'text': error.toString(),
+                'text': _redact(error.toString()),
                 'truncated': true,
               })
-            : AgentEvent.notice(error.toString()),
+            : AgentEvent.notice(_redact(error.toString())),
       ),
     );
     if (!_hasTurn || turn != _turn || _disposed || _terminal) return;
@@ -265,7 +272,7 @@ class AgentSession {
       }
     }
     final nativeMessage = error is AcpRemoteException
-        ? clampUtf8(error.message, 4096)
+        ? clampUtf8(_redact(error.message), 4096)
         : null;
     onTurnEnded(
       AgentTurnEndedParams(
@@ -281,14 +288,15 @@ class AgentSession {
         nativeMessage: nativeMessage,
         nativeMessageTruncated:
             error is AcpRemoteException &&
-            (error.messageTruncated || nativeMessage != error.message),
+            (error.messageTruncated ||
+                nativeMessage != _redact(error.message)),
       ),
     );
     _set(AgentState.idle);
   }
 
   String _message(Object error) => clampJsonString(
-    error is AcpRemoteException ? error.message : error.toString(),
+    _redact(error is AcpRemoteException ? error.message : error.toString()),
     4096,
   );
   bool get _terminal =>

@@ -254,6 +254,15 @@ Future<int> runAcpAgentScript({
     });
   }
 
+  // A scripted error message may echo the Kumiko secret, as a careless
+  // adapter might: <kumiko-secret> becomes the mcpServers entry's secret.
+  Json withSecret(Json error) => switch (error['message']) {
+    final String m when m.contains('<kumiko-secret>') => {
+      ...error,
+      'message': m.replaceAll('<kumiko-secret>', kumikoSecret(mcpServers)),
+    },
+    _ => error,
+  };
   Json launchReport() => {
     'argv': args,
     'cwd': cwd,
@@ -397,7 +406,7 @@ Future<int> runAcpAgentScript({
     final errors = script['errors'];
     final error = errors is Json ? errors[method] : null;
     if (error is Json) {
-      await send({'jsonrpc': '2.0', 'id': id, 'error': error});
+      await send({'jsonrpc': '2.0', 'id': id, 'error': withSecret(error)});
       return;
     }
     switch (method) {
@@ -420,7 +429,7 @@ Future<int> runAcpAgentScript({
         }
         await actions(script['new']);
         if (script['newErrorAfterActions'] case final Json error) {
-          await send({'jsonrpc': '2.0', 'id': id, 'error': error});
+          await send({'jsonrpc': '2.0', 'id': id, 'error': withSecret(error)});
           return;
         }
         final initial = script['newSessionUpdates'];
