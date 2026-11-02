@@ -74,6 +74,18 @@ class AgentSession {
   static Iterable<String> _noSecrets() => const [];
   String? _heldKind;
   String _held = '';
+
+  /// Kind and text of the last chunk sent, to catch a secret whose first
+  /// few characters it already carried.
+  String? _sentKind;
+  String _sent = '';
+
+  /// A chunk tail is held back only when it matches at least this many
+  /// leading characters of a secret: by chance that is about 1 in 16
+  /// million, so ordinary text is not split or delayed. A secret started in
+  /// a shorter tail is redacted from the next chunk; at most 3 of its
+  /// characters were sent.
+  static const _minHeld = 4;
   final AdapterClaims? claims;
   final void Function(AgentStateParams) onState;
   final void Function(AgentPermissionRequestedParams) onPermissionRequested;
@@ -169,6 +181,7 @@ class AgentSession {
       _enqueue(encodeAgentEvent(AgentEvent.replay(AgentReplayPhase.start)));
   Future<void> replayEnded() {
     final held = _flushHeld();
+    _sentKind = null;
     if (held.isNotEmpty) _enqueue(held).ignore();
     return _enqueue(
       encodeAgentEvent(AgentEvent.replay(AgentReplayPhase.end)),
@@ -220,13 +233,18 @@ class AgentSession {
       // of this one that could be the start of a secret.
       final continues = kind == _heldKind;
       final flushed = continues ? const <Uint8List>[] : _flushHeld();
-      final carry = _redact(
-        '${continues ? _held : ''}${content['text']! as String}',
-      );
-      final hold = _secretPrefixAtEnd(carry);
+      var text = content['text']! as String;
+      if (!continues && kind == _sentKind) text = _secretRestRedacted(text);
+      final carry = _redact('${continues ? _held : ''}$text');
+      var hold = _secretPrefixAtEnd(carry);
+      if (hold < _minHeld) hold = 0;
       _held = carry.substring(carry.length - hold);
       _heldKind = hold == 0 ? null : kind! as String;
       final emit = carry.substring(0, carry.length - hold);
+      if (emit.isNotEmpty) {
+        _sentKind = kind! as String;
+        _sent = emit;
+      }
       return [
         ...flushed,
         if (emit.isNotEmpty)
@@ -238,10 +256,25 @@ class AgentSession {
           ),
       ];
     }
+    _sentKind = null;
     return [
       ..._flushHeld(),
       ...normalizeAcpUpdate(_redactJson(update)! as Json),
     ];
+  }
+
+  /// [text] with a leading rest of a secret redacted, when the last chunk
+  /// sent ended with that secret's first characters (fewer than [_minHeld]).
+  String _secretRestRedacted(String text) {
+    for (final secret in _secrets()) {
+      for (var k = 1; k < _minHeld && k < secret.length; k++) {
+        if (_sent.endsWith(secret.substring(0, k)) &&
+            text.startsWith(secret.substring(k))) {
+          return '<redacted>${text.substring(secret.length - k)}';
+        }
+      }
+    }
+    return text;
   }
 
   static const _textChunkKinds = {
@@ -265,17 +298,17 @@ class AgentSession {
     return best;
   }
 
-  /// Releases a held chunk tail as its own chunk. A tail of 8 or more
-  /// characters is a secret cut short, not text, and is redacted.
+  /// Releases a held chunk tail that no chunk completed. It is a secret cut
+  /// short, not text, so it is sent redacted.
   List<Uint8List> _flushHeld() {
     final kind = _heldKind;
     if (kind == null) return const [];
-    final text = _held.length >= 8 ? '<redacted>' : _held;
     _heldKind = null;
     _held = '';
+    _sentKind = null;
     return normalizeAcpUpdate({
       'sessionUpdate': kind,
-      'content': {'type': 'text', 'text': text},
+      'content': {'type': 'text', 'text': '<redacted>'},
     }).toList();
   }
 
@@ -315,6 +348,7 @@ class AgentSession {
       return;
     }
     final held = _flushHeld();
+    _sentKind = null;
     if (held.isNotEmpty) await _enqueue(held);
     await _enqueue(
       encodeAgentEvent(

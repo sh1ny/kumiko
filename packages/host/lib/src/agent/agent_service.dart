@@ -1218,6 +1218,9 @@ class AgentService {
     // expanded final update under backpressure. Retire choices without native
     // replies: stdin has closed, but the ACP reader must drain through EOF.
     a.session.observeExit();
+    // The run is over: its secret stops working now, not once the transcript
+    // has drained (that can wait on desktop credit indefinitely).
+    _revoke(a.grant);
     // EOF owns the separate final-count lifecycle: buffered updates must
     // finish normalization/admission before sealing or disposing their pipes.
     await a.io.client.done;

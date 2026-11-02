@@ -736,19 +736,32 @@ void main() {
       expect(text, 'key <redacted> done');
     });
 
-    test('a short held tail is released as text before the turn ends',
-        () async {
+    test('a tail of fewer than 4 secret characters is not held', () async {
       s.acceptPrompt('hello');
       chunk('agent_message_chunk', 'see abc');
+      chunk('agent_message_chunk', ' and more');
       await finish('end_turn');
       expect(streamed(), [
-        (AgentEventKind.agentText, 'see '),
-        (AgentEventKind.agentText, 'abc'),
+        (AgentEventKind.agentText, 'see abc'),
+        (AgentEventKind.agentText, ' and more'),
         (AgentEventKind.turn, null),
       ]);
     });
 
-    test('a long held tail at turn end is a cut-off secret and redacted',
+    test('a secret begun in a short tail is redacted from the next chunk',
+        () async {
+      s.acceptPrompt('hello');
+      chunk('agent_message_chunk', 'key abc');
+      chunk('agent_message_chunk', '${secret.substring(3)} done');
+      await finish('end_turn');
+      expect(streamed(), [
+        (AgentEventKind.agentText, 'key abc'),
+        (AgentEventKind.agentText, '<redacted> done'),
+        (AgentEventKind.turn, null),
+      ]);
+    });
+
+    test('a held tail never completed is a cut-off secret and redacted',
         () async {
       s.acceptPrompt('hello');
       chunk('agent_message_chunk', 'key ${secret.substring(0, 30)}');
@@ -762,13 +775,25 @@ void main() {
 
     test('another update releases the held tail first, in order', () async {
       s.acceptPrompt('hello');
-      chunk('agent_message_chunk', 'hi ab');
+      chunk('agent_message_chunk', 'hi abcd');
       chunk('agent_thought_chunk', 'think');
       await finish('end_turn');
       expect(streamed(), [
         (AgentEventKind.agentText, 'hi '),
-        (AgentEventKind.agentText, 'ab'),
+        (AgentEventKind.agentText, '<redacted>'),
         (AgentEventKind.thought, 'think'),
+        (AgentEventKind.turn, null),
+      ]);
+    });
+
+    test('a held tail continued by ordinary text is released joined',
+        () async {
+      s.acceptPrompt('hello');
+      chunk('agent_message_chunk', 'abcd');
+      chunk('agent_message_chunk', 'ef!');
+      await finish('end_turn');
+      expect(streamed(), [
+        (AgentEventKind.agentText, 'abcdef!'),
         (AgentEventKind.turn, null),
       ]);
     });

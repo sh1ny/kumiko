@@ -101,9 +101,15 @@ Future<File> saveAgentFixture(Desktop d, Directory work, {
   )));
   return report;
 }
-List<Json> fixtureReports(File file) => file.existsSync()
-    ? [for (final line in file.readAsLinesSync()) if (line.isNotEmpty) jsonDecode(line) as Json]
-    : [];
+/// Complete report lines only: the fixture may be appending the last one.
+List<Json> fixtureReports(File file) {
+  if (!file.existsSync()) return [];
+  final lines = file.readAsStringSync().split('\n')..removeLast();
+  return [
+    for (final line in lines)
+      if (line.trim().isNotEmpty) jsonDecode(line) as Json,
+  ];
+}
 Future<Json> waitFixture(File report, bool Function(Json) test) async {
   await eventually(() => fixtureReports(report).any(test), reason: 'fixture report missing: ${report.path}');
   return fixtureReports(report).lastWhere(test);

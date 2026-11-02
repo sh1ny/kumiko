@@ -302,6 +302,56 @@ void main() {
   });
 
   test(
+    'adapter exit revokes the secret while its output is credit-blocked',
+    () async {
+      // The ACP reader is held admitting an expanded final update, so EOF
+      // and the transcript drain wait for credit; the exit alone revokes.
+      final text = '' * maxAgentTextChunkBytes;
+      final (d, a, report) = await realSession(
+        attach: false,
+        script: {
+          'prompt': [
+            {'update': textUpdate(text)},
+            {'update': textUpdate('trailing')},
+            {'exit': 7},
+          ],
+        },
+      );
+      final secret = secretIn(report);
+      final live = await ToolClient.connect(await endpointOf(d));
+      addTearDown(live.close);
+      live.authenticate(secret);
+      expect(await live.readJson(), {'ok': true});
+      final input = d.connection
+          .attachInbound(a.started.eventChannel, grantInitial: false)
+          .listen((_) {});
+      addTearDown(input.cancel);
+      await a.call(Method.agentAttach);
+      await a.prompt('exit under backpressure');
+      await a.wait(
+        Method.agentState,
+        where: (p) => p['state'] == 'failed',
+        within: const Duration(seconds: 10),
+      );
+      expect(await live.closedByHost(), isTrue);
+      final after = await ToolClient.connect(await endpointOf(d));
+      addTearDown(after.close);
+      after.authenticate(secret);
+      expect(await after.readJson(), {
+        'ok': false,
+        'error': 'unauthenticated',
+      });
+      expect(
+        a.of(Method.agentExited),
+        isEmpty,
+        reason: 'the output must still be waiting for credit',
+      );
+      d.connection.grantInitial(a.started.eventChannel);
+      await a.wait(Method.agentExited, where: (p) => p['reason'] == 'failed');
+    },
+  );
+
+  test(
     'secret absent from records, control messages and redacted stderr tails',
     () async {
       // A session whose prompt fails with an error message echoing the
