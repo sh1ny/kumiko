@@ -16,6 +16,7 @@ class HostOptions {
     this.settleDeadline = defaultSettleDeadline,
     this.consoleCloseTimeout = defaultConsoleCloseTimeout,
     this.postExitReadDeadline = defaultPostExitReadDeadline,
+    this.toolEndpointFault,
   });
 
   /// Concurrent units per host (design D4, Resource Bounds).
@@ -67,6 +68,9 @@ class HostOptions {
   final Duration settleDeadline;
   final Duration consoleCloseTimeout;
   final Duration postExitReadDeadline;
+
+  /// Makes creating the tool endpoint fail with this cause (tests only).
+  final String? toolEndpointFault;
 
   /// Extra wait at the start of reconciliation (tests only).
   final Duration reconcileDelay;

@@ -51,7 +51,7 @@ The endpoint is the one listening surface Kumiko adds on the machine, and the se
     - `-32000`: server-side refusal, including `too many concurrent calls` and *session unavailable*.
     - `-32700`: parse error for a malformed line from an authenticated bridge; that line is answered and the connection stays open unless the line bound is exceeded.
 16. **Catalog.** `ToolCatalog` maps a role to its allowed tools. M1: `coding -> {kumiko_session_info}`. `tools/list` returns only the role's tools. `tools/call` checks on every call: the grant is live, the tool is in the role's set, and the arguments validate against the schema. Results come only from the grant's own slot, never from an argument. Later roles and tools extend this table and follow these rules.
-17. **`kumiko_session_info`.** Takes an empty object, is marked read-only, changes no state, reads host memory only, and returns the calling session's Kumiko session id, role, runtime kind, adapter name and version, and the target workspace path captured at start (unchanged by later focus moves). The result is under 4 KiB.
+17. **`kumiko_session_info`.** Takes an empty object, is marked read-only, changes no state, reads host memory only, and returns the calling session's Kumiko session id, role, runtime kind, adapter name and version, and the target workspace path captured at start (unchanged by later focus moves). The result is under 4 KiB. The tool definition has `inputSchema` `{type: object, properties: {}, additionalProperties: false}` and `annotations: {readOnlyHint: true}`. The `tools/call` result carries `content: [{type: text, text: <JSON of the structured object>}]` and `structuredContent` with exactly these keys: `sessionId`, `role`, `runtime` (runtime kind, e.g. `claude-code`), `adapter: {name, version}` and `target: {path}` (absolute workspace path).
 
 ### Tools status (D6)
 
@@ -90,7 +90,7 @@ The endpoint is the one listening surface Kumiko adds on the machine, and the se
 | Outbound queue per connection | 1 MiB pending result bytes | Stop reading that connection's requests until drained |
 | Grants | One per live session run (unit cap 64) | Bound by the unit cap |
 | `kumiko_session_info` result | < 4 KiB | - |
-| Windows pending pipe instances | 1 pending; `nMaxInstances` 256 | Client `WaitNamedPipe` 2 s, then bridge exits 2 |
+| Windows pending pipe instances | 1 pending; `nMaxInstances` 255 (`PIPE_UNLIMITED_INSTANCES`, the API maximum; the tool service enforces the connection caps) | Client `WaitNamedPipe` 2 s, then bridge exits 2 |
 | Windows connection workers | One isolate per connection (16 unauthenticated + 256 authenticated) | Accept refused at the caps; every worker cancellable by its stop event |
 
 Tool handling reads only memory and never awaits desktop credit, so ADR 0002 control is not delayed.

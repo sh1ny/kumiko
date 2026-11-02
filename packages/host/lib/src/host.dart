@@ -6,6 +6,8 @@ import 'package:process_containment/process_containment.dart';
 
 import 'agent/agent_service.dart';
 import 'agent/runtime_profile_service.dart';
+import 'agent/tools/tool_endpoint.dart';
+import 'agent/tools/tool_service.dart';
 import 'cleanup_service.dart';
 import 'host_extension.dart';
 import 'host_faults.dart';
@@ -82,6 +84,8 @@ class Host {
   RuntimeProfileService? _runtimeProfiles;
   TerminalService? _terminals;
   AgentService? _agents;
+  ToolService? _tools;
+  ToolEndpoint? _toolEndpoint;
   bool _stopping = false;
 
   /// Runs until the desktop goes away; returns the exit code.
@@ -143,6 +147,17 @@ class Host {
       return _StartFailure(_storeError(e), HostExit.startFailed);
     }
     log.event('host-start', ids: {'pid': pid});
+    // The lock is held, so a socket file here is stale. A failure leaves the
+    // host running without tools (design D7).
+    final tools = _tools = ToolService(
+      log: (message) => log.event('tool-service', code: message),
+    );
+    _toolEndpoint = await ToolEndpoint.start(
+      service: tools,
+      profile: profile,
+      fault: options.toolEndpointFault,
+      log: (op, detail) => log.event(op, code: detail),
+    );
     return null;
   }
 
@@ -440,6 +455,7 @@ class Host {
           faults: faults,
           connection: _connection,
           agents: _agents!,
+          tools: _tools!,
         ),
         method,
         params,
@@ -463,6 +479,8 @@ class Host {
     await _startup;
     if (_stopping) return;
     final units = _units;
+    // No new tool connection once the desktop is gone; the socket file goes.
+    await _toolEndpoint?.close();
     _terminals?.dispose();
     _agents?.dispose();
     if (units != null) {
@@ -487,6 +505,11 @@ class Host {
       // The row stays as it is; the next host reconciles.
     }
     _log?.event('host-exit', code: '$code');
+    try {
+      await _toolEndpoint?.close();
+    } on Object {
+      // Best effort; the profile lock replaces a stale socket.
+    }
     try {
       _store?.close();
       await _lock?.release();
