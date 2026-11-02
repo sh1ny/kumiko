@@ -23,7 +23,7 @@ void main() {
   late Directory profile;
   late Directory work;
   setUp(() {
-    profile = tempDir('agent_qualification_profile_');
+    profile = tempDir('aq_profile_');
     work = tempDir('agent_qualification_work_');
   });
   tearDown(() async {

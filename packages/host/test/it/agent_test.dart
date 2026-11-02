@@ -955,6 +955,11 @@ void main() {
         // Every conversation-bearing file, including DB/WAL/logs, is still
         // read while live. After quit even this named lock must be checked.
         if (hostRunning && entry.path == lockPath) continue;
+        // The tool endpoint socket stores no bytes and cannot be opened.
+        if (FileSystemEntity.typeSync(entry.path, followLinks: false) ==
+            FileSystemEntityType.unixDomainSock) {
+          continue;
+        }
         expect(
           latin1.decode(entry.readAsBytesSync()),
           isNot(contains(canary)),

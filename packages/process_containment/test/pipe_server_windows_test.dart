@@ -59,6 +59,40 @@ final _localFree = DynamicLibrary.open('kernel32.dll')
       Pointer<Void> Function(Pointer<Void>)
     >('LocalFree');
 
+final _stringToSid = _advapi32
+    .lookupFunction<
+      Int32 Function(Pointer<Utf16>, Pointer<Pointer<Void>>),
+      int Function(Pointer<Utf16>, Pointer<Pointer<Void>>)
+    >('ConvertStringSidToSidW');
+
+/// The `S-1-...` form of an SDDL trustee. String security descriptors write
+/// well-known accounts as aliases (`SY`, and `LA` for the built-in
+/// Administrator, the CI runner's account), so compare canonical SIDs.
+String _canonicalSid(String trustee) {
+  final text = trustee.toNativeUtf16();
+  final sid = calloc<Pointer<Void>>();
+  final out = calloc<Pointer<Utf16>>();
+  try {
+    if (_stringToSid(text, sid) == 0) {
+      throw StateError('ConvertStringSidToSidW failed for $trustee');
+    }
+    try {
+      if (w.convertSidToStringSidW(sid.value, out) == 0) {
+        throw StateError('ConvertSidToStringSidW failed for $trustee');
+      }
+      final result = out.value.toDartString();
+      w.localFree(out.value.cast());
+      return result;
+    } finally {
+      w.localFree(sid.value);
+    }
+  } finally {
+    calloc.free(text);
+    calloc.free(sid);
+    calloc.free(out);
+  }
+}
+
 const _readControl = 0x00020000;
 const _fileShareReadWrite = 3;
 const _openExisting = 3;
@@ -175,7 +209,7 @@ void main() {
       reason: sddl,
     );
     expect(
-      aces.map((a) => a.trustee == 'SY' ? 'S-1-5-18' : a.trustee).toSet(),
+      aces.map((a) => _canonicalSid(a.trustee)).toSet(),
       {_currentUserSid(), 'S-1-5-18'},
     );
   });

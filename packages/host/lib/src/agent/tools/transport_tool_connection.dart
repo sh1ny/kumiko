@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:io';
 
 import 'tool_connection.dart';
 
@@ -10,6 +11,22 @@ const int maxPendingOutboundBytes = 1024 * 1024;
 /// torn down (flush, then the peer's EOF). Closing a Windows pipe discards
 /// bytes the client has not read yet, so a refusal needs this to be seen.
 const Duration finalMessageGrace = Duration(seconds: 1);
+
+/// A writer for [sink] that runs each write (add, then flush) only after the
+/// previous one settled. [IOSink] rejects `add` while a flush is pending, so
+/// a burst of replies written directly would drop all but the first. Each
+/// returned future settles with its own write, including its error.
+Future<void> Function(List<int>) serializedSinkWriter(IOSink sink) {
+  Future<void> tail = Future<void>.value();
+  return (bytes) {
+    final done = tail.then((_) {
+      sink.add(bytes);
+      return sink.flush();
+    });
+    tail = done.catchError((Object _) {});
+    return done;
+  };
+}
 
 /// Adapts a byte transport (unix `Socket`, Windows pipe connection) to
 /// [ToolConnection] and adds the two behaviours both need:

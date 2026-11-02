@@ -41,6 +41,9 @@ class ToolClient {
       InternetAddress(endpoint, type: InternetAddressType.unix),
       0,
     );
+    // A write to a connection the host closed fails on done; tests observe
+    // the close through reads, as on Windows.
+    socket.done.ignore();
     return ToolClient._(
       socket.add,
       () async => socket.destroy(),

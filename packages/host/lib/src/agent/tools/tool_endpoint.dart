@@ -94,10 +94,7 @@ class ToolEndpoint {
       (socket) => service.accept(
         TransportToolConnection(
           source: socket,
-          write: (bytes) {
-            socket.add(bytes);
-            return socket.flush();
-          },
+          write: serializedSinkWriter(socket),
           closeTransport: () async => socket.destroy(),
         ),
       ),
