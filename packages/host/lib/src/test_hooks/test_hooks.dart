@@ -21,6 +21,7 @@ class TestHostExtension implements HostExtension {
   TestHostExtension({
     this.options = const HostOptions(),
     this.qualifiedAdaptersOverride,
+    this.toolDeliveryFailuresOverride,
   });
 
   /// Options from `KUMIKO_TEST_*` variables, which make timing deterministic:
@@ -44,7 +45,18 @@ class TestHostExtension implements HostExtension {
     final shellPath = env['KUMIKO_TEST_SHELL_PATH'];
     final runtimePath = env['KUMIKO_TEST_RUNTIME_PATH'];
     final candidates = env['KUMIKO_TEST_QUALIFIED_ADAPTERS'];
+    final failures = env['KUMIKO_TEST_TOOL_DELIVERY_FAILURES'];
     return TestHostExtension(
+      toolDeliveryFailuresOverride: failures == null
+          ? null
+          : [
+              for (final triple in jsonDecode(failures) as List)
+                (
+                  (triple as List)[0] as String,
+                  triple[1] as String,
+                  triple[2] as String,
+                ),
+            ],
       qualifiedAdaptersOverride: candidates == null
           ? null
           : [
@@ -98,6 +110,9 @@ class TestHostExtension implements HostExtension {
 
   @override
   final List<(String, String, List<String>)>? qualifiedAdaptersOverride;
+
+  @override
+  final List<(String, String, String)>? toolDeliveryFailuresOverride;
 
   @override
   Set<String> get capabilities => const {

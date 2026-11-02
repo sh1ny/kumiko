@@ -20,6 +20,9 @@ abstract interface class HostExtension {
   /// Exact qualification candidates, available only in a test build.
   List<(String, String, List<String>)>? get qualifiedAdaptersOverride;
 
+  /// Replacement for the recorded tool-delivery failures, test builds only.
+  List<(String, String, String)>? get toolDeliveryFailuresOverride;
+
   /// Runs a `--test-fixture` mode: [args] are the mode and its arguments.
   /// Returns the process exit code.
   Future<int> runFixture(List<String> args);

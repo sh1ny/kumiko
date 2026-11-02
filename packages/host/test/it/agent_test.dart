@@ -67,7 +67,7 @@ void main() {
       expect(
         fixtureReports(report)
             .lastWhere((p) => p.containsKey('newCwd'))['mcpServers'],
-        isEmpty,
+        hasLength(1),
       );
       expect(
         a.started.sessionId,

@@ -7,6 +7,8 @@ import 'dart:typed_data';
 
 import 'package:host_protocol/host_protocol.dart';
 
+import 'fixture_kumiko_tool.dart';
+
 /// Actual stdio ACP fixture. The JSON environment script is test data, never
 /// provider qualification. Only explicitly named environment values are
 /// reported; neither inherited credentials nor full environment are dumped.
@@ -157,6 +159,10 @@ Future<int> runAcpAgentScript({
   var status = 0;
   var nextId = 1;
   Object? promptId;
+  final kumikoTool = script['kumikoTool'] is Json
+      ? KumikoToolDriver(script['kumikoTool'] as Json, report)
+      : null;
+  Object? mcpServers;
   var native = script['nativeSessionId'] as String? ?? 'fixture-native';
   Completer<void>? cancelled;
   var cancelledTurn = false;
@@ -267,6 +273,11 @@ Future<int> runAcpAgentScript({
         await gatedUpdate(gate);
       }
       if (action['stderr'] case final String value) writeError(value);
+      if (action['stderrSecret'] == true) {
+        // The Kumiko secret of the mcpServers entry, as a careless adapter
+        // might print it. The host must redact it from any stderr tail.
+        writeError('adapter saw secret=${kumikoSecret(mcpServers)}');
+      }
       if (action['writeFile'] case final Json value) {
         File(value['path'] as String)
             .writeAsStringSync(value['text'] as String);
@@ -402,7 +413,16 @@ Future<int> runAcpAgentScript({
         });
       case 'session/new':
         report({'newCwd': params['cwd'], 'mcpServers': params['mcpServers']});
+        mcpServers = params['mcpServers'];
+        if (kumikoTool?.when == 'session/new') {
+          // Like an adapter: the call runs alongside session/new.
+          unawaited(kumikoTool!.run(mcpServers));
+        }
         await actions(script['new']);
+        if (script['newErrorAfterActions'] case final Json error) {
+          await send({'jsonrpc': '2.0', 'id': id, 'error': error});
+          return;
+        }
         final initial = script['newSessionUpdates'];
         if (initial is List) {
           final burst = StringBuffer()..writeln(jsonEncode({
@@ -420,6 +440,7 @@ Future<int> runAcpAgentScript({
       case 'session/load' || 'session/resume':
         native = params['sessionId'] as String;
         report({'method': method, ...params});
+        mcpServers = params['mcpServers'];
         await actions(script[method == 'session/load' ? 'load' : 'resume']);
         await result(id, {});
       case 'session/prompt':
@@ -436,6 +457,7 @@ Future<int> runAcpAgentScript({
         cancelled = Completer<void>();
         cancelledTurn = false;
         report({'prompt': params['prompt'], 'sessionId': native});
+        if (kumikoTool?.when == 'prompt') await kumikoTool!.run(mcpServers);
         final reason = await actions(script['prompt']);
         if (script['holdPrompt'] == true && !cancelledTurn) {
           await cancelled!.future;

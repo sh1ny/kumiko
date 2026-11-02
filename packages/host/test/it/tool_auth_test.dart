@@ -1,7 +1,10 @@
+import 'dart:convert';
 import 'dart:io';
 
+import 'package:host_protocol/host_protocol.dart';
 import 'package:test/test.dart';
 
+import 'support/agent_support.dart';
 import 'support/harness.dart';
 import 'support/tool_support.dart';
 
@@ -43,6 +46,61 @@ void main() {
 
   Map<String, Object?> grantState(Map<String, Object?> state, String id) =>
       (state['grants']! as Map<String, Object?>)[id]! as Map<String, Object?>;
+
+  /// A second host with the agent capability and a scripted ACP fixture: the
+  /// grants below are minted, bound and revoked by real sessions.
+  Future<(Desktop, AgentPeer, File)> realSession({
+    Json script = const {},
+    bool attach = true,
+  }) async {
+    final prof = tempDir('toolauth_agent_profile_');
+    final work = tempDir('toolauth_agent_work_');
+    addTearDown(() async {
+      killReported(work);
+      await deleteTree(work);
+      await deleteTree(prof);
+    });
+    final d = await Desktop.start(
+      prof,
+      capabilities: {...testCapabilities, Capability.agent},
+      environment: const {
+        'KUMIKO_TEST_RUNTIME_PATH': '',
+        'KUMIKO_TEST_SHELL_PATH': '',
+      },
+    );
+    addTearDown(d.dispose);
+    await d.waitState();
+    final w = await d.openWorkspace(work.path);
+    final report = await saveAgentFixture(
+      d,
+      work,
+      script: {'reportLaunch': true, ...script},
+    );
+    final a = AgentPeer(d);
+    await a.start(w.workspace.id);
+    if (attach) await a.attach();
+    return (d, a, report);
+  }
+
+  /// The file as text, or null when the running host holds it locked.
+  String? readable(File f) {
+    try {
+      return latin1.decode(f.readAsBytesSync());
+    } on FileSystemException {
+      return null;
+    }
+  }
+
+  String secretIn(File report) {
+    final launch = fixtureReports(report).lastWhere(
+      (p) => p.containsKey('newCwd'),
+    );
+    final entry = (launch['mcpServers'] as List).single as Json;
+    return [
+      for (final e in entry['env'] as List)
+        if ((e as Json)['name'] == 'KUMIKO_TOOL_SECRET') e['value'] as String,
+    ].single;
+  }
 
   test('correct secret is accepted and served for its session only', () async {
     final a = await newGrant(desktop, target: r'C:\work\a');
@@ -144,18 +202,44 @@ void main() {
   test(
     'revoked secret is refused after close and after adapter exit',
     () async {
-      final closed = await newGrant(desktop);
-      final exited = await newGrant(desktop);
-      // AgentService revokes on close and on adapter exit (task 5.2); here
-      // the grants are revoked directly.
-      await grantCall(desktop, 'revoke', closed.id);
-      await grantCall(desktop, 'revoke', exited.id);
-      for (final secret in [closed.secret, exited.secret]) {
-        final c = await client();
-        c.authenticate(secret);
-        expect(await c.readJson(), {'ok': false, 'error': 'unauthenticated'});
-        expect(await c.closedByHost(), isTrue);
-      }
+      final (closedHost, closing, closedReport) = await realSession();
+      final closedSecret = secretIn(closedReport);
+      final live = await ToolClient.connect(await endpointOf(closedHost));
+      addTearDown(live.close);
+      live.authenticate(closedSecret);
+      expect(await live.readJson(), {'ok': true});
+      await closing.close();
+      expect(await live.closedByHost(), isTrue);
+      final afterClose = await ToolClient.connect(await endpointOf(closedHost));
+      addTearDown(afterClose.close);
+      afterClose.authenticate(closedSecret);
+      expect(await afterClose.readJson(), {
+        'ok': false,
+        'error': 'unauthenticated',
+      });
+      expect(await afterClose.closedByHost(), isTrue);
+
+      final (exitedHost, exiting, exitedReport) = await realSession(
+        script: {
+          'prompt': [
+            {'exit': 3},
+          ],
+        },
+      );
+      final exitedSecret = secretIn(exitedReport);
+      await exiting.prompt();
+      await exiting.wait(
+        Method.agentExited,
+        where: (p) => p['reason'] == 'failed',
+      );
+      final afterExit = await ToolClient.connect(await endpointOf(exitedHost));
+      addTearDown(afterExit.close);
+      afterExit.authenticate(exitedSecret);
+      expect(await afterExit.readJson(), {
+        'ok': false,
+        'error': 'unauthenticated',
+      });
+      expect(await afterExit.closedByHost(), isTrue);
     },
   );
 
@@ -219,7 +303,86 @@ void main() {
 
   test(
     'secret absent from records, control messages and redacted stderr tails',
-    () {},
-    skip: 'enabled by task 5.2',
+    () async {
+      // A successful session: the secret exists only in the adapter's launch
+      // data, never in the store, the log or any control message.
+      final prof = tempDir('toolauth_secret_profile_');
+      final work = tempDir('toolauth_secret_work_');
+      addTearDown(() async {
+        killReported(work);
+        await deleteTree(work);
+        await deleteTree(prof);
+      });
+      final d = await Desktop.start(
+        prof,
+        capabilities: {...testCapabilities, Capability.agent},
+        environment: const {
+          'KUMIKO_TEST_RUNTIME_PATH': '',
+          'KUMIKO_TEST_SHELL_PATH': '',
+        },
+      );
+      addTearDown(d.dispose);
+      await d.waitState();
+      final w = await d.openWorkspace(work.path);
+      final report = await saveAgentFixture(
+        d,
+        work,
+        script: {'reportLaunch': true},
+      );
+      final a = AgentPeer(d);
+      await a.start(w.workspace.id);
+      await a.attach();
+      final secret = secretIn(report);
+      await a.prompt();
+      await a.wait(Method.agentTurnEnded);
+      await a.close();
+
+      final surfaces = <String, String>{
+        'start result': jsonEncode(a.started.toJson()),
+        'notifications': jsonEncode([
+          for (final n in a.notifications) {'method': n.method, 'params': n.params},
+        ]),
+        for (final f in prof.listSync(recursive: true).whereType<File>())
+          if (readable(f) case final String text) f.path: text,
+      };
+      for (final entry in surfaces.entries) {
+        expect(entry.value, isNot(contains(secret)), reason: entry.key);
+      }
+
+      // A failed start: the adapter echoes the secret on stderr, the host
+      // reports the tail with the secret redacted.
+      final failWork = tempDir('toolauth_secret_fail_');
+      addTearDown(() async {
+        killReported(failWork);
+        await deleteTree(failWork);
+      });
+      final w2 = await d.openWorkspace(failWork.path);
+      final failReport = await saveAgentFixture(
+        d,
+        failWork,
+        script: {
+          'reportLaunch': true,
+          'new': [
+            {'stderrSecret': true},
+          ],
+          'newErrorAfterActions': {'code': -32000, 'message': 'rejected'},
+        },
+      );
+      final b = AgentPeer(d);
+      RpcException? failure;
+      try {
+        await b.start(w2.workspace.id);
+      } on RpcException catch (e) {
+        failure = e;
+      }
+      expect(failure, isNotNull);
+      final failedSecret = secretIn(failReport);
+      final text = jsonEncode({
+        'message': failure!.message,
+        'data': failure.data,
+      });
+      expect(text, isNot(contains(failedSecret)));
+      expect(text, contains('<redacted>'));
+    },
   );
 }

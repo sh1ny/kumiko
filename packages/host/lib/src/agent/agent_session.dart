@@ -40,9 +40,15 @@ class AgentSession {
     required this.onTurnEnded,
     required this.enqueueEvents,
     AgentDeadlineFactory? deadlineFactory,
+    AgentTools? tools,
+    bool toolsAuthenticated = false,
     this.claims,
     this._nativeSessionId,
-  }) : _deadlineFactory = deadlineFactory ?? _TimerDeadline.new {
+  }) : _deadlineFactory = deadlineFactory ?? _TimerDeadline.new,
+       // ignore: prefer_initializing_formals
+       _tools = tools,
+       // ignore: prefer_initializing_formals
+       _toolsAuthenticated = toolsAuthenticated {
     client.normalizeNotification = _normalize;
     client.consumeNotification = _consume;
     client.onPermissionRequest = _permission;
@@ -83,8 +89,42 @@ class AgentSession {
   /// freezing the final event count; this does not wait for desktop delivery.
   Future<void> get eventsEnqueued => _events;
 
+  /// Tools status of this live run (null: not tracked, e.g. unit tests).
+  AgentTools? get tools => _tools;
+  AgentTools? _tools;
+  bool _toolsAuthenticated;
+  bool _firstTurnEnded = false;
+
+  /// A bridge authenticated with this run's secret. Not yet used becomes the
+  /// status of a run that was not started.
+  void toolsAuthenticated() {
+    _toolsAuthenticated = true;
+    if (_tools?.status == AgentToolsStatus.notStarted) {
+      _setTools(const AgentTools(AgentToolsStatus.notYetUsed));
+    }
+  }
+
+  /// A Kumiko tool call succeeded: the terminal status for the run, even over
+  /// a recorded delivery failure for the adapter version.
+  void toolsCalled() {
+    _toolsAuthenticated = true;
+    if (_tools != null && _tools!.status != AgentToolsStatus.connected) {
+      _setTools(const AgentTools(AgentToolsStatus.connected));
+    }
+  }
+
+  void _setTools(AgentTools next) {
+    _tools = next;
+    if (!_disposed && !_terminal) _publish();
+  }
+
   void _publish() => onState(
-    AgentStateParams(sessionId: sessionId, seq: ++_seq, state: _state),
+    AgentStateParams(
+      sessionId: sessionId,
+      seq: ++_seq,
+      state: _state,
+      tools: _tools,
+    ),
   );
   void _set(AgentState state) {
     if (_state == state || _disposed) return;
@@ -215,6 +255,15 @@ class AgentSession {
     }
     _cancelPermissions();
     _hasTurn = false;
+    // The first turn end without authentication means the adapter never
+    // started the bridge. The idle publication below carries the change.
+    if (!_firstTurnEnded) {
+      _firstTurnEnded = true;
+      if (_tools?.status == AgentToolsStatus.notYetUsed &&
+          !_toolsAuthenticated) {
+        _tools = const AgentTools(AgentToolsStatus.notStarted);
+      }
+    }
     final nativeMessage = error is AcpRemoteException
         ? clampUtf8(error.message, 4096)
         : null;

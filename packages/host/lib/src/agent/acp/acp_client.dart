@@ -252,12 +252,13 @@ class AcpClient {
   /// before any following ACP line can consume its initial updates.
   Future<String> newSession(
     String cwd, {
+    List<Json> mcpServers = const [],
     Duration timeout = const Duration(seconds: 60),
     void Function(String nativeSessionId)? onCreated,
   }) async {
     final result = await request('session/new', {
       'cwd': cwd,
-      'mcpServers': <Object>[],
+      'mcpServers': mcpServers,
     }, timeout: timeout, onResult: onCreated == null ? null : (result) {
       onCreated(result['sessionId']! as String);
     });
@@ -266,14 +267,22 @@ class AcpClient {
 
   // Replay can block on the bounded event consumer. Count active time only,
   // never desktop credit starvation, against the same 60-second bound.
-  Future<Json> loadSession(String id, String cwd) => request('session/load', {
+  Future<Json> loadSession(
+  String id,
+  String cwd, {
+  List<Json> mcpServers = const [],
+}) => request('session/load', {
     'sessionId': id,
     'cwd': cwd,
-    'mcpServers': <Object>[],
+    'mcpServers': mcpServers,
   }, timeout: const Duration(seconds: 60));
-  Future<Json> resumeSession(String id, String cwd) => request(
+  Future<Json> resumeSession(
+  String id,
+  String cwd, {
+  List<Json> mcpServers = const [],
+}) => request(
     'session/resume',
-    {'sessionId': id, 'cwd': cwd, 'mcpServers': <Object>[]},
+    {'sessionId': id, 'cwd': cwd, 'mcpServers': mcpServers},
     timeout: const Duration(seconds: 60),
   );
   /// Throws local queue-admission refusals before accepting the prompt.

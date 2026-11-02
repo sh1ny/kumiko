@@ -305,6 +305,8 @@ class Host {
       store: store,
       options: options,
       qualifiedAdaptersOverride: extension?.qualifiedAdaptersOverride,
+      tools: _tools!,
+      toolDeliveryFailuresOverride: extension?.toolDeliveryFailuresOverride,
     );
     _workbench = WorkbenchService(
       store: store,
