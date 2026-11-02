@@ -5,9 +5,25 @@
 #
 # Usage: bash pr-pair.sh <subcommand> [options]
 #   identity <dir>                    fetch URL + every push URL of origin -> owner/name
-#   context --code <dir> [--store <dir>]
+#   context --code <dir> [--store <dir>] [--only repos] [--branch b [--after-merge]]
 #                                     per-repo login, main, validate, reviewers, merge_ready (specwright.yaml + planning_store:);
-#                                     merge (user|agent), merge_method, delete_branch (bad value = exit 2 bad_setting)
+#                                     merge (user|agent), merge_method, delete_branch (bad value = exit 2 bad_setting;
+#                                     --only repos skips that check, for callers that never merge, such as vcs.sh)
+#                                     With `vcs: gitbutler` the settings must be those the change branch committed (the shared work tree
+#                                     can hold a sibling branch's or an unassigned edit): --branch b compares git hash-object
+#                                     --path=openspec/specwright.yaml <work-tree file> (the repo's clean and eol filters apply, so CRLF
+#                                     checkouts compare equal) with refs/heads/b:openspec/specwright.yaml. A difference, or the file on one
+#                                     side only, is exit 1 settings_not_pinned (names the file and the ref; commit the edit on b); a git
+#                                     failure is exit 1 git_error. --after-merge --branch b, for cleanup after its pull and delete,
+#                                     compares with the tip of refs/heads/b while that branch exists (pull skipped or left applied), else
+#                                     with gitbutler.project.targetRef; its message names that ref and says to run `but pull` or undo the
+#                                     work-tree edit. A merge-settings call (anything but --only repos) without --branch is exit 2 usage
+#                                     on GitButler. GitButler here means `vcs: gitbutler` in the work-tree file or a GitButler-managed
+#                                     repo (gitbutler/ in the common git dir and gitbutler.project.targetRef set, as vcs.sh decides),
+#                                     so an unpinned edit of the vcs line cannot turn the check off. Other Git and jj repos (a leftover
+#                                     target ref alone included) never pin; they accept and ignore --branch.
+#   vcs --code <dir>                  independent backend settings -> {"ok":true,"code":"git|jj|gitbutler","store":"git|jj"};
+#                                     absent settings default independently to git; unknown values stop with unknown_vcs; gitbutler is code-repo only and needs finish: pr
 #   tier --code <dir>                 cheap_tier.enabled: {"ok": true, "cheap_tier": bool} (true only for a parsed true; anything else
 #                                     is false, with a "note" when the value or the section is not true/false/a map). Reads no other
 #                                     setting, so a bad pr.merge_method cannot change it; exit 0 for any readable settings file
@@ -15,6 +31,26 @@
 #                                     one PUT repos/o/n/pulls/N/merge (merge_method, sha), then always a read-back: merged (also when a
 #                                     person merged first), refused (reason head_changed on 409, else refused; exit 1) or, when the state
 #                                     cannot be read or the PUT got a 5xx, unknown (exit 3). Never a second PUT, auto-merge or a queue call; bad input = exit 2
+#   policy --repo o/n --head sha --snapshot code=f [--reviewed-head code=sha] [--store --snapshot store=f --reviewed-head store=sha]
+#                                     the merge policy from GitHub, never the work tree: default_branch (repos/o/n), then openspec/specwright.yaml
+#                                     read through the contents API at the default branch and at the PR head, both as the run login. Prints
+#                                     main and head (pr.merge, pr.merge_method, pr.delete_branch, pr.reviewers; with --store also
+#                                     planning_store.reviewers), compared normalized, never as bytes, drift [{key, main, head}] and, from
+#                                     main alone: merge, merge_method, delete_branch, merge_ready {code[, store]}, merge_reason, merge_note.
+#                                     No file on main is user mode; a bad merge_method/delete_branch on main with merge: agent is exit 2
+#                                     bad_setting (a bad head value is only drift). A failed, cut-off or unreadable read (not a file, not
+#                                     base64, or YAML the reader would skip or misread: block sequences, anchors, tags, duplicate keys,
+#                                     tabs in indentation), or no file at the head, is exit 3 lookup_failed "merge policy unknown:
+#                                     <reason>"; a malformed file names its first bad line.
+#                                     Also reported.{main,head}.{code[,store]} {ok, missing, head_mismatch, snapshot_head, reviewed_head}:
+#                                     ok when the snapshot is of that repository's reviewed head (code: --head, or --reviewed-head code= for
+#                                     the archive carry-over; store: --reviewed-head store=, required) and every required reviewer of that
+#                                     side's authorizing set (store: planning_store.reviewers, else pr.reviewers) is reported in it; a set
+#                                     with no required reviewer is never ok. Heads match when equal or one is a prefix of the other.
+#                                     reviewer_args.{main,head}.{code[,store]}: login:role:seconds per reviewer, for pr-snapshot.sh --reviewer.
+#                                     --store without --snapshot store= and --reviewed-head store= is exit 2; an unreadable snapshot exits 2.
+#                                     A pr.reviewers that is not a mapping (a string, a list) reads as no reviewers, so it authorizes
+#                                     nothing, and is listed in invalid [{side, key, value}]
 #   delete-remote --repo o/n --branch b --head sha
 #                                     delete the remote branch only when it is still at the full 40-hex merged head and no open PR is
 #                                     based on it: deleted | gone (404, or 422 gone meanwhile) | moved (sha) | based_on (prs) |
@@ -81,6 +117,7 @@ if command -v cygpath >/dev/null 2>&1; then PR_PAIR_DIR=$(cygpath -m "$PR_PAIR_D
 export PR_PAIR_DIR
 
 exec "$py" -I -X utf8 - "$@" <<'PYSRC'
+import base64
 import contextlib
 import datetime
 import errno
@@ -89,6 +126,7 @@ import json
 import os
 import re
 import secrets
+import shlex
 import shutil
 import socket
 import subprocess
@@ -106,6 +144,7 @@ class _Bounded:
 
     def __getattr__(self, name):
         if _Bounded.mod is None:
+            sys.dont_write_bytecode = True  # no __pycache__ in an installed skill (#157)
             spec = importlib.util.spec_from_file_location("bounded", os.path.join(os.environ["PR_PAIR_DIR"], "bounded.py"))
             _Bounded.mod = importlib.util.module_from_spec(spec)
             spec.loader.exec_module(_Bounded.mod)
@@ -473,6 +512,260 @@ def parse_yaml(text):
     return block(0, lines[0][0])[0] if lines else {}
 
 
+def escape_len(s, i):
+    """Length of the double-quoted escape at s[i] (a backslash) as YAML defines it, or 0 when YAML has no such escape."""
+    c = s[i + 1:i + 2]
+    if c in ("x", "u", "U"):
+        n = {"x": 2, "u": 4, "U": 8}[c]
+        h = s[i + 2:i + 2 + n]
+        if not re.fullmatch(r"[0-9a-fA-F]{%d}" % n, h):
+            return 0
+        v = int(h, 16)  # YAML rejects a surrogate (a pair too) and a code point past U+10FFFF
+        return 0 if 0xD800 <= v <= 0xDFFF or v > 0x10FFFF else 2 + n
+    return 2 if c and c in YAML_ESCAPES else 0
+
+
+class YamlBad(ValueError):
+    pass
+
+
+PLAIN_START_BAD = set("[]{},#&*!|>'\"%@`")
+FLOW_CHARS = set(",[]{}")
+
+
+def plain_ok(v, flow, key=False):
+    """Raise YamlBad unless v is a plain scalar that parse_yaml reads as YAML does."""
+    if not v:
+        raise YamlBad("an empty entry")
+    if v[0] in PLAIN_START_BAD or (v[0] in "-?:" and (len(v) == 1 or v[1] in " \t" or (flow and v[1] in FLOW_CHARS))) \
+            or (flow and v[0] in "?:"):  # in a flow collection YAML 1.1 parsers (Psych) read a leading `?` or `:` as an indicator
+        raise YamlBad(f"`{v[0]}` cannot start a plain value (anchors, tags, aliases and directives are not read)")
+    if " #" in v or "\t#" in v:
+        raise YamlBad("a comment the reader would keep as text")
+    if re.search(r":[ \t]", v) or v.endswith(":"):
+        raise YamlBad("a plain value holds `:` before a space or tab")
+    if flow and (set(v) & (FLOW_CHARS | {"'", '"'})):
+        raise YamlBad("a flow entry holds `,`, a bracket or a quote outside quotes")
+    if key and ":" in v:
+        raise YamlBad("a flow key holds `:` (the reader splits at the first one)")
+
+
+def quoted_end(v, i):
+    """Index after the quoted scalar starting at v[i]; raises YamlBad on an unknown escape or a missing closing quote."""
+    q, j = v[i], i + 1
+    while j < len(v):
+        if q == '"' and v[j] == "\\":
+            n = escape_len(v, j)
+            if not n:
+                raise YamlBad(f"unknown escape `{v[j:j + 2]}`")
+            j += n
+            continue
+        if v[j] == q:
+            if q == "'" and v[j + 1:j + 2] == "'":
+                j += 2
+                continue
+            return j + 1
+        j += 1
+    raise YamlBad("unterminated quote")
+
+
+def key_too_long(k):
+    """YAML ends a simple (implicit) key within 1024 characters; the reader has no limit."""
+    return "a key of 1024 characters or more (YAML's simple-key limit)" if len(k.strip()) >= 1024 else None
+
+
+MAX_DEPTH = 32  # nesting the validator accepts; deeper would exhaust Python's recursion limit here or in parse_yaml
+
+
+def flow_node(v, i, key=False, depth=0):
+    """Index after one flow node at v[i] (i already past spaces): a collection, a quoted or a plain scalar."""
+    if i >= len(v):
+        raise YamlBad("an empty entry")
+    c = v[i]
+    if key and c in "[{":
+        raise YamlBad("a flow key that is a collection")
+    if c == "[" or c == "{":
+        if depth >= MAX_DEPTH:
+            raise YamlBad(f"flow collections nested more than {MAX_DEPTH} deep")
+        close, j, keys = ("]" if c == "[" else "}"), i + 1, set()
+        while True:
+            j = skip_ws(v, j)
+            if j >= len(v):
+                raise YamlBad(f"unterminated `{c}`")
+            if v[j] == close:
+                return j + 1
+            if v[j] == ",":
+                raise YamlBad("an empty entry")
+            start = j
+            j = flow_node(v, j, key=c == "{", depth=depth + 1)
+            j = skip_ws(v, j)
+            if c == "{":
+                why = key_too_long(v[start:j].strip())
+                if why:
+                    raise YamlBad(why)
+                key = unquote(v[start:j].strip())
+                if v[start:j].strip() == "<<":
+                    raise YamlBad("a `<<` merge key (YAML merges it in, the reader does not)")
+                if key in keys:
+                    raise YamlBad(f"duplicate key `{key}`")
+                keys.add(key)
+                if j < len(v) and v[j] == ":":
+                    if v[j + 1:j + 2] not in (" ", "\t"):  # `{a:[]}`, `{"a":1}`, `{a:}`: YAML 1.1 parsers want the space
+                        raise YamlBad("a flow key's `:` not followed by a space")
+                    j = skip_ws(v, j + 1)
+                    if j < len(v) and v[j] not in ",}":
+                        j = skip_ws(v, flow_node(v, j, depth=depth + 1))
+            elif j < len(v) and v[j] == ":":
+                raise YamlBad("a `key: value` pair inside `[...]` is read as text")
+            if j >= len(v):
+                raise YamlBad(f"unterminated `{c}`")
+            if v[j] == ",":
+                j = skip_ws(v, j + 1)
+                if j < len(v) and v[j] == close:
+                    raise YamlBad("a trailing comma (the reader keeps it as an empty entry)")
+            elif v[j] != close:
+                raise YamlBad(f"`{v[j]}` where `,` or `{close}` belongs")
+    if c in "]}":
+        raise YamlBad(f"unbalanced `{c}`")
+    if c in "\"'":
+        return quoted_end(v, i)
+    j = i
+    # libyaml ends a flow plain scalar at `:` before a space or any of `,?[]{}`
+    while j < len(v) and v[j] not in FLOW_CHARS and not (v[j] == ":" and (j + 1 == len(v) or v[j + 1] in " \t,?[]{}")):
+        j += 1
+    plain_ok(v[i:j].rstrip(), True, key)
+    return j
+
+
+def skip_ws(v, i):
+    while i < len(v) and v[i] in " \t":
+        i += 1
+    return i
+
+
+def value_problem(v):
+    """Why a value (or a quoted key) is not YAML that parse_yaml reads as written, or None."""
+    v = v.strip()
+    try:
+        if v[0] in "[{\"'":
+            j = flow_node(v, 0) if v[0] in "[{" else quoted_end(v, 0)
+            if v[j:].strip():
+                raise YamlBad("text after the closing " + ("bracket" if v[0] in "[{" else "quote"))
+        else:
+            plain_ok(v, False)
+    except YamlBad as e:
+        return str(e)
+    return None
+
+
+def yaml_problem(text):
+    """The first line parse_yaml would skip, drop or misread, as `line N: why`, or None.
+
+    parse_yaml is lenient for local settings; `policy` authorizes a merge from a remote file, so a file it cannot read whole
+    is unknown there (ADR 0020 D4). This checks the YAML subset the reader reads as YAML does: block mappings, flow
+    collections, quoted and plain scalars, `|`/`>` blocks. What it would read otherwise (block sequences, anchors, tags,
+    aliases, tabs in indentation, duplicate keys, explicit indentation indicators) is a problem too, so it fails closed."""
+    # YAML allows tab, LF, CR and printable characters; U+0085, U+2028, U+2029 and U+FEFF are excluded too
+    odd = re.search("[^\t\n\r\x20-\x7e\xa0-\ud7ff\ue000-\ufffd\U00010000-\U0010ffff]|[\u2028\u2029\ufeff]", text)
+    if odd:  # str.splitlines breaks at some of these where YAML does not, and YAML forbids the controls
+        row = len(re.split(r"\r\n|\r|\n", text[:odd.start()]))
+        return f"line {row}: a control character or line separator (U+{ord(odd.group()):04X})"
+    odd = re.search(r"[^\S \t\r\n]", text)  # Python's \s and strip() take these as space, YAML takes them as text
+    if odd:
+        row = len(re.split(r"\r\n|\r|\n", text[:odd.start()]))
+        return f"line {row}: a space character YAML does not separate with (U+{ord(odd.group()):04X})"
+    raw = text.splitlines()
+    key_re = re.compile(r"^((?:\"(?:[^\"\\]|\\.)*\"|'(?:[^']|'')*'|[^:\s][^:]*?)):(?:\s+(.*))?$")
+    lines = []
+    marker = False  # the one `---` allowed, before any key
+    block = None  # the key's indentation while inside a `|`/`>` block, whose text mapping() checks from the raw lines
+    for n, r in enumerate(raw):
+        if not r.strip() and "\t" in r:  # blank lines too, in a block or not: YAML rejects or keeps them, the reader drops them
+            return f"line {n + 1}: a tab in the indentation"
+        if block is not None and (not r.strip() or len(r) - len(r.lstrip(" ")) > block):
+            continue  # block text: a tab after its space indentation is text
+        block = None
+        if "\t" in r[:len(r) - len(r.lstrip())]:
+            return f"line {n + 1}: a tab in the indentation"
+        s = strip_comment(r).rstrip()
+        if s.strip():
+            lead = s[:len(s) - len(s.lstrip())]
+            if not lead and re.match(r"(---|\.\.\.)(\s|$)", s):  # indented: block text, or not a `key: value` line below
+                if marker or lines or s != "---":
+                    return f"line {n + 1}: a document marker the reader does not read (only `---` alone, first, at column 0)"
+                marker = True
+                continue
+            lines.append((len(lead), s.strip(), n))
+            m = key_re.match(s.strip())
+            if m and m.group(2) and m.group(2).strip()[0] in "|>":
+                block = len(lead)
+
+    def bad(i, why):
+        raise YamlBad(f"line {lines[i][2] + 1}: {why}")
+
+    def mapping(i, indent, depth=0):
+        if depth >= MAX_DEPTH:
+            bad(i, f"mappings nested more than {MAX_DEPTH} deep")
+        keys = set()
+        while i < len(lines) and lines[i][0] == indent:
+            body, row = lines[i][1], lines[i][2]
+            if body == "-" or body.startswith("- "):
+                bad(i, "a block sequence (`- item`) is not read; write it as `[a, b]`")
+            m = key_re.match(body)
+            if not m:
+                bad(i, "not a `key: value` line")
+            k = m.group(1)
+            why = value_problem(k) or key_too_long(k)
+            if why:
+                bad(i, why)
+            key = unquote(k.strip())
+            if k.strip() == "<<":
+                bad(i, "a `<<` merge key (YAML merges it in, the reader does not)")
+            if key in keys:
+                bad(i, f"duplicate key `{key}`")
+            keys.add(key)
+            val = m.group(2)
+            if val and val.strip()[0] in "|>":
+                if not BLOCK_HEADER.match(val.strip()) or re.search(r"\d", val):
+                    bad(i, "a block scalar header the reader does not read (only |, >, with + or -)")
+                end = block_scalar(raw, row + 1, indent, "|", "")[1]
+                body_rows = [r for r in raw[row + 1:end] if r.strip()]
+                if body_rows:
+                    pad = len(body_rows[0]) - len(body_rows[0].lstrip(" "))
+                    for r in raw[row + 1:end]:
+                        if r.strip():
+                            break
+                        if len(r) > pad:
+                            bad(i, "a blank line before a block scalar's text with more spaces than the text")
+                    if any(len(r) - len(r.lstrip(" ")) < pad for r in body_rows):
+                        bad(i, "a block scalar line indented less than its first line")
+                    if val.strip()[0] == ">" and any(len(r) - len(r.lstrip(" ")) > pad or r[pad] == "\t" for r in body_rows):
+                        bad(i, "a more-indented or tab-led line in a `>` block (YAML keeps its line breaks, the reader folds them)")
+                i += 1
+                while i < len(lines) and lines[i][2] < end:
+                    i += 1
+            elif val is None or val.strip() == "":
+                i += 1
+                if i < len(lines) and lines[i][0] > indent:
+                    i = mapping(i, lines[i][0], depth + 1)
+            else:
+                why = value_problem(val)
+                if why:
+                    bad(i, why)
+                i += 1
+        return i
+
+    if not lines:
+        return None
+    try:
+        i = mapping(0, lines[0][0])
+        if i < len(lines):
+            bad(i, "unexpected indentation")
+    except YamlBad as e:
+        return str(e)
+    return None
+
+
 def duration(v, default):
     if v is None or v == "":
         return default
@@ -583,30 +876,42 @@ def setting_text(m, key):
     return str(v).lower() if isinstance(v, bool) else str(v)
 
 
-def contexts(code, store):
+def merge_mode(pr):
+    """pr.merge as the policy reads it: (user|agent, note). Anything else is user, with a note naming the value as written."""
+    merge = pr.get("merge")
+    note = None
+    if merge not in (None, "") and merge not in ("user", "agent"):
+        note = f"pr.merge: {setting_text(pr, 'merge')} is not user or agent; treated as user"
+    return (merge if merge in ("user", "agent") else "user"), note
+
+
+def merge_options(pr):
+    """pr.merge_method and pr.delete_branch with their defaults; a bad value is exit 2 bad_setting."""
+    method = pr.get("merge_method")
+    method = "merge" if method is None else method
+    if method not in ("merge", "squash", "rebase"):
+        raise Stop("bad_setting", f"pr.merge_method: {setting_text(pr, 'merge_method')} must be merge, squash or rebase", code=2)
+    delete = pr.get("delete_branch")
+    delete = True if delete is None else delete
+    if not isinstance(delete, bool):
+        raise Stop("bad_setting", f"pr.delete_branch: {setting_text(pr, 'delete_branch')} must be true or false", code=2)
+    return method, delete
+
+
+def contexts(code, store, check_merge=True):
     s = load_settings(code)
     pr = s.get("pr") or {}
     out = {"code": repo_ctx(s, code, "code"), "store": repo_ctx(s, store, "store") if store else None,
            "finish": str(s.get("finish") or ""), "max_fix_rounds": int(pr.get("max_fix_rounds") if isinstance(pr.get("max_fix_rounds"), int) else 2),
            "after_limit": str(pr.get("after_limit") or "ask"), "react": bool(pr.get("react")),
            "poll_interval": duration(pr.get("poll_interval"), 300)}
-    merge = pr.get("merge")
-    out["merge"] = merge if merge in ("user", "agent") else "user"
-    if merge not in (None, "") and merge not in ("user", "agent"):
-        out["merge_note"] = f"pr.merge: {setting_text(pr, 'merge')} is not user or agent; treated as user"
+    out["merge"], note = merge_mode(pr)
+    if note:
+        out["merge_note"] = note
     out["merge_method"], out["delete_branch"] = "merge", True
-    if out["merge"] != "agent":  # only the agent merge reads them: user mode keeps today's behaviour
+    if out["merge"] != "agent" or not check_merge:  # only the agent merge reads them: user mode keeps today's behaviour
         return out
-    method = pr.get("merge_method")
-    method = "merge" if method is None else method
-    if method not in ("merge", "squash", "rebase"):
-        raise Stop("bad_setting", f"pr.merge_method: {setting_text(pr, 'merge_method')} must be merge, squash or rebase", code=2)
-    out["merge_method"] = method
-    delete = pr.get("delete_branch")
-    delete = True if delete is None else delete
-    if not isinstance(delete, bool):
-        raise Stop("bad_setting", f"pr.delete_branch: {setting_text(pr, 'delete_branch')} must be true or false", code=2)
-    out["delete_branch"] = delete
+    out["merge_method"], out["delete_branch"] = merge_options(pr)
     return out
 
 
@@ -683,7 +988,8 @@ def ambient_login():
 def norm_pr(p):
     state = "MERGED" if p.get("merged_at") else ("OPEN" if p.get("state") == "open" else "CLOSED")
     return {"number": p["number"], "url": p["html_url"], "state": state, "base": (p.get("base") or {}).get("ref"),
-            "head_sha": (p.get("head") or {}).get("sha"), "merged_at": p.get("merged_at"), "title": p.get("title", "")}
+            "head_sha": (p.get("head") or {}).get("sha"), "merged_at": p.get("merged_at"),
+            "merge_commit_sha": p.get("merge_commit_sha"), "title": p.get("title", "")}
 
 
 def discover(repo, branch, base=None, states=None):
@@ -717,10 +1023,100 @@ def cmd_identity(argv):
     return identity(pos[0])
 
 
+def settings_path(code):
+    """The settings file load_settings reads, or None."""
+    for base in (code, toplevel(code)):
+        p = Path(base) / "openspec" / "specwright.yaml"
+        if p.is_file():
+            return p.resolve()  # absolute: git runs with cwd=toplevel, so a path relative to the caller would miss
+    return None
+
+
+def settings_pinned(code, ref, branch, after_merge=False):
+    """GitButler: the work-tree settings file must equal the one at `ref` (hash-object applies the repo's clean and eol
+    filters, so a CRLF checkout compares equal). Raises settings_not_pinned (a difference, or a file on one side only) or git_error."""
+    top = toplevel(code)
+    path = settings_path(code)
+    rel = "openspec/specwright.yaml"
+    if path is not None:
+        try:
+            rel = path.resolve().relative_to(Path(top).resolve()).as_posix()
+        except ValueError:
+            pass
+    work = None
+    if path is not None:
+        r = git(top, "hash-object", f"--path={rel}", str(path))
+        if r.returncode != 0:
+            raise Stop("git_error", f"git hash-object {rel} failed: {r.stderr.strip()}")
+        work = r.stdout.strip()
+    r = git(top, "ls-tree", ref, "--", rel)
+    if r.returncode != 0:
+        raise Stop("git_error", f"git ls-tree {ref} -- {rel} failed: {r.stderr.strip()}")
+    parts = r.stdout.split()
+    tip = parts[2] if len(parts) >= 3 else None
+    if work == tip:
+        return
+    if after_merge:
+        how = f"run `but pull` or undo the edit of {rel} in the work tree before acting on it"
+    else:
+        how = f"commit the edit on {branch}, or undo it, before this step"
+    if work is None:
+        state = f"{rel} is missing from the work tree but present at {ref}"
+    elif tip is None:
+        state = f"{rel} exists in the work tree but not at {ref}"
+    else:
+        state = f"{rel} in the work tree differs from the copy at {ref}"
+    raise Stop("settings_not_pinned", f"{state}; with vcs: gitbutler the settings are those the change branch committed: {how}",
+               file=rel, ref=ref)
+
+
+def gitbutler_pins(code):
+    """Whether `context` pins the settings: `vcs: gitbutler` in the work-tree file, or a GitButler-managed repo as vcs.sh
+    `gitbutler_managed` sees it (`gitbutler/` in the common git dir and gitbutler.project.targetRef set). The second does not
+    come from the file being checked, so an unpinned edit of the `vcs:` line cannot turn the check off; a leftover target ref
+    without the metadata dir is a Git or jj checkout and does not pin."""
+    if load_settings(code).get("vcs") == "gitbutler":
+        return True
+    # no --path-format (git 2.31+): on an older git it would fail and turn the check off; a relative answer is
+    # relative to `code`, as vcs.sh gitbutler_managed resolves it
+    r = git(code, "rev-parse", "--git-common-dir")
+    common = r.stdout.strip()
+    if r.returncode != 0 or not common:
+        return False
+    common_dir = Path(common) if Path(common).is_absolute() else Path(code) / common
+    if not (common_dir / "gitbutler").is_dir():
+        return False
+    r = git(code, "config", "--get", "gitbutler.project.targetRef")
+    return r.returncode == 0 and bool(r.stdout.strip())
+
+
+def pin_ref(code, branch, after_merge):
+    if not after_merge:
+        return f"refs/heads/{branch}"
+    if has_ref(code, f"refs/heads/{branch}"):
+        return f"refs/heads/{branch}"
+    r = git(code, "config", "--get", "gitbutler.project.targetRef")
+    target = r.stdout.strip() if r.returncode == 0 else ""
+    if not target:
+        raise Stop("git_error", "gitbutler.project.targetRef is not set, so there is no target to compare the settings with")
+    return target
+
+
 def cmd_context(argv):
-    a, _ = parse_args(argv, {"--code": "code", "--store": "store"})
+    after_merge = "--after-merge" in argv
+    argv = [t for t in argv if t != "--after-merge"]
+    a, _ = parse_args(argv, {"--code": "code", "--store": "store", "--only": "only", "--branch": "branch"})
     need(a, "code")
-    c = contexts(a["code"], a.get("store"))
+    if a.get("only") not in (None, "repos"):
+        usage("--only takes repos")
+    if after_merge and not a.get("branch"):
+        usage("--after-merge needs --branch")
+    if gitbutler_pins(a["code"]):
+        if a.get("only") != "repos" and not a.get("branch"):
+            usage("with vcs: gitbutler, context for the merge settings needs --branch <branch>")
+        if a.get("branch"):
+            settings_pinned(a["code"], pin_ref(a["code"], a["branch"], after_merge), a["branch"], after_merge)
+    c = contexts(a["code"], a.get("store"), check_merge=a.get("only") != "repos")
     for k, d in (("code", a["code"]), ("store", a.get("store"))):
         if c[k] is not None:
             try:
@@ -746,6 +1142,32 @@ def cmd_tier(argv):
     elif v is not False and v is not None:
         out["note"] = f"cheap_tier.enabled: {setting_text(section, 'enabled')} is not true or false; treated as false"
     return out
+def cmd_vcs(argv):
+    a, _ = parse_args(argv, {"--code": "code"})
+    need(a, "code")
+    raw = load_settings(a["code"])
+    planning_store = raw.get("planning_store")
+    if not isinstance(planning_store, dict):
+        planning_store = {}
+
+    def selected(section, name, accepted):
+        value = section.get("vcs")
+        if value is None:
+            return "git"
+        if value not in accepted:
+            raise Stop("unknown_vcs", f"unknown {name} VCS {value!r}; accepted values: {', '.join(accepted)}")
+        return value
+
+    code = selected(raw, "code", ("git", "jj", "gitbutler"))
+    if planning_store.get("vcs") == "gitbutler":
+        raise Stop("unsupported_vcs", "planning_store.vcs: gitbutler is not supported; a store accepts git or jj")
+    store = selected(planning_store, "planning_store", ("git", "jj"))
+    if code == "gitbutler" and raw.get("finish") != "pr":
+        raise Stop("unsupported_combination", "vcs: gitbutler runs only with finish: pr (finish is "
+                   f"{setting_text(raw, 'finish') if raw.get('finish') is not None else 'absent, which counts as local'})")
+    return {"ok": True, "code": code, "store": store}
+
+
 
 
 def cmd_discover(argv):
@@ -1224,6 +1646,17 @@ def cmd_pair_state(argv):
     return {**r, "action": "ready" if not r["waiting_on"] else "wait"}
 
 
+def is_jj(d):
+    """A jj repo: it has .jj/ at its toplevel (colocated)."""
+    return os.path.isdir(os.path.join(toplevel(d), ".jj"))
+
+
+def is_gitbutler(d):
+    """A repo GitButler manages: it has .git/gitbutler/."""
+    r = git(d, "rev-parse", "--git-path", "gitbutler")
+    return r.returncode == 0 and bool(r.stdout.strip()) and os.path.isdir(os.path.join(d, r.stdout.strip()))
+
+
 def remote_contains(d, branch, sha):
     r = git_net(d, "ls-remote", "origin", f"refs/heads/{branch}")
     if r.returncode != 0:
@@ -1236,7 +1669,9 @@ def remote_contains(d, branch, sha):
         return True
     if git(d, "cat-file", "-e", remote + "^{commit}").returncode != 0:
         # another checkout pushed a tip this repo lacks: fetch it (FETCH_HEAD only, no local ref moves) before the ancestry test
-        git_net(d, "fetch", "-q", "origin", f"refs/heads/{branch}")
+        # --refmap= on a jj or GitButler repo: jj imports a remote-tracking move into a tracked bookmark, and a Git ref write is
+        # outside GitButler's workspace, so only FETCH_HEAD may change
+        git_net(d, "fetch", "-q", *(["--refmap="] if is_jj(d) or is_gitbutler(d) else []), "origin", f"refs/heads/{branch}")
     r = git(d, "merge-base", "--is-ancestor", sha, remote)
     if r.returncode in (0, 1):
         return r.returncode == 0
@@ -1565,7 +2000,9 @@ def pass_write(argv):
               if not local and any(edits_for(f, "code") for f in intent["findings"]) else None)
     owner = new_owner(secrets.token_hex(16), a["code"])
     rec = {**intent, "version": 2, "owner": owner, "change": a["change"], "code_repo": a["code_repo"], "heads": heads, "marker": marker,
-           "written_at": owner["at"]}  # when the pass began: the last-resort re-request cutoff (adopt keeps it; nothing rewrites it)
+           "written_at": owner["at"]}
+    if cmd_vcs(["--code", a["code"]])["code"] == "gitbutler":  # D13: unassigned paths already there are not this pass's to ask about
+        rec["preexisting"] = sorted(vcs_state(a["code"], "code", a["code"], intent["branch"])["unassigned_paths"])  # when the pass began: the last-resort re-request cutoff (adopt keeps it; nothing rewrites it)
     path.parent.mkdir(parents=True, exist_ok=True)
     f, tmp = temp_beside(path)  # a uniquely named file: two writers never share one
     try:
@@ -1594,6 +2031,20 @@ def judge(d, e):
     if not p.is_file():
         return "pending"
     t = p.read_text(encoding="utf-8", errors="replace")
+    return "done" if all(c in t for c in contains) and not any(x in t for x in absent) else "pending"
+
+
+def judge_at(d, e, rev):
+    """judge() on the file as commit `rev` has it."""
+    r = git(d, "cat-file", "blob", f"{rev}:{e['file']}")
+    if e.get("deleted"):
+        return "pending" if r.returncode == 0 else "done"
+    contains, absent = listify(e.get("contains")), listify(e.get("absent"))
+    if not contains and not absent:
+        return "unjudgeable"
+    if r.returncode != 0:
+        return "pending"
+    t = r.stdout
     return "done" if all(c in t for c in contains) and not any(x in t for x in absent) else "pending"
 
 
@@ -1710,6 +2161,7 @@ def pass_plan(argv):
     ctx = contexts(a["code"], a.get("store"))
     dirs = {"code": a["code"], "store": a.get("store")}
     marker = rec.get("marker")
+    code_gitbutler = cmd_vcs(["--code", a["code"]])["code"] == "gitbutler"
     dests = [k for k in ("store", "code") if any(edits_for(f, k) for f in findings) or (k == "store" and marker)]
     if not a.get("store") and ("store" in dests or prs.get("store") or any(f["source"] == "store" for f in findings)):
         raise Stop("store_required", "this record names the store repo; pass plan needs --store <dir>", code=2)
@@ -1734,14 +2186,23 @@ def pass_plan(argv):
         files = sorted({norm(e["file"]) for e in edits})
         row = {"step": "fix_commit", "repo": k, "state": "done" if sha else "todo", "sha": sha, "trailer": f"Feedback-Round: {n}",
                "files": files}
-        # judged even when a trailer commit exists: an interrupted pass can commit and push only part of its edits
-        verdicts = [(e, judge(d, e)) for e in edits]
+        st = vcs_state(d, "code", a["code"], branch) if k == "code" and code_gitbutler else None
+        # judged even when a trailer commit exists: an interrupted pass can commit and push only part of its edits.
+        # GitButler: the working tree holds every applied branch, so a file the change has no uncommitted edit in is
+        # judged at the branch tip; another branch's assigned edit is never evidence
+        mine = set(st["change_paths"]) | set(st["unassigned_paths"]) if st else None
+        verdicts = [(e, judge(d, e) if mine is None or norm(e["file"]) in mine else judge_at(d, e, tip[k])) for e in edits]
         pending = [{"file": norm(e["file"]), "finding": e["finding"], "reason": "not_made"} for e, v in verdicts if v == "pending"]
         for e, v in verdicts:
             if v == "unjudgeable":
                 stops.append({"reason": "edit_unjudgeable", "repo": k, "finding": e["finding"], "file": norm(e["file"]),
                               "detail": "the recorded edit has no contains/absent/deleted check, so it cannot be judged done"})
-        dirty = dirty_paths(d)
+        if k == "code" and code_gitbutler:
+            # D13: the change's paths and the unassigned ones; another branch's never count, nor do the unassigned paths that
+            # `pass write` recorded as preexisting (unless the pass itself edits one of them)
+            dirty = (set(st["change_paths"]) | set(st["unassigned_paths"])) - (set(rec.get("preexisting") or []) - set(files))
+        else:
+            dirty = dirty_paths(d)
         extra = sorted(dirty - set(files))
         if extra:
             stops.append({"reason": "unrecorded_change", "repo": k, "files": extra,
@@ -1941,19 +2402,42 @@ def cmd_pass(argv):
 
 def cmd_branch_check(argv):
     """May a change branch be deleted once its PR merged and main is updated? Local refs only; changes nothing."""
-    a, _ = parse_args(argv, {"--dir": "dir", "--branch": "branch", "--main": "main", "--head": "head"})
+    a, _ = parse_args(argv, {"--dir": "dir", "--branch": "branch", "--main": "main", "--head": "head", "--code": "code",
+                             "--role": "role", "--login": "login"})
     need(a, "dir", "branch", "main")
     d, b, m, head = a["dir"], a["branch"], a["main"], a.get("head")
+    backend = "git"
+    if a.get("code"):  # a non-Git backend reads the fetched main through vcs.sh: its local main may lag a skipped pull
+        role = a.get("role") or "code"
+        if role not in ("code", "store"):
+            usage("--role must be code or store")
+        backend = cmd_vcs(["--code", a["code"]])[role]
+        if backend != "git":
+            m = vcs_json("fetch-main", "--repo", d, "--role", role, "--code", a["code"],
+                         *(["--login", a["login"]] if a.get("login") else []))["commit"]
     if head is not None and not re.match(r"^[0-9a-fA-F]{4,64}$", head):
         raise Stop("usage", f"--head must be a commit id, got {head!r}", code=2)
 
     def fail(what, r):
         raise Stop("git_error", f"{what} in {d}: {(r.stderr or r.stdout).strip()}")
 
-    for ref in (f"refs/heads/{b}", f"refs/heads/{m}"):
+    if not has_ref(d, f"refs/heads/{b}"):
+        # without --code (the repo-local call) <dir> is the code repo; a store is never on GitButler
+        if not a.get("code"):
+            backend = cmd_vcs(["--code", d])["code"]
+        if backend == "gitbutler":  # `but pull` removed the integrated branch: delete-branch reports already_deleted
+            return {"ok": True, "delete": True, "reason": "already_deleted", "lacking": []}
+
+    # --main may be a commit id (the fetched main on GitButler) when no branch has that name
+    by_commit = re.fullmatch(r"[0-9a-fA-F]{7,40}", m) and not has_ref(d, f"refs/heads/{m}")
+    for ref in (f"refs/heads/{b}",) + (() if by_commit else (f"refs/heads/{m}",)):
         r = git(d, "rev-parse", "--verify", "-q", ref + "^{commit}")
         if r.returncode != 0:
             fail(f"cannot resolve {ref}", r)
+    if by_commit:
+        r = git(d, "rev-parse", "--verify", "-q", m + "^{commit}")
+        if r.returncode != 0:
+            fail(f"cannot resolve commit {m}", r)
 
     def ancestor(x, y, what):
         r = git(d, "merge-base", "--is-ancestor", x, y)
@@ -1968,7 +2452,7 @@ def cmd_branch_check(argv):
         rows = [(rec.strip("\n").split("\x1f") + [""])[:2] for rec in r.stdout.split("\x1e") if rec.strip()]
         return [{"sha": sha.strip(), "subject": subject} for sha, subject in rows]
 
-    tip, mref = f"refs/heads/{b}", f"refs/heads/{m}"
+    tip, mref = f"refs/heads/{b}", (m if by_commit else f"refs/heads/{m}")
     if ancestor(tip, mref, f"cannot compare {b} with {m}"):
         return {"ok": True, "delete": True, "reason": "on_main", "lacking": []}
     known = bool(head) and git(d, "cat-file", "-e", head + "^{commit}").returncode == 0
@@ -1979,6 +2463,51 @@ def cmd_branch_check(argv):
     return {"ok": True, "delete": False, "reason": "lacking", "lacking": lacking(f"{mref}..{tip}", "--not", head)}
 
 
+def vcs_sh(*args):
+    return run([BASH, f"{os.environ['PR_PAIR_DIR']}/vcs.sh", *args])
+
+
+def vcs_plan(cwd, role, code, operation, branch, *extra):
+    """The commands vcs.sh plan prints for one operation in a jj repo, as {cmd: argv, cwd}."""
+    r = vcs_sh("plan", "--repo", cwd, "--role", role, "--code", code, "--operation", operation, "--branch", branch, *extra)
+    try:
+        doc = json.loads(r.stdout)
+    except ValueError:
+        doc = {}
+    if not doc.get("ok"):
+        raise Stop(doc.get("error") or "vcs_error", doc.get("message") or f"vcs.sh plan failed in {cwd}: {r.stderr.strip()}")
+    return [[x.replace("\\", "/") if re.match(r"^[A-Za-z]:\\", x) else x for x in shlex.split(c)] for c in doc["commands"]]  # drive paths: forward slashes
+
+
+def vcs_json(command, *args):
+    r = vcs_sh(command, *args)
+    try:
+        doc = json.loads(r.stdout)
+    except ValueError:
+        doc = {}
+    if not doc.get("ok"):
+        raise Stop(doc.get("error") or "vcs_error", doc.get("message") or f"vcs.sh {command} failed: {r.stderr.strip()}",
+                   code=3 if r.returncode == 3 else 1)
+    return doc
+
+
+def vcs_state(cwd, role, code, branch):
+    """vcs.sh state for the named change branch (GitButler: the change's, unassigned and other branches' paths)."""
+    return vcs_json("state", "--repo", cwd, "--role", role, "--code", code, "--branch", branch)
+
+
+def vcs_branch(cwd, role, code):
+    """The current branch of a repo, read through vcs.sh state."""
+    r = vcs_sh("state", "--repo", cwd, "--role", role, "--code", code)
+    try:
+        doc = json.loads(r.stdout)
+    except ValueError:
+        doc = {}
+    if not doc.get("ok"):
+        raise Stop(doc.get("error") or "vcs_error", doc.get("message") or f"vcs.sh state failed in {cwd}: {r.stderr.strip()}")
+    return doc["branch"]
+
+
 def cmd_cleanup(argv):
     a, _ = parse_args(argv, {"--code": "code", "--store": "store", "--branch": "branch"})
     need(a, "code", "store", "branch")
@@ -1987,6 +2516,7 @@ def cmd_cleanup(argv):
     ctx = contexts(a["code"], a["store"])
     as_sh = f"{os.environ['PR_PAIR_DIR']}/as.sh"
     members, keep, out = e["set"], [], {}
+    backends = cmd_vcs(["--code", a["code"]])
     all_merged = bool(members) and all(e[k]["pr"] and e[k]["pr"]["state"] == "MERGED" for k in members)
     for k, d in (("code", a["code"]), ("store", a["store"])):
         side, main = e[k], e[k]["main"]
@@ -1994,21 +2524,38 @@ def cmd_cleanup(argv):
         exists = has_ref(d, f"refs/heads/{branch}")
         ent = {"expected": side["expected"], "repo": side["repo"], "dir": cwd, "merged": False, "branch_exists": exists, "pr": pr, "commands": []}
         cmd = lambda *c: {"cmd": list(c), "cwd": cwd}
+        jj = backends[k] != "git"  # a jj or GitButler repo gets vcs.sh plan's commands; a Git repo keeps the Git commands below
+        gb = backends[k] == "gitbutler"
         if side["expected"] and pr and pr["state"] == "MERGED":
             ent["merged"] = True
             if exists:
                 # after the pull, branch-check decides: the skill runs `delete` only when it answers delete: true
                 check = ["pr-pair.sh", "branch-check", "--dir", cwd, "--branch", branch, "--main", main] + (["--head", pr["head_sha"]] if pr.get("head_sha") else [])
-                ent["commands"] = [cmd("git", "checkout", main), cmd("bash", as_sh, ctx[k]["login"] or ambient_login(), "git", "pull", "--ff-only"), cmd(*check)]
-                ent["delete"] = ["git", "branch", "-D", branch]
+                if jj:
+                    login = ctx[k]["login"] or ambient_login()
+                    merged_sha = pr.get("merge_commit_sha")
+                    if gb:  # the pull names the branch being cleaned up; the check reads the fetched main; the delete carries the squash proof
+                        check += ["--code", a["code"], "--role", k, "--login", login]
+                    ent["commands"] = ([cmd(*c) for c in vcs_plan(cwd, k, a["code"], "switch", main)] +
+                                       [cmd(*c) for c in vcs_plan(cwd, k, a["code"], "pull", branch if gb else main, "--login", login)] +
+                                       [cmd(*check)])
+                    ent["delete"] = vcs_plan(cwd, k, a["code"], "delete-branch", branch, "--force",
+                                             *(["--merged-commit", merged_sha] if gb and merged_sha else []))[0]
+                else:
+                    ent["commands"] = [cmd("git", "checkout", main), cmd("bash", as_sh, ctx[k]["login"] or ambient_login(), "git", "pull", "--ff-only"), cmd(*check)]
+                    ent["delete"] = ["git", "branch", "-D", branch]
         elif side["expected"]:
             keep.append({"repo": k, "slug": side["repo"], "state": pr["state"] if pr else "NONE", "branch": branch,
                          "url": pr["url"] if pr else None})
         elif k == "store" and exists and side["reason"] == "no_github_origin":  # no PR can merge it: the user shares it by hand
             keep.append({"repo": k, "slug": None, "state": "SHARE_BY_HAND", "branch": branch, "url": None})
         elif k == "code" and exists and all_merged:  # the empty code branch, kept until now
-            cur = git(d, "branch", "--show-current").stdout.strip()
-            ent["commands"] = ([cmd("git", "checkout", main)] if cur == branch else []) + [cmd("git", "branch", "-d", branch)]
+            cur = vcs_branch(cwd, k, a["code"])
+            if jj:
+                ent["commands"] = (([cmd(*c) for c in vcs_plan(cwd, k, a["code"], "switch", main)] if cur == branch else []) +
+                                   [cmd(*c) for c in vcs_plan(cwd, k, a["code"], "delete-branch", branch)])
+            else:
+                ent["commands"] = ([cmd("git", "checkout", main)] if cur == branch else []) + [cmd("git", "branch", "-d", branch)]
         out[k] = ent
     return {"ok": True, "branch": branch, "set": members, "code": out["code"], "store": out["store"], "keep": keep}
 
@@ -2063,6 +2610,162 @@ def reply_message(r):
     except ValueError:
         message = ""
     return message or (r.stderr or r.stdout).strip() or f"gh exited {r.returncode}"
+
+
+def policy_unknown(reason):
+    raise Stop("lookup_failed", f"merge policy unknown: {reason}", code=3, unknown=True)
+
+
+def policy_gh(*args):
+    """One fenced, bounded gh read for `policy`; a failure or a limit is unknown with the policy wording; a 404 is None."""
+    try:
+        r = gh(*args)
+    except Stop as e:
+        if e.extra.get("unknown"):
+            policy_unknown(re.sub(r"^GitHub state unknown: ", "", e.message))
+        raise
+    if r.returncode != 0:
+        if http_status(r) == 404:
+            return None
+        policy_unknown(reply_message(r))
+    return r.stdout
+
+
+def policy_file(repo, ref):
+    """The parsed specwright.yaml at `ref` from GitHub's contents API: a mapping, or None when the file is not there (404)."""
+    out = policy_gh("api", f"repos/{repo}/contents/openspec/specwright.yaml?ref={quote(ref, safe='')}")
+    if out is None:
+        return None
+    try:
+        body = json.loads(out)
+        if not isinstance(body, dict) or body.get("type") != "file" or body.get("encoding") != "base64":
+            raise ValueError("not a base64 file")
+        text = base64.b64decode("".join(str(body.get("content", "")).split()), validate=True).decode("utf-8-sig")
+        why = yaml_problem(text)
+        if why:
+            raise ValueError(why)
+        s = parse_yaml(text) or {}
+        if not isinstance(s, dict):
+            raise ValueError("not a mapping")
+    except (ValueError, TypeError) as e:  # binascii.Error and UnicodeDecodeError are ValueErrors
+        policy_unknown(f"unreadable openspec/specwright.yaml at {ref}: {e}")
+    return s
+
+
+def policy_side(s, with_store):
+    """The policy keys of one settings file, normalized so only a real difference compares unequal. Keys are the setting names."""
+    def sect(src, name):
+        v = src.get(name)
+        return v if isinstance(v, dict) else {}
+    pr = sect(s, "pr")
+    merge, note = merge_mode(pr)
+    method, delete = pr.get("merge_method"), pr.get("delete_branch")
+    raw, invalid = pr.get("reviewers"), []
+    if raw is not None and not isinstance(raw, dict):  # a string or a list: no reviewers, so it authorizes nothing
+        invalid.append({"key": "pr.reviewers", "value": setting_text(pr, "reviewers")})
+        raw = None
+    side = {"pr.merge": merge, "pr.merge_method": "merge" if method is None else method,
+            "pr.delete_branch": True if delete is None else delete, "pr.reviewers": reviewers_of(raw)}
+    if with_store:
+        own = sect(s, "planning_store").get("reviewers")
+        side["planning_store.reviewers"] = reviewers_of(own) if isinstance(own, dict) else None  # None: the store inherits pr.reviewers
+    return side, note, pr, invalid
+
+
+def same_setting(a, b):
+    """Equal by type as well as value: Python has 1 == True and 0 == False, but `delete_branch: 1` is not `true`."""
+    return json.dumps(a, sort_keys=True, default=str) == json.dumps(b, sort_keys=True, default=str)
+
+
+def has_required(reviewers):
+    return any(r["role"] == "required" for r in reviewers.values())
+
+
+def same_commit(a, b):
+    """Two commit ids are the same when equal, or when one (7 to 40 hex digits) is a prefix of the other."""
+    a, b = str(a or "").lower(), str(b or "").lower()
+    return bool(re.fullmatch(r"[0-9a-f]{7,40}", a) and re.fullmatch(r"[0-9a-f]{7,40}", b)) and (a.startswith(b) or b.startswith(a))
+
+
+def reported_check(snapshot, reviewed, reviewers):
+    """Whether the snapshot is of the reviewed head and every required reviewer of the authorizing set reported in it.
+    A set with no required reviewer authorizes nothing: not ok."""
+    got = snapshot.get("head_oid") if isinstance(snapshot, dict) else None
+    mismatch = not same_commit(got, reviewed)
+    state = {}
+    for r in (snapshot.get("reviewers") if isinstance(snapshot, dict) else None) or []:
+        if isinstance(r, dict) and isinstance(r.get("login"), str):
+            login = re.sub(r"\[bot\]$", "", r["login"]).lower()
+            state[login] = state.get(login, False) or r.get("state") == "reported"
+    required = [l for l, r in reviewers.items() if r["role"] == "required"]
+    missing = [l for l in required if not state.get(l.lower())]
+    return {"ok": bool(required) and not missing and not mismatch, "missing": missing, "head_mismatch": mismatch,
+            "snapshot_head": got, "reviewed_head": reviewed}
+
+
+def cmd_policy(argv):
+    """The merge policy as the default branch holds it, and where the PR head's copy differs (trust-main-merge-policy D1-D3)."""
+    with_store = "--store" in argv
+    a, _ = parse_args([t for t in argv if t != "--store"], {"--repo": "repo", "--head": "head", "--snapshot": "+snapshot",
+                                                            "--reviewed-head": "+reviewed"})
+    need(a, "repo", "head")
+    repo, head = a["repo"], a["head"]
+    if not re.fullmatch(r"[0-9a-fA-F]{7,40}", head):
+        usage(f"--head must be a commit id of 7 to 40 hex digits, got {head!r}")
+    reviewed = {}
+    for spec in a.get("reviewed", []):
+        name, _, sha = spec.partition("=")
+        if name not in ("code", "store") or not re.fullmatch(r"[0-9a-fA-F]{7,40}", sha):
+            usage("--reviewed-head is code=<sha> or store=<sha> (7 to 40 hex digits)")
+        reviewed[name] = sha
+    reviewed.setdefault("code", head)
+    sides = ["code", "store"] if with_store else ["code"]
+    snaps = read_snapshots(a)
+    for side in sides:
+        if side not in snaps:
+            usage(f"missing --snapshot {side}=<file>")
+    if with_store and "store" not in reviewed:
+        usage("--store needs --reviewed-head store=<sha>")
+    if not with_store and ("store" in snaps or "store" in reviewed):
+        usage("--snapshot store= and --reviewed-head store= need --store")
+    body = policy_gh("api", f"repos/{repo}")
+    try:
+        default = json.loads(body or "")["default_branch"]
+        if not isinstance(default, str) or not default:
+            raise ValueError("no default branch")
+    except (ValueError, KeyError, TypeError):
+        policy_unknown(f"cannot read the default branch of {repo}")
+    main_s = policy_file(repo, default)
+    if main_s is None:
+        main_s = {}  # no settings file on the default branch: user mode
+    head_s = policy_file(repo, head)
+    if head_s is None:
+        policy_unknown(f"no openspec/specwright.yaml readable at {head}")
+    main, note, main_pr, main_bad = policy_side(main_s, with_store)
+    head_side, _, _, head_bad = policy_side(head_s, with_store)
+    drift = [{"key": k, "main": main[k], "head": head_side[k]} for k in main if not same_setting(main[k], head_side[k])]
+    out = {"ok": True, "repo": repo, "default_branch": default, "main": main, "head": head_side, "drift": drift,
+           "invalid": [dict(side=w, **b) for w, bad in (("main", main_bad), ("head", head_bad)) for b in bad],
+           "merge": main["pr.merge"], "merge_method": "merge", "delete_branch": True}
+    if out["merge"] == "agent":  # only the agent merge reads them, as context does; a bad value on main stops here
+        out["merge_method"], out["delete_branch"] = merge_options(main_pr)
+    ready = {"code": has_required(main["pr.reviewers"])}
+    if with_store:
+        own = main["planning_store.reviewers"]
+        ready["store"] = ready["code"] if own is None else has_required(own)
+    out["merge_ready"] = ready
+    out["reported"], out["reviewer_args"] = {}, {}
+    for which, side in (("main", main), ("head", head_side)):
+        sets = {"code": side["pr.reviewers"]}
+        if with_store:
+            own = side["planning_store.reviewers"]
+            sets["store"] = side["pr.reviewers"] if own is None else own
+        out["reported"][which] = {k: reported_check(snaps[k], reviewed[k], v) for k, v in sets.items()}
+        out["reviewer_args"][which] = {k: [f"{l}:{r['role']}:{r['timeout']}" for l, r in v.items()] for k, v in sets.items()}
+    out["merge_reason"] = {k: None if v else "no_required_reviewer" for k, v in ready.items()}
+    if note:
+        out["merge_note"] = note
+    return out
 
 
 def cmd_delete_remote(argv):
@@ -2128,11 +2831,11 @@ def cmd_item_issues(argv):
     return {"ok": True, "found": found, "missing": [i for i in items if i not in found]}
 
 
-COMMANDS = {"identity": cmd_identity, "context": cmd_context, "tier": cmd_tier, "discover": cmd_discover, "expected": cmd_expected,
+COMMANDS = {"identity": cmd_identity, "context": cmd_context, "tier": cmd_tier, "vcs": cmd_vcs, "discover": cmd_discover, "expected": cmd_expected,
             "ensure-pr": cmd_ensure_pr, "closing-check": cmd_closing_check,
             "closed-check": cmd_closed_check, "link": cmd_link, "pair-state": cmd_pair_state, "rounds": cmd_rounds,
             "pass": cmd_pass, "cleanup-plan": cmd_cleanup, "branch-check": cmd_branch_check, "merge": cmd_merge,
-            "delete-remote": cmd_delete_remote, "item-issues": cmd_item_issues}
+            "delete-remote": cmd_delete_remote, "policy": cmd_policy, "item-issues": cmd_item_issues}
 
 args = sys.argv[1:]
 try:

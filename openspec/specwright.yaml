@@ -139,3 +139,7 @@ release:
   version_files:
     VERSION: '^(\d+\.\d+\.\d+)$'
     # package.json: '^  "version": "(\d+\.\d+\.\d+)",$'
+
+# Backend for branch state and version-control writes: git | jj | gitbutler.
+# git is the default; selected for this project during the update.
+vcs: git

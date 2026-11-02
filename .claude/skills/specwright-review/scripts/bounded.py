@@ -12,6 +12,9 @@ Limits (defaults live here only; the environment can lower them, for tests, but 
 Test overrides (read from the run's environment, only when set; never needed in production):
   SPECWRIGHT_TEST_POLL     the wait interval of the loop, in seconds (default POLL)
   SPECWRIGHT_TEST_NO_JOB   1 makes the Windows job object fail, to test the fallback (read only by spawn)
+  SPECWRIGHT_TEST_SPAWN_DIR  a directory; on POSIX each successful spawn creates an empty file named after the child's pid in
+                           it (from this process's environment, and from the child's env= when that names another), so a
+                           test runner can stop sessions nested spawns started. Unset: nothing is written. Windows: never.
 
 Use as a library:  run_bounded(cmd, deadline, max_bytes, env, cwd, paged=False, secret=False) -> Result(rc, stdout, stderr, limit)
   limit is None, "deadline_exceeded" or "response_too_large" (rc is None then); deadline and max_bytes default (None) to the
@@ -129,6 +132,21 @@ def _resume(p):
         raise OSError("NtResumeProcess failed: NTSTATUS 0x%08x" % (status & 0xFFFFFFFF))
 
 
+def _record_spawn(pid, child_env):
+    """Test hook SPECWRIGHT_TEST_SPAWN_DIR (POSIX): create an empty file named `pid` in the directory this process's
+    environment names, and in the one the child's env names when that is another. A failed write is ignored."""
+    dirs = []
+    for env in (os.environ, child_env):
+        d = (env or {}).get("SPECWRIGHT_TEST_SPAWN_DIR")
+        if d and d not in dirs:
+            dirs.append(d)
+    for d in dirs:
+        try:
+            open(os.path.join(d, str(pid)), "w").close()
+        except OSError:
+            pass
+
+
 def spawn(cmd, data=None, hook_env=None, **kw):
     """Popen with a stopping handle on the whole tree (see the module header). `hook_env` is the environment that carries the
     test overrides when it is not the command's own (default: kw["env"], else this process's). Returns p with p.stdin None
@@ -140,6 +158,8 @@ def spawn(cmd, data=None, hook_env=None, **kw):
         kw.setdefault("start_new_session", True)
     p = subprocess.Popen(cmd, stdin=subprocess.DEVNULL if data is None else subprocess.PIPE, bufsize=0, **kw)
     p.job = None
+    if os.name != "nt":
+        _record_spawn(p.pid, kw.get("env"))
     if os.name == "nt":
         try:
             p.job = _make_job(p, hook_env)

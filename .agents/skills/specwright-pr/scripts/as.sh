@@ -32,6 +32,11 @@
 # Run git from inside the target repo: the URL check and the http extraHeader
 # scrub cover the current repository only, so a git command that selects
 # another one (-C, --git-dir, --work-tree) is refused (exit 3).
+# but: only `but pull` runs (it runs the system `git fetch`, so the same transport rules
+# apply); -C/--current-dir and every other but subcommand are refused (exit 3).
+# jj: only `jj git push` and `jj git fetch` run (they use a Git child process, so the
+# same transport rules apply); -R/--repository, --config/--config-file and every other
+# jj subcommand are refused (exit 3).
 set -euo pipefail
 
 resolve=
@@ -166,6 +171,63 @@ case ${1##*/} in
         *) break ;;
       esac
     done ;;
+esac
+
+# but (GitButler): only `but pull` is fenced. It fetches by running the system `git fetch`,
+# which takes the transport settings below from the environment. -C/--current-dir selects
+# another repository (the checks here read the one as.sh starts in), so it is refused
+# anywhere before `--`, and so is every other subcommand.
+case ${1##*/} in
+  but|but.exe)
+    for a in "${@:2}"; do
+      [ "$a" != -- ] || break
+      case $a in
+        -C|-C?*|--current-dir|--current-dir=*)
+          echo "as.sh: but $a selects another repository; run as.sh from inside it; refusing" >&2; exit 3 ;;
+      esac
+    done
+    w1= i=2
+    while [ "$i" -le $# ]; do
+      a=${!i}
+      case $a in
+        --) break ;;
+        -*) i=$((i + 1)) ;;
+        *) w1=$a; break ;;
+      esac
+    done
+    if [ "$w1" != pull ]; then
+      echo "as.sh: only 'but pull' is fenced; refusing 'but${w1:+ $w1}'" >&2; exit 3
+    fi ;;
+esac
+
+# jj: only `jj git push` and `jj git fetch` are fenced. They run a Git child process,
+# which takes the transport settings below from the environment. Any option that selects
+# another repository or config (-R, --repository, --config, --config-file; global options
+# may follow the subcommand) or any other subcommand is refused before it runs.
+case ${1##*/} in
+  jj|jj.exe)
+    for a in "${@:2}"; do
+      [ "$a" != -- ] || break
+      case $a in
+        -R|-R?*|--repository|--repository=*)
+          echo "as.sh: jj $a selects another repository; run as.sh from inside it; refusing" >&2; exit 3 ;;
+        --config|--config=*|--config-file|--config-file=*)
+          echo "as.sh: jj $a selects another config; refusing" >&2; exit 3 ;;
+      esac
+    done
+    w1= w2= i=2
+    while [ "$i" -le $# ]; do
+      a=${!i}
+      case $a in
+        --) break ;;
+        --color|--at-op|--at-operation) i=$((i + 2)) ;;
+        -*) i=$((i + 1)) ;;
+        *) if [ -z "$w1" ]; then w1=$a; else w2=$a; break; fi; i=$((i + 1)) ;;
+      esac
+    done
+    if [ "$w1" != git ] || { [ "$w2" != push ] && [ "$w2" != fetch ]; }; then
+      echo "as.sh: only 'jj git push' and 'jj git fetch' are fenced; refusing 'jj ${w1}${w2:+ $w2}'" >&2; exit 3
+    fi ;;
 esac
 
 if [ "$(git rev-parse --is-inside-work-tree 2>/dev/null || true)" = true ]; then

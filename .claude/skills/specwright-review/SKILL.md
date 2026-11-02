@@ -1,8 +1,8 @@
 ---
 name: specwright-review
-description: "External Claude reviews for Specwright changes, always launched through Orca skills in a fresh tab or pane with structured report-back. Validates findings and fails closed; pre-ship mode blocks on concrete P0/P1 defects, not an open-ended zero-findings loop. Triggers: 'review before ship', 'run the pre-ship review', a design review step (FULL tier, roadmap baseline), or specwright-commit, specwright-pr ship and specwright-finish calling it."
+description: "Reviewer routes and the pre-ship review for Specwright changes. Chooses the reviewer (codex, claude, omp CLI or the specwright-reviewer subagent) from review.order, runs it isolated and read-only through scripts/review-run.sh, validates the output and fails closed. Pre-ship mode reviews the finished main...<change branch tip> diff before the first PR or a local merge, blocks on P0/P1 findings, and sets the rules for fixes, waivers and spec amendments. Triggers: 'review before ship', 'run the pre-ship review', a design review step (FULL tier, roadmap baseline) choosing its reviewer, or specwright-commit, specwright-pr ship and specwright-finish calling it."
 metadata:
-  version: 0.10.0
+  version: 0.14.1
 ---
 
 # Specwright Review
@@ -11,67 +11,67 @@ The script lives in `${CLAUDE_SKILL_DIR}/scripts/` (in other harnesses: the `scr
 
 ## Settings
 
-This project's reviewer is always external Claude through Orca. Helper limits remain configurable in `openspec/specwright.yaml`:
+Read from `openspec/specwright.yaml`; every key is optional:
 
 ```yaml
 review:
-  cross_model: true
-  order: [claude]
-  # Omit model/effort overrides unless the user requested them; Orca inherits
-  # the configured Claude default.
-  timeout: 20m
-  max_diff_kb: 3072
+  cross_model: true          # false = the specwright-reviewer subagent only, no CLI
+  order: [codex, claude, omp] # routes tried in order; the current harness is skipped
+  models:                    # per route; omit = the CLI's default
+    omp: "@default"          # an OMP role (@slow) or provider/id
+  thinking: {}               # per route: codex reasoning effort, claude --effort, omp --thinking (provider/id only)
+  timeout: 20m               # per review run; the reviewer is killed after it
+  max_diff_kb: 1024          # pre-ship input bound (code + store diff); over it, no review runs
   preship: true              # false = no pre-ship review and no ship/merge gate
 ```
 
 ## Routes
 
-Every local code, design and pre-ship review uses this route, including when the authoring harness is Claude:
+Every review (design or pre-ship) picks its reviewer the same way:
 
-If you are already the dispatched Claude review worker, perform the assigned review and report using the live Dispatch preamble; do not launch another reviewer. The steps below belong to the coordinator.
-
-1. Read the `orca-cli` and `orchestration` skills, resolve the Orca executable once, and load their version-matched guides. Use real Orca runtime state, not an in-process subagent.
-2. Bind a coordinator Run and launch a fresh worker with `ORCA orchestration worker-start --spec "<self-contained read-only review>" --worktree current --agent claude --json`. `ORCA` means the executable resolved by the skill. Each review starts in a new Orca tab or pane; never reuse the author's session or run a hidden direct CLI reviewer. Inherit the user's configured Claude model unless they named an override.
-3. Give the worker the exact reviewed HEAD/range, artifact paths, reviewer brief and required report schema. Keep it read-only except its report files; no builds, tests, formatters, product/provider processes or product edits. Require evidence-backed consumer impact and a realistic trigger; distinguish severity from likelihood.
-4. Receive its report through the orchestration `worker_done`/coordinator inbox flow. Validate the active Dispatch, report file and reviewed HEAD before acknowledging completion; release the settled worker according to the orchestration skill. Do not substitute a terminal's silence for a completed review.
-5. Use `review-run.sh preflight`, `record` and `gate` for bounds and validated receipts, recording the external report with `--route claude`. `select` may supply CLI availability metadata but never authorizes a subagent or alternate-provider fallback; `run` is not this project's launch path. Missing Claude/Orca or invalid output is a failed review, not permission to review inline.
-6. Report the Orca Run/Dispatch/agent identity and findings. Requested settings are not proof of the effective model; report unavailable model metadata as unknown. The helper's generic receipt is not proof of Orca process isolation.
-
-Do one bounded review of the requested change and regressions. P2/P3 findings are non-blocking; do not automatically repeat adversarial sweeps until every finding is gone. A focused verification of an addressed blocker is distinct from reopening the whole scope.
+1. **Select:** `bash scripts/review-run.sh select --runtime <claude|codex|omp|other>`, where `--runtime` is the harness you are running in (`other` skips nothing). It prints `route` (`codex`, `claude`, `omp` or `subagent`), `skipped` (each route with its reason: `current runtime`, `not installed`, a failed probe, or OMP's `Model "<m>" not found`), `model` and `thinking`. Save the output to a temp file: `run` takes it as `--selection` so the receipt lists the skipped routes. Exit 1 (an unknown name in `review.order`) → stop and show the message.
+2. **CLI route** → `run` (below). The script holds one fixed, read-only command line per CLI; never build or change a reviewer command line yourself.
+3. **`subagent`** → dispatch the `specwright-reviewer` agent with file paths, never your reasoning, then validate what it wrote with `record` (below). If no such agent is installed, stop and tell the user.
+4. **Background.** A review takes minutes, up to `review.timeout`. Start `run` in the background (Claude Code: `run_in_background`; other harnesses: their background or blocking exec) and wait for it to finish; do not poll it.
+5. **Exit 3 is a failed review** (`status: invalid`, `timeout`, or the reviewer crashed): nothing was reviewed. Never try the next route, never review the change yourself, and never treat it as a pass. Report the route, the status and the error, and offer to run it again. A failed pre-ship review stops ship and the local merge until a review passes.
+6. **Receipt.** Report the receipt from the output: the route, the skipped routes with their reasons, and the requested and actual model and level (`unknown` when the CLI does not say). The receipt's `process_group` says how the reviewer's processes were held together (`job` on Windows, `session` on POSIX); `none` (with `process_group_reason`) means Windows could not make a job object, and a stopped reviewer's tree was then stopped from the reviewer's own process.
 
 ## Design reviews
 
-Use the external Orca/Claude route above for FULL-tier and roadmap baseline reviews. First allocate the report with `bash scripts/review-run.sh record --kind design --change <change-name> --scratch`; give that path, the requested artifacts and review template to the worker.
+The schema's review step (FULL tier) and the `specwright-roadmap` baseline review use the routes above:
+- **CLI route:** write the review request (the same request the review step describes: the files to read, the installed project skills that apply, the review template) to a temp file, then `bash scripts/review-run.sh run --kind design --route <route> --prompt-file <request file> --out <review file> --change <change-name> --selection <select output>` (store-backed: `--store <store toplevel>`, so the Claude route can read the planning files). `<review file>` is the change's `review.md`; for the roadmap baseline it is `openspec/architecture-review.md` and `<change-name>` is `baseline`. The script writes it only after the output has exactly one `VERDICT: <v>` line (`<v>` is `APPROVE`, `APPROVE_WITH_CHANGES` or `REVISE`) and exactly one `CHANGES_APPLIED: <c>` line (`no` or `yes` after `APPROVE_WITH_CHANGES`, `n/a` after the other two); `BLOCKED`, `USER_OVERRIDE`, `SKIPPED_LIGHT`, `DEFERRED`, `WAIVED` or any other value is invalid, and the error names it. On exit 3 the file is untouched. `codex` on Windows needs Python 3.11+ for the script to pass on your `windows.sandbox` setting (see the Windows note below); without it the review still runs, but codex may not be able to read the checkout, and the check above then refuses a `BLOCKED` result.
+- **`subagent`:** first ask the script for a result file, `bash scripts/review-run.sh record --kind design --change <change-name> --scratch`, which prints `scratch`, a fresh result file under the state dir, outside the change. The `specwright-reviewer` agent writes its review to that file, never to the review file. Then `bash scripts/review-run.sh record --kind design --change <change-name> --result <scratch> --out <review file> --route subagent --selection <select output>`: it writes `<review file>` atomically only when the review validates (the same check as above) and removes the scratch file. Report its `receipt` (Routes step 6). Exit 3 → the review is invalid: `<review file>` is left as it was (an earlier review stays), the output names the scratch file, the tasks step does not start; run the review again. Bare `record` without `--out` still validates a file in place, but design reviews do not use it.
 
-After its report arrives, run `bash scripts/review-run.sh record --kind design --change <change-name> --result <scratch> --out <review file> --route claude`. It atomically writes the change's `review.md` (or baseline architecture review) only when the verdict and `CHANGES_APPLIED` markers validate. Add `--store <store toplevel>` when planning is store-backed. Exit 3 leaves the prior review untouched and is not a pass.
+**Windows and codex.** The codex route always ignores the user's codex config (`--ignore-user-config`). On Windows only, when that config's `[windows] sandbox` is a plain name (such as `elevated`), the script passes just that setting as `-c windows.sandbox="<name>"` and lists it in the receipt as `windows_sandbox`; nothing else in the file is used. Reading the file needs Python 3.11+ (`tomllib`); on an older Python nothing is passed.
 
 ## Pre-ship review
 
-Reviews the finished change, `<main>...HEAD` of the code repo and, store-backed, of the store, before the change's first PR or a local merge. With `review.preship: false`, skip this whole section and the gate.
+Reviews the finished change, `<main>...<branch>` of the code repo (the tip of the change branch, which is HEAD on Git and jj) and, store-backed, of the store, before the change's first PR or a local merge. With `review.preship: false`, skip this whole section and the gate.
+
+**Branch.** Every `review-run.sh` call below that reads the change takes `--branch <prefix>/<change-name>` (the roadmap's `<branch>` for a roadmap branch, such as `docs/project-baseline`). The script resolves `refs/heads/<branch>` itself on every call for the diff, the record key, the `Preship-Round` count, the after-archive lookup, `heads_moved`, `gate` and `waive`; never pass a SHA. On GitButler HEAD is the workspace commit or another applied branch, so `--branch` is required there: without it the script stops with a usage error naming `--branch` and no review runs. On Git and jj pass it too; the tip equals HEAD, so ranges and record keys are the same as without it. Store-backed, the store side reads the store's HEAD (`--store-branch <name>` names its branch when needed).
 
 **When.** `specwright-commit` step 3 runs it once every task is committed. `specwright-pr` ship (before the change's first PR) and `specwright-finish` (before a local merge) run the **gate** first and come here only on `missing`.
 
-1. **Review.** Resolve the planning repo as the calling skill does, then:
-   - Run `bash scripts/review-run.sh preflight --kind preship --change <change-name> --base <main> --prefix <P>` (store-backed: add `--store <store toplevel> --store-base <store main>`) and save its exact output. It checks the complete combined diff against `review.max_diff_kb` and names the reviewed heads and artifacts.
-   - Launch external Claude through Orca as specified in Routes. Supply that HEAD, the complete `<main>...HEAD` context, artifact paths, `references/brief.md`, `references/findings.schema.json`, and the report path. Keep the requested review bounded; do not supply author rationale.
-   - After structured completion, validate with `bash scripts/review-run.sh record --kind preship --change <change-name> --result <findings file> --route claude --preflight <preflight output>` (store-backed: add `--store <store toplevel>`). If HEAD moved, the record fails closed; never attach a review to a head it did not inspect.
+1. **Review.** Resolve the planning repo as the calling skill does. Select (Routes step 1), then:
+   - CLI route, in the background: `bash scripts/review-run.sh run --kind preship --route <route> --change <change-name> --branch <prefix>/<change-name> --out <findings file> --base <main> --prefix <P> --selection <select output>`, store-backed adding `--store <store toplevel> --store-base <store main>`. `<P>` is the planning prefix, as `specwright-pr` defines it (default `openspec`, relative to the code toplevel). The script builds the input itself (both diffs, the changed files, the change's artifact paths, `references/brief.md`), checks it against the findings schema, and records the result for the reviewed head.
+   - `subagent`: first `bash scripts/review-run.sh preflight --kind preship --change <change-name> --branch <prefix>/<change-name> --base <main> --prefix <P>` (store-backed: `--store <store toplevel> --store-base <store main>`) and save its output. It applies `review.max_diff_kb` to the same combined diff `run` reads, before any reviewer starts (exit 1 `diff_too_large`: handle it as below), and prints the heads the review covers. Then dispatch `specwright-reviewer` in pre-ship mode with the change name, the preflight `artifacts` (the artifact paths to read: archived ones once the change is archived), the base and the change branch `<prefix>/<change-name>` (the reviewer diffs `<base>...<branch>`, never HEAD), the planning root (`root.path`) and `<P>`, the store id when the session selected a store (the agent passes it to `openspec list --json` as `--store <id>`), the store toplevel and base when store-backed, `references/brief.md`, `references/findings.schema.json` and the path of the findings file to write; then `bash scripts/review-run.sh record --kind preship --change <change-name> --branch <prefix>/<change-name> --result <findings file> --route subagent --preflight <preflight output> --selection <select output>` (store-backed: `--store <store toplevel>`). If the branch tip moved since the preflight, `record` exits 3 with `heads_moved` and writes nothing: run the review again.
    - Exit 1 `diff_too_large` → no reviewer ran. Report the size and ask the user to raise `review.max_diff_kb` or set `review.preship: false`. Never review a cut-down diff.
-   - Exit 3 is a failed review: report its status/error, preserve the prior record, and do not fall back to another reviewer.
+   - Exit 3 → Routes step 5.
 2. **Read the result.** P0 and P1 findings block; P2 and P3 do not. No P0/P1 → the review passed: report it and hand back to the caller. Leave P2/P3 findings as they are: the PR description lists them, and fixing them now would leave the new head without a pass. Fix them only when the user asks, or in a round commit you make anyway (step 4).
-3. **Blocked.** Show every open P0/P1 finding (id, file, title) with the options: fix, or waive. A waiver comes only from the user: run `bash scripts/review-run.sh waive --change <change-name> --prefix <P> --finding <id> --reason "<the user's reason>"` (store-backed: `--store <store toplevel>`) only after the user explicitly answers that this finding is accepted, with their reason. Never waive a finding on your own judgement. No answer → no pass, and ship does not start. Once every P0/P1 is waived, `gate` reports `pass`.
-4. **Fix round.** Before fixing anything, `bash scripts/review-run.sh rounds --change <change-name>` (store-backed: `--store <store toplevel>`) gives `n`, the highest `Preship-Round:` trailer on the branch in either repo. When `n` is 2 or more and the review still has an unwaived P0/P1, stop fixing: list the open findings and ask the user how to proceed (another round, waive, or stop). Otherwise this is round `n+1`:
+3. **Blocked.** Show every open P0/P1 finding (id, file, title) with the options: fix, or waive. A waiver comes only from the user: run `bash scripts/review-run.sh waive --change <change-name> --branch <prefix>/<change-name> --prefix <P> --finding <id> --reason "<the user's reason>"` (store-backed: `--store <store toplevel>`) only after the user explicitly answers that this finding is accepted, with their reason. Never waive a finding on your own judgement. No answer → no pass, and ship does not start. Once every P0/P1 is waived, `gate` reports `pass`.
+4. **Fix round.** Before fixing anything, `bash scripts/review-run.sh rounds --change <change-name> --branch <prefix>/<change-name>` (store-backed: `--store <store toplevel>`) gives `n`, the highest `Preship-Round:` trailer on the branch in either repo. When `n` is 2 or more and the review still has an unwaived P0/P1, stop fixing: list the open findings and ask the user how to proceed (another round, waive, or stop). Otherwise this is round `n+1`:
    - fix each `code` and `test` finding, test-first where it changes behaviour, and run the tests;
-   - commit the fixed files by name under the `specwright-commit` rules, one commit per changed repo (store-backed: the store first, same subject and trailer in both), with the subject `<type>(<change-name>): address pre-ship review` and the trailer `Preship-Round: <n+1>`. Never use `address review feedback` or a `Feedback-Round:` trailer for these: those count PR fix rounds;
+   - commit the fixed files by name under the `specwright-commit` rules (`bash <specwright-pr>/scripts/vcs.sh commit --repo <toplevel> --role code --branch <branch> --message-file <msgfile> -- <files>`; the store: `--repo "<store toplevel>" --role store --code "<code toplevel>"`), one commit per changed repo (store-backed: the store first, same subject and trailer in both), with the subject `<type>(<change-name>): address pre-ship review` and the trailer `Preship-Round: <n+1>`. Never use `address review feedback` or a `Feedback-Round:` trailer for these: those count PR fix rounds;
    - run a new pre-ship review (step 1): the new head has no pass until one passes.
 5. **Spec findings** (`category: spec`) carry the reviewer's `spec_class`:
-   - **clarification:** one reading of the spec fits every other scenario, and the code and tests already match it. Check that yourself. If it holds, edit the wording in the planning repo and commit it by name as `<type>(<change-name>): amend specs` with the trailer `Amendment: clarification`, then run a new pre-ship review. If it does not hold, treat it as a behaviour change.
+   - **clarification:** one reading of the spec fits every other scenario, and the code and tests already match it. Check that yourself. If it holds, edit the wording in the planning repo and commit it by name (`vcs.sh commit`, as above) as `<type>(<change-name>): amend specs` with the trailer `Amendment: clarification`, then run a new pre-ship review. If it does not hold, treat it as a behaviour change.
    - **behaviour_change:** after the edit, the requirement or scenario would allow something different. Do not edit the spec. Ask the user whether to change the behaviour (the spec, then the code) or the code to fit the spec. Only on their approval: follow the apply drift rule (an `amend specs` commit with the trailer `Amendment: behaviour-change`, a new design review step when the tier is FULL, test and code updates), then run a new pre-ship review.
    - You may treat a clarification as a behaviour change and ask; never the other way round.
 6. **Report:** the route and receipt, the findings by priority, what was fixed, amended or waived, and the P2/P3 findings left open.
 
 ## Gate
 
-`bash scripts/review-run.sh gate --change <change-name> --prefix <P>` (store-backed: `--store <store toplevel>`) prints `status`:
+`bash scripts/review-run.sh gate --change <change-name> --branch <prefix>/<change-name> --prefix <P>` (store-backed: `--store <store toplevel>`) prints `status`:
 - `pass`: a record for the current head (or the head before the change's archive commit) has no unwaived P0/P1. Continue.
 - `missing`: no record for this head (a new commit, another machine, a lost state dir). Run the pre-ship review.
 - `blocked`: the record has open P0/P1 findings (`open`). Go to Pre-ship review step 3.

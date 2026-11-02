@@ -23,7 +23,8 @@
 #   cross_group[]   {sha, task, group}  a trailer naming a task outside the commit's group
 #   missing_headings[]  groups that have tasks but no `## N.` heading
 # Exit: 0 answered (even with uncovered tasks or gaps: the caller decides), 1 stop (JSON "error"): range_too_large,
-#       2 usage or missing input (usage, no_tasks, tasks_too_large, no_python), 3 git failed (git_failed).
+#       2 usage or bad input (usage, no_tasks, tasks_too_large, no_python, duplicate_task_ids: a task id on
+#       more than one `- [<box>] X.Y ` line; the message names every repeated id), 3 git failed (git_failed).
 # Bounds: tasks.md over 1 MiB = exit 2 tasks_too_large; more than 10000 commits in the range = exit 1
 # range_too_large (the test lowers it with TASK_COVER_MAX_COMMITS); a subject or trailer value is cut at 64 KiB.
 # Needs bash, git (trailers) and Python 3.8+.
@@ -109,7 +110,16 @@ for line in text.splitlines():
         tasks.append({"id": "%s.%s" % (m.group(2), m.group(3)), "group": int(m.group(2)),
                       "ticked": box_done(m.group(1)), "commits": []})
 
-count = int(git(repo, "rev-list", "--count", rng).decode().strip() or 0)
+# a repeated id would let one line's evidence hide the other's: tasks.md is invalid, report no coverage
+seen, repeated = set(), []
+for t in tasks:
+    if t["id"] in seen and t["id"] not in repeated:
+        repeated.append(t["id"])
+    seen.add(t["id"])
+if repeated:
+    stop("duplicate_task_ids", "%s repeats task ids: %s" % (tasks_path, ", ".join(repeated)), 2)
+
+count =int(git(repo, "rev-list", "--count", rng).decode().strip() or 0)
 if count > MAX_COMMITS:
     stop("range_too_large", "range %s has %d commits, over the bound of %d" % (rng, count, MAX_COMMITS), 1)
 
