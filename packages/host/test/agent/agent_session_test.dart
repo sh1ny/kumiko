@@ -786,6 +786,35 @@ void main() {
       ]);
     });
 
+    test('a secret streamed in three parts is redacted', () async {
+      s.acceptPrompt('hello');
+      chunk('agent_message_chunk', 'key a');
+      chunk('agent_message_chunk', 'b');
+      chunk('agent_message_chunk', '${secret.substring(2)} done');
+      await finish('end_turn');
+      final text = streamed()
+          .where((e) => e.$1 == AgentEventKind.agentText)
+          .map((e) => e.$2)
+          .join();
+      expect(text, 'key ab<redacted> done');
+    });
+
+    test('a secret streamed one character at a time is redacted', () async {
+      s.acceptPrompt('hello');
+      chunk('agent_message_chunk', 'key ');
+      for (final c in secret.split('')) {
+        chunk('agent_message_chunk', c);
+      }
+      chunk('agent_message_chunk', ' done');
+      await finish('end_turn');
+      final text = streamed()
+          .where((e) => e.$1 == AgentEventKind.agentText)
+          .map((e) => e.$2)
+          .join();
+      expect(text, 'key abc<redacted> done');
+      expect(text, isNot(contains(secret.substring(3, 10))));
+    });
+
     test('a held tail continued by ordinary text is released joined',
         () async {
       s.acceptPrompt('hello');

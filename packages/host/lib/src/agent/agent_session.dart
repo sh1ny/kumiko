@@ -75,16 +75,18 @@ class AgentSession {
   String? _heldKind;
   String _held = '';
 
-  /// Kind and text of the last chunk sent, to catch a secret whose first
-  /// few characters it already carried.
+  /// Kind and last [_sentWindow] characters of the text already sent in
+  /// consecutive chunks of that kind, so a match is followed across any
+  /// number of chunk boundaries.
   String? _sentKind;
   String _sent = '';
+  static const _sentWindow = 64;
 
-  /// A chunk tail is held back only when it matches at least this many
+  /// Text is held back only once the stream matches at least this many
   /// leading characters of a secret: by chance that is about 1 in 16
-  /// million, so ordinary text is not split or delayed. A secret started in
-  /// a shorter tail is redacted from the next chunk; at most 3 of its
-  /// characters were sent.
+  /// million, so ordinary text is not split or delayed. A match always
+  /// begins in sent text with fewer characters, so at most 3 characters of
+  /// a secret are ever sent; the rest is held, then redacted.
   static const _minHeld = 4;
   final AdapterClaims? claims;
   final void Function(AgentStateParams) onState;
@@ -233,18 +235,21 @@ class AgentSession {
       // of this one that could be the start of a secret.
       final continues = kind == _heldKind;
       final flushed = continues ? const <Uint8List>[] : _flushHeld();
-      var text = content['text']! as String;
-      if (!continues && kind == _sentKind) text = _secretRestRedacted(text);
-      final carry = _redact('${continues ? _held : ''}$text');
-      var hold = _secretPrefixAtEnd(carry);
-      if (hold < _minHeld) hold = 0;
+      if (kind != _sentKind) {
+        _sentKind = kind! as String;
+        _sent = '';
+      }
+      final carry = _redactAfterSent(
+        '${continues ? _held : ''}${content['text']! as String}',
+      );
+      final hold = _heldLength(carry);
       _held = carry.substring(carry.length - hold);
       _heldKind = hold == 0 ? null : kind! as String;
       final emit = carry.substring(0, carry.length - hold);
-      if (emit.isNotEmpty) {
-        _sentKind = kind! as String;
-        _sent = emit;
-      }
+      final sent = '$_sent$emit';
+      _sent = sent.length > _sentWindow
+          ? sent.substring(sent.length - _sentWindow)
+          : sent;
       return [
         ...flushed,
         if (emit.isNotEmpty)
@@ -263,18 +268,20 @@ class AgentSession {
     ];
   }
 
-  /// [text] with a leading rest of a secret redacted, when the last chunk
-  /// sent ended with that secret's first characters (fewer than [_minHeld]).
-  String _secretRestRedacted(String text) {
+  /// [text] redacted, including the rest of a secret whose first
+  /// characters already went out in [_sent].
+  String _redactAfterSent(String text) {
+    var out = _redact(text);
     for (final secret in _secrets()) {
-      for (var k = 1; k < _minHeld && k < secret.length; k++) {
+      for (var k = min(secret.length - 1, _sent.length); k >= 1; k--) {
         if (_sent.endsWith(secret.substring(0, k)) &&
-            text.startsWith(secret.substring(k))) {
-          return '<redacted>${text.substring(secret.length - k)}';
+            out.startsWith(secret.substring(k))) {
+          out = '<redacted>${out.substring(secret.length - k)}';
+          break;
         }
       }
     }
-    return text;
+    return out;
   }
 
   static const _textChunkKinds = {
@@ -283,19 +290,21 @@ class AgentSession {
     'agent_thought_chunk',
   };
 
-  /// Length of the longest tail of [text] that is a proper prefix of a
-  /// secret.
-  int _secretPrefixAtEnd(String text) {
+  /// How much of the end of [carry] to hold: the part of the longest
+  /// stream tail ([_sent] then [carry]) that is a proper prefix of a secret,
+  /// once that tail is at least [_minHeld] long.
+  int _heldLength(String carry) {
+    final stream = '$_sent$carry';
     var best = 0;
     for (final secret in _secrets()) {
-      for (var k = min(secret.length - 1, text.length); k > best; k--) {
-        if (text.endsWith(secret.substring(0, k))) {
+      for (var k = min(secret.length - 1, stream.length); k > best; k--) {
+        if (stream.endsWith(secret.substring(0, k))) {
           best = k;
           break;
         }
       }
     }
-    return best;
+    return best < _minHeld ? 0 : min(best, carry.length);
   }
 
   /// Releases a held chunk tail that no chunk completed. It is a secret cut
