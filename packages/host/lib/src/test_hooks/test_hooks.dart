@@ -28,7 +28,7 @@ class TestHostExtension implements HostExtension {
   /// `UNIT_CAP`, `RECONCILE_DELAY_MS`, `RETRY_DELAY_MS`,
   /// `SHUTDOWN_DEADLINE_MS`, `WORKSPACE_CAP`, `RESOLVE_TIMEOUT_MS`,
   /// `ATTACH_TIMEOUT_MS`, `SETTLE_DEADLINE_MS`, `CONSOLE_CLOSE_TIMEOUT_MS`,
-  /// `READ_DEADLINE_MS`.
+  /// `READ_DEADLINE_MS`, `REVOKED_SECRETS_KEPT`.
   /// `KUMIKO_TEST_SHELL_PATH` replaces `PATH` for shell detection (entries
   /// split by the platform's path separator) and switches the well-known
   /// install locations off; `KUMIKO_TEST_SHELL_DIRS` lists them instead.
@@ -98,6 +98,9 @@ class TestHostExtension implements HostExtension {
             millis('CONSOLE_CLOSE_TIMEOUT_MS') ??
             HostOptions.defaultConsoleCloseTimeout,
         toolEndpointFault: env['KUMIKO_TEST_TOOL_ENDPOINT_FAULT'],
+        revokedSecretsKept:
+            number('REVOKED_SECRETS_KEPT') ??
+            HostOptions.defaultRevokedSecretsKept,
         postExitReadDeadline:
             millis('READ_DEADLINE_MS') ??
             HostOptions.defaultPostExitReadDeadline,

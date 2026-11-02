@@ -319,15 +319,19 @@ class AgentService {
   void _revoke(ToolGrant? grant) {
     if (grant == null || !_grants.remove(grant)) return;
     _revokedSecrets.add(grant.secret);
-    while (_revokedSecrets.length > 32) {
+    while (_revokedSecrets.length > options.revokedSecretsKept) {
       _revokedSecrets.removeFirst();
     }
     grant.revoke();
   }
 
-  String _redact(String text) {
+  /// Redacts every live and recently revoked secret, and always [own]: the
+  /// run's own grant is revoked before its diagnostics are built, and other
+  /// revocations may meanwhile have evicted it from the recent ones.
+  String _redact(String text, [ToolGrant? own]) {
     var out = text;
     for (final secret in [
+      ?own?.secret,
       for (final g in _grants) g.secret,
       ..._revokedSecrets,
     ]) {
@@ -808,11 +812,11 @@ class AgentService {
         rethrow;
       }
       if (error is AcpProtocolException) {
-        throw RpcException(ErrorCode.adapterProtocol, _redact(error.message), {
+        throw RpcException(ErrorCode.adapterProtocol, _redact(error.message, grant), {
           'stage': stage,
         });
       }
-      final tail = _redact(io?.stderr.tail() ?? '');
+      final tail = _redact(io?.stderr.tail() ?? '', grant);
       final status = io?.status;
       final reason =
           stage == 'session/new' &&
@@ -828,9 +832,10 @@ class AgentService {
           : ErrorCode.adapterStartFailed;
       final message = _redact(
         error is AcpRemoteException ? error.message : error.toString(),
+        grant,
       );
       final nativeMessage = error is AcpRemoteException
-          ? clampUtf8(_redact(error.message), 4096)
+          ? clampUtf8(_redact(error.message, grant), 4096)
           : null;
       throw RpcException(
         reason,
@@ -846,7 +851,7 @@ class AgentService {
           'nativeMessage': ?nativeMessage,
           if (error is AcpRemoteException &&
               (error.messageTruncated ||
-                  nativeMessage != _redact(error.message)))
+                  nativeMessage != _redact(error.message, grant)))
             'nativeMessageTruncated': true,
         },
       );
@@ -880,7 +885,7 @@ class AgentService {
       nativeSessionId: record.nativeSessionId,
       tools: _startTools(grant, record.adapter),
       toolsAuthenticated: grant?.everAuthenticated ?? false,
-      redact: _redact,
+      redact: (text) => _redact(text, grant),
       enqueueEvents: a.relay.enqueue,
       onState: (p) {
         _notify(a, Method.agentState, p.toJson());
@@ -1288,17 +1293,18 @@ class AgentService {
             : null,
         message: restoring
             ? error is AcpRemoteException && error.messageTruncated
-                  ? '${clampUtf8(_redact(error.message), 4096 - ' [truncated]'.length)} [truncated]'
+                  ? '${clampUtf8(_redact(error.message, a.grant), 4096 - ' [truncated]'.length)} [truncated]'
                   : clampUtf8(
                       _redact(
                         error is AcpRemoteException
                             ? error.message
                             : error.toString(),
+                        a.grant,
                       ),
                       4096,
                     )
             : error is AcpProtocolException
-            ? _redact(error.message)
+            ? _redact(error.message, a.grant)
             : null,
       );
       _notify(a, Method.agentExited, exited.toJson());

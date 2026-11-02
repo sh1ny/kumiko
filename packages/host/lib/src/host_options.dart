@@ -17,7 +17,11 @@ class HostOptions {
     this.consoleCloseTimeout = defaultConsoleCloseTimeout,
     this.postExitReadDeadline = defaultPostExitReadDeadline,
     this.toolEndpointFault,
+    this.revokedSecretsKept = defaultRevokedSecretsKept,
   });
+
+  /// Secrets of revoked tool grants still redacted from adapter text.
+  static const int defaultRevokedSecretsKept = 32;
 
   /// Concurrent units per host (design D4, Resource Bounds).
   static const int defaultUnitCap = 64;
@@ -71,6 +75,9 @@ class HostOptions {
 
   /// Makes creating the tool endpoint fail with this cause (tests only).
   final String? toolEndpointFault;
+
+  /// How many revoked secrets stay redacted; each run always redacts its own.
+  final int revokedSecretsKept;
 
   /// Extra wait at the start of reconciliation (tests only).
   final Duration reconcileDelay;

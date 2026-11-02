@@ -320,6 +320,10 @@ void main() {
         environment: const {
           'KUMIKO_TEST_RUNTIME_PATH': '',
           'KUMIKO_TEST_SHELL_PATH': '',
+          // No revoked secrets kept for other runs: each run's diagnostics
+          // must still redact its own secret after its grant is revoked,
+          // however many other grants were revoked meanwhile.
+          'KUMIKO_TEST_REVOKED_SECRETS_KEPT': '0',
         },
       );
       addTearDown(d.dispose);
