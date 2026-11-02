@@ -91,5 +91,5 @@
 
 ## 9. Integration checks
 
-- [ ] 9.1 Run the full suites on Windows locally and the CI matrix on Windows, Linux and macOS: `dart test` in `packages/process_containment`, `packages/host_protocol`, `packages/host` and `tool`, `flutter test` in `packages/desktop`, `dart analyze` workspace-wide, and `dart tool/audit_dependencies.dart`, which must report no new dependency. Verify: all green.
-- [ ] 9.2 Release-host smoke on Windows: build with `tool/bundle_host.dart`, start a Claude Code session in the desktop app, and have the agent call the Kumiko session tool. Verify: the pane shows *Kumiko tools: connected*, or *unavailable* with the recorded failure, and after quit no `kumiko_host --mcp-bridge` process remains (Task Manager / `Get-Process`).
+- [x] 9.1 Run the full suites on Windows locally and the CI matrix on Windows, Linux and macOS: `dart test` in `packages/process_containment`, `packages/host_protocol`, `packages/host` and `tool`, `flutter test` in `packages/desktop`, `dart analyze` workspace-wide, and `dart tool/audit_dependencies.dart`, which must report no new dependency. Verify: all green.
+- [x] 9.2 Release-host smoke on Windows: build with `tool/bundle_host.dart`, start a Claude Code session in the desktop app, and have the agent call the Kumiko session tool. Verify: the pane shows *Kumiko tools: connected*, or *unavailable* with the recorded failure, and after quit no `kumiko_host --mcp-bridge` process remains (Task Manager / `Get-Process`).
