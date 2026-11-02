@@ -45,8 +45,8 @@
 | desktop-host-protocol → Agent control carries the Kumiko tools status | Status change reaches the desktop | packages/host/test/it/agent_tools_test.dart | first successful call publishes state seq+1 with tools connected | green |
 | desktop-host-protocol → Agent control carries the Kumiko tools status | Stale status message | packages/desktop/test/agent_test.dart | stale tools status ignored by sequence | green |
 | desktop-host-protocol → Agent control carries the Kumiko tools status | Older desktop | packages/host_protocol/test/agent_messages_test.dart | state without or with an unknown tools field round-trips | green |
-| desktop-host-protocol → Tool traffic never uses the desktop connection | Tool call under saturated output | packages/host/test/it/agent_qualification_test.dart | tool call answered within the control-latency bound under saturation | red |
-| desktop-host-protocol → Tool traffic never uses the desktop connection | Busy tool clients do not delay Stop | packages/host/test/it/agent_qualification_test.dart | Stop acknowledged within bound while a client holds max in-flight calls | red |
+| desktop-host-protocol → Tool traffic never uses the desktop connection | Tool call under saturated output | packages/host/test/it/agent_qualification_test.dart | tool call answered within the control-latency bound under saturation | green |
+| desktop-host-protocol → Tool traffic never uses the desktop connection | Busy tool clients do not delay Stop | packages/host/test/it/agent_qualification_test.dart | Stop acknowledged within bound while a client holds max in-flight calls | green |
 
 ## 1. ADR and architecture
 
@@ -81,7 +81,7 @@
 
 ## 7. Fairness under saturation
 
-- [ ] 7.1 Extend `packages/host/test/it/agent_qualification_test.dart` with two cases: a `kumiko_session_info` call answered within the control-latency bound while a terminal saturates and another event channel has no credit; and Stop acknowledged within the bound while one client holds 8 in-flight calls. Verify: they fail before wiring or are proven by 5.2, then pass; flip rows green.
+- [x] 7.1 Extend `packages/host/test/it/agent_qualification_test.dart` with two cases: a `kumiko_session_info` call answered within the control-latency bound while a terminal saturates and another event channel has no credit; and Stop acknowledged within the bound while one client holds 8 in-flight calls. Verify: they fail before wiring or are proven by 5.2, then pass; flip rows green.
 
 ## 8. Qualification
 
