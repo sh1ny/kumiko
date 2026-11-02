@@ -533,6 +533,13 @@ QualificationReport checkQualification(
         failures.add(
           '$where: observed text differs from the toolDeliveryFailures entry',
         );
+      } else if (row != null && row.result == 'pass') {
+        // Checked per OS: the entry reports the version unavailable on every
+        // OS, so a pass anywhere contradicts it.
+        failures.add(
+          '$where: toolDeliveryFailures lists this version but the evidence is '
+          'pass',
+        );
       } else if (!observedFail && (row == null || row.result != 'fail')) {
         failures.add(
           '$where: toolDeliveryFailures lists this version but the evidence is '

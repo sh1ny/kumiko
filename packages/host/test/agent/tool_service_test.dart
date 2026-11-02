@@ -338,6 +338,38 @@ void main() {
         expect(ids, {1, 2, 3, 4, 5, 6, 7, 8});
       },
     );
+
+    test(
+      'cancelled calls waiting on the binding still count until they settle',
+      () async {
+        for (var i = 1; i <= 8; i++) {
+          c.send(callReq(i, 'kumiko_session_info', <String, Object?>{}));
+          await c.settle();
+          c.send({
+            'jsonrpc': '2.0',
+            'method': 'notifications/cancelled',
+            'params': {'requestId': i},
+          });
+        }
+        await c.settle();
+        expect(c.unread, isEmpty);
+        // Eight cancelled calls still await the binding: no capacity freed.
+        c.send(callReq(9, 'kumiko_session_info', <String, Object?>{}));
+        final r = await c.next();
+        expect(r['id'], 9);
+        expect((r['error'] as Map)['message'], 'too many concurrent calls');
+        // Once the binding settles them, capacity returns; no cancelled
+        // result is ever sent.
+        grant
+          ..setAdapter('a', '1')
+          ..bind('s');
+        await c.settle();
+        c.send(callReq(10, 'kumiko_session_info', <String, Object?>{}));
+        expect((await c.next())['id'], 10);
+        await c.settle();
+        expect(c.unread, isEmpty);
+      },
+    );
   });
 
   group('tool catalog', () {

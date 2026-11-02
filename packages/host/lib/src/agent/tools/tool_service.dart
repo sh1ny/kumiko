@@ -149,6 +149,10 @@ class ToolGrant {
 
 class _Call {
   bool done = false;
+
+  /// Cancelled by the client while still running: its result is dropped,
+  /// but it counts against the in-flight cap until it settles.
+  bool cancelled = false;
 }
 
 class _Conn {
@@ -157,6 +161,9 @@ class _Conn {
   final ToolConnection transport;
   final buffer = BytesBuilder(copy: false);
   final inFlight = <Object, _Call>{};
+
+  /// Cancelled calls that are still running (awaiting the binding).
+  int cancelledRunning = 0;
   StreamSubscription<List<int>>? sub;
   Timer? deadline;
   ToolGrant? grant;
@@ -485,12 +492,18 @@ class ToolService {
   void _onNotification(_Conn c, String method, Object? params) {
     if (method != 'notifications/cancelled' || params is! Map) return;
     final call = c.inFlight.remove(params['requestId']);
-    call?.done = true; // Its result is dropped when it completes.
+    if (call == null || call.done) return;
+    // Its result is dropped when it completes; until then it still holds a
+    // slot, so call/cancel cycles cannot pile up work before the binding.
+    call
+      ..done = true
+      ..cancelled = true;
+    c.cancelledRunning++;
   }
 
   void _onCall(_Conn c, Object id, Object? params) {
     final grant = c.grant!;
-    if (c.inFlight.length >= _maxInFlightPerConnection) {
+    if (c.inFlight.length + c.cancelledRunning >= _maxInFlightPerConnection) {
       c.send(_error(id, -32000, 'too many concurrent calls'));
       return;
     }
@@ -535,6 +548,8 @@ class ToolService {
       succeeded = true;
     } on _SessionUnavailable {
       reply = _error(id, -32000, 'session unavailable');
+    } finally {
+      if (call.cancelled) c.cancelledRunning--; // Settled: its slot is free.
     }
     if (call.done || c.closing) return; // Cancelled, revoked or gone.
     call.done = true;

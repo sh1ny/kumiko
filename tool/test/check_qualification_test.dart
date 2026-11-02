@@ -41,6 +41,12 @@ String _toolFail(String os, String notes, {String others = 'pass'}) => _results(
   notes: (o, i) => i == _toolItem && o == os ? notes : 'synthetic fixture',
 );
 
+/// The tool call fails with the same notes on every OS.
+String _toolFailEverywhere(String notes) => _results(
+  result: (o, i) => i == _toolItem ? 'fail' : 'pass',
+  notes: (o, i) => i == _toolItem ? notes : 'synthetic fixture',
+);
+
 String _results({
   String name = _name,
   String version = _version,
@@ -463,7 +469,7 @@ void main() {
 
     test('matched failure is QUALIFIED and printed', () {
       final report = checkQualification(
-        _toolFail('windows', observed),
+        _toolFailEverywhere(observed),
         _source(failures: _failure(text)),
       );
       expect(report.failures, isEmpty);
@@ -473,7 +479,7 @@ void main() {
       final dir = Directory.systemTemp.createTempSync('qualification_');
       addTearDown(() => dir.deleteSync(recursive: true));
       final results = File.fromUri(dir.uri.resolve('results.md'))
-        ..writeAsStringSync(_toolFail('windows', observed));
+        ..writeAsStringSync(_toolFailEverywhere(observed));
       final source = File.fromUri(dir.uri.resolve('qualified_adapters.dart'))
         ..writeAsStringSync(_source(failures: _failure(text)));
       final out = StringBuffer();
@@ -547,6 +553,21 @@ void main() {
         ),
         [_name, _version, 'windows', _toolItem],
       );
+      // a matching failure on one OS does not excuse a pass on another
+      for (final os in ['linux', 'macos']) {
+        _fails(
+          checkQualification(
+            _results(
+              result: (o, i) =>
+                  i == _toolItem && o != os ? 'fail' : 'pass',
+              notes: (o, i) =>
+                  i == _toolItem && o != os ? observed : 'synthetic fixture',
+            ),
+            _source(failures: _failure(text)),
+          ),
+          [_name, _version, os, _toolItem],
+        );
+      }
     });
 
     test('toolDeliveryFailures literal accepts spaces and an empty list', () {
@@ -556,7 +577,7 @@ void main() {
       );
       expect(
         checkQualification(
-          _toolFail('windows', observed),
+          _toolFailEverywhere(observed),
           _source(failures: '// recorded\n${_failure(text)}\n'),
         ).verdict,
         'QUALIFIED',
