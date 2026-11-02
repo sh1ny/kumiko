@@ -22,7 +22,7 @@ Real qualification of an adapter version SHALL record a `kumiko tool call` item 
 - **THEN** the checker fails, naming the adapter version and OS
 
 #### Scenario: Recorded failure matches evidence
-- **WHEN** a version's Windows evidence records `kumiko tool call` as `fail` with an observed failure, and the failure list names that version with the same text, and every other checked item passes
+- **WHEN** a version's evidence on every OS records `kumiko tool call` as `fail` with the same observed failure, and the failure list names that version with that text, and every other checked item passes
 - **THEN** the checker reports **QUALIFIED** and prints the recorded tool delivery failure with adapter, version, OS and text
 
 #### Scenario: Evidence failure without a list entry
