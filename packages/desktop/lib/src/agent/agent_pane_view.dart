@@ -127,6 +127,11 @@ class _AgentPaneViewState extends State<AgentPaneView> {
               ],
             ),
           ),
+          if (link.toolsLabel case final label?)
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 8),
+              child: Text(label, key: Key('agent-tools-$id')),
+            ),
           if (link.transcript.hiddenEntries > 0)
             Text(
               'Earlier messages hidden (${link.transcript.hiddenEntries} entries)',

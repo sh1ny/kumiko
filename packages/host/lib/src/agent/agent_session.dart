@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:math';
 import 'dart:typed_data';
 
 import 'package:host_protocol/host_protocol.dart';
@@ -40,9 +41,19 @@ class AgentSession {
     required this.onTurnEnded,
     required this.enqueueEvents,
     AgentDeadlineFactory? deadlineFactory,
+    AgentTools? tools,
+    bool toolsAuthenticated = false,
+    String Function(String)? redact,
+    Iterable<String> Function()? secrets,
     this.claims,
     this._nativeSessionId,
-  }) : _deadlineFactory = deadlineFactory ?? _TimerDeadline.new {
+  }) : _deadlineFactory = deadlineFactory ?? _TimerDeadline.new,
+       _redact = redact ?? _unredacted,
+       _secrets = secrets ?? _noSecrets,
+       // ignore: prefer_initializing_formals
+       _tools = tools,
+       // ignore: prefer_initializing_formals
+       _toolsAuthenticated = toolsAuthenticated {
     client.normalizeNotification = _normalize;
     client.consumeNotification = _consume;
     client.onPermissionRequest = _permission;
@@ -51,6 +62,32 @@ class AgentSession {
   }
   final String sessionId;
   final AcpClient client;
+
+  /// Removes Kumiko tool secrets from adapter text before it leaves the host
+  /// (transcript notices, turn-end and stop messages).
+  final String Function(String) _redact;
+  static String _unredacted(String text) => text;
+
+  /// The secrets [_redact] removes, so a text chunk ending in the start of
+  /// one can be held until the next chunk shows whether it continues.
+  final Iterable<String> Function() _secrets;
+  static Iterable<String> _noSecrets() => const [];
+  String? _heldKind;
+  String _held = '';
+
+  /// Kind and last [_sentWindow] characters of the text already sent in
+  /// consecutive chunks of that kind, so a match is followed across any
+  /// number of chunk boundaries.
+  String? _sentKind;
+  String _sent = '';
+  static const _sentWindow = 64;
+
+  /// Text is held back only once the stream matches at least this many
+  /// leading characters of a secret: by chance that is about 1 in 16
+  /// million, so ordinary text is not split or delayed. A match always
+  /// begins in sent text with fewer characters, so at most 3 characters of
+  /// a secret are ever sent; the rest is held, then redacted.
+  static const _minHeld = 4;
   final AdapterClaims? claims;
   final void Function(AgentStateParams) onState;
   final void Function(AgentPermissionRequestedParams) onPermissionRequested;
@@ -83,8 +120,42 @@ class AgentSession {
   /// freezing the final event count; this does not wait for desktop delivery.
   Future<void> get eventsEnqueued => _events;
 
+  /// Tools status of this live run (null: not tracked, e.g. unit tests).
+  AgentTools? get tools => _tools;
+  AgentTools? _tools;
+  bool _toolsAuthenticated;
+  bool _firstTurnEnded = false;
+
+  /// A bridge authenticated with this run's secret. Not yet used becomes the
+  /// status of a run that was not started.
+  void toolsAuthenticated() {
+    _toolsAuthenticated = true;
+    if (_tools?.status == AgentToolsStatus.notStarted) {
+      _setTools(const AgentTools(AgentToolsStatus.notYetUsed));
+    }
+  }
+
+  /// A Kumiko tool call succeeded: the terminal status for the run, even over
+  /// a recorded delivery failure for the adapter version.
+  void toolsCalled() {
+    _toolsAuthenticated = true;
+    if (_tools != null && _tools!.status != AgentToolsStatus.connected) {
+      _setTools(const AgentTools(AgentToolsStatus.connected));
+    }
+  }
+
+  void _setTools(AgentTools next) {
+    _tools = next;
+    if (!_disposed && !_terminal) _publish();
+  }
+
   void _publish() => onState(
-    AgentStateParams(sessionId: sessionId, seq: ++_seq, state: _state),
+    AgentStateParams(
+      sessionId: sessionId,
+      seq: ++_seq,
+      state: _state,
+      tools: _tools,
+    ),
   );
   void _set(AgentState state) {
     if (_state == state || _disposed) return;
@@ -110,8 +181,14 @@ class AgentSession {
   /// on the same ordered, bounded event path before transitioning to idle.
   Future<void> replayStarted() =>
       _enqueue(encodeAgentEvent(AgentEvent.replay(AgentReplayPhase.start)));
-  Future<void> replayEnded() =>
-      _enqueue(encodeAgentEvent(AgentEvent.replay(AgentReplayPhase.end)));
+  Future<void> replayEnded() {
+    final held = _flushHeld();
+    _sentKind = null;
+    if (held.isNotEmpty) _enqueue(held).ignore();
+    return _enqueue(
+      encodeAgentEvent(AgentEvent.replay(AgentReplayPhase.end)),
+    );
+  }
   Future<void> notice(String text) =>
       _enqueue(encodeAgentEvent(AgentEvent.notice(text)));
 
@@ -147,8 +224,113 @@ class AgentSession {
     if (params['sessionId'] != _nativeSessionId) return null;
     final update = params['update'];
     if (update is! Json) throw AcpProtocolException('invalid session/update');
-    return normalizeAcpUpdate(update);
+    final kind = update['sessionUpdate'];
+    final content = update['content'];
+    if (_textChunkKinds.contains(kind) &&
+        content is Json &&
+        content['type'] == 'text' &&
+        content['text'] is String) {
+      // A secret streamed across chunks is redacted once joined: carry the
+      // held tail of the previous chunk of this kind, and hold back any tail
+      // of this one that could be the start of a secret.
+      final continues = kind == _heldKind;
+      final flushed = continues ? const <Uint8List>[] : _flushHeld();
+      if (kind != _sentKind) {
+        _sentKind = kind! as String;
+        _sent = '';
+      }
+      final carry = _redactAfterSent(
+        '${continues ? _held : ''}${content['text']! as String}',
+      );
+      final hold = _heldLength(carry);
+      _held = carry.substring(carry.length - hold);
+      _heldKind = hold == 0 ? null : kind! as String;
+      final emit = carry.substring(0, carry.length - hold);
+      final sent = '$_sent$emit';
+      _sent = sent.length > _sentWindow
+          ? sent.substring(sent.length - _sentWindow)
+          : sent;
+      return [
+        ...flushed,
+        if (emit.isNotEmpty)
+          ...normalizeAcpUpdate(
+            _redactJson({
+              ...update,
+              'content': {...content, 'text': emit},
+            })! as Json,
+          ),
+      ];
+    }
+    _sentKind = null;
+    return [
+      ..._flushHeld(),
+      ...normalizeAcpUpdate(_redactJson(update)! as Json),
+    ];
   }
+
+  /// [text] redacted, including the rest of a secret whose first
+  /// characters already went out in [_sent].
+  String _redactAfterSent(String text) {
+    var out = _redact(text);
+    for (final secret in _secrets()) {
+      for (var k = min(secret.length - 1, _sent.length); k >= 1; k--) {
+        if (_sent.endsWith(secret.substring(0, k)) &&
+            out.startsWith(secret.substring(k))) {
+          out = '<redacted>${out.substring(secret.length - k)}';
+          break;
+        }
+      }
+    }
+    return out;
+  }
+
+  static const _textChunkKinds = {
+    'user_message_chunk',
+    'agent_message_chunk',
+    'agent_thought_chunk',
+  };
+
+  /// How much of the end of [carry] to hold: the part of the longest
+  /// stream tail ([_sent] then [carry]) that is a proper prefix of a secret,
+  /// once that tail is at least [_minHeld] long.
+  int _heldLength(String carry) {
+    final stream = '$_sent$carry';
+    var best = 0;
+    for (final secret in _secrets()) {
+      for (var k = min(secret.length - 1, stream.length); k > best; k--) {
+        if (stream.endsWith(secret.substring(0, k))) {
+          best = k;
+          break;
+        }
+      }
+    }
+    return best < _minHeld ? 0 : min(best, carry.length);
+  }
+
+  /// Releases a held chunk tail that no chunk completed. It is a secret cut
+  /// short, not text, so it is sent redacted.
+  List<Uint8List> _flushHeld() {
+    final kind = _heldKind;
+    if (kind == null) return const [];
+    _heldKind = null;
+    _held = '';
+    _sentKind = null;
+    return normalizeAcpUpdate({
+      'sessionUpdate': kind,
+      'content': {'type': 'text', 'text': '<redacted>'},
+    }).toList();
+  }
+
+  /// [_redact] applied to every string in adapter JSON before any of it
+  /// reaches the transcript or the desktop.
+  Object? _redactJson(Object? value) => switch (value) {
+    final String s => _redact(s),
+    final Map<Object?, Object?> m => <String, Object?>{
+      for (final e in m.entries) e.key! as String: _redactJson(e.value),
+    },
+    final List<Object?> l => [for (final v in l) _redactJson(v)],
+    _ => value,
+  };
 
   Future<void> _consume(Object value) => _enqueue(value as Iterable<Uint8List>);
   Future<void> _enqueue(Iterable<Uint8List> lines) {
@@ -174,6 +356,9 @@ class AgentSession {
       fail(error);
       return;
     }
+    final held = _flushHeld();
+    _sentKind = null;
+    if (held.isNotEmpty) await _enqueue(held);
     await _enqueue(
       encodeAgentEvent(
         result != null
@@ -185,10 +370,10 @@ class AgentSession {
             : error is AcpRemoteException && error.messageTruncated
             ? AgentEvent.fromJson({
                 'kind': AgentEventKind.notice.name,
-                'text': error.toString(),
+                'text': _redact(error.toString()),
                 'truncated': true,
               })
-            : AgentEvent.notice(error.toString()),
+            : AgentEvent.notice(_redact(error.toString())),
       ),
     );
     if (!_hasTurn || turn != _turn || _disposed || _terminal) return;
@@ -215,8 +400,17 @@ class AgentSession {
     }
     _cancelPermissions();
     _hasTurn = false;
+    // The first turn end without authentication means the adapter never
+    // started the bridge. The idle publication below carries the change.
+    if (!_firstTurnEnded) {
+      _firstTurnEnded = true;
+      if (_tools?.status == AgentToolsStatus.notYetUsed &&
+          !_toolsAuthenticated) {
+        _tools = const AgentTools(AgentToolsStatus.notStarted);
+      }
+    }
     final nativeMessage = error is AcpRemoteException
-        ? clampUtf8(error.message, 4096)
+        ? clampUtf8(_redact(error.message), 4096)
         : null;
     onTurnEnded(
       AgentTurnEndedParams(
@@ -232,14 +426,15 @@ class AgentSession {
         nativeMessage: nativeMessage,
         nativeMessageTruncated:
             error is AcpRemoteException &&
-            (error.messageTruncated || nativeMessage != error.message),
+            (error.messageTruncated ||
+                nativeMessage != _redact(error.message)),
       ),
     );
     _set(AgentState.idle);
   }
 
   String _message(Object error) => clampJsonString(
-    error is AcpRemoteException ? error.message : error.toString(),
+    _redact(error is AcpRemoteException ? error.message : error.toString()),
     4096,
   );
   bool get _terminal =>
@@ -263,7 +458,7 @@ class AgentSession {
         ),
       );
     }
-    final tool = params['toolCall'];
+    final tool = _redactJson(params['toolCall']);
     final options = params['options'];
     if (tool is! Json || options is! List) {
       throw AcpProtocolException('invalid permission request');
@@ -281,13 +476,20 @@ class AgentSession {
       preview: _permissionPreview(tool),
       options: [
         for (final option in options)
-          if (option is Json) AgentPermissionOption.fromJson(option),
+          if (option is Json)
+            AgentPermissionOption.fromJson(_redactJson(option)! as Json),
       ],
     );
-    _permissions[id] = _Permission(
-      rpcId,
-      dto.options.map((o) => o.optionId).toSet(),
-    );
+    // The desktop sees redacted option ids; the adapter gets its own back.
+    // If two native ids redact alike, the first one offered is kept.
+    final native = <String, String>{};
+    for (final option in options) {
+      if (option is Json && option['optionId'] is String) {
+        final nativeId = option['optionId']! as String;
+        native.putIfAbsent(_redact(nativeId), () => nativeId);
+      }
+    }
+    _permissions[id] = _Permission(rpcId, native);
     _set(AgentState.waitingApproval);
     onPermissionRequested(dto);
     return null;
@@ -317,7 +519,8 @@ class AgentSession {
         'permission request is no longer pending',
       );
     }
-    if (!permission.options.contains(optionId)) {
+    final nativeOptionId = permission.options[optionId];
+    if (nativeOptionId == null) {
       throw RpcException(
         ErrorCode.invalidParams,
         'option was not offered by this request',
@@ -326,7 +529,7 @@ class AgentSession {
     // Admission can refuse synchronously without consuming the user's choice.
     // Accepted native-write failures still fail the session asynchronously.
     final write = client.reply(permission.rpcId, {
-      'outcome': {'outcome': 'selected', 'optionId': optionId},
+      'outcome': {'outcome': 'selected', 'optionId': nativeOptionId},
     });
     _permissions.remove(requestId);
     _observeWrite(write);
@@ -469,5 +672,7 @@ class AgentSession {
 class _Permission {
   _Permission(this.rpcId, this.options);
   final Object rpcId;
-  final Set<String> options;
+
+  /// Desktop (redacted) option id to the adapter's own id.
+  final Map<String, String> options;
 }

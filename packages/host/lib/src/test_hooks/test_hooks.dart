@@ -6,6 +6,7 @@ import 'dart:typed_data';
 
 import 'package:host_protocol/host_protocol.dart';
 
+import '../agent/tools/tool_service.dart';
 import '../host_extension.dart';
 import '../host_faults.dart';
 import '../host_options.dart';
@@ -20,13 +21,14 @@ class TestHostExtension implements HostExtension {
   TestHostExtension({
     this.options = const HostOptions(),
     this.qualifiedAdaptersOverride,
+    this.toolDeliveryFailuresOverride,
   });
 
   /// Options from `KUMIKO_TEST_*` variables, which make timing deterministic:
   /// `UNIT_CAP`, `RECONCILE_DELAY_MS`, `RETRY_DELAY_MS`,
   /// `SHUTDOWN_DEADLINE_MS`, `WORKSPACE_CAP`, `RESOLVE_TIMEOUT_MS`,
   /// `ATTACH_TIMEOUT_MS`, `SETTLE_DEADLINE_MS`, `CONSOLE_CLOSE_TIMEOUT_MS`,
-  /// `READ_DEADLINE_MS`.
+  /// `READ_DEADLINE_MS`, `REVOKED_SECRETS_KEPT`.
   /// `KUMIKO_TEST_SHELL_PATH` replaces `PATH` for shell detection (entries
   /// split by the platform's path separator) and switches the well-known
   /// install locations off; `KUMIKO_TEST_SHELL_DIRS` lists them instead.
@@ -43,7 +45,18 @@ class TestHostExtension implements HostExtension {
     final shellPath = env['KUMIKO_TEST_SHELL_PATH'];
     final runtimePath = env['KUMIKO_TEST_RUNTIME_PATH'];
     final candidates = env['KUMIKO_TEST_QUALIFIED_ADAPTERS'];
+    final failures = env['KUMIKO_TEST_TOOL_DELIVERY_FAILURES'];
     return TestHostExtension(
+      toolDeliveryFailuresOverride: failures == null
+          ? null
+          : [
+              for (final triple in jsonDecode(failures) as List)
+                (
+                  (triple as List)[0] as String,
+                  triple[1] as String,
+                  triple[2] as String,
+                ),
+            ],
       qualifiedAdaptersOverride: candidates == null
           ? null
           : [
@@ -84,6 +97,10 @@ class TestHostExtension implements HostExtension {
         consoleCloseTimeout:
             millis('CONSOLE_CLOSE_TIMEOUT_MS') ??
             HostOptions.defaultConsoleCloseTimeout,
+        toolEndpointFault: env['KUMIKO_TEST_TOOL_ENDPOINT_FAULT'],
+        revokedSecretsKept:
+            number('REVOKED_SECRETS_KEPT') ??
+            HostOptions.defaultRevokedSecretsKept,
         postExitReadDeadline:
             millis('READ_DEADLINE_MS') ??
             HostOptions.defaultPostExitReadDeadline,
@@ -96,6 +113,9 @@ class TestHostExtension implements HostExtension {
 
   @override
   final List<(String, String, List<String>)>? qualifiedAdaptersOverride;
+
+  @override
+  final List<(String, String, String)>? toolDeliveryFailuresOverride;
 
   @override
   Set<String> get capabilities => const {
@@ -146,6 +166,12 @@ class TestHostExtension implements HostExtension {
           TestResolveReleaseParams.fromJson(params).path,
         );
         return <String, Object?>{};
+      case 'test/tools.state':
+      case 'test/tools.grant':
+      case 'test/tools.bind':
+      case 'test/tools.fail':
+      case 'test/tools.revoke':
+        return _tools(host.tools, method, params);
       case 'test/agent.stats':
         EmptyParams.fromJson(params);
         return {
@@ -216,4 +242,62 @@ class _Producer {
       // The desktop closed the channel, or the connection ended.
     }
   }
+}
+
+/// Grants a test registered through `test/tools.grant`, by id.
+final Map<String, ToolGrant> _testGrants = {};
+
+/// `test/tools.*`: register, bind, fail and revoke grants directly on the
+/// host's tool service, and read its endpoint state. Stands in for what
+/// `AgentService` does for a live session (task 5.2).
+Object? _tools(ToolService tools, String method, Json params) {
+  ToolGrant grant() =>
+      _testGrants[params['id']] ??
+      (throw RpcException(ErrorCode.invalidParams, 'no test grant'));
+  switch (method) {
+    case 'test/tools.state':
+      return {
+        'available': tools.endpointAvailable,
+        'endpoint': tools.endpoint,
+        'reason': tools.unavailableReason,
+        'unauthenticated': tools.unauthenticatedCount,
+        'authenticated': tools.authenticatedCount,
+        'authFailures': tools.authFailureCount,
+        'grants': {
+          for (final e in _testGrants.entries)
+            e.key: {
+              'live': e.value.isLive,
+              'everAuthenticated': e.value.everAuthenticated,
+              'everCalled': e.value.everCalled,
+            },
+        },
+      };
+    case 'test/tools.grant':
+      final id = 'g${_testGrants.length + 1}';
+      final g = tools.register(
+        target: params['target'] as String? ?? Directory.current.path,
+        role: ToolRole.coding,
+        runtime: 'claude-code',
+        profile: 'test',
+      );
+      _testGrants[id] = g;
+      if (params['bind'] == true) {
+        g
+          ..setAdapter('fixture-adapter', '1.0.0')
+          ..bind('rec-$id');
+      }
+      return {'id': id, 'secret': g.secret};
+    case 'test/tools.bind':
+      grant()
+        ..setAdapter('fixture-adapter', '1.0.0')
+        ..bind(params['recordId'] as String? ?? 'rec-${params['id']}');
+      return <String, Object?>{};
+    case 'test/tools.fail':
+      grant().fail('test');
+      return <String, Object?>{};
+    case 'test/tools.revoke':
+      grant().revoke();
+      return <String, Object?>{};
+  }
+  throw RpcException(ErrorCode.methodNotAvailable, method);
 }

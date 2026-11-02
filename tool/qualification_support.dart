@@ -6,6 +6,13 @@ import 'package:host_protocol/host_protocol.dart';
 import 'check_qualification.dart';
 
 const qualificationOses = ['windows', 'linux', 'macos'];
+
+/// The tool delivery item (ADR 0013 D8) and the Kumiko session tool it calls.
+const toolCallQualificationItem = toolCallItem;
+const qualificationToolName = 'kumiko_session_info';
+const qualificationToolPrompt =
+    'Call the Kumiko tool $qualificationToolName once and report its result '
+    'in one sentence. Use no other tool and make no file changes.';
 const _items = [
   'launch',
   'streaming',
@@ -16,6 +23,7 @@ const _items = [
   'load',
   'resume',
   'auth-required observed',
+  toolCallQualificationItem,
 ];
 const finderQualificationItem = 'launch from Finder or the Dock';
 List<String> qualificationItems(String os) {
@@ -331,6 +339,7 @@ class QualificationObservation {
     this.authCode = '',
     this.authMessage = '',
     this.authTruncated = false,
+    this.observed = '',
   }) : result = passed ? 'pass' : 'fail' {
     if (!confirmed) {
       throw StateError('A real user observation needs explicit confirmation');
@@ -340,11 +349,13 @@ class QualificationObservation {
     : result = 'unproven',
       authCode = '',
       authMessage = '',
-      authTruncated = false;
+      authTruncated = false,
+      observed = '';
   final String result;
   final String authCode;
   final String authMessage;
   final bool authTruncated;
+  final String observed;
 }
 
 void _cell(String text) {
@@ -393,6 +404,16 @@ String mergeQualificationEvidence(
     }
     _cell(row.authCode);
     _cell(row.authMessage);
+    if (entry.key == toolCallQualificationItem && row.result == 'fail') {
+      _cell(row.observed);
+      if (row.observed.isEmpty ||
+          qualificationObservedText(row.observed) != row.observed) {
+        throw StateError(
+          'A failed kumiko tool call needs the observed single-line text, '
+          'without quotes, pipes, backslashes or dollar signs',
+        );
+      }
+    }
     if (entry.key == 'auth-required observed' &&
         (row.result == 'pass' || os == 'windows') &&
         (row.authCode.isEmpty ||
@@ -405,7 +426,8 @@ String mergeQualificationEvidence(
   }
   final before = checkQualification(
     original,
-    'const qualifiedAdapters = <(String, String, List<String>)>[];',
+    'const qualifiedAdapters = <(String, String, List<String>)>[];\n'
+    'const toolDeliveryFailures = <(String, String, String)>[];',
   );
   if (before.failures.isNotEmpty) {
     throw FormatException(before.failures.join('\n'));
@@ -493,7 +515,9 @@ String mergeQualificationEvidence(
       final note = row.result == 'unproven'
           ? 'Not verified by a user on this OS.'
           : 'Real local adapter through test host; OS=$platform; '
-                '${date.toUtc().toIso8601String().substring(0, 10)}; user confirmed ${row.result}.';
+                '${date.toUtc().toIso8601String().substring(0, 10)}; '
+                '${row.result == 'fail' && item == toolCallQualificationItem ? 'observed: "${row.observed}"; ' : ''}'
+                'user confirmed ${row.result}.';
       out.writeln(
         '| $item | user | ${row.result} | $note | ${row.authCode} | ${row.authMessage} |',
       );
@@ -525,10 +549,66 @@ String mergeQualificationEvidence(
       : original.replaceRange(sectionStart, sectionEnd, section);
   final checked = checkQualification(
     result,
-    'const qualifiedAdapters = <(String, String, List<String>)>[];',
+    'const qualifiedAdapters = <(String, String, List<String>)>[];\n'
+    'const toolDeliveryFailures = <(String, String, String)>[];',
   );
   if (checked.failures.isNotEmpty) {
     throw FormatException(checked.failures.join('\n'));
   }
   return result;
+}
+
+/// What the tool step observed for one session. [observed] is single-line text
+/// safe for `observed: "<text>"` and a `toolDeliveryFailures` literal; [detail]
+/// is terminal presentation only.
+class QualificationToolResult {
+  const QualificationToolResult(this.passed, this.observed, this.detail);
+  final bool passed;
+  final String observed;
+  final String detail;
+}
+
+/// Replaces every character the evidence cell and the source literal cannot
+/// carry, and bounds the length.
+String qualificationObservedText(String value) {
+  final safe = value
+      .replaceAll(RegExp(r'''[|"'\\$\x00-\x1f\x7f]'''), '?')
+      .replaceAll(RegExp(r'\s+'), ' ')
+      .trim();
+  return safe.length > 200 ? safe.substring(0, 200).trim() : safe;
+}
+
+/// Passes only on the host's own observation: tools status `connected` (an
+/// authenticated `tools/call` succeeded) after a turn that ended without error.
+/// [toolTitles] are the transcript's tool names. They are reported but not
+/// decisive, because adapters title MCP calls differently.
+QualificationToolResult evaluateQualificationToolCall({
+  AgentTools? tools,
+  required Iterable<String> toolTitles,
+  AgentTurnEndedParams? turn,
+}) {
+  final status = tools == null
+      ? 'no tools status reported'
+      : 'tools status ${tools.status.name}'
+            '${tools.reason == null ? '' : ' (${tools.reason})'}';
+  final turnText = turn == null
+      ? 'no turn result'
+      : turn.error != null
+      ? 'turn failed: ${turn.error}'
+      : 'turn ${turn.stopReason ?? 'ended'}';
+  final named = toolTitles
+      .where((title) => title.contains(qualificationToolName))
+      .toList();
+  final transcript = named.isEmpty
+      ? 'tool name not seen in transcript'
+      : 'transcript tool: ${named.first}';
+  final passed =
+      tools?.status == AgentToolsStatus.connected &&
+      turn != null &&
+      turn.error == null;
+  return QualificationToolResult(
+    passed,
+    passed ? '' : qualificationObservedText('$status; $turnText'),
+    '$status; $turnText; $transcript',
+  );
 }

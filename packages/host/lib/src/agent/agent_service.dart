@@ -21,6 +21,7 @@ import 'executable_resolver.dart';
 import 'qualification.dart';
 import 'qualified_adapters.dart';
 import 'runtime_profile_service.dart';
+import 'tools/tool_service.dart';
 
 /// The captured execution target is never derived again from desktop focus or
 /// a mutable workspace row. Continue will compare this durable identity.
@@ -248,11 +249,19 @@ class _Agent {
     required this.io,
     required this.reservation,
     this.mode,
+    this.grant,
+    this.mcpServers = const [],
   }) : restoring = mode != null;
   final AgentSessionRecord record;
   final _AgentIO io;
   final ChannelReservation reservation;
   final AgentContinueMode? mode;
+
+  /// This run's tool grant, revoked when the run ends; null without an endpoint.
+  final ToolGrant? grant;
+
+  /// The `mcpServers` list every session request of this run carries.
+  final List<Json> mcpServers;
   bool restoring;
   final relay = AgentEventRelay();
   late final AgentSession session;
@@ -279,7 +288,9 @@ class AgentService {
     required this.profiles,
     required this.store,
     required this.options,
+    required this.tools,
     this.qualifiedAdaptersOverride,
+    this.toolDeliveryFailuresOverride,
   });
   final Connection connection;
   final UnitManager units;
@@ -288,6 +299,8 @@ class AgentService {
   final Store store;
   final HostOptions options;
   final List<(String, String, List<String>)>? qualifiedAdaptersOverride;
+  final ToolService tools;
+  final List<(String, String, String)>? toolDeliveryFailuresOverride;
   late final _executables = LaunchExecutableResolver(
     faults: workspaces.resolver.faults,
     timeout: options.resolveTimeout,
@@ -297,6 +310,38 @@ class AgentService {
   final _io = <_AgentIO>{};
   final _random = Random.secure();
   bool _disposed = false;
+
+  /// Live grants, and the secrets of the most recently revoked ones: every
+  /// one is redacted from adapter stderr before it leaves the host.
+  final _grants = <ToolGrant>{};
+  final _revokedSecrets = Queue<String>();
+
+  void _revoke(ToolGrant? grant) {
+    if (grant == null || !_grants.remove(grant)) return;
+    _revokedSecrets.add(grant.secret);
+    while (_revokedSecrets.length > options.revokedSecretsKept) {
+      _revokedSecrets.removeFirst();
+    }
+    grant.revoke();
+  }
+
+  /// Redacts every live and recently revoked secret, and always [own]: the
+  /// run's own grant is revoked before its diagnostics are built, and other
+  /// revocations may meanwhile have evicted it from the recent ones.
+  String _redact(String text, [ToolGrant? own]) {
+    var out = text;
+    for (final secret in _secretsFor(own)) {
+      out = out.replaceAll(secret, '<redacted>');
+    }
+    return out;
+  }
+
+  /// Every secret [_redact] removes: the run's own, live and kept revoked.
+  List<String> _secretsFor(ToolGrant? own) => [
+    ?own?.secret,
+    for (final g in _grants) g.secret,
+    ..._revokedSecrets,
+  ];
 
   /// Read only on demand by the test extension; no transcript or new counters.
   Json snapshot() => {
@@ -398,6 +443,7 @@ class AgentService {
       eventChannel: a.channel,
       adapter: adapter,
       capabilities: claims.capabilities,
+      tools: a.session.tools,
     );
   }
 
@@ -561,6 +607,7 @@ class AgentService {
         adapter: adapter,
         capabilities: claims.capabilities,
         mode: a.mode!,
+        tools: a.session.tools,
       );
     } finally {
       _continuing.remove(record.id);
@@ -612,8 +659,31 @@ class AgentService {
     _available();
     final reservation = connection.reserveChannels(1);
     _AgentIO? io;
+    ToolGrant? grant;
+    _Agent? live;
     var stage = 'spawn';
     try {
+      // The grant exists before the adapter starts, so a bridge that races
+      // `session/new` can authenticate and wait for the record. Without an
+      // endpoint the adapter gets no `kumiko` entry at all.
+      final endpoint = tools.endpoint;
+      if (endpoint != null) {
+        grant = tools.register(
+          target: target.path,
+          role: ToolRole.coding,
+          runtime: profile.runtimeKind,
+          profile: profile.id,
+          onAuthenticated: () {
+            final a = live;
+            if (a != null && _current(a)) a.session.toolsAuthenticated();
+          },
+          onCallSucceeded: () {
+            final a = live;
+            if (a != null && _current(a)) a.session.toolsCalled();
+          },
+        );
+        _grants.add(grant);
+      }
       final launch = await units.launch(
         target: target.path,
         expectedIdentity: target.identity,
@@ -625,6 +695,19 @@ class AgentService {
       );
       io = _AgentIO(launch);
       _io.add(io);
+      final mcpServers = <Json>[
+        if (grant != null)
+          {
+            'name': 'kumiko',
+            'command': Platform.resolvedExecutable,
+            'args': ['--mcp-bridge'],
+            'env': [
+              {'name': 'KUMIKO_TOOL_ENDPOINT', 'value': endpoint!},
+              {'name': 'KUMIKO_TOOL_SECRET', 'value': grant.secret},
+              {'name': unitMarkerVariable, 'value': launch.id},
+            ],
+          },
+      ];
       _available();
       stage = 'initialize';
       final initialization = await io.client.initialize();
@@ -637,11 +720,12 @@ class AgentService {
         name: initialization.adapterName,
         version: initialization.adapterVersion ?? '',
       );
+      grant?.setAdapter(adapter.name, adapter.version);
       late final _Agent a;
       if (saved == null) {
         final startingIo = io;
         stage = 'session/new';
-        await io.client.newSession(target.path, onCreated: (native) {
+        await io.client.newSession(target.path, mcpServers: mcpServers, onCreated: (native) {
           _available();
           final now = DateTime.now().toUtc().toIso8601String();
           final record = AgentSessionRecord(
@@ -661,7 +745,10 @@ class AgentService {
             io: startingIo,
             reservation: reservation,
             claims: claims,
+            grant: grant,
+            mcpServers: mcpServers,
           );
+          live = a;
         });
       } else {
         if (!claims.canLoad && !claims.canResume) {
@@ -676,10 +763,16 @@ class AgentService {
           reservation: reservation,
           claims: claims,
           mode: claims.canLoad ? AgentContinueMode.load : AgentContinueMode.resume,
+          grant: grant,
+          mcpServers: mcpServers,
         );
+        live = a;
       }
       return (a, adapter, claims);
     } on Object catch (error) {
+      // An attempt that never produced a session releases its secret; calls
+      // still waiting for the record answer session unavailable.
+      if (live == null) _revoke(grant);
       if (io != null) {
         final outcome = await _end(io);
         await io.client.close();
@@ -722,11 +815,11 @@ class AgentService {
         rethrow;
       }
       if (error is AcpProtocolException) {
-        throw RpcException(ErrorCode.adapterProtocol, error.message, {
+        throw RpcException(ErrorCode.adapterProtocol, _redact(error.message, grant), {
           'stage': stage,
         });
       }
-      final tail = io?.stderr.tail() ?? '';
+      final tail = _redact(io?.stderr.tail() ?? '', grant);
       final status = io?.status;
       final reason =
           stage == 'session/new' &&
@@ -740,11 +833,12 @@ class AgentService {
                 ? ErrorCode.notExecutable
                 : ErrorCode.adapterStartFailed
           : ErrorCode.adapterStartFailed;
-      final message = error is AcpRemoteException
-          ? error.message
-          : error.toString();
+      final message = _redact(
+        error is AcpRemoteException ? error.message : error.toString(),
+        grant,
+      );
       final nativeMessage = error is AcpRemoteException
-          ? clampUtf8(error.message, 4096)
+          ? clampUtf8(_redact(error.message, grant), 4096)
           : null;
       throw RpcException(
         reason,
@@ -759,7 +853,8 @@ class AgentService {
           if (error is AcpRemoteException) 'nativeCode': error.code,
           'nativeMessage': ?nativeMessage,
           if (error is AcpRemoteException &&
-              (error.messageTruncated || nativeMessage != error.message))
+              (error.messageTruncated ||
+                  nativeMessage != _redact(error.message, grant)))
             'nativeMessageTruncated': true,
         },
       );
@@ -772,20 +867,29 @@ class AgentService {
     required ChannelReservation reservation,
     required AdapterClaims claims,
     AgentContinueMode? mode,
+    ToolGrant? grant,
+    List<Json> mcpServers = const [],
   }) {
     final a = _Agent(
       record: record,
       io: io,
       reservation: reservation,
       mode: mode,
+      grant: grant,
+      mcpServers: mcpServers,
     );
     _agents[record.id] = a;
+    grant?.bind(record.id);
     a.relay.onFailure = (error) => _fail(a, error);
     a.session = AgentSession(
       sessionId: record.id,
       client: io.client,
       claims: claims,
       nativeSessionId: record.nativeSessionId,
+      tools: _startTools(grant, record.adapter),
+      toolsAuthenticated: grant?.everAuthenticated ?? false,
+      redact: (text) => _redact(text, grant),
+      secrets: () => _secretsFor(grant),
       enqueueEvents: a.relay.enqueue,
       onState: (p) {
         _notify(a, Method.agentState, p.toJson());
@@ -822,6 +926,29 @@ class AgentService {
     });
     unawaited(_watchExit(a));
     return a;
+  }
+
+  /// The tools status a run starts with (design D6), seeded from what the
+  /// grant already saw during `session/new`.
+  AgentTools _startTools(ToolGrant? grant, AgentAdapter adapter) {
+    if (grant == null) {
+      return AgentTools(
+        AgentToolsStatus.unavailable,
+        reason:
+            tools.unavailableReason ?? 'endpoint-unavailable: not started',
+      );
+    }
+    if (grant.everCalled) return const AgentTools(AgentToolsStatus.connected);
+    for (final (name, version, text)
+        in toolDeliveryFailuresOverride ?? toolDeliveryFailures) {
+      if (name == adapter.name && version == adapter.version) {
+        return AgentTools(
+          AgentToolsStatus.unavailable,
+          reason: 'for $name $version: $text',
+        );
+      }
+    }
+    return const AgentTools(AgentToolsStatus.notYetUsed);
   }
 
   void _insert(AgentSessionRecord r) {
@@ -913,6 +1040,7 @@ class AgentService {
         await a.io.client.loadSession(
           a.record.nativeSessionId,
           a.record.target.path,
+          mcpServers: a.mcpServers,
         );
         if (!_current(a) || a.ending) return;
         await a.session.replayEnded();
@@ -922,6 +1050,7 @@ class AgentService {
         await a.io.client.resumeSession(
           a.record.nativeSessionId,
           a.record.target.path,
+          mcpServers: a.mcpServers,
         );
       }
       if (_current(a) && !a.ending) {
@@ -983,6 +1112,7 @@ class AgentService {
       _ => false,
     };
     a.ending = true;
+    _revoke(a.grant);
     a.attachTimer?.cancel();
     a.session.beginClosing();
     a.relay.close();
@@ -1088,6 +1218,9 @@ class AgentService {
     // expanded final update under backpressure. Retire choices without native
     // replies: stdin has closed, but the ACP reader must drain through EOF.
     a.session.observeExit();
+    // The run is over: its secret stops working now, not once the transcript
+    // has drained (that can wait on desktop credit indefinitely).
+    _revoke(a.grant);
     // EOF owns the separate final-count lifecycle: buffered updates must
     // finish normalization/admission before sealing or disposing their pipes.
     await a.io.client.done;
@@ -1113,6 +1246,7 @@ class AgentService {
     if (!_current(a) || a.ending) return;
     final restoring = a.restoring;
     a.ending = true;
+    _revoke(a.grant);
     if (a.attached) a.attachTimer?.cancel();
     a.session.fail(error);
     var outcome = await _end(a.io);
@@ -1166,15 +1300,18 @@ class AgentService {
             : null,
         message: restoring
             ? error is AcpRemoteException && error.messageTruncated
-                  ? '${clampUtf8(error.message, 4096 - ' [truncated]'.length)} [truncated]'
+                  ? '${clampUtf8(_redact(error.message, a.grant), 4096 - ' [truncated]'.length)} [truncated]'
                   : clampUtf8(
-                      error is AcpRemoteException
-                          ? error.message
-                          : error.toString(),
+                      _redact(
+                        error is AcpRemoteException
+                            ? error.message
+                            : error.toString(),
+                        a.grant,
+                      ),
                       4096,
                     )
             : error is AcpProtocolException
-            ? error.message
+            ? _redact(error.message, a.grant)
             : null,
       );
       _notify(a, Method.agentExited, exited.toJson());
@@ -1200,6 +1337,7 @@ class AgentService {
   }();
 
   void _forget(_Agent a) {
+    _revoke(a.grant);
     a.callbacks = false;
     a.attachTimer?.cancel();
     a.session.dispose();
@@ -1214,6 +1352,9 @@ class AgentService {
   void dispose() {
     if (_disposed) return;
     _disposed = true;
+    for (final grant in _grants.toList()) {
+      _revoke(grant);
+    }
     for (final a in _agents.values) {
       a.callbacks = false;
       a.attachTimer?.cancel();

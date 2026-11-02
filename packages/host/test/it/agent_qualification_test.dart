@@ -10,6 +10,7 @@ import 'package:test/test.dart';
 import 'support/agent_support.dart';
 import 'support/harness.dart';
 import 'support/terminal_support.dart';
+import 'support/tool_support.dart';
 
 const _mib = 1024 * 1024;
 const _ackBound = Duration(milliseconds: 250);
@@ -22,7 +23,7 @@ void main() {
   late Directory profile;
   late Directory work;
   setUp(() {
-    profile = tempDir('agent_qualification_profile_');
+    profile = tempDir('aq_profile_');
     work = tempDir('agent_qualification_work_');
   });
   tearDown(() async {
@@ -215,6 +216,196 @@ void main() {
     await terminal.subscription.cancel();
     expect(LedgerView(profile).units(), isEmpty);
     await expectAllGone(readReports(work));
+  }, timeout: const Timeout(Duration(minutes: 5)));
+
+  String secretOf(File report) {
+    final launch = fixtureReports(
+      report,
+    ).firstWhere((p) => p.containsKey('newCwd'));
+    final entry = (launch['mcpServers'] as List).single as Json;
+    return [
+      for (final e in entry['env'] as List)
+        if ((e as Json)['name'] == 'KUMIKO_TOOL_SECRET') e['value'] as String,
+    ].single;
+  }
+
+  Map<String, Object?> sessionInfoCall(int id) => {
+    'jsonrpc': '2.0',
+    'id': id,
+    'method': 'tools/call',
+    'params': {
+      'name': 'kumiko_session_info',
+      'arguments': <String, Object?>{},
+    },
+  };
+
+  test('tool call answered within the control-latency bound under '
+      'saturation', () async {
+    final (d, workspace) = await desktop();
+    await d.saveFixtureProfile(cwd: work.path);
+    var ready = false;
+    var terminalBytes = 0;
+    var terminalTail = '';
+    final terminal = await d.openTerminal(
+      'fixture',
+      onData: (bytes) {
+        terminalTail += latin1.decode(bytes);
+        if (!ready) {
+          ready = terminalTail.contains('READY;');
+        } else {
+          terminalBytes += bytes.length;
+        }
+        if (terminalTail.length > 128) {
+          terminalTail = terminalTail.substring(terminalTail.length - 128);
+        }
+      },
+    );
+    await eventually(() => ready, reason: 'terminal A did not initialize');
+    final (b, bReport) = await agent(
+      d,
+      workspace,
+      runtime: 'stalled',
+      credit: false,
+      script: {
+        'blockedWriteAfterMs': 100,
+        'prompt': [
+          {
+            'flood': {'count': 4096, 'update': textUpdate('b' * 16384)},
+          },
+        ],
+      },
+    );
+    await b.peer.prompt();
+    await waitFixture(bReport, (p) => p['blockedWrite'] == true);
+    _expectQueueBound(await _paused(b.peer));
+    final (c, cReport) = await agent(
+      d,
+      workspace,
+      runtime: 'tooled',
+      script: {'reportLaunch': true},
+    );
+    await terminal.send('flood ${1 << 40}');
+    await eventually(
+      () => terminalBytes >= 8 * _mib,
+      within: const Duration(seconds: 60),
+      reason: 'A did not saturate',
+    );
+    final client = await ToolClient.connect(await endpointOf(d));
+    addTearDown(client.close);
+    client.authenticate(secretOf(cReport));
+    expect(await client.readJson(), {'ok': true});
+    var worst = Duration.zero;
+    final startBytes = terminalBytes;
+    for (var i = 0; i < 50; i++) {
+      final before = terminalBytes;
+      final clock = Stopwatch()..start();
+      client.send(sessionInfoCall(i + 1));
+      final answer = (await client.readJson())!;
+      final elapsed = clock.elapsed;
+      expect(answer['id'], i + 1);
+      expect(
+        ((answer['result'] as Json)['structuredContent'] as Json)['sessionId'],
+        c.peer.id,
+      );
+      if (elapsed > worst) worst = elapsed;
+      await eventually(
+        () => terminalBytes > before,
+        reason: 'terminal A stopped flowing during sample $i',
+      );
+    }
+    expect(terminalBytes, greaterThan(startBytes));
+    expect(b.receivedBytes, 0, reason: 'B still has no credit');
+    print(
+      'measured: tool call worst of 50 ${worst.inMicroseconds / 1000} ms '
+      'on ${Platform.operatingSystem}',
+    );
+    expect(worst, lessThanOrEqualTo(_ackBound));
+    await c.closeAndRelease();
+    await b.closeAndRelease();
+    await d.closeTerminal(terminal.id);
+    await terminal.waitExited(within: const Duration(seconds: 35));
+    await terminal.subscription.cancel();
+    expect(LedgerView(profile).units(), isEmpty);
+    await expectAllGone(readReports(work));
+  }, timeout: const Timeout(Duration(minutes: 5)));
+
+  test('Stop acknowledged within bound while a client holds max in-flight '
+      'calls', () async {
+    final (d, workspace) = await desktop();
+    // Session P stays in session/new, so its grant is unbound: every call
+    // from its bridge client waits on the binding future and stays in flight.
+    final release = File(joinPath(work.path, 'release-pending'));
+    final pendingReport = await saveAgentFixture(
+      d,
+      work,
+      id: 'pending',
+      script: {
+        'reportLaunch': true,
+        'new': [
+          {'waitFile': release.path},
+        ],
+      },
+    );
+    final pendingPeer = AgentPeer(d);
+    final starting = pendingPeer.start(workspace, runtime: 'pending');
+    await waitFixture(pendingReport, (p) => p.containsKey('newCwd'));
+    final client = await ToolClient.connect(await endpointOf(d));
+    addTearDown(client.close);
+    client.authenticate(secretOf(pendingReport));
+    expect(await client.readJson(), {'ok': true});
+    for (var id = 1; id <= 8; id++) {
+      client.send(sessionInfoCall(id));
+    }
+    // Nothing answers while the slot is unbound.
+    await Future<void>.delayed(const Duration(milliseconds: 500));
+    expect(client.ended, isFalse);
+
+    final (c, cReport) = await agent(
+      d,
+      workspace,
+      runtime: 'active',
+      script: {
+        'prompt': [
+          {'waitCancel': true},
+        ],
+      },
+    );
+    var worst = Duration.zero;
+    for (var i = 0; i < 50; i++) {
+      await c.peer.prompt('turn $i');
+      await eventually(
+        () => c.peer.of(Method.agentState).last['state'] == 'running',
+      );
+      final clock = Stopwatch()..start();
+      await c.peer.call(Method.agentStop);
+      final ack = clock.elapsed;
+      if (ack > worst) worst = ack;
+      await eventually(() => c.peer.of(Method.agentStopResult).length == i + 1);
+      await eventually(
+        () => c.peer.of(Method.agentState).last['state'] == 'idle',
+      );
+    }
+    expect(fixtureReports(cReport), isNotNull);
+    print(
+      'measured: Stop worst of 50 with 8 calls in flight '
+      '${worst.inMicroseconds / 1000} ms on ${Platform.operatingSystem}',
+    );
+    expect(worst, lessThanOrEqualTo(_ackBound));
+
+    // The eight calls were really pending: they are answered only now.
+    release.writeAsStringSync('go');
+    await starting;
+    final ids = <Object?>{};
+    for (var i = 0; i < 8; i++) {
+      final answer = (await client.readJson())!;
+      expect(answer['result'], isNotNull);
+      ids.add(answer['id']);
+    }
+    expect(ids, {1, 2, 3, 4, 5, 6, 7, 8});
+    await pendingPeer.attach();
+    await pendingPeer.close();
+    await c.closeAndRelease();
+    expect(LedgerView(profile).units(), isEmpty);
   }, timeout: const Timeout(Duration(minutes: 5)));
 
   test('with no credit the host stops reading at the queue bound (fixture '

@@ -140,6 +140,15 @@ class _SessionView {
   AgentExitedParams? exited;
   AgentCloseFailedParams? closeFailed;
   AgentPermissionResolvedParams? resolved;
+
+  /// Latest Kumiko tools status from the start/continue result or agent/state.
+  AgentTools? tools;
+
+  /// Every turn end in order, so the tool step can find its own turn.
+  final turns = <AgentTurnEndedParams>[];
+
+  /// Titles of tool events the transcript showed (bounded).
+  final toolTitles = <String>[];
   final permissions = <String, AgentPermissionRequestedParams>{};
   final kinds = <AgentEventKind>{};
   bool replayStarted = false;
@@ -191,6 +200,7 @@ class _Host {
         if (state.seq > v.seq) {
           v.seq = state.seq;
           v.state = state.state;
+          if (state.tools != null) v.tools = state.tools;
         }
       case Method.agentPermissionRequested:
         final permission = AgentPermissionRequestedParams.fromJson(n.params);
@@ -210,6 +220,7 @@ class _Host {
         );
       case Method.agentTurnEnded:
         v.turn = AgentTurnEndedParams.fromJson(n.params);
+        v.turns.add(v.turn!);
         stdout.writeln(
           'Turn ended: ${v.turn!.error ?? v.turn!.stopReason ?? 'unspecified'}'
           '${v.turn!.message == null ? '' : ': ${_display(v.turn!.message!)}'}',
@@ -302,16 +313,33 @@ class _Host {
           WorkspaceOpenParams(workspace.path).toJson(),
         ),
       ).workspace.id;
-  Future<AgentStartResult> startAgent(String workspace, String profile) async =>
-      AgentStartResult.fromJson(
-        await call(
-          Method.agentStart,
-          AgentStartParams(
-            workspaceId: workspace,
-            runtimeProfileId: profile,
-          ).toJson(),
-        ),
+  Future<AgentStartResult> startAgent(String workspace, String profile) async {
+    final started = AgentStartResult.fromJson(
+      await call(
+        Method.agentStart,
+        AgentStartParams(
+          workspaceId: workspace,
+          runtimeProfileId: profile,
+        ).toJson(),
+      ),
+    );
+    final view = this.view(started.sessionId);
+    if (started.tools != null) view.tools ??= started.tools;
+    return started;
+  }
+
+  /// Waits (bounded) for the host to report a successful call; a status that
+  /// never becomes `connected` is itself the observation, not an error.
+  Future<void> settleTools(String id) async {
+    try {
+      await wait(
+        () => view(id).tools?.status == AgentToolsStatus.connected,
+        timeout: const Duration(seconds: 10),
       );
+    } on TimeoutException {
+      // The evaluation reports the status that was actually observed.
+    }
+  }
   Future<void> attach(String id, int channel) async {
     final decoder = AgentEventDecoder();
     final v = view(id);
@@ -325,6 +353,12 @@ class _Host {
           try {
             for (final event in decoder.add(bytes)) {
               v.kinds.add(event.kind);
+              if ((event.kind == AgentEventKind.tool ||
+                      event.kind == AgentEventKind.toolUpdate) &&
+                  event.title != null &&
+                  v.toolTitles.length < 64) {
+                v.toolTitles.add(event.title!);
+              }
               if (event.kind == AgentEventKind.replay) {
                 if (event.phase == AgentReplayPhase.start) {
                   v.replayStarted = true;
@@ -664,6 +698,7 @@ Future<void> _dryRun(
     }
   }
   await _dryRunAuth(executable, profile, workspace);
+  await _dryRunTool(executable, profile, workspace);
   stdout.writeln('DRY-RUN PASSED (fixture only; no evidence written)');
 }
 
@@ -802,6 +837,89 @@ Future<void> _dryRunAuth(
   }
 }
 
+/// The tool step: prompts the agent to call `kumiko_session_info`, then reads
+/// the host's tools status and the turn and transcript it actually produced.
+/// The scripted fixture is told to make that call (`kumikoTool`); it is not
+/// evidence, so the result is printed but never recorded.
+Future<void> _dryRunTool(
+  String executable,
+  Directory profile,
+  Directory workspace,
+) async {
+  final script = File('${workspace.path}/tool.script.json');
+  await script.writeAsString(
+    jsonEncode({
+      'agentInfo': {'name': 'qualification-fixture', 'version': 'test-only'},
+      'kumikoTool': {'call': qualificationToolName, 'when': 'prompt'},
+      'prompt': [
+        {
+          'update': {
+            'sessionUpdate': 'agent_message_chunk',
+            'content': {'type': 'text', 'text': 'Fixture tool reply'},
+          },
+        },
+      ],
+    }),
+  );
+  const runtime = 'qualification-tool-fixture';
+  final host = await _Host.start(executable, profile, fixture: true);
+  var saved = false;
+  try {
+    final workspaceId = await host.workspace(workspace);
+    await host.call(
+      Method.runtimeSave,
+      RuntimeSaveParams(
+        RuntimeProfile(
+          id: runtime,
+          name: 'Fixture tool path (not evidence)',
+          runtimeKind: 'claude-code',
+          executable: executable,
+          args: ['--test-fixture', 'acp-agent', '--script', script.path],
+        ),
+      ).toJson(),
+    );
+    saved = true;
+    final started = await host.startAgent(workspaceId, runtime);
+    final id = started.sessionId;
+    stdout.writeln(
+      'FIXTURE kumiko tools status at start: '
+      '${started.tools?.status.name ?? 'not reported'}',
+    );
+    await host.attach(id, started.eventChannel);
+    final v = host.view(id);
+    final turnIndex = v.turns.length;
+    await host.prompt(id, qualificationToolPrompt);
+    await host.wait(() => v.turns.length > turnIndex || v.exited != null);
+    await host.settleTools(id);
+    final result = evaluateQualificationToolCall(
+      tools: v.tools,
+      toolTitles: v.toolTitles,
+      turn: v.turns.length > turnIndex ? v.turns[turnIndex] : null,
+    );
+    stdout.writeln(
+      'FIXTURE $toolCallQualificationItem: '
+      '${result.passed ? 'pass' : 'fail'} (${_display(result.detail)}); '
+      'fixture result, not evidence',
+    );
+    _require(
+      result.passed,
+      'Fixture $toolCallQualificationItem failed: ${result.detail}',
+    );
+    await host.closeAgent(id);
+  } finally {
+    try {
+      if (saved) {
+        await host.call(
+          Method.runtimeRemove,
+          RuntimeRemoveParams(runtime).toJson(),
+        );
+      }
+    } finally {
+      await host.dispose();
+    }
+  }
+}
+
 Future<void> _confirm(
   _Console console,
   Map<String, QualificationObservation> rows,
@@ -810,6 +928,7 @@ Future<void> _confirm(
   String detail, {
   String authCode = '',
   String authMessage = '',
+  String observed = '',
 }) async {
   stdout.writeln('$item: proposed ${passed ? 'pass' : 'fail'}; $detail');
   if (await console.approve(
@@ -820,6 +939,7 @@ Future<void> _confirm(
       confirmed: true,
       authCode: authCode,
       authMessage: authMessage,
+      observed: observed,
     );
   } else {
     stdout.writeln(
@@ -892,6 +1012,10 @@ Future<void> _realRun(
     stdout.writeln(
       'Actual initialized identity: ${candidate.$1} ${candidate.$2}',
     );
+    stdout.writeln(
+      'Kumiko tools status at start: ${started.tools?.status.name ?? 'not reported'}'
+      '${started.tools?.reason == null ? '' : ' (${_display(started.tools!.reason!)})'}',
+    );
     await host.attach(id, started.eventChannel);
     await _confirm(
       console,
@@ -904,8 +1028,11 @@ Future<void> _realRun(
     var prompted = false;
     var stopTried = false;
     var permissionTried = false;
+    int? toolTurnIndex;
     stdout.writeln(
-      'Commands: prompt, permission, stop, close.\n'
+      'Commands: prompt, tool, permission, stop, close.\n'
+      '`tool` asks the agent to call $qualificationToolName (the Kumiko session\n'
+      'tool); answer any permission it raises with the permission command.\n'
       'Use a prompt that actually produces streaming, tool activity and a permission.\n'
       'Native settings may omit permissions. Those cannot be recorded as passing.\n'
       'For close-with-confirmation, close during a second running/waiting turn after Stop.',
@@ -930,6 +1057,15 @@ Future<void> _realRun(
           }
           await host.prompt(id, text);
           prompted = true;
+        case 'tool':
+          if (!await console.approve(
+            'Send this exact prompt to the real provider so the agent calls the '
+            'Kumiko session tool (tokens possible)?\n$qualificationToolPrompt',
+          )) {
+            break;
+          }
+          toolTurnIndex = v.turns.length;
+          await host.prompt(id, qualificationToolPrompt);
         case 'permission':
           if (v.permissions.isEmpty) {
             stdout.writeln('No pending permission was offered.');
@@ -999,7 +1135,7 @@ Future<void> _realRun(
             );
           }
         default:
-          stdout.writeln('Use prompt, permission, stop or close.');
+          stdout.writeln('Use prompt, tool, permission, stop or close.');
       }
     }
     if (prompted) {
@@ -1029,6 +1165,32 @@ Future<void> _realRun(
     }
     if (!stopTried) {
       stdout.writeln('Stop was untried; no result will be invented.');
+    }
+    if (toolTurnIndex != null) {
+      await host.settleTools(id);
+      final result = evaluateQualificationToolCall(
+        tools: v.tools,
+        toolTitles: v.toolTitles,
+        turn: v.turns.length > toolTurnIndex ? v.turns[toolTurnIndex] : null,
+      );
+      await _confirm(
+        console,
+        rows,
+        toolCallQualificationItem,
+        result.passed,
+        result.detail,
+        observed: result.observed,
+      );
+      stdout.writeln(
+        'Manual note, not recorded by this tool: check whether the adapter\'s '
+        'native history contains the session\'s KUMIKO_TOOL_SECRET and add '
+        'yes or no to the kumiko tool call Notes by hand.',
+      );
+    } else {
+      stdout.writeln(
+        'The tool command was not run; $toolCallQualificationItem remains '
+        'unrecorded.',
+      );
     }
     final records = AgentRecordsResult.fromJson(
       await host.call(Method.agentRecords, AgentRecordsParams([id]).toJson()),

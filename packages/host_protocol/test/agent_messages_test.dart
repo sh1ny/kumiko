@@ -23,6 +23,109 @@ Matcher _invalid() => throwsA(
 );
 
 void main() {
+  group('Kumiko tools status (additive, no version bump)', () {
+    Json rt(Json wire) => jsonDecode(jsonEncode(wire)) as Json;
+    const adapter = AgentAdapter(name: 'claude', version: '1');
+
+    test('state without or with a tools field round-trips', () {
+      final bare = {'sessionId': 's', 'seq': 3, 'state': 'idle'};
+      final parsedBare = AgentStateParams.fromJson(rt(bare));
+      expect(parsedBare.tools, isNull);
+      expect(parsedBare.toJson(), bare);
+
+      const unavailable = AgentTools(
+        AgentToolsStatus.unavailable,
+        reason: 'endpoint-unavailable: path too long',
+      );
+      for (final tools in [
+        const AgentTools(AgentToolsStatus.notYetUsed),
+        const AgentTools(AgentToolsStatus.connected),
+        const AgentTools(AgentToolsStatus.notStarted),
+        unavailable,
+      ]) {
+        final wire = AgentStateParams(
+          sessionId: 's',
+          seq: 4,
+          state: AgentState.running,
+          tools: tools,
+        ).toJson();
+        expect(wire['tools'], {
+          'status': tools.status.name,
+          'reason': ?tools.reason,
+        });
+        final back = AgentStateParams.fromJson(rt(wire));
+        expect(back.tools!.status, tools.status);
+        expect(back.tools!.reason, tools.reason);
+        expect(back.toJson(), wire);
+      }
+      expect(unavailable.toJson(), {
+        'status': 'unavailable',
+        'reason': 'endpoint-unavailable: path too long',
+      });
+    });
+
+    test('an unknown tools status is tolerated as unknown', () {
+      final parsed = AgentStateParams.fromJson(
+        rt({
+          'sessionId': 's',
+          'seq': 5,
+          'state': 'idle',
+          'tools': {'status': 'quantum', 'extra': 1},
+        }),
+      );
+      expect(parsed.seq, 5);
+      expect(parsed.state, AgentState.idle);
+      expect(parsed.tools!.status, AgentToolsStatus.unknown);
+      expect(
+        AgentStateParams.fromJson(parsed.toJson()).tools!.status,
+        AgentToolsStatus.unknown,
+      );
+    });
+
+    test('a malformed tools field never rejects the state message', () {
+      for (final bad in <Object?>['x', 3, {'status': 7}, <Object?>[]]) {
+        final parsed = AgentStateParams.fromJson(
+          rt({'sessionId': 's', 'seq': 1, 'state': 'idle', 'tools': bad}),
+        );
+        expect(parsed.state, AgentState.idle);
+        expect(parsed.tools?.status ?? AgentToolsStatus.unknown,
+            AgentToolsStatus.unknown);
+      }
+    });
+
+    test('start and Continue results carry tools; older results decode', () {
+      const tools = AgentTools(AgentToolsStatus.notYetUsed);
+      final start = const AgentStartResult(
+        sessionId: 's',
+        eventChannel: 1,
+        adapter: adapter,
+        capabilities: [],
+        tools: tools,
+      ).toJson();
+      expect(start['tools'], {'status': 'notYetUsed'});
+      expect(
+        AgentStartResult.fromJson(rt(start)).tools!.status,
+        AgentToolsStatus.notYetUsed,
+      );
+      final cont = const AgentContinueResult(
+        eventChannel: 2,
+        adapter: adapter,
+        capabilities: [],
+        mode: AgentContinueMode.load,
+        tools: AgentTools(AgentToolsStatus.unavailable, reason: 'r'),
+      ).toJson();
+      final contBack = AgentContinueResult.fromJson(rt(cont));
+      expect(contBack.tools!.status, AgentToolsStatus.unavailable);
+      expect(contBack.tools!.reason, 'r');
+
+      final old = Map<String, Object?>.of(start)..remove('tools');
+      expect(AgentStartResult.fromJson(rt(old)).tools, isNull);
+      expect(AgentStartResult.fromJson(rt(old)).toJson(), old);
+      final oldCont = Map<String, Object?>.of(cont)..remove('tools');
+      expect(AgentContinueResult.fromJson(rt(oldCont)).tools, isNull);
+    });
+  });
+
   final requests = {
     Method.runtimeList: 'runtime/list',
     Method.runtimeSave: 'runtime/save',

@@ -1,6 +1,7 @@
 import 'package:host_protocol/host_protocol.dart';
 
 import 'agent/agent_service.dart';
+import 'agent/tools/tool_service.dart';
 import 'host_faults.dart';
 import 'host_options.dart';
 import 'unit_manager.dart';
@@ -19,6 +20,9 @@ abstract interface class HostExtension {
   /// Exact qualification candidates, available only in a test build.
   List<(String, String, List<String>)>? get qualifiedAdaptersOverride;
 
+  /// Replacement for the recorded tool-delivery failures, test builds only.
+  List<(String, String, String)>? get toolDeliveryFailuresOverride;
+
   /// Runs a `--test-fixture` mode: [args] are the mode and its arguments.
   /// Returns the process exit code.
   Future<int> runFixture(List<String> args);
@@ -34,10 +38,12 @@ class HostServices {
     required this.faults,
     required this.connection,
     required this.agents,
+    required this.tools,
   });
 
   final UnitManager units;
   final HostFaults faults;
   final Connection connection;
   final AgentService agents;
+  final ToolService tools;
 }

@@ -690,4 +690,141 @@ void main() {
     expect(ends, hasLength(1));
     expect(s.state, AgentState.idle);
   });
+
+  group('secret split across streamed text chunks', () {
+    const secret = 'abcdefghijklmnopqrstuvwxyz0123456789ABCDEFG';
+    setUp(() {
+      s.dispose();
+      s = AgentSession(
+        sessionId: 'host',
+        client: p.client,
+        onState: states.add,
+        onPermissionRequested: requests.add,
+        onPermissionResolved: resolved.add,
+        onStopResult: stops.add,
+        onTurnEnded: ends.add,
+        redact: (text) => text.replaceAll(secret, '<redacted>'),
+        secrets: () => const [secret],
+        enqueueEvents: (lines) {
+          final decoder = AgentEventDecoder();
+          for (final line in lines) {
+            events.addAll(decoder.add(line));
+          }
+          decoder.close();
+        },
+      );
+      s.ready(nativeSessionId: 'native');
+    });
+    void chunk(String kind, String text) => p.update({
+      'sessionUpdate': kind,
+      'content': {'type': 'text', 'text': text},
+    });
+    List<(AgentEventKind, String?)> streamed() => [
+      for (final e in events)
+        if (e.kind != AgentEventKind.user) (e.kind, e.text),
+    ];
+
+    test('is redacted once joined', () async {
+      s.acceptPrompt('hello');
+      chunk('agent_message_chunk', 'key ${secret.substring(0, 20)}');
+      chunk('agent_message_chunk', '${secret.substring(20)} done');
+      await finish('end_turn');
+      final text = streamed()
+          .where((e) => e.$1 == AgentEventKind.agentText)
+          .map((e) => e.$2)
+          .join();
+      expect(text, 'key <redacted> done');
+    });
+
+    test('a tail of fewer than 4 secret characters is not held', () async {
+      s.acceptPrompt('hello');
+      chunk('agent_message_chunk', 'see abc');
+      chunk('agent_message_chunk', ' and more');
+      await finish('end_turn');
+      expect(streamed(), [
+        (AgentEventKind.agentText, 'see abc'),
+        (AgentEventKind.agentText, ' and more'),
+        (AgentEventKind.turn, null),
+      ]);
+    });
+
+    test('a secret begun in a short tail is redacted from the next chunk',
+        () async {
+      s.acceptPrompt('hello');
+      chunk('agent_message_chunk', 'key abc');
+      chunk('agent_message_chunk', '${secret.substring(3)} done');
+      await finish('end_turn');
+      expect(streamed(), [
+        (AgentEventKind.agentText, 'key abc'),
+        (AgentEventKind.agentText, '<redacted> done'),
+        (AgentEventKind.turn, null),
+      ]);
+    });
+
+    test('a held tail never completed is a cut-off secret and redacted',
+        () async {
+      s.acceptPrompt('hello');
+      chunk('agent_message_chunk', 'key ${secret.substring(0, 30)}');
+      await finish('end_turn');
+      expect(streamed(), [
+        (AgentEventKind.agentText, 'key '),
+        (AgentEventKind.agentText, '<redacted>'),
+        (AgentEventKind.turn, null),
+      ]);
+    });
+
+    test('another update releases the held tail first, in order', () async {
+      s.acceptPrompt('hello');
+      chunk('agent_message_chunk', 'hi abcd');
+      chunk('agent_thought_chunk', 'think');
+      await finish('end_turn');
+      expect(streamed(), [
+        (AgentEventKind.agentText, 'hi '),
+        (AgentEventKind.agentText, '<redacted>'),
+        (AgentEventKind.thought, 'think'),
+        (AgentEventKind.turn, null),
+      ]);
+    });
+
+    test('a secret streamed in three parts is redacted', () async {
+      s.acceptPrompt('hello');
+      chunk('agent_message_chunk', 'key a');
+      chunk('agent_message_chunk', 'b');
+      chunk('agent_message_chunk', '${secret.substring(2)} done');
+      await finish('end_turn');
+      final text = streamed()
+          .where((e) => e.$1 == AgentEventKind.agentText)
+          .map((e) => e.$2)
+          .join();
+      expect(text, 'key ab<redacted> done');
+    });
+
+    test('a secret streamed one character at a time is redacted', () async {
+      s.acceptPrompt('hello');
+      chunk('agent_message_chunk', 'key ');
+      for (final c in secret.split('')) {
+        chunk('agent_message_chunk', c);
+      }
+      chunk('agent_message_chunk', ' done');
+      await finish('end_turn');
+      final text = streamed()
+          .where((e) => e.$1 == AgentEventKind.agentText)
+          .map((e) => e.$2)
+          .join();
+      expect(text, 'key abc<redacted> done');
+      expect(text, isNot(contains(secret.substring(3, 10))));
+    });
+
+    test('a held tail continued by ordinary text is released joined',
+        () async {
+      s.acceptPrompt('hello');
+      chunk('agent_message_chunk', 'abcd');
+      chunk('agent_message_chunk', 'ef!');
+      await finish('end_turn');
+      expect(streamed(), [
+        (AgentEventKind.agentText, 'abcdef!'),
+        (AgentEventKind.turn, null),
+      ]);
+    });
+  });
 }

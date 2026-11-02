@@ -319,7 +319,7 @@ void main() {
         .singleWhere((p) => p['method'] == 'session/load');
     expect(load['sessionId'], row['native_session_id']);
     expect(load['cwd'], row['target_path']);
-    expect(load['mcpServers'], isEmpty);
+    expect((load['mcpServers'] as List).single, containsPair('name', 'kumiko'));
     expect(
       fixtureReports(report)
           .where((p) => p.containsKey('newCwd') || p.containsKey('prompt')),

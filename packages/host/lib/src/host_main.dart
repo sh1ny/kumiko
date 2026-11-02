@@ -3,6 +3,7 @@ import 'dart:io';
 
 import 'package:process_containment/process_containment.dart';
 
+import 'agent/tools/mcp_bridge.dart';
 import 'host.dart';
 import 'host_extension.dart';
 
@@ -11,10 +12,15 @@ const String _usage = 'usage: kumiko_host --profile <dir>';
 /// The host's entry, shared by the release and the test executable (design
 /// D10). [extension] is passed only by the test entry point.
 ///
-/// `--unit-exec` is dispatched here, so both executables have it (D2).
+/// `--unit-exec` and `--mcp-bridge` are dispatched here, so both executables
+/// have them (D2, D9).
 /// `--test-fixture` is dispatched only with an [extension]: in the release
 /// host it is a usage error that starts nothing and touches nothing.
 Future<int> hostMain(List<String> args, {HostExtension? extension}) async {
+  // First of all: the bridge starts no host machinery (design D9).
+  if (args.isNotEmpty && args.first == '--mcp-bridge') {
+    return runMcpBridge(Platform.environment);
+  }
   if (args.isNotEmpty && args.first == '--unit-exec') {
     runUnitExec(args.sublist(1));
   }

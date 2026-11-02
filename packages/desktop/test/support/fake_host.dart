@@ -686,10 +686,14 @@ class FakeHostLink implements HostLink {
     });
   }
 
-  void agentState(String id, AgentState state, [int seq = 1]) =>
-      agentStateSource.add(
-        AgentStateParams(sessionId: id, seq: seq, state: state),
-      );
+  void agentState(
+    String id,
+    AgentState state, [
+    int seq = 1,
+    AgentTools? tools,
+  ]) => agentStateSource.add(
+    AgentStateParams(sessionId: id, seq: seq, state: state, tools: tools),
+  );
 
   void agentEvent(String id, AgentEvent event) {
     _agentEventCounts[id] = (_agentEventCounts[id] ?? 0) + 1;

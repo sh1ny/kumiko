@@ -4,6 +4,8 @@ This document contains real per-version observations and a fenced format templat
 Windows qualification of `@agentclientprotocol/claude-agent-acp` 0.99.1 was run
 through `tool/qualify_claude_acp.dart` and personally confirmed by the user.
 Linux and macOS user observations remain `unproven`; they are not passing results.
+The Windows `kumiko tool call` row for 0.99.1 was recorded on 2026-11-02 by a
+real run of the driver's `tool` step (pass; status connected).
 Do not copy the fenced template into an evidence section before making those
 observations. Capability claims must match the recorded results below.
 
@@ -34,8 +36,9 @@ mise exec -- dart tool/qualify_claude_acp.dart --workspace "<absolute disposable
 
 `--dry-run` uses only owned temporary files and the contained scripted fixture.
 It exercises streaming, tools, an explicit fixture permission choice, Stop,
-confirmed close, preferred load, resume-only continuation and refusal without
-the candidate override. Its output is not real-adapter evidence and it never
+confirmed close, preferred load, resume-only continuation, refusal without
+the candidate override and a scripted `kumiko_session_info` call whose host
+tools status must become `connected`. Its output is not real-adapter evidence and it never
 writes version observations here.
 
 Real qualification requires an interactive terminal, Node 22 or newer, the
@@ -56,6 +59,12 @@ approved provider requests may spend tokens and change workspace files.
 `--profile "<runtime profile id>"` selects one explicitly. An unavailable chosen
 profile or default is reported rather than silently replaced. Without
 `--profile-dir`, the Kumiko profile is disposable.
+
+During the interactive loop, `tool` (after approval) sends a fixed prompt asking
+the agent to call `kumiko_session_info`. After close, the driver reads the host's
+Kumiko tools status (from the start result and `agent/state`), the turn result
+and the tool name shown in the transcript, then asks you to confirm `pass` or
+`fail`. A failure proposes the observed text for the `observed: "<text>"` note.
 
 Separate explicit approvals gate provider execution, prompts, the offered
 permission choice, Stop, close, authentication isolation and the final evidence
@@ -117,9 +126,30 @@ Only unfenced real-run sections count as evidence. Blank results, unknown
 items/OSes and duplicate sections/rows fail with adapter/version, OS and item
 (or the `section` diagnostic item). For a listed pair it checks launch, streaming,
 tool activity, permission request, Stop, close with confirmation, authentication,
-and macOS Finder/Dock. It checks load/resume only if that pair claims them;
-unclaimed load/resume may fail or remain unproven without blocking other claims.
-Fill every result when recording a run; an empty template cell is not a status.
+`kumiko tool call`, and macOS Finder/Dock. It checks load/resume only if that pair
+claims them; unclaimed load/resume may fail or remain unproven without blocking
+other claims. Fill every result when recording a run; an empty template cell is
+not a status.
+
+`kumiko tool call` records that the adapter's session called the Kumiko session
+tool `kumiko_session_info` and the host observed the call succeed (the driver's
+`tool` command prompts for it and reads the host's tools status, the turn result
+and the tool name the transcript shows). It is required per OS for every listed
+version; Windows must be recorded, Linux and macOS may be `unproven`. Its notes
+should also say whether the adapter's native history contains the session
+secret (the driver cannot observe this; record it by hand).
+
+A `kumiko tool call` `fail` is accepted only with the observed failure and a
+matching list entry:
+
+- The `Notes` cell must carry `observed: "<text>"` on a single line, with no
+  pipes or double quotes. A `fail` without it fails the checker.
+- `toolDeliveryFailures` (below) must list the same adapter name, version and
+  exactly that text. The failure then counts as a satisfied item and the checker
+  prints `TOOL DELIVERY FAILURE RECORDED: <adapter> <version> <os>: <text>`.
+- A `fail` with no list entry, a list entry whose evidence is `pass`, `unproven`
+  or missing, and a list entry whose text differs from the evidence all fail the
+  checker, naming the adapter, version and OS.
 
 The source grammar is intentionally literal, so later claim logic can consume the
 same typed data without evaluating Dart source:
@@ -138,6 +168,22 @@ not. Entries and identities must be unique. The production list currently names
 `@agentclientprotocol/claude-agent-acp` 0.99.1 for `load` and `resume`, backed by
 the confirmed Windows results below. Linux/macOS remain explicitly unproven.
 
+After `qualifiedAdapters` the same file holds a second literal with the same
+restrictions (no computed expressions or other declarations):
+
+```dart
+const toolDeliveryFailures = <(String, String, String)>[
+  ('<adapterName>', '<exactVersion>', '<observed failure text>'),
+];
+```
+
+Each tuple is `(adapterName, exactVersion, observedFailure)`. The third string
+may contain spaces but no single quote, backslash, `$` or line break, and must
+not be empty. An empty list is valid and is the normal state. Entries must be
+unique per name and version. A missing or unparseable second literal fails the
+checker. A session on a listed exact version starts with Kumiko tools
+unavailable and shows that text.
+
 Run `dart run tool/check_qualification.dart [resultsPath [sourcePath]]` from the
 repository root. Defaults are this file and
 `packages/host/lib/src/agent/qualified_adapters.dart`. The pure API is
@@ -152,7 +198,10 @@ use `<adapterName> <exactVersion>: <os>: <item>: <detail>` (unproven entries omi
   QUALIFIED. The document must still be nonblank and structurally valid.
 - Exit 0 with nonempty claims and allowed unproven observations:
   `unproven: <adapterName> <exactVersion>: <os>: <item>` for each, then `ACCEPTED`.
-- Exit 0 with nonempty claims and every checked item passing: `QUALIFIED`.
+- Exit 0 with nonempty claims and every checked item passing or an accepted
+  tool delivery failure: `QUALIFIED`, preceded by one
+  `TOOL DELIVERY FAILURE RECORDED: ...` line per accepted failure. An
+  unaccepted `fail` is never QUALIFIED.
 
 M1 close requires QUALIFIED. ACCEPTED leaves every unproven item visible.
 Missing or unparseable source/results files fail; there are no provider calls.
@@ -178,6 +227,7 @@ fenced block must remain a template, not an observed adapter version section.
 | load | user | | | | |
 | resume | user | | | | |
 | auth-required observed | user | | | | |
+| kumiko tool call | user | | | | |
 
 ### linux
 
@@ -192,6 +242,7 @@ fenced block must remain a template, not an observed adapter version section.
 | load | user | | | | |
 | resume | user | | | | |
 | auth-required observed | user | | | | |
+| kumiko tool call | user | | | | |
 
 ### macos
 
@@ -206,6 +257,7 @@ fenced block must remain a template, not an observed adapter version section.
 | load | user | | | | |
 | resume | user | | | | |
 | auth-required observed | user | | | | |
+| kumiko tool call | user | | | | |
 | launch from Finder or the Dock | user | | | | |
 ```
 
@@ -215,15 +267,16 @@ fenced block must remain a template, not an observed adapter version section.
 
 | Item | Kind | Result | Notes | Auth code | Auth message |
 |---|---|---|---|---|---|
-| launch | user | pass | Real local adapter through test host; OS=windows; 2026-10-31; user confirmed pass. |  |  |
-| streaming | user | pass | Real local adapter through test host; OS=windows; 2026-10-31; user confirmed pass. |  |  |
-| tool activity | user | pass | Real local adapter through test host; OS=windows; 2026-10-31; user confirmed pass. |  |  |
-| permission request | user | pass | Real local adapter through test host; OS=windows; 2026-10-31; user confirmed pass. |  |  |
-| Stop | user | pass | Real local adapter through test host; OS=windows; 2026-10-31; user confirmed pass. |  |  |
-| close with confirmation | user | pass | Real local adapter through test host; OS=windows; 2026-10-31; user confirmed pass. |  |  |
-| load | user | pass | Real local adapter through test host; OS=windows; 2026-10-31; user confirmed pass. |  |  |
-| resume | user | pass | Real local adapter through test host; OS=windows; 2026-10-31; user confirmed pass. |  |  |
-| auth-required observed | user | pass | Real local adapter through test host; OS=windows; 2026-10-31; isolated session/new succeeded, then session/prompt returned this exact error; user confirmed authentication semantics and pass. | -32000 | Authentication required |
+| launch | user | pass | Real local adapter through test host; OS=windows; 2026-11-02; user confirmed pass. |  |  |
+| streaming | user | pass | Real local adapter through test host; OS=windows; 2026-11-02; user confirmed pass. |  |  |
+| tool activity | user | pass | Real local adapter through test host; OS=windows; 2026-11-02; user confirmed pass. |  |  |
+| permission request | user | pass | Real local adapter through test host; OS=windows; 2026-11-02; user confirmed pass. |  |  |
+| Stop | user | pass | Real local adapter through test host; OS=windows; 2026-11-02; user confirmed pass. |  |  |
+| close with confirmation | user | pass | Real local adapter through test host; OS=windows; 2026-11-02; user confirmed pass. |  |  |
+| load | user | pass | Real local adapter through test host; OS=windows; 2026-11-02; user confirmed pass. |  |  |
+| resume | user | pass | Real local adapter through test host; OS=windows; 2026-11-02; user confirmed pass. |  |  |
+| auth-required observed | user | pass | Real local adapter through test host; OS=windows; 2026-11-02; user confirmed pass. | -32000 | Authentication required |
+| kumiko tool call | user | pass | Real local adapter through test host; OS=windows; 2026-11-02; user confirmed pass. Native Claude history (~/.claude/projects) contains the secret: no (no KUMIKO_TOOL_SECRET, KUMIKO_TOOL_ENDPOINT, mcp-bridge or mcpServers in the run's session files). |  |  |
 
 ### linux
 
@@ -238,6 +291,7 @@ fenced block must remain a template, not an observed adapter version section.
 | load | user | unproven | Not verified by a user on this OS. |  |  |
 | resume | user | unproven | Not verified by a user on this OS. |  |  |
 | auth-required observed | user | unproven | Not verified by a user on this OS. |  |  |
+| kumiko tool call | user | unproven | Not verified by a user on this OS. |  |  |
 
 ### macos
 
@@ -252,5 +306,6 @@ fenced block must remain a template, not an observed adapter version section.
 | load | user | unproven | Not verified by a user on this OS. |  |  |
 | resume | user | unproven | Not verified by a user on this OS. |  |  |
 | auth-required observed | user | unproven | Not verified by a user on this OS. |  |  |
+| kumiko tool call | user | unproven | Not verified by a user on this OS. |  |  |
 | launch from Finder or the Dock | user | unproven | Not verified by a user on this OS. |  |  |
 

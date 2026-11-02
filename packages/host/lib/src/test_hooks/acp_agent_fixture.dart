@@ -7,6 +7,8 @@ import 'dart:typed_data';
 
 import 'package:host_protocol/host_protocol.dart';
 
+import 'fixture_kumiko_tool.dart';
+
 /// Actual stdio ACP fixture. The JSON environment script is test data, never
 /// provider qualification. Only explicitly named environment values are
 /// reported; neither inherited credentials nor full environment are dumped.
@@ -157,6 +159,10 @@ Future<int> runAcpAgentScript({
   var status = 0;
   var nextId = 1;
   Object? promptId;
+  final kumikoTool = script['kumikoTool'] is Json
+      ? KumikoToolDriver(script['kumikoTool'] as Json, report)
+      : null;
+  Object? mcpServers;
   var native = script['nativeSessionId'] as String? ?? 'fixture-native';
   Completer<void>? cancelled;
   var cancelledTurn = false;
@@ -248,6 +254,29 @@ Future<int> runAcpAgentScript({
     });
   }
 
+  // Scripted adapter output may echo the Kumiko secret, as a careless
+  // adapter might: <kumiko-secret> in any string of an error, update or
+  // permission request becomes the mcpServers entry's secret.
+  // <kumiko-secret-head> and <kumiko-secret-tail> are its first 20
+  // characters and the rest, to split it across streamed chunks.
+  Object? secretIn(Object? value) => switch (value) {
+    final String s when s.contains('<kumiko-secret') => s
+        .replaceAll(
+          '<kumiko-secret-head>',
+          kumikoSecret(mcpServers).substring(0, 20),
+        )
+        .replaceAll(
+          '<kumiko-secret-tail>',
+          kumikoSecret(mcpServers).substring(20),
+        )
+        .replaceAll('<kumiko-secret>', kumikoSecret(mcpServers)),
+    final Map<Object?, Object?> m => <String, Object?>{
+      for (final e in m.entries) e.key! as String: secretIn(e.value),
+    },
+    final List<Object?> l => [for (final v in l) secretIn(v)],
+    _ => value,
+  };
+  Json withSecret(Json error) => secretIn(error)! as Json;
   Json launchReport() => {
     'argv': args,
     'cwd': cwd,
@@ -262,11 +291,18 @@ Future<int> runAcpAgentScript({
     for (final value in source) {
       if (ended) return null;
       final action = value as Json;
-      if (action['update'] case final Json value) await update(value);
+      if (action['update'] case final Json value) {
+        await update(withSecret(value));
+      }
       if (action['gatedUpdate'] case final Json gate) {
         await gatedUpdate(gate);
       }
       if (action['stderr'] case final String value) writeError(value);
+      if (action['stderrSecret'] == true) {
+        // The Kumiko secret of the mcpServers entry, as a careless adapter
+        // might print it. The host must redact it from any stderr tail.
+        writeError('adapter saw secret=${kumikoSecret(mcpServers)}');
+      }
       if (action['writeFile'] case final Json value) {
         File(value['path'] as String)
             .writeAsStringSync(value['text'] as String);
@@ -307,7 +343,7 @@ Future<int> runAcpAgentScript({
           'jsonrpc': '2.0',
           'id': id,
           'method': 'session/request_permission',
-          'params': {'sessionId': native, ...permission},
+          'params': {'sessionId': native, ...withSecret(permission)},
         });
         if (action['waitPermission'] != false) {
           await response.future;
@@ -386,7 +422,7 @@ Future<int> runAcpAgentScript({
     final errors = script['errors'];
     final error = errors is Json ? errors[method] : null;
     if (error is Json) {
-      await send({'jsonrpc': '2.0', 'id': id, 'error': error});
+      await send({'jsonrpc': '2.0', 'id': id, 'error': withSecret(error)});
       return;
     }
     switch (method) {
@@ -402,7 +438,16 @@ Future<int> runAcpAgentScript({
         });
       case 'session/new':
         report({'newCwd': params['cwd'], 'mcpServers': params['mcpServers']});
+        mcpServers = params['mcpServers'];
+        if (kumikoTool?.when == 'session/new') {
+          // Like an adapter: the call runs alongside session/new.
+          unawaited(kumikoTool!.run(mcpServers));
+        }
         await actions(script['new']);
+        if (script['newErrorAfterActions'] case final Json error) {
+          await send({'jsonrpc': '2.0', 'id': id, 'error': withSecret(error)});
+          return;
+        }
         final initial = script['newSessionUpdates'];
         if (initial is List) {
           final burst = StringBuffer()..writeln(jsonEncode({
@@ -420,6 +465,7 @@ Future<int> runAcpAgentScript({
       case 'session/load' || 'session/resume':
         native = params['sessionId'] as String;
         report({'method': method, ...params});
+        mcpServers = params['mcpServers'];
         await actions(script[method == 'session/load' ? 'load' : 'resume']);
         await result(id, {});
       case 'session/prompt':
@@ -436,7 +482,13 @@ Future<int> runAcpAgentScript({
         cancelled = Completer<void>();
         cancelledTurn = false;
         report({'prompt': params['prompt'], 'sessionId': native});
+        if (kumikoTool?.when == 'prompt') await kumikoTool!.run(mcpServers);
         final reason = await actions(script['prompt']);
+        if (script['promptErrorAfterActions'] case final Json error) {
+          await send({'jsonrpc': '2.0', 'id': id, 'error': withSecret(error)});
+          promptId = null;
+          return;
+        }
         if (script['holdPrompt'] == true && !cancelledTurn) {
           await cancelled!.future;
         }

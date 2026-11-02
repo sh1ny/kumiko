@@ -14,6 +14,10 @@ const defaultQualifiedAdaptersPath =
     'packages/host/lib/src/agent/qualified_adapters.dart';
 
 const _oses = ['windows', 'linux', 'macos'];
+
+/// Tool delivery item (ADR 0013 D8): a `fail` is accepted only with its
+/// observed text in Notes and a matching `toolDeliveryFailures` entry.
+const toolCallItem = 'kumiko tool call';
 const _baselineItems = [
   'launch',
   'streaming',
@@ -22,11 +26,18 @@ const _baselineItems = [
   'Stop',
   'close with confirmation',
   'auth-required observed',
+  toolCallItem,
 ];
 const _finderItem = 'launch from Finder or the Dock';
 const _knownItems = {..._baselineItems, 'load', 'resume', _finderItem};
 
 typedef _Adapter = (String, String);
+
+/// Parsed source literals: qualified claims and tool delivery failures.
+typedef _Source = (
+  Map<_Adapter, List<String>>,
+  Map<_Adapter, String>,
+);
 
 /// A pure audit result. Failures suppress the success verdict.
 class QualificationReport {
@@ -34,6 +45,7 @@ class QualificationReport {
     required this.failures,
     required this.unproven,
     required this.verdict,
+    this.toolDeliveryFailures = const [],
   });
 
   /// Pair/OS/item diagnostics, or source/results diagnostics for document errors.
@@ -45,16 +57,20 @@ class QualificationReport {
   /// NO CLAIMS (no adapter qualified), ACCEPTED, QUALIFIED, or null on failure.
   final String? verdict;
 
+  /// `<adapter> <version> <os>: <text>` for each accepted tool delivery failure.
+  final List<String> toolDeliveryFailures;
+
   int get exitCode => failures.isEmpty ? 0 : 1;
 }
 
 class _Observation {
-  _Observation(this.kind, this.result, this.code, this.message);
+  _Observation(this.kind, this.result, this.code, this.message, this.notes);
 
   final String kind;
   final String result;
   final String code;
   final String message;
+  final String notes;
 }
 
 /// Deliberately small literal grammar, not a Dart evaluator. Unknown syntax must
@@ -67,6 +83,7 @@ class _QualifiedSourceParser {
 
   static final _trivia = RegExp(r'\s+|//[^\r\n]*|/\*[\s\S]*?\*/');
   static final _string = RegExp(r"'([^'\\\$\s]+)'");
+  static final _failureText = RegExp(r"'([^'\\\$\r\n]+)'");
 
   void _skipTrivia() {
     while (true) {
@@ -116,7 +133,7 @@ class _QualifiedSourceParser {
     return match.group(1)!;
   }
 
-  Map<_Adapter, List<String>> parse() {
+  _Source parse() {
     for (final token in [
       'const',
       'qualifiedAdapters',
@@ -178,16 +195,97 @@ class _QualifiedSourceParser {
       }
     }
     _expect(';');
+    return (entries, _parseToolDeliveryFailures());
+  }
+
+  /// `toolDeliveryFailures` follows `qualifiedAdapters`; absence is an error.
+  Map<_Adapter, String> _parseToolDeliveryFailures() {
     _skipTrivia();
-    if (_position != source.length) {
+    if (_position >= source.length) {
+      throw const _ToolFailuresFormatException(
+        'the literal is missing after qualifiedAdapters',
+      );
+    }
+    try {
+      for (final token in [
+        'const',
+        'toolDeliveryFailures',
+        '=',
+        '<',
+        '(',
+        'String',
+        ',',
+        'String',
+        ',',
+        'String',
+        ')',
+        '>',
+        '[',
+      ]) {
+        _expect(token);
+      }
+      final failures = <_Adapter, String>{};
+      if (!_consume(']')) {
+        while (true) {
+          _expect('(');
+          final name = _readString();
+          _expect(',');
+          final version = _readString();
+          _expect(',');
+          final text = _readFailureText();
+          _consume(',');
+          _expect(')');
+          final pair = (name, version);
+          if (failures.containsKey(pair)) {
+            throw FormatException('duplicate failure for $name $version');
+          }
+          failures[pair] = text;
+          if (_consume(']')) break;
+          _expect(',');
+          if (_consume(']')) break;
+        }
+      }
+      _expect(';');
+      _skipTrivia();
+      if (_position != source.length) {
+        throw FormatException(
+          'unexpected source after toolDeliveryFailures',
+          source,
+          _position,
+        );
+      }
+      return failures;
+    } on FormatException catch (error) {
+      throw _ToolFailuresFormatException(error.message);
+    }
+  }
+
+  /// Spaces are allowed; a quote, backslash, `$` (interpolation) or line break
+  /// is not, so the decoded text is exactly the source text.
+  String _readFailureText() {
+    _skipTrivia();
+    final match = _failureText.matchAsPrefix(source, _position);
+    if (match == null) {
       throw FormatException(
-        'unexpected source after qualifiedAdapters',
+        'expected a nonempty single-line single-quoted failure text',
         source,
         _position,
       );
     }
-    return entries;
+    _position = match.end;
+    return match.group(1)!;
   }
+}
+
+/// A `toolDeliveryFailures` diagnostic rather than a `qualifiedAdapters` one.
+class _ToolFailuresFormatException extends FormatException {
+  const _ToolFailuresFormatException(super.message);
+}
+
+/// The text of `observed: "<text>"` in a Notes cell, or null when absent/empty.
+String? _observedText(String notes) {
+  final match = RegExp(r'observed: "([^"]+)"').firstMatch(notes);
+  return match?.group(1);
 }
 
 List<String> _cells(String line) {
@@ -208,10 +306,12 @@ QualificationReport checkQualification(
 ) {
   final failures = <String>[];
   final unproven = <String>[];
+  final recorded = <String>[];
   QualificationReport report(String? verdict) => QualificationReport(
     failures: failures,
     unproven: unproven,
     verdict: failures.isEmpty ? verdict : null,
+    toolDeliveryFailures: recorded,
   );
 
   if (qualifiedSource == null) {
@@ -219,8 +319,14 @@ QualificationReport checkQualification(
     return report(null);
   }
   final Map<_Adapter, List<String>> claims;
+  final Map<_Adapter, String> listedFailures;
   try {
-    claims = _QualifiedSourceParser(qualifiedSource).parse();
+    (claims, listedFailures) = _QualifiedSourceParser(qualifiedSource).parse();
+  } on _ToolFailuresFormatException catch (error) {
+    failures.add(
+      'source: unrecognised toolDeliveryFailures literal: ${error.message}',
+    );
+    return report(null);
   } on FormatException catch (error) {
     failures.add(
       'source: unrecognised qualifiedAdapters literal: ${error.message}',
@@ -329,7 +435,13 @@ QualificationReport checkQualification(
       failures.add('$where: duplicate item row');
       continue;
     }
-    rows[item] = _Observation(cells[1], cells[2], cells[4], cells[5]);
+    rows[item] = _Observation(
+      cells[1],
+      cells[2],
+      cells[4],
+      cells[5],
+      cells[3],
+    );
     if (cells[1] != 'user' && cells[1] != 'agent') {
       failures.add('$where: unknown kind "${cells[1]}"');
     }
@@ -365,7 +477,29 @@ QualificationReport checkQualification(
               );
             }
           case 'fail':
-            failures.add('$where: fail');
+            if (item == toolCallItem) {
+              final observed = _observedText(row.notes);
+              final listed = listedFailures[entry.key];
+              if (observed == null) {
+                failures.add(
+                  '$where: fail needs observed: "<text>" in Notes',
+                );
+              } else if (listed == null) {
+                failures.add(
+                  '$where: fail is not listed in toolDeliveryFailures',
+                );
+              } else if (listed != observed) {
+                failures.add(
+                  '$where: observed text differs from the toolDeliveryFailures entry',
+                );
+              } else {
+                recorded.add(
+                  '${entry.key.$1} ${entry.key.$2} $os: $observed',
+                );
+              }
+            } else {
+              failures.add('$where: fail');
+            }
           case 'unproven':
             if (os != 'windows' && row.kind == 'user') {
               unproven.add(where);
@@ -376,6 +510,31 @@ QualificationReport checkQualification(
             }
           // Blank and unknown statuses already have pair/OS/item diagnostics.
         }
+      }
+    }
+  }
+  for (final listed in listedFailures.entries) {
+    final rows = {
+      for (final os in _oses) os: evidence[listed.key]?[os]?[toolCallItem],
+    };
+    for (final os in _oses) {
+      final row = rows[os];
+      final where = _where(listed.key, os, toolCallItem);
+      if (row != null &&
+          row.result == 'fail' &&
+          _observedText(row.notes) != listed.value) {
+        if (claims.containsKey(listed.key)) continue; // reported above
+        failures.add(
+          '$where: observed text differs from the toolDeliveryFailures entry',
+        );
+      } else if (row == null || row.result != 'fail') {
+        // Checked per OS: the entry reports the version unavailable on every
+        // OS, so each OS needs the observed failure; pass, unproven or
+        // missing evidence anywhere contradicts it.
+        failures.add(
+          '$where: toolDeliveryFailures lists this version but the evidence is '
+          '${row == null ? 'missing' : row.result.isEmpty ? 'blank' : row.result}',
+        );
       }
     }
   }
@@ -418,6 +577,9 @@ int runQualificationCheck(List<String> args, {required StringSink out}) {
   }
   for (final failure in report.failures) {
     out.writeln('FAILED: $failure');
+  }
+  for (final recorded in report.toolDeliveryFailures) {
+    out.writeln('TOOL DELIVERY FAILURE RECORDED: $recorded');
   }
   if (report.verdict != null) out.writeln(report.verdict);
   return report.exitCode;
