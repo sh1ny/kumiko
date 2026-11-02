@@ -339,6 +339,40 @@ void main() {
       },
     );
 
+    test('a closed connection releases its calls waiting on the binding', () async {
+      // Authenticate, fill the in-flight cap and disconnect, repeatedly,
+      // while session/new is still pending: nothing stays allocated.
+      for (var round = 0; round < 4; round++) {
+        final peer = round == 0 ? c : await connect(service, grant);
+        for (var i = 1; i <= 8; i++) {
+          peer.send(callReq(i, 'kumiko_session_info', <String, Object?>{}));
+          await peer.settle();
+          if (i == 4) {
+            peer.send({
+              'jsonrpc': '2.0',
+              'method': 'notifications/cancelled',
+              'params': {'requestId': 4},
+            });
+          }
+        }
+        await peer.settle();
+        expect(grant.pendingBindingWaiters, 8);
+        await peer.eof();
+        await peer.closed;
+        await peer.settle();
+        expect(grant.pendingBindingWaiters, 0, reason: 'round $round');
+      }
+      // A live connection's waiter is still answered after binding.
+      final live = await connect(service, grant);
+      live.send(callReq(1, 'kumiko_session_info', <String, Object?>{}));
+      await live.settle();
+      grant
+        ..setAdapter('a', '1')
+        ..bind('s');
+      expect((await live.next())['id'], 1);
+      expect(grant.pendingBindingWaiters, 0);
+    });
+
     test('a request ID already in flight is rejected, not replaced', () async {
       c.send(callReq(1, 'kumiko_session_info', <String, Object?>{}));
       for (var i = 0; i < 10; i++) {

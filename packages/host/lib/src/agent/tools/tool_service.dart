@@ -65,6 +65,10 @@ class ToolGrant {
   final ToolService _service;
   final Uint8List _secretBytes;
   final _binding = Completer<_Bound>();
+
+  /// One per call waiting for the binding; settled by [bind] or [fail], or
+  /// dropped by its connection's close, so nothing outlives the connection.
+  final _waiters = <Completer<_Bound>>{};
   final _connections = <_Conn>{};
   bool _live = true;
   String? _adapterName;
@@ -98,6 +102,17 @@ class ToolGrant {
   /// True once any `tools/call` succeeded.
   bool get everCalled => _everCalled;
   bool get isLive => _live;
+
+  /// Calls still waiting for the binding (tests).
+  int get pendingBindingWaiters => _waiters.length;
+
+  /// A waiter for the binding, or null once it has settled.
+  Completer<_Bound>? _waitBinding() {
+    if (_binding.isCompleted) return null;
+    final waiter = Completer<_Bound>();
+    _waiters.add(waiter);
+    return waiter;
+  }
   bool get isBound => _boundValue != null;
   _Bound? _boundValue;
 
@@ -111,8 +126,12 @@ class ToolGrant {
   /// Ignored when already bound, failed or revoked.
   void bind(String recordId) {
     if (!_live || _binding.isCompleted) return;
-    _boundValue = _Bound(recordId);
-    _binding.complete(_boundValue);
+    final bound = _boundValue = _Bound(recordId);
+    _binding.complete(bound);
+    for (final waiter in _waiters) {
+      waiter.complete(bound);
+    }
+    _waiters.clear();
   }
 
   /// The attempt failed before binding: waiting calls answer *session
@@ -120,6 +139,10 @@ class ToolGrant {
   void fail(String reason) {
     if (_binding.isCompleted) return;
     _binding.completeError(const _SessionUnavailable());
+    for (final waiter in _waiters) {
+      waiter.completeError(const _SessionUnavailable());
+    }
+    _waiters.clear();
   }
 
   /// Ends the run: answers in-flight calls with an error, closes this
@@ -164,6 +187,9 @@ class _Conn {
 
   /// Cancelled calls that are still running (awaiting the binding).
   int cancelledRunning = 0;
+
+  /// Binding waiters of this connection's running calls.
+  final waiters = <Completer<_Bound>>{};
   StreamSubscription<List<int>>? sub;
   Timer? deadline;
   ToolGrant? grant;
@@ -333,6 +359,14 @@ class ToolService {
       call.done = true;
     }
     c.inFlight.clear();
+    // Calls still waiting for the binding end now, not when it settles.
+    for (final waiter in c.waiters.toList()) {
+      c.grant?._waiters.remove(waiter);
+      if (!waiter.isCompleted) {
+        waiter.completeError(const _SessionUnavailable());
+      }
+    }
+    c.waiters.clear();
     return c.closedFuture = c.transport.close().catchError((Object _) {}).then((
       _,
     ) {
@@ -542,7 +576,14 @@ class ToolService {
     try {
       // Only tool in M1: kumiko_session_info. The result comes from the
       // grant's own slot, never from an argument.
-      final bound = await grant._binding.future;
+      final waiter = grant._waitBinding();
+      if (waiter != null) c.waiters.add(waiter);
+      final _Bound bound;
+      try {
+        bound = await (waiter?.future ?? grant._binding.future);
+      } finally {
+        if (waiter != null) c.waiters.remove(waiter);
+      }
       final info = grant._info(bound);
       reply = _result(id, {
         'content': [

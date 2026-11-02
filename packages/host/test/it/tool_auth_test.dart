@@ -354,10 +354,13 @@ void main() {
                   ],
                 },
                 'options': [
-                  {'optionId': 'yes', 'name': 'Allow once', 'kind': 'allow_once'},
+                  {
+                    'optionId': 'allow-<kumiko-secret>',
+                    'name': 'Allow once',
+                    'kind': 'allow_once',
+                  },
                 ],
               },
-              'waitPermission': false,
             },
           ],
           'promptErrorAfterActions': {
@@ -374,6 +377,23 @@ void main() {
       final asked = await a.wait(Method.agentPermissionRequested);
       expect(asked['title'], 'Run env: <redacted>');
       expect(asked['preview'], 'KUMIKO_TOOL_SECRET=<redacted>');
+      // The desktop sees and answers the redacted option id; the adapter
+      // gets its own id back.
+      final option = (asked['options'] as List).single as Json;
+      expect(option['optionId'], 'allow-<redacted>');
+      await a.call(Method.agentPermissionReply, {
+        'sessionId': a.id,
+        'requestId': asked['requestId'],
+        'optionId': option['optionId'],
+      });
+      final answer = await waitFixture(
+        report,
+        (p) => p.containsKey('permissionOutcome'),
+      );
+      expect(answer['permissionOutcome'], {
+        'outcome': 'selected',
+        'optionId': 'allow-$secret',
+      });
       final ended = await a.wait(Method.agentTurnEnded);
       expect(ended['nativeMessage'], 'prompt failed, secret=<redacted>');
       expect(ended['message'], 'prompt failed, secret=<redacted>');

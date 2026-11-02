@@ -348,19 +348,21 @@ class AgentSession {
           'Permission requested',
       preview: _permissionPreview(tool),
       options: [
-        // Labels are redacted; the option id goes back to the adapter as is.
         for (final option in options)
           if (option is Json)
-            AgentPermissionOption.fromJson({
-              ...(_redactJson(option)! as Json),
-              'optionId': ?option['optionId'],
-            }),
+            AgentPermissionOption.fromJson(_redactJson(option)! as Json),
       ],
     );
-    _permissions[id] = _Permission(
-      rpcId,
-      dto.options.map((o) => o.optionId).toSet(),
-    );
+    // The desktop sees redacted option ids; the adapter gets its own back.
+    // If two native ids redact alike, the first one offered is kept.
+    final native = <String, String>{};
+    for (final option in options) {
+      if (option is Json && option['optionId'] is String) {
+        final nativeId = option['optionId']! as String;
+        native.putIfAbsent(_redact(nativeId), () => nativeId);
+      }
+    }
+    _permissions[id] = _Permission(rpcId, native);
     _set(AgentState.waitingApproval);
     onPermissionRequested(dto);
     return null;
@@ -390,7 +392,8 @@ class AgentSession {
         'permission request is no longer pending',
       );
     }
-    if (!permission.options.contains(optionId)) {
+    final nativeOptionId = permission.options[optionId];
+    if (nativeOptionId == null) {
       throw RpcException(
         ErrorCode.invalidParams,
         'option was not offered by this request',
@@ -399,7 +402,7 @@ class AgentSession {
     // Admission can refuse synchronously without consuming the user's choice.
     // Accepted native-write failures still fail the session asynchronously.
     final write = client.reply(permission.rpcId, {
-      'outcome': {'outcome': 'selected', 'optionId': optionId},
+      'outcome': {'outcome': 'selected', 'optionId': nativeOptionId},
     });
     _permissions.remove(requestId);
     _observeWrite(write);
@@ -542,5 +545,7 @@ class AgentSession {
 class _Permission {
   _Permission(this.rpcId, this.options);
   final Object rpcId;
-  final Set<String> options;
+
+  /// Desktop (redacted) option id to the adapter's own id.
+  final Map<String, String> options;
 }
