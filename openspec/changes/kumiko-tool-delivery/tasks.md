@@ -34,7 +34,7 @@
 | agent-tool-access → The Kumiko tools status reports only what was observed | Continue resets the status | packages/host/test/it/agent_tools_test.dart | continued run starts at not yet used | red |
 | agent-tool-access → The bridge ends with its session or its host | Session closed | packages/host/test/it/agent_tools_test.dart | bridge process gone when close settles | red |
 | agent-tool-access → The bridge ends with its session or its host | Host killed | packages/host/test/it/agent_tools_test.dart | bridge exits on endpoint EOF and reconciliation leaves none | red |
-| agent-tool-access → The bridge ends with its session or its host | Bridge started without a host | packages/host/test/it/mcp_bridge_test.dart | missing endpoint or variables exit non-zero with one stderr line | red |
+| agent-tool-access → The bridge ends with its session or its host | Bridge started without a host | packages/host/test/it/mcp_bridge_test.dart | missing endpoint or variables exit non-zero with one stderr line | green |
 | agent-runtimes → Kumiko tool delivery is qualified per adapter version | Passing tool call recorded | tool/test/qualify_claude_acp_test.dart | dry run records kumiko tool call pass from the fixture | red |
 | agent-runtimes → Kumiko tool delivery is qualified per adapter version | Evidence missing the item | tool/test/check_qualification_test.dart | missing kumiko tool call fails naming version, OS, item | red |
 | agent-runtimes → Kumiko tool delivery is qualified per adapter version | Recorded failure is reported | packages/host/test/it/agent_tools_test.dart | listed failure affects only that exact version | red |
@@ -66,8 +66,8 @@
 
 ## 4. Bridge mode
 
-- [ ] 4.1 Write failing `packages/host/test/it/mcp_bridge_test.dart`. It covers: `--mcp-bridge` with missing variables or a missing endpoint writes one stderr line and exits non-zero without reading stdin; with a live host it authenticates and relays MCP both ways; it exits on stdin EOF, on endpoint EOF and on a refused secret. Verify: the tests fail.
-- [ ] 4.2 Implement `--mcp-bridge` dispatch in `host_main.dart` beside `--unit-exec` and the relay per D3 and D9, in both the release and test entry points. Verify: 4.1 passes; `tool/test/bundle_host_test.dart` still passes; flip rows green.
+- [x] 4.1 Write failing `packages/host/test/it/mcp_bridge_test.dart`. It covers: `--mcp-bridge` with missing variables or a missing endpoint writes one stderr line and exits non-zero without reading stdin; with a live host it authenticates and relays MCP both ways; it exits on stdin EOF, on endpoint EOF and on a refused secret. Verify: the tests fail.
+- [x] 4.2 Implement `--mcp-bridge` dispatch in `host_main.dart` beside `--unit-exec` and the relay per D3 and D9, in both the release and test entry points. Verify: 4.1 passes; `tool/test/bundle_host_test.dart` still passes; flip rows green.
 
 ## 5. Delivery, secrets and status in agent sessions
 
