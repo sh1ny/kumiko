@@ -8,9 +8,6 @@ analyzer:
   exclude:
     - "**/build/**"
     - "**/.dart_tool/**"
-    - "orca/**"
-    - "t3code/**"
-    - "itsaplan/**"
     - "tool/probes/**"
     - "third_party/**"
     - "packages/desktop/windows/**"
