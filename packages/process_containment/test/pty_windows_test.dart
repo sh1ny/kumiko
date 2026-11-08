@@ -183,7 +183,6 @@ void main() {
 
   test('a pseudo-console is hosted by the bundled OpenConsole.exe '
       '(design D2: bundled ConPTY)', () async {
-    expect(await _consoleHostPaths(), isEmpty, reason: 'none before');
     final unit = spawnWindowsUnit(
       executable:
           Platform.environment['ComSpec'] ?? r'C:\Windows\System32\cmd.exe',
@@ -196,12 +195,16 @@ void main() {
     await session.reader.waitForText('Reply from');
 
     final hosts = await _consoleHostPaths();
-    expect(hosts, hasLength(1), reason: 'one console host: $hosts');
-    expect(p.basename(hosts.single), 'OpenConsole.exe');
-    expect(
-      File(p.join(p.dirname(hosts.single), 'conpty.dll')).existsSync(),
-      isTrue,
-      reason: 'started by the bundled conpty.dll beside it: ${hosts.single}',
-    );
+    // Test files run concurrently in this process, so another file's console
+    // host can be listed too. Every host must be the bundled one.
+    expect(hosts, isNotEmpty, reason: 'a console host runs');
+    for (final host in hosts) {
+      expect(p.basename(host), 'OpenConsole.exe');
+      expect(
+        File(p.join(p.dirname(host), 'conpty.dll')).existsSync(),
+        isTrue,
+        reason: 'started by the bundled conpty.dll beside it: $host',
+      );
+    }
   });
 }
