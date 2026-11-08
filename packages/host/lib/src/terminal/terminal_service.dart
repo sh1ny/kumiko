@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:io';
+import 'dart:isolate';
 import 'dart:math';
 import 'dart:typed_data';
 
@@ -59,6 +60,7 @@ class _Terminal {
     required this.unit,
     required this.pty,
     required this.size,
+    this.expectedLeader,
   });
 
   final String id;
@@ -67,6 +69,9 @@ class _Terminal {
   final ContainedUnit unit;
   final PtyHandles pty;
   PtySize size;
+
+  /// The shell's image, fixed before the spawn (POSIX; ADR 0014 decision 5).
+  final ExecutableIdentity? expectedLeader;
 
   int get outputId => reservation.ids[0];
   int get inputId => reservation.ids[1];
@@ -134,6 +139,10 @@ class TerminalService {
   int _opening = 0;
   bool _disposed = false;
 
+  /// True while an activity read runs, including one past its deadline: the
+  /// host keeps one read in flight (ADR 0014 decision 6).
+  bool _activityReading = false;
+
   /// Console closes that passed their timeout and have not returned
   /// (Windows). Each holds one admission slot.
   int get pendingConsoleCleanups => _pending.length;
@@ -199,6 +208,7 @@ class TerminalService {
         {'pending': _pending.length},
       );
     }
+    final expectedLeader = _expectedLeader(profile);
     final reservation = connection.reserveChannels(2);
     _opening++;
     String? unitId;
@@ -236,6 +246,7 @@ class TerminalService {
         unit: unit,
         pty: handles,
         size: PtySize(params.cols, params.rows),
+        expectedLeader: expectedLeader,
       );
       try {
         t.reader = await PtyReaderIsolate.start(
@@ -312,6 +323,83 @@ class TerminalService {
       );
     }
     return spawnFailed(e.stage, e.errno, 'Cannot start $executable: $e');
+  }
+
+  /// The identity of the file the shim will `execve` for [profile], resolved
+  /// with the `PATH` the unit gets, before anything is spawned (ADR 0014
+  /// decision 5). Null on Windows, and when it cannot be resolved (the leader
+  /// then reads unknown).
+  ExecutableIdentity? _expectedLeader(ShellProfile profile) {
+    if (Platform.isWindows) return null;
+    final path =
+        terminalEnvironment(posix: true, profileEnv: profile.env)['PATH'] ??
+        Platform.environment['PATH'];
+    final program = resolveUnitProgram(profile.executable, path);
+    return program == null ? null : executableIdentity(program);
+  }
+
+  // --- activity --------------------------------------------------------------
+
+  /// `terminal/activity` (ADR 0014 decisions 4-7): reads, in one worker
+  /// isolate under [activityDeadline], what each named terminal's unit runs.
+  /// Unknown or finished terminals read ended without a read; terminals not
+  /// read by the deadline read unknown. A read past its deadline keeps the
+  /// host's one slot until it returns; a request meanwhile is refused `busy`.
+  Future<TerminalActivityResult> activity(TerminalActivityParams params) async {
+    if (_activityReading) {
+      throw RpcException(
+        ErrorCode.busy,
+        'a terminal activity read is still running',
+      );
+    }
+    final probes = <_ActivityProbe>[];
+    for (final id in params.terminalIds.toSet()) {
+      final t = _terminals[id];
+      if (t == null || t.processExited) continue;
+      if (t.status == TerminalStatus.exiting ||
+          t.status == TerminalStatus.ended) {
+        continue;
+      }
+      final unit = t.unit;
+      int? job;
+      if (unit is WindowsUnit) {
+        try {
+          job = duplicateHandle(unit.jobHandle);
+        } on Object {
+          continue; // the job is closed: nothing of the unit runs
+        }
+      }
+      probes.add(_ActivityProbe(id, unit.pid, job, t.expectedLeader?.value));
+    }
+
+    Map<String, TerminalActivity>? reads;
+    if (probes.isNotEmpty) {
+      _activityReading = true;
+      faults.activityReads++;
+      final unreadable = faults.activityImageUnreadable;
+      final slow = faults.activityReadSlow;
+      final read = _runActivityRead(probes, unreadable, slow)
+          .then<Map<String, TerminalActivity>?>(
+            (r) => r,
+            onError: (Object e) {
+              log.event('terminal-activity-failed', code: '$e');
+              return null;
+            },
+          )
+          .whenComplete(() => _activityReading = false);
+      reads = await read.timeout(activityDeadline, onTimeout: () => null);
+    }
+    final probed = {for (final p in probes) p.terminalId};
+    return TerminalActivityResult([
+      for (final id in params.terminalIds)
+        reads?[id] ??
+            TerminalActivity(
+              terminalId: id,
+              state: probed.contains(id)
+                  ? TerminalActivityState.unknown
+                  : TerminalActivityState.ended,
+            ),
+    ]);
   }
 
   // --- attach ----------------------------------------------------------------
@@ -735,4 +823,104 @@ class TerminalService {
       t.reader.discard();
     }
   }
+}
+
+/// How long a `terminal/activity` read may take (ADR 0014 bounds).
+const Duration activityDeadline = Duration(seconds: 1);
+
+/// What the activity worker needs of one terminal: plain values only.
+class _ActivityProbe {
+  const _ActivityProbe(
+    this.terminalId,
+    this.leaderPid,
+    this.job,
+    this.expected,
+  );
+  final String terminalId;
+  final int leaderPid;
+
+  /// Windows: a duplicate of the unit's job handle, closed by the worker.
+  final int? job;
+
+  /// POSIX: the expected leader image (`ExecutableIdentity.value`).
+  final String? expected;
+}
+
+/// Starts the activity worker. A top-level function, so the closure sent to
+/// the isolate captures only the plain probe values.
+Future<Map<String, TerminalActivity>> _runActivityRead(
+  List<_ActivityProbe> probes,
+  bool unreadable,
+  bool slow,
+) => Isolate.run(() => _readActivity(probes, unreadable, slow));
+
+/// Runs on the activity worker isolate. [unreadable] and [slow] are the test
+/// faults: every leader image unreadable, and a read that outlives the
+/// deadline.
+Map<String, TerminalActivity> _readActivity(
+  List<_ActivityProbe> probes,
+  bool unreadable,
+  bool slow,
+) {
+  if (slow) sleep(HostFaults.activitySlowRead);
+  final out = <String, TerminalActivity>{};
+  for (final probe in probes) {
+    try {
+      out[probe.terminalId] = _classify(probe, unreadable);
+    } on Object {
+      out[probe.terminalId] = TerminalActivity(
+        terminalId: probe.terminalId,
+        state: TerminalActivityState.unknown,
+      );
+    } finally {
+      final job = probe.job;
+      if (job != null) closeHandle(job);
+    }
+  }
+  return out;
+}
+
+/// busy when anything besides the shell runs, or the shell was replaced;
+/// idle when only the shell runs; ended when nothing runs; unknown when the
+/// leader's image cannot be judged.
+TerminalActivity _classify(_ActivityProbe probe, bool unreadable) {
+  final expected = probe.expected;
+  final read = readUnitProcesses(
+    UnitProbe(
+      leaderPid: probe.leaderPid,
+      job: probe.job,
+      expectedLeader: expected == null ? null : ExecutableIdentity(expected),
+    ),
+  );
+  final leader = unreadable && read.leader != LeaderState.gone
+      ? LeaderState.unreadable
+      : read.leader;
+  final busyPids = [
+    if (leader == LeaderState.replaced) probe.leaderPid,
+    ...read.others,
+  ]..sort();
+  TerminalActivity of(TerminalActivityState state) =>
+      TerminalActivity(terminalId: probe.terminalId, state: state);
+  if (busyPids.isEmpty) {
+    return switch (leader) {
+      LeaderState.shell => of(TerminalActivityState.idle),
+      LeaderState.gone => of(TerminalActivityState.ended),
+      LeaderState.unreadable ||
+      LeaderState.replaced => of(TerminalActivityState.unknown),
+    };
+  }
+  final names = <String>[];
+  for (final pid in busyPids) {
+    if (names.length == maxActivityProgramNames) break;
+    final name = pid == probe.leaderPid && read.leaderName != null
+        ? read.leaderName
+        : processImageName(pid);
+    if (name != null && name.isNotEmpty) names.add(activityProgramName(name));
+  }
+  return TerminalActivity(
+    terminalId: probe.terminalId,
+    state: TerminalActivityState.busy,
+    programs: names,
+    processCount: busyPids.length,
+  );
 }

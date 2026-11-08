@@ -54,7 +54,7 @@ Never runUnitExec(List<String> args) {
 
   final env = Map<String, String>.of(Platform.environment);
   env[unitMarkerVariable] = id;
-  final program = _resolveProgram(argv.first, env['PATH']);
+  final program = resolveUnitProgram(argv.first, env['PATH']);
   if (program == null) {
     if (slave != null) _statusFail(statusFd, 'exec', enoent, 127);
     _fail('${argv.first}: not found', 127);
@@ -118,7 +118,11 @@ Never _fail(String message, int code) {
   exit(code);
 }
 
-String? _resolveProgram(String name, String? path) {
+/// The file the shim `execve`s for [name] with [path] as `PATH`: [name]
+/// itself when it holds a `/`, else the first regular file in an absolute
+/// `PATH` entry. The host uses it to fix a terminal's expected leader image
+/// before the spawn (ADR 0014 decision 5).
+String? resolveUnitProgram(String name, String? path) {
   if (name.contains('/')) return name;
   for (final dir in (path ?? '/usr/bin:/bin').split(':')) {
     // An empty or relative entry names the working directory, which can be

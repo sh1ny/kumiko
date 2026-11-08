@@ -204,3 +204,35 @@ String _stripNamespacePrefix(String path) {
   if (path.startsWith(r'\\?\')) return path.substring(4);
   return path;
 }
+
+/// The `dev:ino` identity of the file [path] names, following symbolic links
+/// (and `/proc/<pid>/exe` on Linux), or null when `stat` fails. POSIX only.
+String? posixFileId(String path) {
+  final cPath = path.toNativeUtf8();
+  final buffer = calloc<Uint8>(256);
+  try {
+    if (_stat(cPath, buffer.cast<Void>()) != 0) return null;
+    final data = ByteData.sublistView(buffer.asTypedList(256));
+    final dev = Platform.isMacOS
+        ? data.getInt32(0, Endian.host)
+        : data.getUint64(0, Endian.host);
+    final ino = data.getUint64(8, Endian.host);
+    return '$dev:$ino';
+  } finally {
+    calloc.free(cPath);
+    calloc.free(buffer);
+  }
+}
+
+/// `realpath(3)` of [path], or null when it cannot be resolved. POSIX only.
+String? posixRealPath(String path) {
+  final cPath = path.toNativeUtf8();
+  Pointer<Utf8> resolved = nullptr;
+  try {
+    resolved = _realpath(cPath, nullptr);
+    return resolved == nullptr ? null : resolved.toDartString();
+  } finally {
+    if (resolved != nullptr) _free(resolved.cast<Void>());
+    calloc.free(cPath);
+  }
+}

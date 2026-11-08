@@ -46,6 +46,7 @@ abstract final class Method {
   static const String terminalRelease = 'terminal/release';
   static const String terminalExited = 'terminal/exited';
   static const String terminalCloseFailed = 'terminal/closeFailed';
+  static const String terminalActivity = 'terminal/activity';
   static const String runtimeList = 'runtime/list';
   static const String runtimeSave = 'runtime/save';
   static const String runtimeRemove = 'runtime/remove';
@@ -101,6 +102,7 @@ const Map<String, String> methodCapability = {
   Method.terminalResize: Capability.terminal,
   Method.terminalClose: Capability.terminal,
   Method.terminalRelease: Capability.terminal,
+  Method.terminalActivity: Capability.terminal,
   Method.runtimeList: Capability.agent,
   Method.runtimeSave: Capability.agent,
   Method.runtimeRemove: Capability.agent,
@@ -1403,7 +1405,120 @@ class TerminalCloseFailed {
 
 enum TestFixture { tree, escaper, sleeper, stubborn }
 
+/// Bounds of `terminal/activity` (app-exit-and-reopen design D2, ADR 0014):
+/// terminals per request, names per terminal and bytes per name.
+const int maxActivityTerminalIds = 64;
+const int maxActivityProgramNames = 3;
+const int maxActivityProgramNameBytes = 64;
+
+/// [name] cut to [maxActivityProgramNameBytes] of UTF-8 on a character
+/// boundary.
+String activityProgramName(String name) {
+  final bytes = utf8.encode(name);
+  if (bytes.length <= maxActivityProgramNameBytes) return name;
+  var end = maxActivityProgramNameBytes;
+  // Back off continuation bytes (10xxxxxx) to the start of a character.
+  while (end > 0 && (bytes[end] & 0xC0) == 0x80) {
+    end--;
+  }
+  return utf8.decode(bytes.sublist(0, end));
+}
+
+/// `terminal/activity`: what each named terminal runs now.
+class TerminalActivityParams {
+  const TerminalActivityParams(this.terminalIds);
+
+  factory TerminalActivityParams.fromJson(Json json) {
+    final ids = _list<String>(json, 'terminalIds');
+    if (ids.length > maxActivityTerminalIds) {
+      throw RpcException(
+        ErrorCode.invalidParams,
+        'at most $maxActivityTerminalIds terminal ids',
+      );
+    }
+    return TerminalActivityParams(ids);
+  }
+
+  final List<String> terminalIds;
+
+  Json toJson() => {'terminalIds': terminalIds};
+}
+
+/// Busy: the unit holds a process besides its shell, or its leader runs
+/// another image. Idle: only the shell. Ended: no such live terminal.
+/// Unknown: missing evidence or past the activity deadline.
+enum TerminalActivityState { busy, idle, ended, unknown }
+
+class TerminalActivity {
+  const TerminalActivity({
+    required this.terminalId,
+    required this.state,
+    this.programs = const [],
+    this.processCount = 0,
+  });
+
+  factory TerminalActivity.fromJson(Json json) {
+    final programs = json['programs'] == null
+        ? const <String>[]
+        : _list<String>(json, 'programs');
+    if (programs.length > maxActivityProgramNames ||
+        programs.any(
+          (n) => utf8.encode(n).length > maxActivityProgramNameBytes,
+        )) {
+      throw RpcException(
+        ErrorCode.invalidParams,
+        'at most $maxActivityProgramNames names of '
+        '$maxActivityProgramNameBytes bytes',
+      );
+    }
+    return TerminalActivity(
+      terminalId: _req<String>(json, 'terminalId'),
+      state: _enum(TerminalActivityState.values, json, 'state'),
+      programs: programs,
+      processCount: _opt<int>(json, 'processCount') ?? 0,
+    );
+  }
+
+  final String terminalId;
+  final TerminalActivityState state;
+
+  /// Image basenames of up to three programs in ascending pid order, never
+  /// arguments.
+  final List<String> programs;
+
+  /// How many processes make the terminal busy, named or not.
+  final int processCount;
+
+  Json toJson() => {
+    'terminalId': terminalId,
+    'state': state.name,
+    if (programs.isNotEmpty) 'programs': programs,
+    if (processCount != 0) 'processCount': processCount,
+  };
+}
+
+class TerminalActivityResult {
+  const TerminalActivityResult(this.terminals);
+
+  factory TerminalActivityResult.fromJson(Json json) => TerminalActivityResult([
+    for (final t in _list<Json>(json, 'terminals'))
+      TerminalActivity.fromJson(t),
+  ]);
+
+  final List<TerminalActivity> terminals;
+
+  Json toJson() => {
+    'terminals': [for (final t in terminals) t.toJson()],
+  };
+}
+
 enum TestFault {
+  /// `terminal/activity` cannot read any terminal's leader image.
+  activityImageUnreadable,
+
+  /// `terminal/activity` reads take 3 s, past the 1 s deadline.
+  activityReadSlow,
+
   /// Windows: the pseudo-console close never returns (a stuck closer).
   consoleCloseHangs,
   crashAfterPendingWrite,

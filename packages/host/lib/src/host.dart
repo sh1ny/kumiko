@@ -413,6 +413,9 @@ class Host {
       case Method.terminalRelease:
         _terminals!.release(TerminalReleaseParams.fromJson(params));
         return <String, Object?>{};
+      case Method.terminalActivity:
+        final p = TerminalActivityParams.fromJson(params);
+        return (await _terminals!.activity(p)).toJson();
     }
     switch (method) {
       case Method.agentStart:

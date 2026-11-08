@@ -172,6 +172,8 @@ class TestHostExtension implements HostExtension {
       case 'test/tools.fail':
       case 'test/tools.revoke':
         return _tools(host.tools, method, params);
+      case 'test/terminal.stats':
+        return {'activityReads': host.faults.activityReads};
       case 'test/agent.stats':
         EmptyParams.fromJson(params);
         return {

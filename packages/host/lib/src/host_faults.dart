@@ -74,6 +74,18 @@ class HostFaults {
   /// Writing a profile or the default profile fails.
   bool get profileWriteFails => _active.contains(TestFault.profileWriteFails);
 
+  /// `terminal/activity` reads every leader image as unreadable.
+  bool get activityImageUnreadable =>
+      _active.contains(TestFault.activityImageUnreadable);
+
+  /// `terminal/activity` reads take [activitySlowRead], past the deadline.
+  bool get activityReadSlow => _active.contains(TestFault.activityReadSlow);
+
+  static const Duration activitySlowRead = Duration(seconds: 3);
+
+  /// Process-table reads `terminal/activity` started, for the bound test.
+  int activityReads = 0;
+
   /// Saving the Personal layout fails.
   bool get layoutSaveFails => _active.contains(TestFault.layoutSaveFails);
 

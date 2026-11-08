@@ -432,4 +432,95 @@ void main() {
       await host.close();
     });
   });
+
+  group('terminal/activity (app-exit-and-reopen D2)', () {
+    test('name, capability and bound', () {
+      expect(Method.terminalActivity, 'terminal/activity');
+      expect(methodCapability[Method.terminalActivity], Capability.terminal);
+      expect(maxActivityTerminalIds, 64);
+      expect(maxActivityProgramNames, 3);
+      expect(maxActivityProgramNameBytes, 64);
+    });
+
+    test('params round-trip and refuse more than 64 ids', () {
+      final ids = [for (var i = 0; i < 64; i++) 'term-$i'];
+      final params = TerminalActivityParams(ids);
+      expect(
+        TerminalActivityParams.fromJson(
+          jsonDecode(jsonEncode(params.toJson())) as Json,
+        ).terminalIds,
+        ids,
+      );
+      expectReason(
+        () => TerminalActivityParams.fromJson({
+          'terminalIds': [...ids, 'term-64'],
+        }),
+        ErrorCode.invalidParams,
+      );
+      expectReason(
+        () => TerminalActivityParams.fromJson({'terminalIds': 'x'}),
+        ErrorCode.invalidParams,
+      );
+    });
+
+    test('result round-trips every state with programs and a count', () {
+      const result = TerminalActivityResult([
+        TerminalActivity(
+          terminalId: 'a',
+          state: TerminalActivityState.busy,
+          programs: ['vim', 'sleep'],
+          processCount: 5,
+        ),
+        TerminalActivity(terminalId: 'b', state: TerminalActivityState.idle),
+        TerminalActivity(terminalId: 'c', state: TerminalActivityState.ended),
+        TerminalActivity(terminalId: 'd', state: TerminalActivityState.unknown),
+      ]);
+      final back = TerminalActivityResult.fromJson(
+        jsonDecode(jsonEncode(result.toJson())) as Json,
+      );
+      expect(back.terminals.map((t) => t.terminalId), ['a', 'b', 'c', 'd']);
+      expect(back.terminals.map((t) => t.state), [
+        TerminalActivityState.busy,
+        TerminalActivityState.idle,
+        TerminalActivityState.ended,
+        TerminalActivityState.unknown,
+      ]);
+      expect(back.terminals.first.programs, ['vim', 'sleep']);
+      expect(back.terminals.first.processCount, 5);
+      expect(back.terminals[1].programs, isEmpty);
+      expect(result.toJson()['terminals'], isA<List<Object?>>());
+      expect(
+        (result.toJson()['terminals']! as List<Object?>).first,
+        containsPair('state', 'busy'),
+      );
+    });
+
+    test('a result refuses more than three names or a name over 64 bytes', () {
+      expectReason(
+        () => TerminalActivity.fromJson({
+          'terminalId': 'a',
+          'state': 'busy',
+          'programs': ['a', 'b', 'c', 'd'],
+        }),
+        ErrorCode.invalidParams,
+      );
+      expectReason(
+        () => TerminalActivity.fromJson({
+          'terminalId': 'a',
+          'state': 'busy',
+          'programs': ['x' * 65],
+        }),
+        ErrorCode.invalidParams,
+      );
+    });
+
+    test('program names are cut to 64 bytes on a character boundary', () {
+      expect(activityProgramName('vim'), 'vim');
+      expect(activityProgramName('a' * 70), 'a' * 64);
+      // 'é' is 2 bytes: 63 ASCII bytes plus one 'é' would be 65.
+      final cut = activityProgramName('${'a' * 63}é');
+      expect(cut, 'a' * 63);
+      expect(utf8.encode(activityProgramName('é' * 40)).length, 64);
+    });
+  });
 }
