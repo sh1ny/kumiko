@@ -120,6 +120,22 @@ abstract interface class HostLink {
   Future<void> releaseAgent(String sessionId);
   Future<AgentRecordsResult> agentRecords(List<String> sessionIds);
 
+  /// `agent/draftSave`: stores one session's composer text at one revision.
+  /// The host refuses a revision not above the stored one with
+  /// `stale-revision` ([storedRevisionOf]).
+  Future<AgentDraftSaveResult> draftSave(AgentDraftSaveParams params);
+
+  /// `agent/draftLoad`: the stored text (if any) and the stored revision.
+  Future<AgentDraftLoadResult> draftLoad(String sessionId);
+
+  /// `agent/draftReset`: discards the draft store. The host refuses it
+  /// (`draft-store-in-use`) unless drafts are disabled.
+  Future<void> draftReset();
+
+  /// The `agent/draftStoreReady` notifications: the draft store became
+  /// available (after a slow open, a stall, or a reset).
+  Stream<void> get draftStoreReady;
+
   Stream<AgentStateParams> get agentStates;
   Stream<AgentPermissionRequestedParams> get agentPermissionRequests;
   Stream<AgentPermissionResolvedParams> get agentPermissionResolutions;

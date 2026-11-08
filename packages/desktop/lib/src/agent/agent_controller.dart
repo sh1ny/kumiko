@@ -10,6 +10,7 @@ import 'package:host_protocol/host_protocol.dart';
 import '../host_link.dart';
 import '../view_closer.dart';
 import 'agent_transcript.dart';
+import 'draft_saver.dart';
 
 export 'agent_transcript.dart';
 
@@ -25,8 +26,20 @@ class AgentLink {
     required this.paneId,
     required this.workspaceId,
     required this.runtimeName,
+    required DraftQueue draftQueue,
+    required DraftSend draftSend,
+    required void Function() onDraftChanged,
     this.sessionId,
-  });
+  }) {
+    draft = DraftSaver(
+      text: () => _disposed ? _finalText : prompt.text,
+      send: draftSend,
+      queue: draftQueue,
+      onChange: onDraftChanged,
+    );
+    _lastText = prompt.text;
+    prompt.addListener(_promptChanged);
+  }
   final String paneId;
   final String workspaceId;
   String runtimeName;
@@ -63,6 +76,71 @@ class AgentLink {
 
   AgentLinkPhase phase = AgentLinkPhase.ended;
   AgentState state = AgentState.ended;
+
+  /// Stores this session's composer text on the host (design D3).
+  late final DraftSaver draft;
+  int get draftRevision => draft.revision;
+
+  /// Another pane already owns this session's composer: a session id has one
+  /// link with a composer (design D3, one writer per session).
+  bool composerHidden = false;
+
+  /// The host's draft store is disabled (shown on every chat pane).
+  bool draftStorageDisabled = false;
+
+  /// Why the stored draft could not be read, until a save syncs the link.
+  String? loadFailure;
+  String? loadFailureCode;
+
+  /// The close confirmation named an unsaved draft: confirming accepts it.
+  bool draftWarned = false;
+  String _lastText = '';
+  bool _muted = false;
+  bool _disposed = false;
+  String _finalText = '';
+
+  void _promptChanged() {
+    final value = prompt.text;
+    if (value == _lastText) return;
+    _lastText = value;
+    if (!_muted) draft.edit();
+  }
+
+  /// Sets the composer without counting an edit (a loaded or cleared draft).
+  void _setComposer(String value) {
+    _muted = true;
+    try {
+      prompt.value = TextEditingValue(
+        text: value,
+        selection: TextSelection.collapsed(offset: value.length),
+      );
+      _lastText = value;
+    } finally {
+      _muted = false;
+    }
+  }
+
+  /// Why the composer's text is not stored, for the pane and the close
+  /// confirmation; null when it is stored, or there is nothing to lose.
+  String? get unsavedReason {
+    if (composerHidden || prompt.text.isEmpty) return null;
+    if (sessionId == null || !known) return 'session not saved yet';
+    if (draftStorageDisabled) return 'draft storage unavailable';
+    if (draft.failure != null && draft.dirty) return draft.failure;
+    return null;
+  }
+
+  String? get draftNotice {
+    if (composerHidden) return null;
+    if (unsavedReason case final reason?) return 'Draft not saved: $reason';
+    if (draftStorageDisabled && sessionId != null && known) {
+      return 'Draft not saved: draft storage unavailable';
+    }
+    if (loadFailure != null && !draft.synced) {
+      return 'Draft not loaded: $loadFailure';
+    }
+    return null;
+  }
 
   /// Latest Kumiko tools status reported by the host for the live run, ordered
   /// with [seq]. Null until reported, and after host loss or a fresh restore.
@@ -173,6 +251,10 @@ class AgentLink {
   }
 
   void _dispose() {
+    if (_disposed) return;
+    _finalText = prompt.text;
+    _disposed = true;
+    prompt.removeListener(_promptChanged);
     prompt.dispose();
     promptFocus.dispose();
   }
@@ -200,6 +282,173 @@ class AgentController extends ChangeNotifier implements ViewCloser {
   int _generation = 0;
   bool _disposed = false;
   AgentLink? linkOf(String paneId) => _links[paneId];
+
+  final DraftQueue _draftQueue = DraftQueue();
+  final DraftQueue _loadQueue = DraftQueue();
+  bool _draftsDisabled = false;
+  bool _resetting = false;
+  String? _draftResetError;
+
+  /// The host's draft store cannot be used: composer sends are refused until
+  /// it is reset (design D4).
+  bool get draftsDisabled => _draftsDisabled;
+
+  /// Why the last **Reset draft storage** failed, or null.
+  String? get draftResetError => _draftResetError;
+
+  AgentLink _newLink({
+    required String paneId,
+    required String workspaceId,
+    required String runtimeName,
+    String? sessionId,
+  }) => AgentLink(
+    paneId: paneId,
+    workspaceId: workspaceId,
+    runtimeName: runtimeName,
+    sessionId: sessionId,
+    draftQueue: _draftQueue,
+    draftSend: _saveDraft,
+    onDraftChanged: _changed,
+  )..draftStorageDisabled = _draftsDisabled;
+
+  Future<AgentDraftSaveResult> _saveDraft(AgentDraftSaveParams params) async {
+    final host = _host;
+    if (host == null || !host.hello.capabilities.contains(Capability.agent)) {
+      throw const DraftHostLost();
+    }
+    try {
+      final result = await host.draftSave(params);
+      if (_current(host, _generation)) _setDraftsDisabled(false);
+      return result;
+    } on RpcException catch (e) {
+      if (_current(host, _generation)) _noteUnavailable(e);
+      rethrow;
+    }
+  }
+
+  /// The host disables drafts with a message that starts `drafts are
+  /// disabled` (`draft_store.dart`); a stall or a reset in progress answers
+  /// `draft-unavailable` too, but a reset is only offered for the former.
+  void _noteUnavailable(RpcException e) {
+    if (e.reason == ErrorCode.draftUnavailable &&
+        e.message.startsWith('drafts are disabled')) {
+      _setDraftsDisabled(true);
+    }
+  }
+
+  void _setDraftsDisabled(bool disabled) {
+    if (_draftsDisabled == disabled) return;
+    _draftsDisabled = disabled;
+    for (final link in _links.values) {
+      link.draftStorageDisabled = disabled;
+    }
+    _changed();
+  }
+
+  /// The draft store became available: links refused for being unavailable
+  /// save once, and loads refused the same way are asked again.
+  void _draftStoreReady() {
+    _setDraftsDisabled(false);
+    for (final link in _links.values.toList()) {
+      if (link.composerHidden) continue;
+      if (link.loadFailureCode == ErrorCode.draftUnavailable &&
+          !link.draft.synced &&
+          link.known &&
+          link.sessionId != null) {
+        unawaited(_loadDraft(link));
+      }
+      link.draft.retryUnavailable();
+    }
+  }
+
+  /// **Reset draft storage**: after [confirm], asks the host to discard its
+  /// draft store. Offered only while drafts are disabled.
+  Future<void> resetDraftStorage(
+    String paneId,
+    Future<bool> Function() confirm,
+  ) async {
+    final host = _host;
+    if (host == null || !_draftsDisabled || _resetting) return;
+    if (!await confirm()) return;
+    if (!_current(host, _generation) || !_draftsDisabled || _resetting) return;
+    _resetting = true;
+    _draftResetError = null;
+    _changed();
+    try {
+      await host.draftReset();
+      if (_current(host, _generation)) _draftStoreReady();
+    } on RpcException catch (e) {
+      if (_current(host, _generation)) _draftResetError = _describe(e);
+    } on ConnectionClosedException {
+      if (_current(host, _generation)) detach();
+    } finally {
+      _resetting = false;
+      _changed();
+    }
+  }
+
+  /// Reads the stored draft of [link]'s session (at most 8 at a time). A draft
+  /// that arrives after the user typed only raises the revision.
+  Future<void> _loadDraft(AgentLink link) async {
+    final host = _host;
+    final id = link.sessionId;
+    if (host == null || id == null || link.composerHidden) return;
+    final generation = _generation;
+    link.loadFailure = null;
+    link.loadFailureCode = null;
+    bool stale() =>
+        !_current(host, generation) || !_owns(link) || link.composerHidden;
+    try {
+      final loaded = await _loadQueue.run(
+        () => stale()
+            ? Future<AgentDraftLoadResult?>.value()
+            : host
+                  .draftLoad(id)
+                  .timeout(const Duration(seconds: 10))
+                  .then<AgentDraftLoadResult?>((r) => r),
+      );
+      if (loaded == null || stale()) return;
+      _setDraftsDisabled(false);
+      if (loaded.text case final text? when !link.draft.edited) {
+        link._setComposer(text);
+      }
+      link.draft.markSynced(loaded.revision);
+    } on RpcException catch (e) {
+      if (stale()) return;
+      _noteUnavailable(e);
+      link.loadFailure = draftFailureReason(e);
+      link.loadFailureCode = e.reason;
+    } on TimeoutException {
+      if (stale()) return;
+      link.loadFailure = draftFailureReason(TimeoutException(null));
+    } on ConnectionClosedException {
+      if (_current(host, generation)) detach();
+      return;
+    }
+    // Text typed or kept before the load is saved above whatever is stored.
+    link.draft.requestNow();
+    _changed();
+  }
+
+  /// A session id has one link with a composer: the first pane that names it.
+  void _assignComposerOwners(Iterable<PaneNode> panes) {
+    final owners = <String, AgentLink>{};
+    for (final pane in panes) {
+      final link = _links[pane.id];
+      final id = link?.sessionId;
+      if (link == null || id == null) continue;
+      final owner = owners.putIfAbsent(id, () => link);
+      final hidden = !identical(owner, link);
+      if (link.composerHidden == hidden) continue;
+      link.composerHidden = hidden;
+      if (hidden) {
+        link.draft.unbind();
+      } else if (link.known && _host != null) {
+        link.draft.bind(id);
+        unawaited(_loadDraft(link));
+      }
+    }
+  }
 
   void _changed() {
     if (!_disposed) notifyListeners();
@@ -274,6 +523,9 @@ class AgentController extends ChangeNotifier implements ViewCloser {
     });
     listen(host.agentExits, _exited);
     listen(host.agentCloseFailures, _closeFailed);
+    if (host.hello.capabilities.contains(Capability.agent)) {
+      listen<void>(host.draftStoreReady, (_) => _draftStoreReady());
+    }
   }
 
   void _closeFailed(AgentCloseFailedParams event) {
@@ -328,6 +580,7 @@ class AgentController extends ChangeNotifier implements ViewCloser {
       link.phase = AgentLinkPhase.ended;
       link.sending = false;
       link.stopping = false;
+      link.draft.hostLost();
       _disablePermissions(link);
     }
     _changed();
@@ -340,7 +593,7 @@ class AgentController extends ChangeNotifier implements ViewCloser {
       _links.putIfAbsent(
         pane.id,
         () =>
-            AgentLink(
+            _newLink(
                 paneId: pane.id,
                 workspaceId: pane.workspace ?? '',
                 runtimeName: pane.state['runtimeName'] is String
@@ -370,8 +623,9 @@ class AgentController extends ChangeNotifier implements ViewCloser {
           }
         }
       }
-      _disposeLink(link);
+      _disposeLink(link, store: true);
     }
+    _assignComposerOwners(panes);
   }
 
   Future<void> restore() async {
@@ -424,6 +678,18 @@ class AgentController extends ChangeNotifier implements ViewCloser {
         return;
       }
     }
+    // Each restored composer shows its own session's stored draft; the loads
+    // run in the background, so the pane is usable while they are out.
+    for (final link in candidates) {
+      if (!_owns(link) || link.live || link.composerHidden) continue;
+      final id = link.sessionId;
+      if (id == null || !link.known) {
+        link.draft.unbind();
+        continue;
+      }
+      link.draft.bind(id);
+      unawaited(_loadDraft(link));
+    }
     _changed();
   }
 
@@ -447,7 +713,7 @@ class AgentController extends ChangeNotifier implements ViewCloser {
       return;
     }
     final link =
-        AgentLink(
+        _newLink(
             paneId: paneId,
             workspaceId: workspaceId,
             runtimeName: runtimeName,
@@ -456,10 +722,14 @@ class AgentController extends ChangeNotifier implements ViewCloser {
           ..state = AgentState.starting
           ..connected = true
           ..runtimeProfileId = runtimeProfileId;
-    if (previous != null) link.prompt.value = previous.prompt.value;
+    // A conversation with a saved record owns its draft (it stays with that
+    // session); only text that never had a record moves to the new one.
+    if (previous != null && !previous.known) {
+      link.prompt.value = previous.prompt.value;
+    }
     _links[paneId] = link;
     _pendingStarts.add(link);
-    if (previous != null) _disposeLink(previous);
+    if (previous != null) _disposeLink(previous, store: true);
     savePaneState(paneId, {'runtimeName': runtimeName});
     _changed();
     final generation = _generation;
@@ -476,6 +746,7 @@ class AgentController extends ChangeNotifier implements ViewCloser {
       }
       link.sessionId = result.sessionId;
       link.known = true;
+      link.draft.bind(result.sessionId, storedRevision: 0);
       link.adapter = result.adapter;
       link.capabilities = result.capabilities;
       link.tools = result.tools;
@@ -637,7 +908,7 @@ class AgentController extends ChangeNotifier implements ViewCloser {
       }
     } else {
       // Retry is an explicit user action; it never discards an unsent draft.
-      await send(paneId, link.lastPrompt!);
+      await send(paneId, link.lastPrompt!, retry: true);
     }
   }
 
@@ -730,7 +1001,10 @@ class AgentController extends ChangeNotifier implements ViewCloser {
         );
   }
 
-  Future<void> send(String paneId, String text) async {
+  /// Sends [text]. A send of the composer's own text names the draft revision
+  /// it carries and holds the submission guard until the result arrives; a
+  /// Retry ([retry]) resends the last prompt and touches no draft.
+  Future<void> send(String paneId, String text, {bool retry = false}) async {
     final link = _links[paneId];
     final host = _host;
     if (link == null || host == null || !link.canSend || text.trim().isEmpty) {
@@ -748,6 +1022,9 @@ class AgentController extends ChangeNotifier implements ViewCloser {
       return;
     }
     final generation = _generation;
+    final submission = !retry && text == link.prompt.text
+        ? link.draft.beginSubmit()
+        : null;
     link.sending = true;
     link.error = null;
     link.errorCode = null;
@@ -758,15 +1035,29 @@ class AgentController extends ChangeNotifier implements ViewCloser {
     // when the adapter later fails. RPC rejection must not create user history.
     _changed();
     var submitted = false;
+    var cleared = false;
     try {
       await host.promptAgent(
-        AgentPromptParams(sessionId: link.sessionId!, text: text),
+        AgentPromptParams(
+          sessionId: link.sessionId!,
+          text: text,
+          draftRevision: submission?.revision,
+          draftSynced: submission?.synced,
+        ),
       );
       submitted = true;
-      if (_current(host, generation) &&
-          _owns(link) &&
-          link.prompt.text == text) {
-        link.prompt.clear();
+      if (_current(host, generation) && _owns(link)) {
+        final unchanged = submission != null
+            ? link.draft.unchangedSince(submission)
+            : false;
+        // The host removed the draft with the accepted text; the composer
+        // loses it too, unless the user changed it since Send.
+        if (unchanged && link.prompt.text == text) {
+          link._setComposer('');
+          cleared = true;
+        } else if (submission == null && link.prompt.text == text) {
+          link.prompt.clear();
+        }
       }
     } on RpcException catch (e) {
       if (!_current(host, generation) || !_owns(link)) return;
@@ -780,6 +1071,9 @@ class AgentController extends ChangeNotifier implements ViewCloser {
       // failure must release the latch even when an unexpected error propagates.
       if (!submitted && _current(host, generation) && _owns(link)) {
         link.sending = false;
+      }
+      if (submission != null) {
+        link.draft.endSubmit(submission, accepted: submitted, cleared: cleared);
       }
       _changed();
     }
@@ -854,10 +1148,34 @@ class AgentController extends ChangeNotifier implements ViewCloser {
   }
 
   @override
-  Future<Map<String, String>> warningsFor(List<String> paneIds) async => {
-    for (final id in paneIds)
-      if (_warnsOnClose(id)) id: agentCloseWarning,
-  };
+  Future<Map<String, String>> warningsFor(List<String> paneIds) async {
+    // Drafts are stored first, so only a draft that could not be stored is
+    // named (agent-sessions "Closing with an unsaved draft says it will be
+    // lost").
+    await Future.wait([for (final id in paneIds) _storeDraft(id)]);
+    final warnings = <String, String>{};
+    for (final id in paneIds) {
+      final link = _links[id];
+      final running = _warnsOnClose(id);
+      final unsaved = link?.unsavedReason;
+      if (link != null) link.draftWarned = unsaved != null;
+      if (!running && unsaved == null) continue;
+      warnings[id] = [
+        if (running) agentCloseWarning,
+        if (unsaved != null)
+          'Draft not saved: $unsaved. Its text will be lost.',
+      ].join(' ');
+    }
+    return warnings;
+  }
+
+  /// Flushes [paneId]'s draft unless it is already known to be unsaved.
+  Future<void> _storeDraft(String paneId) async {
+    final link = _links[paneId];
+    if (link == null || link.composerHidden || !link.draft.bound) return;
+    if (link.draft.failure != null) return;
+    await link.draft.flush();
+  }
 
   bool _warnsOnClose(String paneId) {
     final link = _links[paneId];
@@ -877,6 +1195,16 @@ class AgentController extends ChangeNotifier implements ViewCloser {
   Future<void> closeConfirmed(String paneId) async {
     final link = _links[paneId];
     final host = _host;
+    if (link != null) {
+      // The draft is stored before the session closes; if that fails and the
+      // confirmation did not name it, the pane stays with its text.
+      await _storeDraft(paneId);
+      if (!_owns(link)) return;
+      if (link.unsavedReason != null && !link.draftWarned) {
+        _changed();
+        return;
+      }
+    }
     if (link != null && host != null && link._draining) {
       // Explicit dismissal may discard the transcript; the native process
       // already exited, so release rather than send close to a dead session.
@@ -1037,7 +1365,14 @@ class AgentController extends ChangeNotifier implements ViewCloser {
     );
   }
 
-  void _disposeLink(AgentLink link) {
+  /// Lets go of [link]. With [store], what is unsaved in its composer is
+  /// sent first, so a pane that goes away keeps its draft.
+  void _disposeLink(AgentLink link, {bool store = false}) {
+    if (store && !_disposed) {
+      unawaited(link.draft.finish());
+    } else {
+      link.draft.dispose();
+    }
     try {
       SchedulerBinding.instance.addPostFrameCallback((_) => link._dispose());
       SchedulerBinding.instance.ensureVisualUpdate();

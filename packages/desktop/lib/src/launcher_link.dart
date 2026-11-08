@@ -400,6 +400,26 @@ class SessionLink implements HostLink {
       );
 
   @override
+  Future<AgentDraftSaveResult> draftSave(AgentDraftSaveParams params) async =>
+      AgentDraftSaveResult.fromJson(
+        await _request(Method.agentDraftSave, params.toJson()),
+      );
+  @override
+  Future<AgentDraftLoadResult> draftLoad(String sessionId) async =>
+      AgentDraftLoadResult.fromJson(
+        await _request(
+          Method.agentDraftLoad,
+          AgentSessionParams(sessionId).toJson(),
+        ),
+      );
+  @override
+  Future<void> draftReset() => _request(Method.agentDraftReset, const {});
+  @override
+  Stream<void> get draftStoreReady => session.notifications
+      .where((n) => n.method == Method.agentDraftStoreReady)
+      .map((_) {});
+
+  @override
   Stream<AgentStateParams> get agentStates => session.notifications
       .where((n) => n.method == Method.agentState)
       .map((n) => AgentStateParams.fromJson(n.params));

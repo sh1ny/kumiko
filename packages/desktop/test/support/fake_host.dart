@@ -691,10 +691,107 @@ class FakeHostLink implements HostLink {
     return source.stream;
   }
 
+  /// Holds `agent/prompt` answers until it completes.
+  Completer<void>? promptGate;
+
+  /// Thrown by `agent/prompt` once the gate (if any) opens.
+  Object? promptError;
+
   @override
   Future<void> promptAgent(AgentPromptParams params) async {
     calls.add('agent/prompt ${params.sessionId}');
     agentPrompts.add(params);
+    await promptGate?.future;
+    if (promptError case final error?) throw error;
+  }
+
+  // --- drafts -----------------------------------------------------------------
+
+  /// Every `agent/draftSave` the desktop sent, in call order.
+  final List<AgentDraftSaveParams> draftSaves = [];
+  final List<String> draftLoads = [];
+  int draftResets = 0;
+
+  /// The host's stored drafts: text (null for a tombstone) and revision.
+  final Map<String, ({String? text, int revision})> storedDrafts = {};
+
+  /// Per-call answers for save and load, consumed first-in first-out before
+  /// the stand-in store answers: an `Exception` or `Error` is thrown, anything
+  /// else is the result. A gate holds the call (after it is recorded).
+  final Queue<Object> draftSaveAnswers = Queue();
+  final Queue<Object> draftLoadAnswers = Queue();
+  Completer<void>? draftSaveGate;
+  Completer<void>? draftLoadGate;
+  Object? draftResetError;
+  int draftSavesInFlight = 0;
+  int maxDraftSavesInFlight = 0;
+  int draftLoadsInFlight = 0;
+  int maxDraftLoadsInFlight = 0;
+  final StreamController<void> draftReadySource = StreamController.broadcast(
+    sync: true,
+  );
+
+  @override
+  Stream<void> get draftStoreReady => draftReadySource.stream;
+
+  @override
+  Future<AgentDraftSaveResult> draftSave(AgentDraftSaveParams params) async {
+    calls.add('agent/draftSave ${params.sessionId}');
+    draftSaves.add(params);
+    draftSavesInFlight++;
+    if (draftSavesInFlight > maxDraftSavesInFlight) {
+      maxDraftSavesInFlight = draftSavesInFlight;
+    }
+    try {
+      await draftSaveGate?.future;
+      if (draftSaveAnswers.isNotEmpty) {
+        final scripted = draftSaveAnswers.removeFirst();
+        if (scripted is Exception || scripted is Error) throw scripted;
+        return scripted as AgentDraftSaveResult;
+      }
+      final stored = storedDrafts[params.sessionId]?.revision ?? 0;
+      if (params.revision <= stored) throw staleRevision(stored);
+      storedDrafts[params.sessionId] = (
+        text: params.text.isEmpty ? null : params.text,
+        revision: params.revision,
+      );
+      return AgentDraftSaveResult(params.revision);
+    } finally {
+      draftSavesInFlight--;
+    }
+  }
+
+  @override
+  Future<AgentDraftLoadResult> draftLoad(String sessionId) async {
+    calls.add('agent/draftLoad $sessionId');
+    draftLoads.add(sessionId);
+    draftLoadsInFlight++;
+    if (draftLoadsInFlight > maxDraftLoadsInFlight) {
+      maxDraftLoadsInFlight = draftLoadsInFlight;
+    }
+    try {
+      await draftLoadGate?.future;
+      if (draftLoadAnswers.isNotEmpty) {
+        final scripted = draftLoadAnswers.removeFirst();
+        if (scripted is Exception || scripted is Error) throw scripted;
+        return scripted as AgentDraftLoadResult;
+      }
+      final stored = storedDrafts[sessionId];
+      return AgentDraftLoadResult(
+        revision: stored?.revision ?? 0,
+        text: stored?.text,
+      );
+    } finally {
+      draftLoadsInFlight--;
+    }
+  }
+
+  @override
+  Future<void> draftReset() async {
+    calls.add('agent/draftReset');
+    draftResets++;
+    if (draftResetError case final error?) throw error;
+    storedDrafts.clear();
   }
 
   @override

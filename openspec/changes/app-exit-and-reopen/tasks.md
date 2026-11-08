@@ -49,28 +49,28 @@ Paths are relative to `packages/`. Where an existing test turns red because its 
 | workbench-layout → Closing a pane or tab checks for live work | Part of a tab close fails | desktop/test/workbench_test.dart | existing partial-tab-close test, busy fixture | green |
 | agent-sessions → Unsent drafts are stored per session | Draft survives quit | desktop/integration_test/exit_reopen_test.dart | composer text returns after quit and reopen | red |
 | agent-sessions → Unsent drafts are stored per session | Draft survives a desktop kill | host/test/it/draft_store_test.dart | draft saved by the stand-in desktop survives its kill | green |
-| agent-sessions → Unsent drafts are stored per session | Draft survives closing the pane | desktop/test/draft_test.dart | pane close flushes the draft before agent/close | red |
-| agent-sessions → Unsent drafts are stored per session | No saved record yet | desktop/test/draft_test.dart | starting link keeps text in memory and shows Draft not saved | red |
-| agent-sessions → Unsent drafts are stored per session | Draft too large | desktop/test/draft_test.dart | draft-too-large shows reason and keeps text | red |
+| agent-sessions → Unsent drafts are stored per session | Draft survives closing the pane | desktop/test/draft_test.dart | pane close flushes the draft before agent/close | green |
+| agent-sessions → Unsent drafts are stored per session | No saved record yet | desktop/test/draft_test.dart | starting link keeps text in memory and shows Draft not saved | green |
+| agent-sessions → Unsent drafts are stored per session | Draft too large | desktop/test/draft_test.dart | draft-too-large shows reason and keeps text | green |
 | agent-sessions → Unsent drafts are stored per session | Draft storage full | host/test/it/draft_store_test.dart | save past 32 MiB total refused draft-cap | green |
-| agent-sessions → Unsent drafts are stored per session | Save fails | desktop/test/draft_test.dart | host-lost save leaves link unsaved and visible | red |
-| agent-sessions → Closing with an unsaved draft says it will be lost | Close a pane with a refused draft | desktop/test/draft_test.dart | close confirmation names the unsaved draft; Cancel keeps it | red |
-| agent-sessions → Closing with an unsaved draft says it will be lost | Close a pane with a stored draft | desktop/test/draft_test.dart | stored idle draft closes silently and stays stored | red |
+| agent-sessions → Unsent drafts are stored per session | Save fails | desktop/test/draft_test.dart | host-lost save leaves link unsaved and visible | green |
+| agent-sessions → Closing with an unsaved draft says it will be lost | Close a pane with a refused draft | desktop/test/draft_test.dart | close confirmation names the unsaved draft; Cancel keeps it | green |
+| agent-sessions → Closing with an unsaved draft says it will be lost | Close a pane with a stored draft | desktop/test/draft_test.dart | stored idle draft closes silently and stays stored | green |
 | agent-sessions → A restored pane shows its session's draft | Draft returns on reopen | desktop/integration_test/exit_reopen_test.dart | restored pane shows draft before Continue; nothing sent | red |
-| agent-sessions → A restored pane shows its session's draft | New session after resume unavailable | desktop/test/draft_test.dart | New session starts empty and the old draft stays | red |
-| agent-sessions → A restored pane shows its session's draft | Stored draft cannot be read | desktop/test/draft_test.dart | failed load shows Draft not loaded, stored draft untouched | red |
+| agent-sessions → A restored pane shows its session's draft | New session after resume unavailable | desktop/test/draft_test.dart | New session starts empty and the old draft stays | green |
+| agent-sessions → A restored pane shows its session's draft | Stored draft cannot be read | desktop/test/draft_test.dart | failed load shows Draft not loaded, stored draft untouched | green |
 | agent-sessions → A restored pane shows its session's draft | Typing after a failed load | host/test/it/draft_store_test.dart | failed load then edit at low revision recovers floor via stale reply | green |
 | agent-sessions → A restored pane shows its session's draft | Send right after a failed load | host/test/it/draft_store_test.dart | unsynced send removes stored P; kill after ack leaves neither | green |
 | agent-sessions → A restored pane shows its session's draft | Send before a slow load returns | host/test/it/draft_store_test.dart | send before held load returns removes P | green |
-| agent-sessions → A restored pane shows its session's draft | Load arrives after the user typed | desktop/test/draft_test.dart | late load raises revision and keeps typed text | red |
+| agent-sessions → A restored pane shows its session's draft | Load arrives after the user typed | desktop/test/draft_test.dart | late load raises revision and keeps typed text | green |
 | agent-sessions → A sent or cleared draft cannot be recovered | Send removes the draft | host/test/it/draft_store_test.dart | canary d1f9 absent from every profile file after ack | green |
 | agent-sessions → A sent or cleared draft cannot be recovered | Clearing removes the draft | host/test/it/draft_store_test.dart | empty save tombstones and the text is absent from every file | green |
-| agent-sessions → A sent or cleared draft cannot be recovered | Retry with a different draft | desktop/test/draft_test.dart | Retry carries no draftRevision and Q stays | red |
-| agent-sessions → A sent or cleared draft cannot be recovered | Stale save while a prompt is being sent | desktop/test/draft_test.dart | guard skips stale re-save of the submitted snapshot | red |
+| agent-sessions → A sent or cleared draft cannot be recovered | Retry with a different draft | desktop/test/draft_test.dart | Retry carries no draftRevision and Q stays | green |
+| agent-sessions → A sent or cleared draft cannot be recovered | Stale save while a prompt is being sent | desktop/test/draft_test.dart | guard skips stale re-save of the submitted snapshot | green |
 | agent-sessions → A sent or cleared draft cannot be recovered | Edits while a prompt is being sent | host/test/it/draft_store_test.dart | R saved above r survives; P absent from every file | green |
-| agent-sessions → A sent or cleared draft cannot be recovered | Prompt refused by the adapter | desktop/test/draft_test.dart | adapter refusal re-saves composer above r | red |
+| agent-sessions → A sent or cleared draft cannot be recovered | Prompt refused by the adapter | desktop/test/draft_test.dart | adapter refusal re-saves composer above r | green |
 | agent-sessions → A sent or cleared draft cannot be recovered | Removal fails | host/test/it/draft_store_test.dart | injected commit failure refuses the prompt before dispatch | green |
-| agent-sessions → A sent or cleared draft cannot be recovered | Removal commits after its deadline | desktop/test/draft_test.dart | draftStoreReady retries the unsaved link without typing | red |
+| agent-sessions → A sent or cleared draft cannot be recovered | Removal commits after its deadline | desktop/test/draft_test.dart | draftStoreReady retries the unsaved link without typing | green |
 | agent-sessions → A sent or cleared draft cannot be recovered | Send while draft storage is unavailable | host/test/it/draft_store_test.dart | disabled store refuses composer send; P kept for healthy restart | green |
 | agent-sessions → A sent or cleared draft cannot be recovered | Reset draft storage | host/test/it/draft_store_test.dart | confirmed reset deletes files, sends draftStoreReady, saves succeed | green |
 | agent-sessions → A sent or cleared draft cannot be recovered | Draft storage not responding at send | host/test/it/draft_store_test.dart | held commit refuses send draft-unavailable within the deadline | green |
@@ -131,7 +131,7 @@ Paths are relative to `packages/`. Where an existing test turns red because its 
 
 ## 5. Drafts on the desktop
 
-- [ ] 5.1 Write failing `desktop/test/draft_test.dart` rows, then implement `DraftSaver` (500 ms quiet, 2 s maximum age, one in flight plus one coalesced, 10 s deadline, ≤ 8 across links), revision sync, the submission guard, re-save after a refusal, the `draftStoreReady` retry, one link per session id, restore through `draftLoad` (≤ 8 at a time, late loads never replace typed text), *New session* starting empty, unsaved-draft close confirmations, *Draft not saved* / *Draft not loaded* reasons, and the **Reset draft storage** action with its confirmation. Verify: every `draft_test.dart` row is green.
+- [x] 5.1 Write failing `desktop/test/draft_test.dart` rows, then implement `DraftSaver` (500 ms quiet, 2 s maximum age, one in flight plus one coalesced, 10 s deadline, ≤ 8 across links), revision sync, the submission guard, re-save after a refusal, the `draftStoreReady` retry, one link per session id, restore through `draftLoad` (≤ 8 at a time, late loads never replace typed text), *New session* starting empty, unsaved-draft close confirmations, *Draft not saved* / *Draft not loaded* reasons, and the **Reset draft storage** action with its confirmation. Verify: every `draft_test.dart` row is green.
 
 ## 6. Previous exit
 

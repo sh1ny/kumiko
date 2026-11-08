@@ -230,61 +230,131 @@ class _AgentPaneViewState extends State<AgentPaneView> {
                 style: Theme.of(context).textTheme.bodySmall,
               ),
             ),
-          Padding(
-            padding: const EdgeInsets.all(8),
-            child: LayoutBuilder(
-              builder: (context, constraints) {
-                final prompt = TextField(
-                  key: Key('agent-prompt-$id'),
-                  controller: link.prompt,
-                  focusNode: link.promptFocus,
-                  autofocus: widget.focused,
-                  minLines: 1,
-                  maxLines: 5,
-                  decoration: const InputDecoration(
-                    hintText: 'Message Claude Code',
-                    border: OutlineInputBorder(),
-                  ),
-                );
-                final actions = Wrap(
-                  spacing: 4,
-                  children: [
-                    FilledButton(
-                      key: Key('agent-send-$id'),
-                      onPressed: link.canSend
-                          ? () => widget.controller.send(id, link.prompt.text)
-                          : null,
-                      child: const Text('Send'),
-                    ),
-                    OutlinedButton(
-                      key: Key('agent-stop-$id'),
-                      onPressed: link.canStop
-                          ? () => widget.controller.stop(id)
-                          : null,
-                      child: const Text('Stop'),
-                    ),
-                  ],
-                );
-                return constraints.maxWidth < 360
-                    ? Column(
-                        crossAxisAlignment: CrossAxisAlignment.stretch,
-                        children: [prompt, actions],
-                      )
-                    : Row(
-                        crossAxisAlignment: CrossAxisAlignment.end,
-                        children: [
-                          Expanded(child: prompt),
-                          const SizedBox(width: 8),
-                          actions,
-                        ],
-                      );
-              },
+          if (link.draftNotice case final notice?)
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 12),
+              child: Text(
+                notice,
+                key: Key('agent-draft-notice-$id'),
+                style: Theme.of(context).textTheme.bodySmall,
+              ),
             ),
-          ),
+          if (widget.controller.draftsDisabled && !link.composerHidden)
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 8),
+              child: Wrap(
+                spacing: 8,
+                crossAxisAlignment: WrapCrossAlignment.center,
+                children: [
+                  OutlinedButton(
+                    key: Key('agent-draft-reset-$id'),
+                    onPressed: () => widget.controller.resetDraftStorage(
+                      id,
+                      () => _confirmReset(context),
+                    ),
+                    child: const Text('Reset draft storage'),
+                  ),
+                  if (widget.controller.draftResetError case final error?)
+                    Text(
+                      'Reset failed: $error',
+                      key: Key('agent-draft-reset-error-$id'),
+                      style: TextStyle(
+                        color: Theme.of(context).colorScheme.error,
+                      ),
+                    ),
+                ],
+              ),
+            ),
+          if (link.composerHidden)
+            Padding(
+              padding: const EdgeInsets.all(8),
+              child: Text(
+                'This session is open in another pane.',
+                key: Key('agent-composer-elsewhere-$id'),
+              ),
+            )
+          else
+            Padding(
+              padding: const EdgeInsets.all(8),
+              child: LayoutBuilder(
+                builder: (context, constraints) {
+                  final prompt = TextField(
+                    key: Key('agent-prompt-$id'),
+                    controller: link.prompt,
+                    focusNode: link.promptFocus,
+                    autofocus: widget.focused,
+                    minLines: 1,
+                    maxLines: 5,
+                    decoration: const InputDecoration(
+                      hintText: 'Message Claude Code',
+                      border: OutlineInputBorder(),
+                    ),
+                  );
+                  final actions = Wrap(
+                    spacing: 4,
+                    children: [
+                      FilledButton(
+                        key: Key('agent-send-$id'),
+                        onPressed: link.canSend
+                            ? () => widget.controller.send(id, link.prompt.text)
+                            : null,
+                        child: const Text('Send'),
+                      ),
+                      OutlinedButton(
+                        key: Key('agent-stop-$id'),
+                        onPressed: link.canStop
+                            ? () => widget.controller.stop(id)
+                            : null,
+                        child: const Text('Stop'),
+                      ),
+                    ],
+                  );
+                  return constraints.maxWidth < 360
+                      ? Column(
+                          crossAxisAlignment: CrossAxisAlignment.stretch,
+                          children: [prompt, actions],
+                        )
+                      : Row(
+                          crossAxisAlignment: CrossAxisAlignment.end,
+                          children: [
+                            Expanded(child: prompt),
+                            const SizedBox(width: 8),
+                            actions,
+                          ],
+                        );
+                },
+              ),
+            ),
         ],
       );
     },
   );
+
+  Future<bool> _confirmReset(BuildContext context) async =>
+      await showDialog<bool>(
+        context: context,
+        builder: (context) => AlertDialog(
+          key: const Key('draft-reset-confirm'),
+          title: const Text('Reset draft storage?'),
+          content: const Text(
+            'Every stored draft will be lost. Text in open composers is '
+            'stored again.',
+          ),
+          actions: [
+            TextButton(
+              key: const Key('draft-reset-cancel'),
+              onPressed: () => Navigator.of(context).pop(false),
+              child: const Text('Cancel'),
+            ),
+            FilledButton(
+              key: const Key('draft-reset-ok'),
+              onPressed: () => Navigator.of(context).pop(true),
+              child: const Text('Reset draft storage'),
+            ),
+          ],
+        ),
+      ) ??
+      false;
 
   Widget _entry(AgentLink link, AgentTranscriptEntry entry) {
     final permission = entry.permission;
