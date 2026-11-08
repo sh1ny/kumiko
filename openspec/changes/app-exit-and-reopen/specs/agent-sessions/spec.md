@@ -45,7 +45,7 @@ Closing a chat pane or tab, or quitting, while a draft's latest text is not stor
 - **THEN** no confirmation is shown and A's draft stays stored
 
 ### Requirement: A restored pane shows its session's draft
-When a chat pane is restored on reopen, its composer SHALL show the stored draft of its own session, before and after Continue. *New session* in that pane SHALL start with an empty composer and leave the old session's draft stored with it. Source: direction "Unsent conversation drafts remain local and scoped", D7.
+When a chat pane is restored on reopen, its composer SHALL show the stored draft of its own session, before and after Continue. *New session* in that pane SHALL start with an empty composer and leave the old session's draft stored with it. If the old composer's text cannot be stored when the user chooses *New session*, the pane SHALL name the reason and ask before the text is lost. Source: direction "Unsent conversation drafts remain local and scoped", D7.
 
 #### Scenario: Draft returns on reopen
 - **WHEN** the user quits with an unsent draft in session A and reopens Kumiko
@@ -54,6 +54,10 @@ When a chat pane is restored on reopen, its composer SHALL show the stored draft
 #### Scenario: New session after resume unavailable
 - **WHEN** a restored pane of session A shows *resume unavailable* with a draft, and the user chooses New session
 - **THEN** the new session's composer is empty, and A's draft stays stored for A
+
+#### Scenario: New session with a draft that cannot be stored
+- **WHEN** the composer of ended session A holds text whose save fails, is refused or does not finish within 2 s, and the user chooses New session
+- **THEN** a confirmation names the reason and says the text will be lost; Cancel keeps A's pane and its text and starts nothing, and confirming starts the new session with an empty composer
 
 #### Scenario: Stored draft cannot be read
 - **WHEN** a restored pane asks for its draft and the host refuses or fails the read

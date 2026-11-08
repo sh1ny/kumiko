@@ -58,6 +58,7 @@ Paths are relative to `packages/`. Where an existing test turns red because its 
 | agent-sessions → Closing with an unsaved draft says it will be lost | Close a pane with a stored draft | desktop/test/draft_test.dart | stored idle draft closes silently and stays stored | green |
 | agent-sessions → A restored pane shows its session's draft | Draft returns on reopen | desktop/integration_test/exit_reopen_test.dart | restored pane shows draft before Continue; nothing sent | green |
 | agent-sessions → A restored pane shows its session's draft | New session after resume unavailable | desktop/test/draft_test.dart | New session starts empty and the old draft stays | green |
+| agent-sessions → A restored pane shows its session's draft | New session with a draft that cannot be stored | desktop/test/draft_test.dart | New session with an unstored draft asks first; Cancel keeps the text | red |
 | agent-sessions → A restored pane shows its session's draft | Stored draft cannot be read | desktop/test/draft_test.dart | failed load shows Draft not loaded, stored draft untouched | green |
 | agent-sessions → A restored pane shows its session's draft | Typing after a failed load | host/test/it/draft_store_test.dart | failed load then edit at low revision recovers floor via stale reply | green |
 | agent-sessions → A restored pane shows its session's draft | Send right after a failed load | host/test/it/draft_store_test.dart | unsynced send removes stored P; kill after ack leaves neither | green |
