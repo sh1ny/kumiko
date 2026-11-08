@@ -6,23 +6,23 @@ Paths are relative to `packages/`. Where an existing test turns red because its 
 
 | Requirement | Scenario | Test file | Test name | State |
 |---|---|---|---|---|
-| app-exit → Quitting with no affected work asks nothing | Quit with idle work | desktop/test/exit_test.dart | quit with idle agent, idle terminal and stored draft exits without a dialog | red |
-| app-exit → Quitting with no affected work asks nothing | Activity cannot be read in time | desktop/test/exit_test.dart | activity timeout lists the terminal as may be running programs | red |
-| app-exit → The exit dialog lists every affected item | Agent turn and terminal program | desktop/test/exit_test.dart | dialog lists running agent and vim with per-item Stop, bulk and Cancel | red |
-| app-exit → The exit dialog lists every affected item | Item finishes while the dialog is open | desktop/test/exit_test.dart | item leaves the list when its work ends; last item quits | red |
-| app-exit → The exit dialog lists every affected item | Another quit while the dialog is open | desktop/test/exit_test.dart | second quit request focuses the open dialog | red |
-| app-exit → Stopping one item keeps the rest and the layout | Stop items one by one | desktop/test/exit_test.dart | per-item Stop removes only that item; quits when list empties | red |
-| app-exit → Stopping one item keeps the rest and the layout | Reopen after stopping items | desktop/integration_test/exit_reopen_test.dart | stopped panes reopen in place with the layout | red |
-| app-exit → Stopping one item keeps the rest and the layout | A Stop fails | desktop/test/exit_test.dart | failed Stop keeps the item with error and cleanup unresolved; polls do not remove it | red |
-| app-exit → The bulk action states and ends all affected work | Bulk stop and close | desktop/test/exit_test.dart | bulk action states consequences and ends all items | red |
-| app-exit → The bulk action states and ends all affected work | Unsaved draft at quit | desktop/test/exit_test.dart | draft-too-large composer listed as unsaved; bulk names its loss | red |
+| app-exit → Quitting with no affected work asks nothing | Quit with idle work | desktop/test/exit_test.dart | quit with idle agent, idle terminal and stored draft exits without a dialog | green |
+| app-exit → Quitting with no affected work asks nothing | Activity cannot be read in time | desktop/test/exit_test.dart | activity timeout lists the terminal as may be running programs | green |
+| app-exit → The exit dialog lists every affected item | Agent turn and terminal program | desktop/test/exit_test.dart | dialog lists running agent and vim with per-item Stop, bulk and Cancel | green |
+| app-exit → The exit dialog lists every affected item | Item finishes while the dialog is open | desktop/test/exit_test.dart | item leaves the list when its work ends; last item quits | green |
+| app-exit → The exit dialog lists every affected item | Another quit while the dialog is open | desktop/test/exit_test.dart | second quit request focuses the open dialog | green |
+| app-exit → Stopping one item keeps the rest and the layout | Stop items one by one | desktop/test/exit_test.dart | per-item Stop removes only that item; quits when list empties | green |
+| app-exit → Stopping one item keeps the rest and the layout | Reopen after stopping items | desktop/integration_test/exit_reopen_test.dart | stopped panes reopen in place with the layout | green |
+| app-exit → Stopping one item keeps the rest and the layout | A Stop fails | desktop/test/exit_test.dart | failed Stop keeps the item with error and cleanup unresolved; polls do not remove it | green |
+| app-exit → The bulk action states and ends all affected work | Bulk stop and close | desktop/test/exit_test.dart | bulk action states consequences and ends all items | green |
+| app-exit → The bulk action states and ends all affected work | Unsaved draft at quit | desktop/test/exit_test.dart | draft-too-large composer listed as unsaved; bulk names its loss | green |
 | app-exit → The bulk action states and ends all affected work | Bulk close with an item that cannot be ended | host/test/it/lifecycle_test.dart | unendable unit at quit is cleanup unresolved at next launch | red |
-| app-exit → Cancel keeps unresolved work running | Cancel after stopping one item | desktop/test/exit_test.dart | Cancel after one Stop keeps the rest running and the stop done | red |
-| app-exit → Cancel keeps unresolved work running | Cancel at once | desktop/test/exit_test.dart | Cancel at once changes nothing | red |
+| app-exit → Cancel keeps unresolved work running | Cancel after stopping one item | desktop/test/exit_test.dart | Cancel after one Stop keeps the rest running and the stop done | green |
+| app-exit → Cancel keeps unresolved work running | Cancel at once | desktop/test/exit_test.dart | Cancel at once changes nothing | green |
 | app-exit → An exit that cannot be cancelled still ends everything | OS-required exit with running work | host/test/it/lifecycle_test.dart | desktop closing input without app/quit ends every unit, no dialog path | red |
-| app-exit → An exit that cannot be cancelled still ends everything | Host already lost at quit | desktop/test/exit_test.dart | host lost with every composer stored exits at once | red |
-| app-exit → An exit that cannot be cancelled still ends everything | Host lost with an unsaved draft | desktop/test/exit_test.dart | host lost with unsaved text lists Draft not saved: host lost | red |
-| app-exit → An exit that cannot be cancelled still ends everything | Host lost while the dialog is open | desktop/test/exit_test.dart | host loss removes process items and keeps draft items | red |
+| app-exit → An exit that cannot be cancelled still ends everything | Host already lost at quit | desktop/test/exit_test.dart | host lost with every composer stored exits at once | green |
+| app-exit → An exit that cannot be cancelled still ends everything | Host lost with an unsaved draft | desktop/test/exit_test.dart | host lost with unsaved text lists Draft not saved: host lost | green |
+| app-exit → An exit that cannot be cancelled still ends everything | Host lost while the dialog is open | desktop/test/exit_test.dart | host loss removes process items and keeps draft items | green |
 | terminal-sessions → The host reports whether a terminal is busy | Shell at its prompt | host/test/it/terminal_activity_test.dart | idle shell reads idle | green |
 | terminal-sessions → The host reports whether a terminal is busy | Program running | host/test/it/terminal_activity_test.dart | child program reads busy with its name | green |
 | terminal-sessions → The host reports whether a terminal is busy | Background job | host/test/it/terminal_activity_test.dart | background sleep reads busy | green |
@@ -47,7 +47,7 @@ Paths are relative to `packages/`. Where an existing test turns red because its 
 | workbench-layout → Closing a pane or tab checks for live work | Close a pane holding a live terminal | desktop/test/workbench_test.dart | pane close with busy terminal warns | green |
 | workbench-layout → Closing a pane or tab checks for live work | Tab with no live work | desktop/test/workbench_test.dart | tab with idle agent and terminal at prompt closes silently | green |
 | workbench-layout → Closing a pane or tab checks for live work | Part of a tab close fails | desktop/test/workbench_test.dart | existing partial-tab-close test, busy fixture | green |
-| agent-sessions → Unsent drafts are stored per session | Draft survives quit | desktop/integration_test/exit_reopen_test.dart | composer text returns after quit and reopen | red |
+| agent-sessions → Unsent drafts are stored per session | Draft survives quit | desktop/integration_test/exit_reopen_test.dart | composer text returns after quit and reopen | green |
 | agent-sessions → Unsent drafts are stored per session | Draft survives a desktop kill | host/test/it/draft_store_test.dart | draft saved by the stand-in desktop survives its kill | green |
 | agent-sessions → Unsent drafts are stored per session | Draft survives closing the pane | desktop/test/draft_test.dart | pane close flushes the draft before agent/close | green |
 | agent-sessions → Unsent drafts are stored per session | No saved record yet | desktop/test/draft_test.dart | starting link keeps text in memory and shows Draft not saved | green |
@@ -56,7 +56,7 @@ Paths are relative to `packages/`. Where an existing test turns red because its 
 | agent-sessions → Unsent drafts are stored per session | Save fails | desktop/test/draft_test.dart | host-lost save leaves link unsaved and visible | green |
 | agent-sessions → Closing with an unsaved draft says it will be lost | Close a pane with a refused draft | desktop/test/draft_test.dart | close confirmation names the unsaved draft; Cancel keeps it | green |
 | agent-sessions → Closing with an unsaved draft says it will be lost | Close a pane with a stored draft | desktop/test/draft_test.dart | stored idle draft closes silently and stays stored | green |
-| agent-sessions → A restored pane shows its session's draft | Draft returns on reopen | desktop/integration_test/exit_reopen_test.dart | restored pane shows draft before Continue; nothing sent | red |
+| agent-sessions → A restored pane shows its session's draft | Draft returns on reopen | desktop/integration_test/exit_reopen_test.dart | restored pane shows draft before Continue; nothing sent | green |
 | agent-sessions → A restored pane shows its session's draft | New session after resume unavailable | desktop/test/draft_test.dart | New session starts empty and the old draft stays | green |
 | agent-sessions → A restored pane shows its session's draft | Stored draft cannot be read | desktop/test/draft_test.dart | failed load shows Draft not loaded, stored draft untouched | green |
 | agent-sessions → A restored pane shows its session's draft | Typing after a failed load | host/test/it/draft_store_test.dart | failed load then edit at low revision recovers floor via stale reply | green |
@@ -140,8 +140,8 @@ Paths are relative to `packages/`. Where an existing test turns red because its 
 
 ## 7. App exit coordinator
 
-- [ ] 7.1 Write the failing `desktop/test/exit_test.dart` rows, then implement `ExitCoordinator` and the exit dialog in `main.dart` / the workbench. Collect affected items (agents, busy or unknown terminals, unsaved composers after the quit flush); poll activity every 1 s; per-item Stop; failed Stops kept; the bulk action stating consequences; Cancel; a second quit focusing the dialog; the layout frozen during exit; host-loss handling; a ≤ 2 s quit flush shared with the layout; `app/quit` before closing. Verify: every `exit_test.dart` row is green.
-- [ ] 7.2 Update the desktop integration quit and reopen tests to expect the cancellable dialog when work is running, and add `desktop/integration_test/exit_reopen_test.dart` (stopped panes reopen in place, drafts return on reopen). Verify: these pass locally on Windows and in CI.
+- [x] 7.1 Write the failing `desktop/test/exit_test.dart` rows, then implement `ExitCoordinator` and the exit dialog in `main.dart` / the workbench. Collect affected items (agents, busy or unknown terminals, unsaved composers after the quit flush); poll activity every 1 s; per-item Stop; failed Stops kept; the bulk action stating consequences; Cancel; a second quit focusing the dialog; the layout frozen during exit; host-loss handling; a ≤ 2 s quit flush shared with the layout; `app/quit` before closing. Verify: every `exit_test.dart` row is green.
+- [x] 7.2 Update the desktop integration quit and reopen tests to expect the cancellable dialog when work is running, and add `desktop/integration_test/exit_reopen_test.dart` (stopped panes reopen in place, drafts return on reopen). Verify: these pass locally on Windows and in CI.
 
 ## 8. Kill test, M1 walk and integration checks
 

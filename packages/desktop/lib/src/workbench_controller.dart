@@ -536,6 +536,7 @@ class WorkbenchController extends ChangeNotifier {
   }
 
   void _setLayout(LayoutDocument d, {bool refocus = false}) {
+    if (_frozen) return;
     final focusedBefore = _layout?.focusedPane;
     _layout = d;
     _message = null;
@@ -552,6 +553,7 @@ class WorkbenchController extends ChangeNotifier {
   }
 
   bool _commit(LayoutResult r, {bool refocus = false}) {
+    if (_frozen) return false;
     final d = r.document;
     if (d == null) {
       _message = switch (r.refusal!) {
@@ -1168,6 +1170,33 @@ class WorkbenchController extends ChangeNotifier {
 
   /// Sends pending layout changes before the desktop quits.
   Future<void> flush() => _saver.flush();
+
+  bool _frozen = false;
+
+  /// The app is quitting: no layout change is applied or saved from here on,
+  /// so the stored layout is the one the quit flushed (design D1).
+  void freezeLayout() => _frozen = true;
+
+  /// The quit flush (design D1): pending layout and draft saves go out
+  /// together and share one 2 s bound.
+  Future<void> flushForExit() =>
+      Future.wait([_saver.flush(), agents.flushDrafts()]).then<void>((_) {});
+
+  /// `app/quit`, before the connection closes. A host without the `lifecycle`
+  /// capability is not asked, and one that does not answer in time or refuses
+  /// never holds the quit back.
+  Future<void> announceQuit() async {
+    final link = _link;
+    if (link == null ||
+        !link.hello.capabilities.contains(Capability.lifecycle)) {
+      return;
+    }
+    try {
+      await link.announceQuit().timeout(const Duration(seconds: 2));
+    } on Object {
+      // The quit goes on; the next launch shows the previous-exit notice.
+    }
+  }
 
   // --- workspaces ---------------------------------------------------------
 

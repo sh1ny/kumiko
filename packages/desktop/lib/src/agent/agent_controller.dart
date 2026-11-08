@@ -173,6 +173,13 @@ class AgentLink {
   bool saved = false;
   bool hostLost = false;
   bool closeRequested = false;
+
+  /// **Stop** in the exit dialog closed this session: its pane stays, saved
+  /// and not running (design D1).
+  bool exitStop = false;
+
+  /// The host could not confirm the unit ended (`agent/closeFailed`).
+  String? closeFailure;
   bool abandoned = false;
   bool sending = false;
   bool stopping = false;
@@ -555,6 +562,7 @@ class AgentController extends ChangeNotifier implements ViewCloser {
     _disablePermissions(link);
     final failure =
         'Agent termination not confirmed: ${event.reason}${event.message == null ? '' : ': ${event.message}'}';
+    link.closeFailure = failure;
     link.error = link.streamFailed ? '${link.error}\n$failure' : failure;
     _changed();
   }
@@ -794,6 +802,8 @@ class AgentController extends ChangeNotifier implements ViewCloser {
     link.state = AgentState.starting;
     link.error = null;
     link.errorCode = null;
+    link.exitStop = false;
+    link.closeFailure = null;
     link._resumeReason = null;
     link.streamFailed = false;
     link.seq = -1;
@@ -1240,6 +1250,69 @@ class AgentController extends ChangeNotifier implements ViewCloser {
     _changed();
   }
 
+  /// What an exit would end in [paneId]'s session, for the exit dialog: its
+  /// turn, a pending permission reply, a stop or a prompt on its way. Null for
+  /// a session that is not running work (the same evidence a pane close uses).
+  String? exitWork(String paneId) {
+    final link = _links[paneId];
+    if (link == null || !_warnsOnClose(paneId)) return null;
+    if (link.state == AgentState.waitingApproval) {
+      return 'waiting for a permission reply';
+    }
+    if (link.state == AgentState.stopping || link.stopping) return 'stopping';
+    if (link.state == AgentState.running) return 'running a turn';
+    return 'sending a prompt';
+  }
+
+  /// The quit flush for drafts: every composer's unsaved text is sent and the
+  /// call completes when each is stored or has failed, or after [timeout].
+  Future<void> flushDrafts({
+    Duration timeout = const Duration(seconds: 2),
+  }) async {
+    await Future.wait([
+      for (final link in _links.values.toList())
+        if (!link.composerHidden && link.draft.bound)
+          link.draft.flush(timeout: timeout),
+    ]);
+  }
+
+  /// **Stop** in the exit dialog: closes [paneId]'s session as a confirmed
+  /// close does, but its pane stays, *Saved, not running* (design D1). Returns
+  /// the error when the host refuses the close; a later `agent/closeFailed`
+  /// shows as [AgentLink.closeFailure].
+  Future<String?> stopForExit(String paneId) async {
+    final link = _links[paneId];
+    final host = _host;
+    if (link == null ||
+        host == null ||
+        !link.live ||
+        link.closeRequested ||
+        link.exitStop) {
+      return null;
+    }
+    final generation = _generation;
+    link.exitStop = true;
+    link.phase = AgentLinkPhase.closing;
+    link.error = null;
+    _changed();
+    try {
+      // The host rechecks the turn and owns cancel-before-terminate.
+      await host.closeAgent(link.sessionId!);
+    } on RpcException catch (e) {
+      if (_current(host, generation) && _owns(link)) {
+        link.exitStop = false;
+        link.phase = AgentLinkPhase.live;
+        link.error = _describe(e);
+        _changed();
+        return link.error;
+      }
+    } on ConnectionClosedException {
+      if (_current(host, generation)) detach();
+    }
+    _changed();
+    return null;
+  }
+
   void _exited(AgentExitedParams event) {
     final link = _bySession[event.sessionId];
     final host = _host;
@@ -1254,6 +1327,10 @@ class AgentController extends ChangeNotifier implements ViewCloser {
     final dismiss =
         link.closeRequested && event.reason == AgentExitReason.closed;
     link.closeRequested = false;
+    // A session stopped from the exit dialog keeps its pane and its record.
+    if (link.exitStop && event.reason == AgentExitReason.closed) {
+      link.saved = link.known;
+    }
     if (!link.streamFailed) {
       link.state = event.reason == AgentExitReason.failed
           ? AgentState.failed

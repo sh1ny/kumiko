@@ -43,8 +43,14 @@ class TerminalLink extends ChangeNotifier {
   String? _notice;
   bool _closeRequested = false;
   bool _inputPaused = false;
+  bool _exitStop = false;
+  String? _closeFailure;
 
   TerminalStatus get status => _status;
+
+  /// The host gave up confirming that the shell ended (`terminal/closeFailed`):
+  /// the reason, or null.
+  String? get closeFailure => _closeFailure;
   String? get terminalId => _terminalId;
 
   /// The host's `terminal/exited`, once the shell ended on its own.
@@ -388,6 +394,9 @@ class TerminalController extends ChangeNotifier implements ViewCloser {
     if (link._closeRequested) {
       // A confirmed close ends in removal, whatever the exit reason.
       _removeEnded(link);
+    } else if (link._exitStop) {
+      // Stopped from the exit dialog: the pane stays, ended (design D1).
+      _maybeFinish(link);
     } else if (e.reason == TerminalExitReason.exited &&
         e.status == 0 &&
         e.outputComplete) {
@@ -425,6 +434,7 @@ class TerminalController extends ChangeNotifier implements ViewCloser {
     }
     // The host closes the channels of a terminal it could not confirm.
     link._released = true;
+    link._closeFailure = f.reason;
     _stopIo(link);
     link._set(
       status: TerminalStatus.ended,
@@ -647,6 +657,45 @@ class TerminalController extends ChangeNotifier implements ViewCloser {
           // The host is gone and its processes with it.
         }
     }
+  }
+
+  /// The live pane ids whose shells an exit would end (any live terminal).
+  Iterable<String> get livePaneIds => [
+    for (final link in _links.values)
+      if (link._status == TerminalStatus.live) link.paneId,
+  ];
+
+  /// **Stop** in the exit dialog: ends [paneId]'s shell as a confirmed close
+  /// does, but the pane stays in the layout, ended (design D1). Returns the
+  /// error when the host refuses the close; a later `terminal/closeFailed`
+  /// shows as [TerminalLink.closeFailure].
+  Future<String?> stopForExit(String paneId) async {
+    final link = _links[paneId];
+    final host = _host;
+    final id = link?.terminalId;
+    if (link == null ||
+        host == null ||
+        id == null ||
+        link._status != TerminalStatus.live) {
+      return null;
+    }
+    link._exitStop = true;
+    link._set(status: TerminalStatus.closing, error: () => null);
+    try {
+      await host.closeTerminal(id);
+    } on RpcException catch (e) {
+      if (link._abandoned) return null;
+      if (e.reason == ErrorCode.unknownTerminal && link._exit != null) {
+        return null; // the host already forgot it: its exit came first
+      }
+      link._exitStop = false;
+      final error = _describe('Could not stop the terminal', e);
+      link._set(status: TerminalStatus.live, error: () => error);
+      return error;
+    } on ConnectionClosedException {
+      // The host is gone and its processes with it.
+    }
+    return null;
   }
 
   // --- the layout ----------------------------------------------------------
