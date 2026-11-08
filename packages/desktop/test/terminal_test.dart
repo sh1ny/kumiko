@@ -337,6 +337,9 @@ void main() {
       await tester.tap(key('split-right-${first.id}'));
       await flush(tester);
       await tester.pumpAndSettle();
+      for (final id in ['t2']) {
+        rig.link.setBusy(id);
+      }
       await tapClosePane(tester, rig.layout.focusedPane!);
       expect(key('close-warning'), findsOneWidget);
       final panes = rig.terminalPanes.length;
@@ -421,6 +424,7 @@ void main() {
       await tester.tap(key('split-right-${first.id}'));
       await flush(tester);
       await tester.pumpAndSettle();
+      rig.link.setBusy('t2');
       await tapClosePane(tester, rig.layout.focusedPane!);
       await confirm(tester);
       rig.link.emitExit('t2', status: null, reason: TerminalExitReason.closed);
@@ -1060,6 +1064,9 @@ void main() {
       await flush(tester);
       await tester.pumpAndSettle();
       final second = rig.layout.focusedPane!;
+      for (final id in ['t2']) {
+        rig.link.setBusy(id);
+      }
       await tapClosePane(tester, second);
       expect(key('close-warning'), findsOneWidget);
 
@@ -1464,6 +1471,9 @@ void main() {
       await tester.pumpAndSettle();
       final second = rig.layout.focusedPane!;
 
+      for (final id in ['t2']) {
+        rig.link.setBusy(id);
+      }
       await tapClosePane(tester, second);
       expect(key('close-warning'), findsOneWidget);
       expect(rig.link.closed, isEmpty, reason: 'nothing before confirm');
@@ -1497,6 +1507,9 @@ void main() {
       await tester.pumpAndSettle();
       final before = jsonOf(rig.layout);
 
+      for (final id in ['t1']) {
+        rig.link.setBusy(id);
+      }
       await tapClosePane(tester, first.id);
       await tester.tap(key('close-warning-cancel'));
       await tester.pumpAndSettle();
@@ -1517,6 +1530,9 @@ void main() {
       await flush(tester);
       await tester.pumpAndSettle();
       final second = rig.layout.focusedPane!;
+      for (final id in ['t1', 't2']) {
+        rig.link.setBusy(id);
+      }
       await tapCloseTab(tester, rig.layout.tabs.single.id);
       expect(key('close-warning'), findsOneWidget);
 
@@ -1545,6 +1561,9 @@ void main() {
       await flush(tester);
       await tester.pumpAndSettle();
       final second = rig.layout.focusedPane!;
+      for (final id in ['t1', 't2']) {
+        rig.link.setBusy(id);
+      }
       await tapClosePane(tester, first.id);
 
       rig.link.emitExit('t2', status: 0);
@@ -1568,6 +1587,9 @@ void main() {
       await flush(tester);
       await tester.pumpAndSettle();
       final second = rig.layout.focusedPane!;
+      for (final id in ['t1', 't2']) {
+        rig.link.setBusy(id);
+      }
       await tapCloseTab(tester, rig.layout.tabs.single.id);
 
       rig.link.emitExit('t2', status: 1);
@@ -1590,6 +1612,9 @@ void main() {
         'other three', (tester) async {
       final rig = await pumpEmpty(tester);
       await fourPaneTab(tester, rig);
+      for (final id in ['t1', 't2', 't3', 't4']) {
+        rig.link.setBusy(id);
+      }
       await tapCloseTab(tester, rig.layout.tabs.single.id);
 
       rig.link.emitExit('t4', status: 0);
@@ -1604,6 +1629,9 @@ void main() {
         'other three running', (tester) async {
       final rig = await pumpEmpty(tester);
       await fourPaneTab(tester, rig);
+      for (final id in ['t1', 't2', 't3', 't4']) {
+        rig.link.setBusy(id);
+      }
       await tapCloseTab(tester, rig.layout.tabs.single.id);
 
       rig.link.emitExit('t4', status: 0);
@@ -1616,6 +1644,69 @@ void main() {
       for (final p in rig.layout.panes) {
         expect(rig.linkOf(p.id)!.status, TerminalStatus.live);
       }
+    });
+
+    uiTest('close of a busy terminal warns naming its program', (tester) async {
+      final rig = await pumpEmpty(tester);
+      await launch(tester);
+      final pane = rig.terminalPanes.single;
+      rig.link.setBusy('t1', ['vim']);
+
+      await tapClosePane(tester, pane.id);
+
+      expect(rig.link.activityRequests, [
+        ['t1'],
+      ]);
+      expect(
+        tester.widget<Text>(key('close-warning-item-${pane.id}')).data,
+        contains('vim'),
+      );
+      expect(rig.link.closed, isEmpty, reason: 'nothing before confirm');
+    });
+
+    uiTest('idle terminal closes without a warning', (tester) async {
+      final rig = await pumpEmpty(tester);
+      await launch(tester);
+      final pane = rig.terminalPanes.single;
+
+      await tapClosePane(tester, pane.id);
+
+      expect(key('close-warning'), findsNothing);
+      expect(rig.link.activityRequests, [
+        ['t1'],
+      ]);
+      expect(rig.link.closed, ['t1'], reason: 'the shell is terminated');
+    });
+
+    uiTest('unknown activity warns may be running programs', (tester) async {
+      final rig = await pumpEmpty(tester);
+      await launch(tester);
+      final pane = rig.terminalPanes.single;
+      rig.link.setUnknown('t1');
+
+      await tapClosePane(tester, pane.id);
+
+      expect(
+        tester.widget<Text>(key('close-warning-item-${pane.id}')).data,
+        contains('may be running programs'),
+      );
+      expect(rig.link.closed, isEmpty, reason: 'nothing before confirm');
+    });
+
+    uiTest('a refused or failed activity request warns as unknown, never '
+        'as idle', (tester) async {
+      final rig = await pumpEmpty(tester);
+      await launch(tester);
+      final pane = rig.terminalPanes.single;
+      rig.link.activityError = RpcException(ErrorCode.busy);
+
+      await tapClosePane(tester, pane.id);
+
+      expect(
+        tester.widget<Text>(key('close-warning-item-${pane.id}')).data,
+        contains('may be running programs'),
+      );
+      expect(rig.link.closed, isEmpty);
     });
 
     uiTest('an ended terminal pane closes without a dialog', (tester) async {
@@ -1651,6 +1742,9 @@ void main() {
       await flush(tester);
       await tester.pumpAndSettle();
 
+      for (final id in ['t1']) {
+        rig.link.setBusy(id);
+      }
       await tapClosePane(tester, 'p2');
       expect(key('close-warning-item-p2'), findsOneWidget);
       await confirm(tester);
@@ -1670,6 +1764,9 @@ void main() {
       rig.link.emitExit('t4', status: 1); // the fourth ended
       await flush(tester);
 
+      for (final id in ['t1', 't2', 't3']) {
+        rig.link.setBusy(id);
+      }
       await tapCloseTab(tester, tabId);
 
       expect(key('close-warning'), findsOneWidget);
@@ -1696,6 +1793,44 @@ void main() {
       await flush(tester);
       expect(rig.layout.tabs, isEmpty);
       expect(rig.layout.activeTab, isNull);
+    });
+
+    uiTest('a tab of three busy terminals, one at its prompt and one ended: '
+        'one dialog names the three busy; confirm ends all four live shells', (
+      tester,
+    ) async {
+      final rig = await pumpEmpty(tester);
+      final panes = await fourPaneTab(tester, rig);
+      await tester.tap(key('split-down-${panes[3]}'));
+      await flush(tester);
+      await tester.pumpAndSettle();
+      final idlePane = rig.layout.focusedPane!;
+      final idleId = rig.link.lastTerminal.id;
+      final tabId = rig.layout.tabs.single.id;
+      final ids = ['t1', 't2', 't3', 't4', idleId];
+      expect(ids.toSet(), hasLength(5));
+      rig.link.emitExit('t4', status: 1); // the fourth ended
+      await flush(tester);
+      for (final id in ['t1', 't2', 't3']) {
+        rig.link.setBusy(id, ['vim']);
+      }
+
+      await tapCloseTab(tester, tabId);
+
+      expect(key('close-warning'), findsOneWidget);
+      for (final id in panes.take(3)) {
+        expect(key('close-warning-item-$id'), findsOneWidget);
+      }
+      expect(key('close-warning-item-${panes[3]}'), findsNothing);
+      expect(key('close-warning-item-$idlePane'), findsNothing);
+      await confirm(tester);
+
+      expect(rig.link.closed, unorderedEquals(['t1', 't2', 't3', idleId]));
+      for (final id in ['t1', 't2', 't3', idleId]) {
+        rig.link.emitExit(id, status: null, reason: TerminalExitReason.closed);
+      }
+      await flush(tester);
+      expect(rig.layout.tabs, isEmpty);
     });
 
     uiTest('tab close shows one dialog naming both live terminals; confirm '
@@ -1725,6 +1860,9 @@ void main() {
       await flush(tester);
       await tester.pumpAndSettle();
 
+      for (final id in ['t1', 't2']) {
+        rig.link.setBusy(id);
+      }
       await tapCloseTab(tester, 't1');
 
       expect(key('close-warning'), findsOneWidget);
@@ -1763,6 +1901,9 @@ void main() {
       await tester.pumpAndSettle();
       final before = jsonOf(rig.layout);
 
+      for (final id in ['t1']) {
+        rig.link.setBusy(id);
+      }
       await tapCloseTab(tester, 't1');
       await tester.tap(key('close-warning-cancel'));
       await tester.pumpAndSettle();
@@ -1825,6 +1966,9 @@ void main() {
       await flush(tester);
       await tester.pumpAndSettle();
 
+      for (final id in ['t1', 't2']) {
+        rig.link.setBusy(id);
+      }
       await tapCloseTab(tester, 't1');
       await confirm(tester);
       expect(
@@ -1871,6 +2015,9 @@ void main() {
       await tester.pumpAndSettle();
       final before = jsonOf(rig.layout);
 
+      for (final id in ['t1']) {
+        rig.link.setBusy(id);
+      }
       await tapClosePane(tester, 'p2');
       await confirm(tester);
       rig.link.emitCloseFailed('t1', 'scan-unreadable');
@@ -1891,6 +2038,9 @@ void main() {
       await launch(tester);
       final pane = rig.terminalPanes.single;
 
+      for (final id in ['t1']) {
+        rig.link.setBusy(id);
+      }
       await tapClosePane(tester, pane.id);
       rig.link.emitExit('t1', status: 0);
       await flush(tester);
@@ -1908,6 +2058,9 @@ void main() {
       final pane = rig.terminalPanes.single;
       rig.link.terminalCloseGate = Completer<void>();
 
+      for (final id in ['t1']) {
+        rig.link.setBusy(id);
+      }
       await tapClosePane(tester, pane.id);
       await confirm(tester);
       expect(rig.link.closed, ['t1']);
@@ -1932,6 +2085,9 @@ void main() {
       final pane = rig.terminalPanes.single;
       rig.link.closeError = RpcException(ErrorCode.unknownTerminal);
 
+      for (final id in ['t1']) {
+        rig.link.setBusy(id);
+      }
       await tapClosePane(tester, pane.id);
       await confirm(tester);
       await flush(tester);
@@ -1946,6 +2102,9 @@ void main() {
       await launch(tester);
       final pane = rig.terminalPanes.single;
 
+      for (final id in ['t1']) {
+        rig.link.setBusy(id);
+      }
       await tapClosePane(tester, pane.id);
       await confirm(tester);
       await tester.pump(const Duration(seconds: 5));
@@ -1962,6 +2121,7 @@ void main() {
       // The other outcome: a second terminal's close ends with the exit.
       await launch(tester);
       final second = rig.terminalPanes.last;
+      rig.link.setBusy('t2');
       await tapClosePane(tester, second.id);
       await confirm(tester);
       expect(find.text('Closing…'), findsOneWidget);
@@ -1980,8 +2140,8 @@ void main() {
       expect(rig.linkOf(pane.id)!.status, TerminalStatus.starting);
 
       await tapClosePane(tester, pane.id);
-      expect(key('close-warning'), findsOneWidget, reason: 'starting warns');
-      await confirm(tester);
+      expect(key('close-warning'), findsNothing, reason: 'starting is silent');
+      expect(rig.link.activityRequests, isEmpty);
       expect(rig.layout.tabs, isEmpty, reason: 'removed at once');
       expect(rig.link.closed, isEmpty);
 
@@ -1999,7 +2159,6 @@ void main() {
       await launch(tester);
       final pane = rig.terminalPanes.single;
       await tapClosePane(tester, pane.id);
-      await confirm(tester);
       expect(rig.layout.tabs, isEmpty);
 
       // The exit races the open's answer.
@@ -2035,7 +2194,6 @@ void main() {
       await launch(tester);
       final pane = rig.terminalPanes.single;
       await tapClosePane(tester, pane.id);
-      await confirm(tester);
 
       rig.link.emitCloseFailed('t1', 'scan-unreadable');
       rig.link.terminalOpenGate!.complete();
@@ -2175,6 +2333,7 @@ void main() {
       await flush(tester);
       await tester.pumpAndSettle();
       final closing = rig.layout.focusedPane!;
+      rig.link.setBusy('t3');
       await tapClosePane(tester, closing);
       await confirm(tester);
       expect(rig.linkOf(closing)!.status, TerminalStatus.closing);

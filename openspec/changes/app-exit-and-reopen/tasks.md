@@ -31,22 +31,22 @@ Paths are relative to `packages/`. Where an existing test turns red because its 
 | terminal-sessions → The host reports whether a terminal is busy | Leader image unreadable | host/test/it/terminal_activity_test.dart | injected unreadable leader image reads unknown | green |
 | terminal-sessions → The host reports whether a terminal is busy | Process table cannot be read in time | host/test/it/terminal_activity_test.dart | injected slow table read reads unknown at the deadline | green |
 | terminal-sessions → The host reports whether a terminal is busy | Unknown terminal id | host/test/it/terminal_activity_test.dart | unknown id reads ended | green |
-| terminal-sessions → Closing live terminals warns about process loss | Close a terminal running vim | desktop/test/terminal_test.dart | close of a busy terminal warns naming its program | red |
-| terminal-sessions → Closing live terminals warns about process loss | Close a terminal at its prompt | desktop/test/terminal_test.dart | idle terminal closes without a warning | red |
-| terminal-sessions → Closing live terminals warns about process loss | Cancel the warning | desktop/test/terminal_test.dart | existing cancel-warning test, busy fixture | red |
-| terminal-sessions → Closing live terminals warns about process loss | Close a tab with several terminal panes | desktop/test/terminal_test.dart | 'a close warning naming more terminals than fit…', busy fixture | red |
-| terminal-sessions → Closing live terminals warns about process loss | Activity unknown | desktop/test/terminal_test.dart | unknown activity warns may be running programs | red |
+| terminal-sessions → Closing live terminals warns about process loss | Close a terminal running vim | desktop/test/terminal_test.dart | close of a busy terminal warns naming its program | green |
+| terminal-sessions → Closing live terminals warns about process loss | Close a terminal at its prompt | desktop/test/terminal_test.dart | idle terminal closes without a warning | green |
+| terminal-sessions → Closing live terminals warns about process loss | Cancel the warning | desktop/test/terminal_test.dart | existing cancel-warning test, busy fixture | green |
+| terminal-sessions → Closing live terminals warns about process loss | Close a tab with several terminal panes | desktop/test/terminal_test.dart | 'a tab of three busy terminals, one at its prompt and one ended…' | green |
+| terminal-sessions → Closing live terminals warns about process loss | Activity unknown | desktop/test/terminal_test.dart | unknown activity warns may be running programs | green |
 | terminal-sessions → Closing live terminals warns about process loss | Move a live terminal | desktop/test/terminal_test.dart | 'after a move the moved pane keeps the keys…' | green |
-| terminal-sessions → Closing live terminals warns about process loss | A shell exits cleanly while the warning is open | desktop/test/terminal_test.dart | 'a clean exit while the close dialog is open…', busy fixture | red |
-| terminal-sessions → Closing live terminals warns about process loss | A shell ends otherwise while the warning is open | desktop/test/terminal_test.dart | existing ends-otherwise-while-warning test, busy fixture | red |
+| terminal-sessions → Closing live terminals warns about process loss | A shell exits cleanly while the warning is open | desktop/test/terminal_test.dart | 'a clean exit while the close dialog is open…', busy fixture | green |
+| terminal-sessions → Closing live terminals warns about process loss | A shell ends otherwise while the warning is open | desktop/test/terminal_test.dart | existing ends-otherwise-while-warning test, busy fixture | green |
 | terminal-sessions → Closing live terminals warns about process loss | Close an ended terminal | desktop/test/terminal_test.dart | existing close-ended-terminal test | green |
-| terminal-sessions → Closing live terminals warns about process loss | Close a terminal that is still starting | desktop/test/terminal_test.dart | starting terminal closes without a warning | red |
+| terminal-sessions → Closing live terminals warns about process loss | Close a terminal that is still starting | desktop/test/terminal_test.dart | starting terminal closes without a warning | green |
 | terminal-sessions → Closing live terminals warns about process loss | Program ignores termination | host/test/it/terminal_close_test.dart | 'program ignoring termination: ack within 250 ms…' | green |
-| workbench-layout → Closing a pane or tab checks for live work | Close a tab holding live terminals | desktop/test/workbench_test.dart | tab close lists busy terminals only | red |
-| workbench-layout → Closing a pane or tab checks for live work | Cancel closing a tab | desktop/test/workbench_test.dart | existing cancel-tab-close test, busy fixture | red |
-| workbench-layout → Closing a pane or tab checks for live work | Close a pane holding a live terminal | desktop/test/workbench_test.dart | pane close with busy terminal warns | red |
-| workbench-layout → Closing a pane or tab checks for live work | Tab with no live work | desktop/test/workbench_test.dart | tab with idle agent and terminal at prompt closes silently | red |
-| workbench-layout → Closing a pane or tab checks for live work | Part of a tab close fails | desktop/test/workbench_test.dart | existing partial-tab-close test, busy fixture | red |
+| workbench-layout → Closing a pane or tab checks for live work | Close a tab holding live terminals | desktop/test/workbench_test.dart | tab close lists busy terminals only | green |
+| workbench-layout → Closing a pane or tab checks for live work | Cancel closing a tab | desktop/test/workbench_test.dart | existing cancel-tab-close test, busy fixture | green |
+| workbench-layout → Closing a pane or tab checks for live work | Close a pane holding a live terminal | desktop/test/workbench_test.dart | pane close with busy terminal warns | green |
+| workbench-layout → Closing a pane or tab checks for live work | Tab with no live work | desktop/test/workbench_test.dart | tab with idle agent and terminal at prompt closes silently | green |
+| workbench-layout → Closing a pane or tab checks for live work | Part of a tab close fails | desktop/test/workbench_test.dart | existing partial-tab-close test, busy fixture | green |
 | agent-sessions → Unsent drafts are stored per session | Draft survives quit | desktop/integration_test/exit_reopen_test.dart | composer text returns after quit and reopen | red |
 | agent-sessions → Unsent drafts are stored per session | Draft survives a desktop kill | host/test/it/draft_store_test.dart | draft saved by the stand-in desktop survives its kill | red |
 | agent-sessions → Unsent drafts are stored per session | Draft survives closing the pane | desktop/test/draft_test.dart | pane close flushes the draft before agent/close | red |
@@ -120,7 +120,7 @@ Paths are relative to `packages/`. Where an existing test turns red because its 
 
 ## 3. Busy-terminal close rule on the desktop
 
-- [ ] 3.1 Replace the synchronous `warnsOnClose` with `Future<Map<String,String>> warningsFor(List<String> paneIds)` across `ViewCloser`, `WorkbenchController.requestClose`, the agent and terminal controllers and `profiles_dialog.dart`. Terminals query `terminal/activity` and name programs; unknown activity warns *may be running programs*; a starting terminal closes silently. Rewrite the busy fixtures in `terminal_test.dart`, `workbench_test.dart` and the agent-and-terminal tab test. Verify: the terminal-sessions and workbench-layout map rows are green, and the rows marked green still pass.
+- [x] 3.1 Replace the synchronous `warnsOnClose` with `Future<Map<String,String>> warningsFor(List<String> paneIds)` across `ViewCloser`, `WorkbenchController.requestClose`, the agent and terminal controllers and `profiles_dialog.dart`. Terminals query `terminal/activity` and name programs; unknown activity warns *may be running programs*; a starting terminal closes silently. Rewrite the busy fixtures in `terminal_test.dart`, `workbench_test.dart` and the agent-and-terminal tab test. Verify: the terminal-sessions and workbench-layout map rows are green, and the rows marked green still pass.
 
 ## 4. Draft store on the host
 

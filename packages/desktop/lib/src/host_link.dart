@@ -88,6 +88,10 @@ abstract interface class HostLink {
   /// `terminal/close`.
   Future<void> closeTerminal(String terminalId);
 
+  /// `terminal/activity`: what each of at most 64 terminals runs now. The
+  /// host refuses a concurrent request (`busy`).
+  Future<TerminalActivityResult> terminalActivity(List<String> terminalIds);
+
   /// `terminal/release`: closes an ended terminal's channels.
   Future<void> releaseTerminal(String terminalId);
 

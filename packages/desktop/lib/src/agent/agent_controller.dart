@@ -854,17 +854,22 @@ class AgentController extends ChangeNotifier implements ViewCloser {
   }
 
   @override
-  String? warnsOnClose(String paneId) {
+  Future<Map<String, String>> warningsFor(List<String> paneIds) async => {
+    for (final id in paneIds)
+      if (_warnsOnClose(id)) id: agentCloseWarning,
+  };
+
+  bool _warnsOnClose(String paneId) {
     final link = _links[paneId];
-    if (link == null || !link.connected || !link.live) return null;
+    if (link == null || !link.connected || !link.live) return false;
     // Submission can already be accepted while its ACK/state is in flight.
     // Preserve confirmation without deriving a speculative Running status.
-    if (link.sending) return agentCloseWarning;
+    if (link.sending) return true;
     return switch (link.state) {
       AgentState.running ||
       AgentState.waitingApproval ||
-      AgentState.stopping => agentCloseWarning,
-      _ => null,
+      AgentState.stopping => true,
+      _ => false,
     };
   }
 

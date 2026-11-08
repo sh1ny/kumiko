@@ -544,15 +544,64 @@ class TerminalController extends ChangeNotifier implements ViewCloser {
 
   // --- close ---------------------------------------------------------------
 
-  /// Why closing [paneId] would end running work, or null (design D9). A
-  /// `starting` terminal warns like a `live` one, since its shell is about to
-  /// exist.
+  /// Why closing each of [paneIds] would end running work (design D2): live
+  /// terminals are asked about in one `terminal/activity` request per 64, and
+  /// only busy or unknown ones warn. A starting terminal has no shell yet and
+  /// closes silently. A refused, failed or slow request reads as unknown,
+  /// never as idle.
   @override
-  String? warnsOnClose(String paneId) => switch (statusOf(paneId)) {
-    TerminalStatus.starting => 'its shell is starting',
-    TerminalStatus.live => 'its shell is running',
-    _ => null,
-  };
+  Future<Map<String, String>> warningsFor(List<String> paneIds) async {
+    final host = _host;
+    final live = <String, String>{}; // terminal id -> pane id
+    for (final paneId in paneIds) {
+      final link = _links[paneId];
+      final id = link?.terminalId;
+      if (link != null && link._status == TerminalStatus.live && id != null) {
+        live[id] = paneId;
+      }
+    }
+    if (live.isEmpty) return const {};
+    final warnings = <String, String>{};
+    final ids = live.keys.toList();
+    for (var i = 0; i < ids.length; i += maxActivityTerminalIds) {
+      final chunk = ids.sublist(
+        i,
+        i + maxActivityTerminalIds > ids.length
+            ? ids.length
+            : i + maxActivityTerminalIds,
+      );
+      Map<String, TerminalActivity>? answers;
+      try {
+        if (host != null) {
+          final result = await host
+              .terminalActivity(chunk)
+              .timeout(_activityTimeout);
+          answers = {for (final a in result.terminals) a.terminalId: a};
+        }
+      } on Object {
+        answers = null; // busy, an error, a lost host or a timeout
+      }
+      for (final id in chunk) {
+        final reason = _activityWarning(answers?[id]);
+        if (reason != null) warnings[live[id]!] = reason;
+      }
+    }
+    return warnings;
+  }
+
+  /// The host answers within 1 s (design D2); the desktop waits a little more.
+  static const _activityTimeout = Duration(seconds: 3);
+
+  static String? _activityWarning(TerminalActivity? a) {
+    if (a == null || a.state == TerminalActivityState.unknown) {
+      return 'may be running programs';
+    }
+    if (a.state != TerminalActivityState.busy) return null;
+    if (a.programs.isEmpty) return 'running programs';
+    final more = a.processCount - a.programs.length;
+    return 'running ${a.programs.join(', ')}'
+        '${more > 0 ? ' and $more more' : ''}';
+  }
 
   /// The user confirmed closing [paneId]. Not live: the pane goes at once (a
   /// `starting` one leaves its open on the orphan list). Live: the intent is

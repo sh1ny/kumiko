@@ -1187,6 +1187,7 @@ void main() {
           SplitDirection.horizontal,
         );
         await flush(tester);
+        host.setBusy(host.lastTerminal.id);
         await rig.controller.requestClose(
           rig.controller.panesOfTab(rig.layout.activeTab!),
           (warnings) async {
@@ -1295,6 +1296,7 @@ void main() {
           SplitDirection.horizontal,
         );
         await flush(tester);
+        host.setBusy(host.lastTerminal.id);
         var dialogs = 0;
         await rig.controller.requestClose(
           rig.controller.panesOfTab(rig.layout.activeTab!),

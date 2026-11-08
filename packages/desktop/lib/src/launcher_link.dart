@@ -245,6 +245,16 @@ class SessionLink implements HostLink {
       _request(Method.terminalClose, TerminalCloseParams(terminalId).toJson());
 
   @override
+  Future<TerminalActivityResult> terminalActivity(
+    List<String> terminalIds,
+  ) async => TerminalActivityResult.fromJson(
+    await _request(
+      Method.terminalActivity,
+      TerminalActivityParams(terminalIds).toJson(),
+    ),
+  );
+
+  @override
   Future<void> releaseTerminal(String terminalId) => _request(
     Method.terminalRelease,
     TerminalReleaseParams(terminalId).toJson(),

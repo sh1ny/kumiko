@@ -187,6 +187,7 @@ void main() {
           SplitDirection.horizontal,
         );
         await flush(tester);
+        rig.link.setBusy(rig.link.lastTerminal.id, ['vim']);
         await tester.tap(key('close-${rig.layout.activeTab}'));
         await tester.pumpAndSettle();
         expect(key('close-warning'), findsOneWidget);
@@ -196,7 +197,7 @@ void main() {
           ),
           findsOneWidget,
         );
-        expect(find.textContaining('its shell is running'), findsOneWidget);
+        expect(find.textContaining('vim'), findsOneWidget);
         await tester.tap(key('close-warning-confirm'));
         await flush(tester);
         expect(rig.link.agentCloses, [id]);
@@ -206,6 +207,64 @@ void main() {
         rig.link.emitExit(rig.link.lastTerminal.id);
         await flush(tester);
         expect(rig.layout.tabs, isEmpty);
+      },
+    );
+
+    uiTest(
+      'a tab of an idle agent and a terminal at its prompt closes silently; one activity request covers the tab',
+      (tester) async {
+        final rig = await pumpRig(tester, host());
+        await launch(tester, entry: 'launch-agent-chat');
+        final pane = rig.layout.panes.single;
+        await rig.controller.splitWithTerminal(
+          pane.id,
+          SplitDirection.horizontal,
+        );
+        await flush(tester);
+        await tester.tap(key('close-${rig.layout.activeTab}'));
+        await tester.pumpAndSettle();
+        expect(key('close-warning'), findsNothing);
+        expect(rig.link.activityRequests, hasLength(1));
+        expect(rig.link.closed, [rig.link.lastTerminal.id]);
+      },
+    );
+
+    uiTest(
+      'tab close lists busy terminals only; pane close of a busy terminal warns',
+      (tester) async {
+        final rig = await pumpRig(tester, host());
+        await launch(tester, entry: 'launch-agent-chat');
+        final pane = rig.layout.panes.single;
+        await rig.controller.splitWithTerminal(
+          pane.id,
+          SplitDirection.horizontal,
+        );
+        await flush(tester);
+        final busyPane = rig.layout.focusedPane!;
+        final busyId = rig.link.lastTerminal.id;
+        await rig.controller.splitWithTerminal(
+          busyPane,
+          SplitDirection.vertical,
+        );
+        await flush(tester);
+        final idlePane = rig.layout.focusedPane!;
+        rig.link.setBusy(busyId, ['vim']);
+
+        await tester.tap(key('close-${rig.layout.activeTab}'));
+        await tester.pumpAndSettle();
+        expect(key('close-warning-item-$busyPane'), findsOneWidget);
+        expect(key('close-warning-item-$idlePane'), findsNothing);
+        expect(key('close-warning-item-${pane.id}'), findsNothing);
+        expect(rig.link.activityRequests.last, hasLength(2));
+        await tester.tap(key('close-warning-cancel'));
+        await tester.pumpAndSettle();
+        expect(rig.layout.panes, hasLength(3));
+
+        await tester.tap(key('close-pane-$busyPane'));
+        await tester.pumpAndSettle();
+        expect(key('close-warning-item-$busyPane'), findsOneWidget);
+        await tester.tap(key('close-warning-cancel'));
+        await tester.pumpAndSettle();
       },
     );
   });

@@ -612,14 +612,27 @@ class WorkbenchController extends ChangeNotifier {
   /// one [confirm]ation first (design D9). Cancel changes nothing. On confirm
   /// each view's owner is asked to close in parallel; plain panes go at once.
   Future<void> requestClose(List<String> paneIds, ConfirmClose confirm) async {
-    final warnings = <CloseWarning>[];
+    // Panes are grouped by owner so each asks once for all of its panes.
+    final byCloser = <ViewCloser, List<String>>{};
     for (final id in paneIds) {
       final pane = _layout?.pane(id);
       if (pane == null) continue;
       final closer = viewKindOf(pane.kind)?.closer?.call(this);
-      final reason = closer?.warnsOnClose(id);
-      if (reason != null) {
-        warnings.add((paneId: id, title: paneTitle(pane), reason: reason));
+      if (closer != null) (byCloser[closer] ??= []).add(id);
+    }
+    final reasons = await Future.wait([
+      for (final e in byCloser.entries) e.key.warningsFor(e.value),
+    ]);
+    final warnings = <CloseWarning>[];
+    for (final id in paneIds) {
+      final pane = _layout?.pane(id);
+      if (pane == null) continue;
+      for (final r in reasons) {
+        final reason = r[id];
+        if (reason != null) {
+          warnings.add((paneId: id, title: paneTitle(pane), reason: reason));
+          break;
+        }
       }
     }
     if (warnings.isNotEmpty && !await confirm(warnings)) return;

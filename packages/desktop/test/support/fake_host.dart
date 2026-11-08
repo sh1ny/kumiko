@@ -454,6 +454,52 @@ class FakeHostLink implements HostLink {
     if (closeError case final error?) throw error;
   }
 
+  /// What `terminal/activity` reports per terminal id; an open terminal not
+  /// listed is idle, any other id is ended. Set [activityError] to fail the
+  /// request, or [activityGate] to hold its answer.
+  final Map<String, TerminalActivity> activities = {};
+  Object? activityError;
+  Completer<void>? activityGate;
+
+  /// Every `terminal/activity` request's ids, in call order.
+  final List<List<String>> activityRequests = [];
+
+  /// Makes [terminalId] busy with [programs].
+  void setBusy(String terminalId, [List<String> programs = const ['vim']]) =>
+      activities[terminalId] = TerminalActivity(
+        terminalId: terminalId,
+        state: TerminalActivityState.busy,
+        programs: programs,
+        processCount: programs.length,
+      );
+
+  /// Makes [terminalId]'s activity unknown.
+  void setUnknown(String terminalId) =>
+      activities[terminalId] = TerminalActivity(
+        terminalId: terminalId,
+        state: TerminalActivityState.unknown,
+      );
+
+  @override
+  Future<TerminalActivityResult> terminalActivity(
+    List<String> terminalIds,
+  ) async {
+    calls.add('terminal/activity ${terminalIds.join(',')}');
+    activityRequests.add([...terminalIds]);
+    await activityGate?.future;
+    if (activityError case final error?) throw error;
+    return TerminalActivityResult([
+      for (final id in terminalIds)
+        activities[id] ??
+            TerminalActivity(
+              terminalId: id,
+              state: terminals.containsKey(id)
+                  ? TerminalActivityState.idle
+                  : TerminalActivityState.ended,
+            ),
+    ]);
+  }
+
   @override
   Future<void> releaseTerminal(String terminalId) async {
     calls.add('terminal/release $terminalId');
