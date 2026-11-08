@@ -57,7 +57,11 @@ void main() {
                   r'C:\Windows\System32\cmd.exe')
             // macOS's /bin/sh re-executes the real shell, which reads as replaced.
             : (Platform.isMacOS ? '/bin/bash' : '/bin/sh'),
-        args: Platform.isWindows ? const ['/d', '/q', '/k'] : const ['-i'],
+        args: Platform.isWindows
+            ? const ['/d', '/q', '/k']
+            : Platform.isMacOS
+            ? const ['--norc', '--noprofile', '-i']
+            : const ['-i'],
         cwd: work.path,
         env: {if (!Platform.isWindows) 'PS1': r'$ ', ...env},
       ),

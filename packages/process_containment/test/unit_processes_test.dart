@@ -142,7 +142,13 @@ void main() {
       final unit = await spawnPosixUnit(
         shimExecutable: shim!,
         containmentId: id,
-        argv: [sh, ...args],
+        // No rc files on macOS: what a machine's profile starts is not this
+        // test's subject, and the CI image's starts child shells.
+        argv: [
+          sh,
+          if (Platform.isMacOS) ...const ['--norc', '--noprofile'],
+          ...args,
+        ],
         environment: {'PS1': r'$ ', ...?environment},
         pty: const PtyOptions(size: PtySize(100, 30)),
       );
