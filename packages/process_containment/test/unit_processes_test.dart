@@ -134,7 +134,9 @@ void main() {
       List<String> args = const ['-i'],
       Map<String, String>? environment,
     }) async {
-      final sh = _posixExecutable('sh');
+      // macOS's /bin/sh is a launcher that re-executes the real shell, so its
+      // image would never match. bash is the image it starts as.
+      final sh = _posixExecutable(Platform.isMacOS ? 'bash' : 'sh');
       final expected = executableIdentity(sh);
       expect(expected, isNotNull, reason: 'identity of $sh');
       final unit = await spawnPosixUnit(

@@ -42,7 +42,7 @@ void main() {
     return desktop;
   }
 
-  /// A terminal running the OS's own shell: `cmd.exe` on Windows, `/bin/sh`
+  /// A terminal running the OS's own shell: `cmd.exe` on Windows, `/bin/bash` on macOS, `/bin/sh`
   /// interactive elsewhere, with [env] in its environment.
   Future<OpenTerminal> realShell(
     Desktop desktop, {
@@ -55,7 +55,8 @@ void main() {
         executable: Platform.isWindows
             ? (Platform.environment['ComSpec'] ??
                   r'C:\Windows\System32\cmd.exe')
-            : '/bin/sh',
+            // macOS's /bin/sh re-executes the real shell, which reads as replaced.
+            : (Platform.isMacOS ? '/bin/bash' : '/bin/sh'),
         args: Platform.isWindows ? const ['/d', '/q', '/k'] : const ['-i'],
         cwd: work.path,
         env: {if (!Platform.isWindows) 'PS1': r'$ ', ...env},
