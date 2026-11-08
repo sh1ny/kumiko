@@ -507,6 +507,42 @@ void main() {
       expect(env.rig.layout.pane(agent.paneId), isNotNull);
     });
 
+    uiTest('a draft typed during the activity wait that fails the final flush '
+        'returns to the dialog', (tester) async {
+      final env = await _env(tester);
+      final agent = await _agent(env, tester);
+      await _terminal(env, tester);
+      env.host.activityGate = Completer<void>();
+
+      final request = await _quit(env, tester);
+      expect(_dialog(), findsNothing, reason: 'the query is still out');
+      // The first flush has finished; this text is only pending.
+      agent.prompt.text = 'typed while waiting';
+      await _wait(tester, 100);
+      env.host.draftSaveAnswers.add(RpcException(ErrorCode.storeError, 'boom'));
+      env.host.activityGate!.complete();
+      await _wait(tester, 100);
+
+      expect(request.answer, isNull, reason: 'the loss was never confirmed');
+      expect(env.shutdowns, 0);
+      expect(env.host.quitAnnounced, isFalse);
+      expect(_dialog(), findsOneWidget);
+      expect(
+        inside(
+          'exit-item-${agent.paneId}',
+          find.textContaining('Draft not saved: boom'),
+        ),
+        findsOneWidget,
+      );
+      expect(agent.prompt.text, 'typed while waiting');
+
+      // The bulk action names the loss and accepts it.
+      await _tap(tester, 'exit-stop-all');
+      await _wait(tester, 100);
+      expect(request.answer, AppExitResponse.exit);
+      expect(env.shutdowns, 1);
+    });
+
     uiTest('a failed save of an emptied composer is listed at quit', (
       tester,
     ) async {

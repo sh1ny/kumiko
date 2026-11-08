@@ -859,6 +859,7 @@ class AgentController extends ChangeNotifier implements ViewCloser {
   Future<void> newSession(
     String paneId, {
     Future<String?> Function(RuntimeListResult profiles)? chooseProfile,
+    Future<bool> Function(String paneId, String reason)? confirmDraftLoss,
   }) async {
     final link = _links[paneId];
     final host = _host;
@@ -902,6 +903,13 @@ class AgentController extends ChangeNotifier implements ViewCloser {
           );
         }
       }
+      // The profile is settled, so Cancel here loses nothing the user chose.
+      // Last, the old draft: start() lets go of this link, and with it of any
+      // text that could not be stored (agent-sessions, *New session with a
+      // draft that cannot be stored*).
+      if (!await _draftSafeToLeave(link, confirmDraftLoss) || !current()) {
+        return;
+      }
       await start(
         paneId,
         workspaceId: link.workspaceId,
@@ -916,6 +924,47 @@ class AgentController extends ChangeNotifier implements ViewCloser {
       _freshSelections.remove(link);
     }
     _changed();
+  }
+
+  /// Stores [link]'s composer text (bounded at 2 s, as the quit flush is) and
+  /// answers whether New session may replace it: true when the text is stored
+  /// or there is none, otherwise [confirm] names the reason and the loss.
+  /// Text that never had a saved record moves to the new session, so it is not
+  /// lost either.
+  Future<bool> _draftSafeToLeave(
+    AgentLink link,
+    Future<bool> Function(String paneId, String reason)? confirm,
+  ) async {
+    if (!link.known || link.composerHidden) return true;
+    // An edit during the wait is sent by another flush: the answer must
+    // describe the text as it is when the wait ends. The whole wait is 2 s.
+    Future<void> store() async {
+      String seen;
+      do {
+        seen = link.prompt.text;
+        await link.draft.flush(timeout: const Duration(seconds: 2));
+      } while (!_disposed && link.prompt.text != seen && link.draft.dirty);
+    }
+
+    try {
+      await store().timeout(const Duration(seconds: 2));
+    } on TimeoutException {
+      // Still unsaved: named below.
+    }
+    if (_disposed || link.prompt.text.isEmpty) return true;
+    // A save that is still out after the wait has no failure yet.
+    final reason =
+        link.unsavedReason ??
+        (link.draft.dirty ? 'the host did not answer' : null);
+    if (reason == null) return true;
+    link.draftWarned = true;
+    if (confirm == null) return false;
+    final ok = await confirm(
+      link.paneId,
+      'Draft not saved: $reason. Its text will be lost.',
+    );
+    if (!ok) link.draftWarned = false;
+    return ok;
   }
 
   Future<void> retry(

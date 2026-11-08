@@ -1177,6 +1177,9 @@ class WorkbenchController extends ChangeNotifier {
   /// so the stored layout is the one the quit flushed (design D1).
   void freezeLayout() => _frozen = true;
 
+  /// The quit went back to the exit dialog: the layout is live again.
+  void unfreezeLayout() => _frozen = false;
+
   /// The quit flush (design D1): pending layout and draft saves go out
   /// together and share one 2 s bound.
   Future<void> flushForExit() =>

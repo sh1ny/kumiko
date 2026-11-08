@@ -84,6 +84,9 @@ class ExitCoordinator extends ChangeNotifier {
   bool _hostWasConnected = false;
   bool _hostLost = false;
   bool _finalChecking = false;
+
+  /// The panes whose unsaved drafts the user's bulk choice named as lost.
+  Set<String> _accepted = const {};
   bool _disposed = false;
   Future<void>? _reading;
   Timer? _timer;
@@ -169,8 +172,14 @@ class ExitCoordinator extends ChangeNotifier {
     try {
       // The quit flush and the activity query run together.
       await Future.wait([workbench.flushForExit(), _readTerminals()]);
-      if (items.isEmpty) return await _quit();
-      return await _decide();
+      while (true) {
+        if (items.isNotEmpty && await _decide() == _Choice.cancel) {
+          return AppExitResponse.cancel;
+        }
+        // The final flush can fail for text typed after the first one; that
+        // draft was not listed, so the user decides again (design D1).
+        if (await _quit()) return AppExitResponse.exit;
+      }
     } finally {
       if (_phase != ExitPhase.quitting) _end();
     }
@@ -183,6 +192,7 @@ class ExitCoordinator extends ChangeNotifier {
     _failed.clear();
     _hostLost = false;
     _finalChecking = false;
+    _accepted = const {};
     notifyListeners();
   }
 
@@ -197,7 +207,7 @@ class ExitCoordinator extends ChangeNotifier {
     if (!_disposed) notifyListeners();
   }
 
-  Future<AppExitResponse> _decide() async {
+  Future<_Choice> _decide() async {
     _phase = ExitPhase.deciding;
     _hostWasConnected = workbench.connected;
     final choice = _choice = Completer<_Choice>();
@@ -207,33 +217,37 @@ class ExitCoordinator extends ChangeNotifier {
         unawaited(_readTerminals().then((_) => _onChange()));
       }
     });
+    _finalChecking = false;
     notifyListeners();
-    _openDialog();
+    if (_dialogContext == null) _openDialog();
     final decided = await choice.future;
     _timer?.cancel();
     _timer = null;
     workbench.removeListener(_onChange);
-    if (decided == _Choice.cancel) {
-      _closeDialog();
-      return AppExitResponse.cancel;
-    }
-    return _quit();
+    if (decided == _Choice.cancel) _closeDialog();
+    return decided;
   }
 
   /// The decision is made: flush, `app/quit`, close the connection. The
   /// layout is frozen, so nothing the host does to its units reaches it.
-  Future<AppExitResponse> _quit() async {
+  /// Answers false, without quitting, when the flush leaves a draft unsaved
+  /// that the user's choice did not name: the dialog asks again.
+  Future<bool> _quit() async {
     _phase = ExitPhase.quitting;
     notifyListeners();
     workbench.freezeLayout();
     try {
       await workbench.flushForExit();
+      if (items.any((i) => i.draft != null && !_accepted.contains(i.paneId))) {
+        workbench.unfreezeLayout();
+        return false;
+      }
       await workbench.announceQuit();
       await quit();
     } on Object catch (e) {
       debugPrint('The quit did not end cleanly: $e');
     }
-    return AppExitResponse.exit;
+    return true;
   }
 
   // --- the dialog -----------------------------------------------------------
@@ -279,6 +293,12 @@ class ExitCoordinator extends ChangeNotifier {
     if (_phase == ExitPhase.deciding &&
         pending != null &&
         !pending.isCompleted) {
+      if (choice == _Choice.quit) {
+        _accepted = {
+          for (final i in items)
+            if (i.draft != null) i.paneId,
+        };
+      }
       pending.complete(choice);
     }
   }

@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:host_protocol/host_protocol.dart';
 
+import '../terminal/profiles_dialog.dart';
 import 'agent_controller.dart';
 
 class AgentStatusChip extends StatelessWidget {
@@ -201,6 +202,14 @@ class _AgentPaneViewState extends State<AgentPaneView> {
                       onPressed: () => widget.controller.newSession(
                         id,
                         chooseProfile: widget.chooseRuntimeProfile,
+                        confirmDraftLoss: (paneId, reason) =>
+                            showCloseWarning(context, [
+                              (
+                                paneId: paneId,
+                                title: 'Agent chat',
+                                reason: reason,
+                              ),
+                            ]),
                       ),
                       child: const Text('New session'),
                     ),

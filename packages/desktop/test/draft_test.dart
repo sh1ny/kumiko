@@ -45,16 +45,19 @@ LayoutDocument _layout(List<String> sessions) => docOf([
     ),
 ], selected: 'A');
 
-Future<Rig> _rig(WidgetTester tester, FakeHostLink host) async {
+Future<Rig> _rig(
+  WidgetTester tester,
+  FakeHostLink host, {
+  bool tracked = true,
+}) async {
   final surfaces = FakeSurfaces();
   var id = 0;
-  final controller = track(
-    WorkbenchController(
-      picker: NoPicker(),
-      newId: (prefix) => '$prefix${++id}',
-      surfaceFactory: surfaces.call,
-    ),
+  final controller = WorkbenchController(
+    picker: NoPicker(),
+    newId: (prefix) => '$prefix${++id}',
+    surfaceFactory: surfaces.call,
   );
+  if (tracked) track(controller);
   await controller.attach(host);
   await flush(tester);
   return Rig(controller, host, surfaces);
@@ -233,6 +236,141 @@ void main() {
       await _wait(tester, 3000);
       expect(host.storedDrafts['old'], (text: 'old draft', revision: 7));
       expect(host.draftSaves, isEmpty);
+    });
+
+    uiTest(
+      'New session with an unstored draft asks first; Cancel keeps the text',
+      (tester) async {
+        final host = _host(['old']);
+        host.storedDrafts['old'] = (text: 'old draft', revision: 7);
+        final rig = await _rig(tester, host);
+        final link = _agents(rig).linkOf('pane-old')!;
+        final asked = <String>[];
+        var answer = false;
+        Future<bool> confirm(String pane, String reason) async {
+          asked.add(pane == 'pane-old' ? reason : 'wrong pane $pane');
+          return answer;
+        }
+
+        // A refused save: the reason is named, Cancel starts nothing.
+        host.draftSaveAnswers.add(RpcException(ErrorCode.draftCap, 'full'));
+        link.prompt.text = 'edited text';
+        await _agents(rig).newSession('pane-old', confirmDraftLoss: confirm);
+        await flush(tester);
+        expect(asked, hasLength(1));
+        expect(asked.single, contains('draft storage full'));
+        expect(asked.single, contains('lost'));
+        expect(host.agentStarts, isEmpty);
+        expect(_agents(rig).linkOf('pane-old'), same(link));
+        expect(link.prompt.text, 'edited text');
+        expect(link.canNewSession, isTrue);
+
+        // A stalled save: after 2 s the wait ends and the reason is named.
+        asked.clear();
+        host.draftSaveGate = Completer<void>();
+        link.prompt.text = 'edited again';
+        final stalled = _agents(rig)
+            .newSession('pane-old', confirmDraftLoss: confirm);
+        await tester.pump(const Duration(milliseconds: 1500));
+        expect(asked, isEmpty, reason: 'the wait is bounded at 2 s, not less');
+        await tester.pump(const Duration(milliseconds: 600));
+        await stalled;
+        expect(asked, hasLength(1));
+        expect(asked.single, contains('did not answer'));
+        expect(host.agentStarts, isEmpty);
+        expect(_agents(rig).linkOf('pane-old'), same(link));
+        expect(link.prompt.text, 'edited again');
+
+        // Confirm: the new session starts with an empty composer.
+        asked.clear();
+        answer = true;
+        final confirmed = _agents(rig)
+            .newSession('pane-old', confirmDraftLoss: confirm);
+        await tester.pump(const Duration(seconds: 3));
+        await confirmed;
+        host.draftSaveGate!.complete();
+        await flush(tester);
+        expect(asked, hasLength(1));
+        expect(host.agentStarts, hasLength(1));
+        final fresh = _agents(rig).linkOf('pane-old')!;
+        expect(fresh, isNot(same(link)));
+        expect(fresh.prompt.text, isEmpty);
+      },
+    );
+
+    uiTest('New session asks nothing when the draft is stored', (tester) async {
+      final host = _host(['old']);
+      final rig = await _rig(tester, host);
+      final link = _agents(rig).linkOf('pane-old')!;
+      link.prompt.text = 'saved on the way';
+      await _agents(rig).newSession(
+        'pane-old',
+        confirmDraftLoss: (_, _) async => fail('a stored draft must not ask'),
+      );
+      await flush(tester);
+      expect(host.agentStarts, hasLength(1));
+      expect(host.storedDrafts['old']?.text, 'saved on the way');
+    });
+
+    uiTest('New session waiting on a draft: edits, double press, dispose', (
+      tester,
+    ) async {
+      final host = _host(['old']);
+      final rig = await _rig(tester, host);
+      final link = _agents(rig).linkOf('pane-old')!;
+      host.draftSaveGate = Completer<void>();
+      link.prompt.text = 'first';
+      var asks = 0;
+      Future<bool> confirm(String pane, String reason) async {
+        asks++;
+        return true;
+      }
+
+      final first = _agents(rig)
+          .newSession('pane-old', confirmDraftLoss: confirm);
+      final second = _agents(rig)
+          .newSession('pane-old', confirmDraftLoss: confirm);
+      await tester.pump(const Duration(seconds: 3));
+      await Future.wait([first, second]);
+      host.draftSaveGate!.complete();
+      await flush(tester);
+      expect(asks, 1);
+      expect(host.agentStarts, hasLength(1));
+
+      // Disposed during the wait: nothing starts, nothing asks.
+      final host2 = _host(['old']);
+      final rig2 = await _rig(tester, host2, tracked: false);
+      final link2 = _agents(rig2).linkOf('pane-old')!;
+      host2.draftSaveGate = Completer<void>();
+      link2.prompt.text = 'text';
+      final pending = _agents(rig2)
+          .newSession('pane-old', confirmDraftLoss: confirm);
+      await tester.pump(const Duration(milliseconds: 100));
+      rig2.controller.dispose();
+      await tester.pump(const Duration(seconds: 3));
+      await pending;
+      host2.draftSaveGate!.complete();
+      await flush(tester);
+      expect(asks, 1);
+      expect(host2.agentStarts, isEmpty);
+
+      // An edit during the wait counts: text cleared meanwhile has nothing to
+      // lose, so nothing is asked.
+      final host3 = _host(['old']);
+      final rig3 = await _rig(tester, host3);
+      final link3 = _agents(rig3).linkOf('pane-old')!;
+      host3.draftSaveGate = Completer<void>();
+      link3.prompt.text = 'text';
+      final edited = _agents(rig3)
+          .newSession('pane-old', confirmDraftLoss: confirm);
+      await tester.pump(const Duration(milliseconds: 500));
+      link3.prompt.text = '';
+      await tester.pump(const Duration(seconds: 3));
+      await edited;
+      host3.draftSaveGate!.complete();
+      await flush(tester);
+      expect(asks, 1);
+      expect(host3.agentStarts, hasLength(1));
     });
 
     uiTest('failed load shows Draft not loaded, stored draft untouched', (
