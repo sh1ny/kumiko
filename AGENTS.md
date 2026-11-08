@@ -70,9 +70,12 @@ refused by another ("Invalid SDK hash").
 - The official Dart and Flutter skills (from dart-lang/skills and
   flutter/agent-plugins) are installed in `.claude/skills/` (Claude Code) and
   `.agents/skills/` (Codex). OMP reads both. They come from the owner's
-  PromptHub library: refresh one with
+  PromptHub library, where each is bound to its upstream directory:
+  `prompthub skill check-update <name>` compares it with upstream, and
+  `prompthub skill update-source <name>` pulls a new upstream version into the
+  library. Then refresh the project copy with
   `prompthub skill project-install <name> --project . --target <folder> --force`
-  for both folders, and do not edit installed skills by hand. Their licences
+  for both folders. Do not edit installed skills by hand. Their licences
   are in `.claude/licenses/` and `.agents/licenses/`.
 - The Specwright and OpenSpec workflow skills, commands and agents live in the
   same folders and in `.omp/`.
