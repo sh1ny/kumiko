@@ -507,6 +507,41 @@ void main() {
       expect(env.rig.layout.pane(agent.paneId), isNotNull);
     });
 
+    uiTest('a failed save of an emptied composer is listed at quit', (
+      tester,
+    ) async {
+      final env = await _env(tester);
+      final agent = await _agent(env, tester);
+      agent.prompt.text = 'prompt P';
+      await _wait(tester, 600);
+      expect(env.host.storedDrafts[agent.sessionId]?.text, 'prompt P');
+
+      // The empty save fails, and so does the quit flush's second try.
+      for (var i = 0; i < 2; i++) {
+        env.host.draftSaveAnswers.add(
+          RpcException(ErrorCode.storeError, 'boom'),
+        );
+      }
+      agent.prompt.clear();
+      await _wait(tester, 600);
+
+      final request = await _quit(env, tester);
+
+      expect(request.answer, isNull);
+      expect(_dialog(), findsOneWidget);
+      expect(
+        inside(
+          'exit-item-${agent.paneId}',
+          find.textContaining('Draft not saved: boom'),
+        ),
+        findsOneWidget,
+      );
+      expect(env.host.storedDrafts[agent.sessionId]?.text, 'prompt P');
+      await _tap(tester, 'exit-cancel');
+      await _wait(tester, 100);
+      expect(request.answer, AppExitResponse.cancel);
+    });
+
     uiTest('Cancel after one Stop keeps the rest running and the stop done', (
       tester,
     ) async {

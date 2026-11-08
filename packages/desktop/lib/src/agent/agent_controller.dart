@@ -123,7 +123,10 @@ class AgentLink {
   /// Why the composer's text is not stored, for the pane and the close
   /// confirmation; null when it is stored, or there is nothing to lose.
   String? get unsavedReason {
-    if (composerHidden || prompt.text.isEmpty) return null;
+    if (composerHidden) return null;
+    // An emptied composer has nothing to lose, but a failed removal leaves
+    // the old draft stored, and it comes back on reopen.
+    if (prompt.text.isEmpty) return draft.dirty ? draft.failure : null;
     if (sessionId == null || !known) return 'session not saved yet';
     if (draftStorageDisabled) return 'draft storage unavailable';
     if (draft.failure != null && draft.dirty) return draft.failure;
@@ -368,6 +371,14 @@ class AgentController extends ChangeNotifier implements ViewCloser {
     }
   }
 
+  /// A reset deleted every stored draft: each open composer, saved before or
+  /// not, stores its text again.
+  void _resaveAll() {
+    for (final link in _links.values.toList()) {
+      if (!link.composerHidden) link.draft.resave();
+    }
+  }
+
   /// **Reset draft storage**: after [confirm], asks the host to discard its
   /// draft store. Offered only while drafts are disabled.
   Future<void> resetDraftStorage(
@@ -383,7 +394,10 @@ class AgentController extends ChangeNotifier implements ViewCloser {
     _changed();
     try {
       await host.draftReset();
-      if (_current(host, _generation)) _draftStoreReady();
+      if (_current(host, _generation)) {
+        _draftStoreReady();
+        _resaveAll();
+      }
     } on RpcException catch (e) {
       if (_current(host, _generation)) _draftResetError = _describe(e);
     } on ConnectionClosedException {
@@ -1172,7 +1186,10 @@ class AgentController extends ChangeNotifier implements ViewCloser {
       if (!running && unsaved == null) continue;
       warnings[id] = [
         if (running) agentCloseWarning,
-        if (unsaved != null)
+        if (unsaved != null && link!.prompt.text.isEmpty)
+          'Draft not saved: $unsaved. The cleared draft stays stored and '
+              'returns when the session reopens.'
+        else if (unsaved != null)
           'Draft not saved: $unsaved. Its text will be lost.',
       ].join(' ');
     }

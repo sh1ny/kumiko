@@ -220,6 +220,19 @@ class DraftSaver {
     requestNow();
   }
 
+  /// The stored copy may be gone (the draft store was reset): the composer's
+  /// text counts as unsaved again and is sent, unless there is nothing to
+  /// store or a submission holds it (its result decides, as in [endSubmit]).
+  void resave() {
+    if (_disposed || !bound || _blocked) return;
+    if (!dirty) {
+      if (text().isEmpty) return;
+      _editSeq++;
+      _revision++;
+    }
+    _request();
+  }
+
   /// Sends the unsaved text at once, unless a save is out (then right after).
   void requestNow() => _request();
 

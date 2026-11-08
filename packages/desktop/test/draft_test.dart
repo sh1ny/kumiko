@@ -520,6 +520,98 @@ void main() {
       expect(link.draftNotice, isNull);
     });
 
+    uiTest('Reset draft storage saves a clean link whose draft it deleted', (
+      tester,
+    ) async {
+      final host = _host(['s0', 's1']);
+      final rig = await _rig(tester, host);
+      final saved = _agents(rig).linkOf('pane-s0')!;
+      final failing = _agents(rig).linkOf('pane-s1')!;
+      await _type(saved, tester, 'stored and clean');
+      expect(host.storedDrafts['s0']?.text, 'stored and clean');
+      expect(saved.draft.dirty, isFalse);
+
+      // The store becomes disabled; another pane notices it first.
+      host.draftSaveAnswers.add(
+        RpcException(ErrorCode.draftUnavailable, 'drafts are disabled: bad'),
+      );
+      await _type(failing, tester, 'second pane text');
+      expect(_agents(rig).draftsDisabled, isTrue);
+
+      await _agents(rig).resetDraftStorage(failing.paneId, () async => true);
+      await _wait(tester, 100);
+      expect(host.draftResets, 1);
+      expect(host.storedDrafts['s1']?.text, 'second pane text');
+      expect(
+        host.storedDrafts['s0']?.text,
+        'stored and clean',
+        reason: 'the reset deleted it; the clean link must store it again',
+      );
+    });
+
+    uiTest('Reset draft storage leaves a submitting composer alone', (
+      tester,
+    ) async {
+      final host = _host();
+      final rig = await _rig(tester, host);
+      final sending = await _started(rig, tester);
+      await rig.controller.launchAgent();
+      await flush(tester);
+      final failing = rig.layout.panes
+          .where((p) => p.kind == agentChatKind)
+          .map((p) => _agents(rig).linkOf(p.id)!)
+          .firstWhere((l) => !identical(l, sending));
+      await _type(sending, tester, 'being sent');
+      expect(sending.canSend, isTrue);
+      host.promptGate = Completer<void>();
+      final send = _agents(rig).send(sending.paneId, 'being sent');
+      await flush(tester);
+      host.draftSaveAnswers.add(
+        RpcException(ErrorCode.draftUnavailable, 'drafts are disabled: bad'),
+      );
+      await _type(failing, tester, 'other text');
+      final before = host.draftSaves.length;
+      await _agents(rig).resetDraftStorage(failing.paneId, () async => true);
+      await _wait(tester, 100);
+      expect(
+        host.draftSaves
+            .skip(before)
+            .where((s) => s.sessionId == sending.sessionId),
+        isEmpty,
+        reason: 'the submission guard holds',
+      );
+      host.promptGate!.complete();
+      await send;
+      await flush(tester);
+    });
+
+    uiTest('a failed save of an emptied composer shows and warns on close', (
+      tester,
+    ) async {
+      final host = _host();
+      final rig = await _rig(tester, host);
+      final link = await _started(rig, tester);
+      final session = link.sessionId!;
+      await _type(link, tester, 'prompt P');
+      expect(host.storedDrafts[session]?.text, 'prompt P');
+
+      host.draftSaveAnswers.add(RpcException(ErrorCode.storeError, 'boom'));
+      link.prompt.clear();
+      await _wait(tester, 600);
+      expect(host.storedDrafts[session]?.text, 'prompt P');
+      expect(link.draftNotice, 'Draft not saved: boom');
+
+      final named = await _closeWarnings(rig, link.paneId, confirm: false);
+      expect(named, hasLength(1));
+      expect(named.single.reason, contains('Draft not saved: boom'));
+      expect(rig.layout.pane(link.paneId), isNotNull);
+      expect(host.agentCloses, isEmpty);
+
+      await _closeWarnings(rig, link.paneId, confirm: true);
+      await flush(tester);
+      expect(host.agentCloses, [session]);
+    });
+
     uiTest('the pane shows the notice and asks before Reset draft storage', (
       tester,
     ) async {
