@@ -81,7 +81,7 @@ Paths are relative to `packages/`. Where an existing test turns red because its 
 | agent-sessions → Closing a running agent asks for confirmation | Close an idle session | desktop/test/agent_test.dart | 'rejected pending prompt restores idle close without confirmation' | green |
 | agent-sessions → Closing a running agent asks for confirmation | Cancel closing a running session | desktop/test/agent_test.dart | existing cancel-running-close test | green |
 | agent-sessions → Closing a running agent asks for confirmation | Confirm closing a running session | host/test/it/agent_close_test.dart | 'running close cancels permissions before cancel…' | green |
-| agent-sessions → Closing a running agent asks for confirmation | Tab with a running agent and a live terminal | desktop/test/workbench_test.dart | 'closing a tab with a running session and a live terminal…', busy fixture | red |
+| agent-sessions → Closing a running agent asks for confirmation | Tab with a running agent and a live terminal | desktop/test/workbench_test.dart | 'closing a tab with a running session and a live terminal…', busy fixture | green |
 | agent-sessions → Closing a running agent asks for confirmation | Turn ends while the confirmation is open | desktop/test/agent_test.dart | existing turn-ends-while-confirmation test | green |
 | execution-host → The host records whether the desktop quit | Normal quit | host/test/it/previous_exit_test.dart | app/quit then input close writes exit_kind quit | green |
 | execution-host → The host records whether the desktop quit | Desktop killed | host/test/it/previous_exit_test.dart | killed stand-in desktop leaves exit_kind null | green |
