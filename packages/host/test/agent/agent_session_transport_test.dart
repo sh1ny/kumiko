@@ -153,7 +153,13 @@ void main() {
     final options = <String>[];
     var remaining = 1024 * 1024;
     for (var i = 0; i < ids.length; i++) {
-      final empty = {'jsonrpc': '2.0', 'id': ids[i], 'result': {'outcome': {'outcome': 'selected', 'optionId': ''}}};
+      final empty = {
+        'jsonrpc': '2.0',
+        'id': ids[i],
+        'result': {
+          'outcome': {'outcome': 'selected', 'optionId': ''},
+        },
+      };
       final overhead = utf8.encode('${jsonEncode(empty)}\n').length;
       final option = 'o' * (i < 15 ? 65000 : remaining - overhead);
       options.add(option);
@@ -164,9 +170,14 @@ void main() {
     expect(requests, hasLength(16));
     peer.blockedWrite = Completer<void>();
     for (var i = 0; i < requests.length; i++) {
-      await desktop.request(Method.agentPermissionReply, AgentPermissionReplyParams(
-        sessionId: 'host', requestId: requests[i].requestId, optionId: options[i],
-      ).toJson());
+      await desktop.request(
+        Method.agentPermissionReply,
+        AgentPermissionReplyParams(
+          sessionId: 'host',
+          requestId: requests[i].requestId,
+          optionId: options[i],
+        ).toJson(),
+      );
     }
     peer.result(promptId(), {'stopReason': 'end_turn'});
     await receiveCompletion();
@@ -175,8 +186,17 @@ void main() {
     final priorStates = states.toList();
     final priorEnds = ends.toList();
     await expectLater(
-      desktop.request(Method.agentPrompt, AgentPromptParams(sessionId: 'host', text: 'not admitted').toJson()),
-      throwsA(isA<RpcException>().having((error) => error.reason, 'reason', ErrorCode.busy)),
+      desktop.request(
+        Method.agentPrompt,
+        AgentPromptParams(sessionId: 'host', text: 'not admitted').toJson(),
+      ),
+      throwsA(
+        isA<RpcException>().having(
+          (error) => error.reason,
+          'reason',
+          ErrorCode.busy,
+        ),
+      ),
     );
     await receiveCompletion();
     expect(session.state, AgentState.idle);
@@ -184,14 +204,22 @@ void main() {
     expect(events, orderedEquals(priorEvents));
     expect(states, orderedEquals(priorStates));
     expect(ends, orderedEquals(priorEnds));
-    expect(peer.writes.where((message) => message['method'] == 'session/prompt'), hasLength(1));
+    expect(
+      peer.writes.where((message) => message['method'] == 'session/prompt'),
+      hasLength(1),
+    );
     peer.blockedWrite!.complete();
     peer.blockedWrite = null;
     await pumpAcp();
     await prompt('retried');
     peer.result(promptId(), {'stopReason': 'end_turn'});
     await receiveCompletion();
-    expect(events.where((event) => event.kind == AgentEventKind.user).map((event) => event.text), ['first', 'retried']);
+    expect(
+      events
+          .where((event) => event.kind == AgentEventKind.user)
+          .map((event) => event.text),
+      ['first', 'retried'],
+    );
     expect(ends, hasLength(2));
     expect(session.state, AgentState.idle);
     expect(peer.client.isClosed, isFalse);

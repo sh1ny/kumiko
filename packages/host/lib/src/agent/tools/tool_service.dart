@@ -113,6 +113,7 @@ class ToolGrant {
     _waiters.add(waiter);
     return waiter;
   }
+
   bool get isBound => _boundValue != null;
   _Bound? _boundValue;
 

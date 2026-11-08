@@ -31,10 +31,7 @@ void main() {
         const AgentTools(AgentToolsStatus.notYetUsed),
         'Kumiko tools: not yet used',
       ),
-      (
-        const AgentTools(AgentToolsStatus.connected),
-        'Kumiko tools: connected',
-      ),
+      (const AgentTools(AgentToolsStatus.connected), 'Kumiko tools: connected'),
       (
         const AgentTools(AgentToolsStatus.notStarted),
         'Kumiko tools: not started by the adapter',

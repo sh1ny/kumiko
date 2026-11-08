@@ -208,10 +208,10 @@ void main() {
       isTrue,
       reason: sddl,
     );
-    expect(
-      aces.map((a) => _canonicalSid(a.trustee)).toSet(),
-      {_currentUserSid(), 'S-1-5-18'},
-    );
+    expect(aces.map((a) => _canonicalSid(a.trustee)).toSet(), {
+      _currentUserSid(),
+      'S-1-5-18',
+    });
   });
 
   test('instances reject remote clients', () async {

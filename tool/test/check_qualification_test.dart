@@ -483,10 +483,7 @@ void main() {
       final source = File.fromUri(dir.uri.resolve('qualified_adapters.dart'))
         ..writeAsStringSync(_source(failures: _failure(text)));
       final out = StringBuffer();
-      expect(
-        runQualificationCheck([results.path, source.path], out: out),
-        0,
-      );
+      expect(runQualificationCheck([results.path, source.path], out: out), 0);
       expect(
         out.toString(),
         contains(
@@ -578,8 +575,7 @@ void main() {
         _fails(
           checkQualification(
             _results(
-              result: (o, i) =>
-                  i == _toolItem && o != os ? 'fail' : 'pass',
+              result: (o, i) => i == _toolItem && o != os ? 'fail' : 'pass',
               notes: (o, i) =>
                   i == _toolItem && o != os ? observed : 'synthetic fixture',
             ),
@@ -622,10 +618,10 @@ void main() {
         "('$_name', '$_version', 'a' + 'b'),",
         _failure(text) + _failure(text),
       ]) {
-        _fails(
-          checkQualification(_results(), _source(failures: failures)),
-          ['source', 'toolDeliveryFailures'],
-        );
+        _fails(checkQualification(_results(), _source(failures: failures)), [
+          'source',
+          'toolDeliveryFailures',
+        ]);
       }
       for (final source in [
         'const qualifiedAdapters = <(String, String, List<String>)>[];\n'

@@ -340,93 +340,181 @@ void main() {
       },
     );
 
-    uiTest('replacement tool output clears obsolete loss markers while sparse status preserves them', (tester) async {
-      final host = agentHost();
-      final rig = await pumpRig(tester, host);
-      await start(rig, tester);
-      final id = session(rig);
-      host.agentEvent(id, AgentEvent.fromJson({
-        'kind': 'tool',
-        'toolCallId': 'replacement',
-        'title': 'Read result',
-        'status': 'in_progress',
-        'content': [
-          {'type': 'content', 'content': {'type': 'text', 'text': 'partial old output'}},
-        ],
-        'truncated': true,
-        'contentTruncated': true,
-        'omittedItems': 2,
-      }));
-      await tester.pump();
-      expect(find.text('truncated · 2 items omitted'), findsOneWidget);
-      host.agentEvent(id, AgentEvent.tool(toolCallId: 'replacement', update: true, status: 'completed'));
-      await tester.pump();
-      expect(find.text('truncated · 2 items omitted'), findsOneWidget);
-      host.agentEvent(id, AgentEvent.tool(
-        toolCallId: 'replacement',
-        update: true,
-        content: [
-          {'type': 'content', 'content': {'type': 'text', 'text': 'complete replacement'}},
-        ],
-      ));
-      await tester.pump();
-      expect(find.text('complete replacement'), findsOneWidget);
-      expect(find.textContaining('truncated'), findsNothing);
-      expect(find.textContaining('items omitted'), findsNothing);
-      host.agentEvent(id, AgentEvent.tool(toolCallId: 'replacement', update: true, status: 'completed'));
-      await tester.pump();
-      expect(find.text('complete replacement'), findsOneWidget);
-      expect(find.textContaining('truncated'), findsNothing);
-      expect(agents(rig).linkOf(chat(rig).id)!.transcript.entries.single.statuses, ['in_progress', 'completed']);
-    });
+    uiTest(
+      'replacement tool output clears obsolete loss markers while sparse status preserves them',
+      (tester) async {
+        final host = agentHost();
+        final rig = await pumpRig(tester, host);
+        await start(rig, tester);
+        final id = session(rig);
+        host.agentEvent(
+          id,
+          AgentEvent.fromJson({
+            'kind': 'tool',
+            'toolCallId': 'replacement',
+            'title': 'Read result',
+            'status': 'in_progress',
+            'content': [
+              {
+                'type': 'content',
+                'content': {'type': 'text', 'text': 'partial old output'},
+              },
+            ],
+            'truncated': true,
+            'contentTruncated': true,
+            'omittedItems': 2,
+          }),
+        );
+        await tester.pump();
+        expect(find.text('truncated · 2 items omitted'), findsOneWidget);
+        host.agentEvent(
+          id,
+          AgentEvent.tool(
+            toolCallId: 'replacement',
+            update: true,
+            status: 'completed',
+          ),
+        );
+        await tester.pump();
+        expect(find.text('truncated · 2 items omitted'), findsOneWidget);
+        host.agentEvent(
+          id,
+          AgentEvent.tool(
+            toolCallId: 'replacement',
+            update: true,
+            content: [
+              {
+                'type': 'content',
+                'content': {'type': 'text', 'text': 'complete replacement'},
+              },
+            ],
+          ),
+        );
+        await tester.pump();
+        expect(find.text('complete replacement'), findsOneWidget);
+        expect(find.textContaining('truncated'), findsNothing);
+        expect(find.textContaining('items omitted'), findsNothing);
+        host.agentEvent(
+          id,
+          AgentEvent.tool(
+            toolCallId: 'replacement',
+            update: true,
+            status: 'completed',
+          ),
+        );
+        await tester.pump();
+        expect(find.text('complete replacement'), findsOneWidget);
+        expect(find.textContaining('truncated'), findsNothing);
+        expect(
+          agents(rig).linkOf(chat(rig).id)!.transcript.entries.single.statuses,
+          ['in_progress', 'completed'],
+        );
+      },
+    );
 
-    uiTest('sparse tool updates preserve loss only for fields not completely replaced', (tester) async {
-      final host = agentHost();
-      final rig = await pumpRig(tester, host);
-      await start(rig, tester);
-      final id = session(rig);
-      void emit(AgentEvent event) {
-        final decoder = AgentEventDecoder();
-        for (final line in encodeAgentEvent(event)) {
-          for (final bounded in decoder.add(line)) {
-            host.agentEvent(id, bounded);
+    uiTest(
+      'sparse tool updates preserve loss only for fields not completely replaced',
+      (tester) async {
+        final host = agentHost();
+        final rig = await pumpRig(tester, host);
+        await start(rig, tester);
+        final id = session(rig);
+        void emit(AgentEvent event) {
+          final decoder = AgentEventDecoder();
+          for (final line in encodeAgentEvent(event)) {
+            for (final bounded in decoder.add(line)) {
+              host.agentEvent(id, bounded);
+            }
           }
+          decoder.close();
         }
-        decoder.close();
-      }
-      emit(AgentEvent.tool(
-        toolCallId: 'located',
-        title: 'Located output',
-        locations: [for (var i = 0; i < 65; i++) {'path': 'file-$i.dart', 'line': i + 1}],
-        content: [{'type': 'content', 'content': {'type': 'text', 'text': 'initial complete content'}}],
-      ));
-      await tester.pump();
-      expect(find.text('truncated'), findsOneWidget);
-      emit(AgentEvent.tool(
-        toolCallId: 'located', update: true,
-        content: [{'type': 'content', 'content': {'type': 'text', 'text': 'complete replacement'}}],
-      ));
-      await tester.pump();
-      expect(find.text('complete replacement'), findsOneWidget);
-      expect(find.text('truncated'), findsOneWidget);
-      emit(AgentEvent.tool(toolCallId: 'located', update: true, status: 'completed'));
-      await tester.pump();
-      expect(find.text('truncated'), findsOneWidget);
-      emit(AgentEvent.tool(toolCallId: 'located', update: true, locations: [{'path': 'complete.dart', 'line': 1}]));
-      await tester.pump();
-      expect(find.text('truncated'), findsNothing);
-      emit(AgentEvent.tool(toolCallId: 'located', update: true, content: [
-        {'type': 'content', 'content': {'type': 'text', 'text': 'x' * (maxAgentToolItemBytes + 1)}},
-      ]));
-      await tester.pump();
-      expect(find.text('truncated'), findsOneWidget);
-      emit(AgentEvent.tool(toolCallId: 'located', update: true, locations: [{'path': 'replacement.dart'}]));
-      await tester.pump();
-      expect(find.text('truncated'), findsOneWidget);
-      emit(AgentEvent.tool(toolCallId: 'located', update: true, content: []));
-      await tester.pump();
-      expect(find.text('truncated'), findsNothing);
-    });
+
+        emit(
+          AgentEvent.tool(
+            toolCallId: 'located',
+            title: 'Located output',
+            locations: [
+              for (var i = 0; i < 65; i++)
+                {'path': 'file-$i.dart', 'line': i + 1},
+            ],
+            content: [
+              {
+                'type': 'content',
+                'content': {'type': 'text', 'text': 'initial complete content'},
+              },
+            ],
+          ),
+        );
+        await tester.pump();
+        expect(find.text('truncated'), findsOneWidget);
+        emit(
+          AgentEvent.tool(
+            toolCallId: 'located',
+            update: true,
+            content: [
+              {
+                'type': 'content',
+                'content': {'type': 'text', 'text': 'complete replacement'},
+              },
+            ],
+          ),
+        );
+        await tester.pump();
+        expect(find.text('complete replacement'), findsOneWidget);
+        expect(find.text('truncated'), findsOneWidget);
+        emit(
+          AgentEvent.tool(
+            toolCallId: 'located',
+            update: true,
+            status: 'completed',
+          ),
+        );
+        await tester.pump();
+        expect(find.text('truncated'), findsOneWidget);
+        emit(
+          AgentEvent.tool(
+            toolCallId: 'located',
+            update: true,
+            locations: [
+              {'path': 'complete.dart', 'line': 1},
+            ],
+          ),
+        );
+        await tester.pump();
+        expect(find.text('truncated'), findsNothing);
+        emit(
+          AgentEvent.tool(
+            toolCallId: 'located',
+            update: true,
+            content: [
+              {
+                'type': 'content',
+                'content': {
+                  'type': 'text',
+                  'text': 'x' * (maxAgentToolItemBytes + 1),
+                },
+              },
+            ],
+          ),
+        );
+        await tester.pump();
+        expect(find.text('truncated'), findsOneWidget);
+        emit(
+          AgentEvent.tool(
+            toolCallId: 'located',
+            update: true,
+            locations: [
+              {'path': 'replacement.dart'},
+            ],
+          ),
+        );
+        await tester.pump();
+        expect(find.text('truncated'), findsOneWidget);
+        emit(AgentEvent.tool(toolCallId: 'located', update: true, content: []));
+        await tester.pump();
+        expect(find.text('truncated'), findsNothing);
+      },
+    );
 
     uiTest(
       'moving a running chat pane keeps link transcript session and pending permissions and sends nothing',

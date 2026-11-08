@@ -122,9 +122,8 @@ class KumikoToolDriver {
     );
   }
 
-  void _notify(String method) => _bridge!.stdin.writeln(
-    jsonEncode({'jsonrpc': '2.0', 'method': method}),
-  );
+  void _notify(String method) =>
+      _bridge!.stdin.writeln(jsonEncode({'jsonrpc': '2.0', 'method': method}));
 
   Future<Json?> _rpc(String method, [Json? params]) async {
     final id = _nextId++;

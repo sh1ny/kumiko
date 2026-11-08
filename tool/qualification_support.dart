@@ -165,7 +165,8 @@ Map<String, String> isolatedAuthEnvironment(
   final windows = os == 'windows';
   return {
     for (final entry in profile.entries)
-      entry.key: credentials.contains(windows ? entry.key.toUpperCase() : entry.key)
+      entry.key:
+          credentials.contains(windows ? entry.key.toUpperCase() : entry.key)
           ? ''
           : entry.value,
     'CLAUDE_CONFIG_DIR': configDir,

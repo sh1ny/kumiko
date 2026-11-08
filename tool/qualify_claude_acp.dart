@@ -340,6 +340,7 @@ class _Host {
       // The evaluation reports the status that was actually observed.
     }
   }
+
   Future<void> attach(String id, int channel) async {
     final decoder = AgentEventDecoder();
     final v = view(id);

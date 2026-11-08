@@ -98,17 +98,25 @@ void main() {
     'escaped over limit': '\u0001' * 683,
     'UTF-8 over limit': '界' * 1366,
   }.entries) {
-    test('native session ID ${id.key} is refused before saved-record creation', () async {
-      final d = await desktop();
-      final workspace = await d.openWorkspace(work.path);
-      await saveAgentFixture(d, work, script: {'nativeSessionId': id.value});
-      final error = await rpcFailure(d.connection.request(Method.agentStart, AgentStartParams(workspaceId: workspace.workspace.id)));
-      expect(error.reason, ErrorCode.adapterProtocol);
-      expect(error.data['stage'], 'session/new');
-      expect(error.message, contains('session id'));
-      noResources();
-      expect(d.connection.isClosed, isFalse);
-    });
+    test(
+      'native session ID ${id.key} is refused before saved-record creation',
+      () async {
+        final d = await desktop();
+        final workspace = await d.openWorkspace(work.path);
+        await saveAgentFixture(d, work, script: {'nativeSessionId': id.value});
+        final error = await rpcFailure(
+          d.connection.request(
+            Method.agentStart,
+            AgentStartParams(workspaceId: workspace.workspace.id),
+          ),
+        );
+        expect(error.reason, ErrorCode.adapterProtocol);
+        expect(error.data['stage'], 'session/new');
+        expect(error.message, contains('session id'));
+        noResources();
+        expect(d.connection.isClosed, isFalse);
+      },
+    );
   }
   for (final id in {
     'ASCII boundary': 's' * 4096,
@@ -125,23 +133,54 @@ void main() {
   }
 
   test('coalesced session/new response and initial updates are retained in native order', () async {
-    final (_, a, _) = await session(script: {
-      'newSessionUpdates': [
-        textUpdate('initial message'),
-        {'sessionUpdate': 'plan', 'entries': [
-          {'content': 'Initial plan', 'priority': 'medium', 'status': 'pending'},
-        ]},
-        {'sessionUpdate': 'tool_call', 'toolCallId': 'initial-tool', 'title': 'Initial tool', 'status': 'pending'},
-        {'sessionUpdate': 'tool_call_update', 'toolCallId': 'initial-tool', 'status': 'completed'},
-      ],
-      'afterNew': [
-        {'update': textUpdate('later message')},
-      ],
-    });
-    await eventually(() => a.events.length == 5, within: const Duration(seconds: 3), reason: 'initial ACP updates were lost before session binding');
-    expect(a.events.map((event) => event['kind']), ['agentText', 'plan', 'tool', 'toolUpdate', 'agentText']);
+    final (_, a, _) = await session(
+      script: {
+        'newSessionUpdates': [
+          textUpdate('initial message'),
+          {
+            'sessionUpdate': 'plan',
+            'entries': [
+              {
+                'content': 'Initial plan',
+                'priority': 'medium',
+                'status': 'pending',
+              },
+            ],
+          },
+          {
+            'sessionUpdate': 'tool_call',
+            'toolCallId': 'initial-tool',
+            'title': 'Initial tool',
+            'status': 'pending',
+          },
+          {
+            'sessionUpdate': 'tool_call_update',
+            'toolCallId': 'initial-tool',
+            'status': 'completed',
+          },
+        ],
+        'afterNew': [
+          {'update': textUpdate('later message')},
+        ],
+      },
+    );
+    await eventually(
+      () => a.events.length == 5,
+      within: const Duration(seconds: 3),
+      reason: 'initial ACP updates were lost before session binding',
+    );
+    expect(a.events.map((event) => event['kind']), [
+      'agentText',
+      'plan',
+      'tool',
+      'toolUpdate',
+      'agentText',
+    ]);
     expect(a.events.first['text'], 'initial message');
-    expect((a.events[1]['entries'] as List).single, containsPair('content', 'Initial plan'));
+    expect(
+      (a.events[1]['entries'] as List).single,
+      containsPair('content', 'Initial plan'),
+    );
     expect(a.events[2]['toolCallId'], 'initial-tool');
     expect(a.events[3]['status'], 'completed');
     expect(a.events.last['text'], 'later message');
@@ -180,13 +219,20 @@ void main() {
     );
     final record = agentRows(profile).single;
     await a.prompt('reject an undeliverable native permission');
-    final exit = await a.wait(Method.agentExited, within: const Duration(seconds: 3));
+    final exit = await a.wait(
+      Method.agentExited,
+      within: const Duration(seconds: 3),
+    );
     expect(exit['reason'], 'failed');
     expect(exit['error'], ErrorCode.adapterProtocol);
     expect(exit['message'], contains('request id'));
     expect(a.of(Method.agentPermissionRequested), isEmpty);
     expect(a.of(Method.agentPermissionResolved), isEmpty);
-    expect(fixtureReports(report).where((entry) => entry.containsKey('permissionOutcome')), isEmpty);
+    expect(
+      fixtureReports(report)
+          .where((entry) => entry.containsKey('permissionOutcome')),
+      isEmpty,
+    );
     await eventually(() => LedgerView(profile).units().isEmpty);
     await expectAllGone(readReports(work));
     expect(agentRows(profile).single, record);

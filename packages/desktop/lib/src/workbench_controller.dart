@@ -87,10 +87,22 @@ const String terminalKind = 'terminal';
 ViewCloser _terminalCloser(WorkbenchController c) => c.terminals;
 ViewCloser _agentCloser(WorkbenchController c) => c.agents;
 
-enum AgentLaunchKind { opened, unavailable, noWorkspace, chooseProfile, noProfile, failed }
+enum AgentLaunchKind {
+  opened,
+  unavailable,
+  noWorkspace,
+  chooseProfile,
+  noProfile,
+  failed,
+}
 
 class AgentLaunch {
-  const AgentLaunch(this.kind, {this.profiles = const [], this.message, this.workspaceId});
+  const AgentLaunch(
+    this.kind, {
+    this.profiles = const [],
+    this.message,
+    this.workspaceId,
+  });
   final AgentLaunchKind kind;
   final List<RuntimeProfile> profiles;
   final String? message;
@@ -107,7 +119,12 @@ const List<ViewKind> registeredViews = [
     needsWorkspace: false,
     closer: _terminalCloser,
   ),
-  ViewKind(agentChatKind, 'Claude Code', needsWorkspace: true, closer: _agentCloser),
+  ViewKind(
+    agentChatKind,
+    'Claude Code',
+    needsWorkspace: true,
+    closer: _agentCloser,
+  ),
 ];
 
 /// The registered kinds the launcher offers as one plain entry each.
@@ -654,7 +671,9 @@ class WorkbenchController extends ChangeNotifier {
   String? get agentsUnavailableReason {
     final hello = _link?.hello;
     if (hello == null) return 'the host is not connected';
-    if (!hello.capabilities.contains(Capability.agent)) return 'the host does not support agents';
+    if (!hello.capabilities.contains(Capability.agent)) {
+      return 'the host does not support agents';
+    }
     return null;
   }
 
@@ -670,7 +689,8 @@ class WorkbenchController extends ChangeNotifier {
       return result;
     } on RpcException catch (e) {
       if (!_stale(generation)) {
-        _message = 'Could not list runtime profiles: ${e.message.isEmpty ? e.reason : e.message}';
+        _message =
+            'Could not list runtime profiles: ${e.message.isEmpty ? e.reason : e.message}';
         notifyListeners();
       }
       return null;
@@ -695,7 +715,11 @@ class WorkbenchController extends ChangeNotifier {
     await refreshRuntimes();
   }
 
-  Future<AgentLaunch> launchAgent({String? profileId, bool choose = false, String? workspaceId}) async {
+  Future<AgentLaunch> launchAgent({
+    String? profileId,
+    bool choose = false,
+    String? workspaceId,
+  }) async {
     final reason = agentsUnavailableReason;
     final link = _link;
     final target = workspaceId ?? _layout?.selectedWorkspace;
@@ -703,33 +727,53 @@ class WorkbenchController extends ChangeNotifier {
       return AgentLaunch(AgentLaunchKind.unavailable, message: reason);
     }
     if (target == null) return const AgentLaunch(AgentLaunchKind.noWorkspace);
-    if (_beingRemoved(target)) return AgentLaunch(AgentLaunchKind.failed, message: _message);
+    if (_beingRemoved(target)) {
+      return AgentLaunch(AgentLaunchKind.failed, message: _message);
+    }
     final generation = _generation;
     final list = await refreshRuntimes();
-    if (_stale(generation) || list == null) return const AgentLaunch(AgentLaunchKind.failed);
+    if (_stale(generation) || list == null) {
+      return const AgentLaunch(AgentLaunchKind.failed);
+    }
     if (list.profiles.isEmpty) {
-      return AgentLaunch(AgentLaunchKind.noProfile, message: list.defaultReason, workspaceId: target);
+      return AgentLaunch(
+        AgentLaunchKind.noProfile,
+        message: list.defaultReason,
+        workspaceId: target,
+      );
     }
     final wanted = profileId ?? (list.defaultAvailable ? list.defaultId : null);
     final profile = list.profiles.where((p) => p.id == wanted).firstOrNull;
     if (choose || profile == null) {
-      return AgentLaunch(AgentLaunchKind.chooseProfile, profiles: list.profiles,
+      return AgentLaunch(
+        AgentLaunchKind.chooseProfile,
+        profiles: list.profiles,
         message: choose ? null : list.defaultReason ?? 'The default runtime profile is unavailable. Choose or add a profile.',
-        workspaceId: target);
+        workspaceId: target,
+      );
     }
     final d = _layout;
     if (d == null || workspace(target) == null || _beingRemoved(target)) {
       return const AgentLaunch(AgentLaunchKind.failed);
     }
     final pane = PaneNode(
-      id: _fresh('p'), kind: agentChatKind, workspace: target, item: _uuid(),
+      id: _fresh('p'),
+      kind: agentChatKind,
+      workspace: target,
+      item: _uuid(),
       state: {'runtimeName': profile.name},
     );
     if (!_commit(d.openTab(pane, tabId: _fresh('t')))) {
       return AgentLaunch(AgentLaunchKind.failed, message: _message);
     }
-    unawaited(agents.start(pane.id, workspaceId: target,
-      runtimeName: profile.name, runtimeProfileId: profile.id));
+    unawaited(
+      agents.start(
+        pane.id,
+        workspaceId: target,
+        runtimeName: profile.name,
+        runtimeProfileId: profile.id,
+      ),
+    );
     return AgentLaunch(AgentLaunchKind.opened, workspaceId: target);
   }
 

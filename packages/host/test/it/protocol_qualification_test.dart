@@ -378,7 +378,11 @@ void main() {
     );
     await r.control();
     await Future<void>.delayed(const Duration(milliseconds: 300));
-    expect(r.wire.sent.length, maxChannels, reason: 'no channel past the cap streamed');
+    expect(
+      r.wire.sent.length,
+      maxChannels,
+      reason: 'no channel past the cap streamed',
+    );
     expect(r.wire.totalSent, maxChannels * _window);
     expect(r.connection.isClosed, isFalse);
 

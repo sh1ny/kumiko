@@ -34,10 +34,7 @@ const _knownItems = {..._baselineItems, 'load', 'resume', _finderItem};
 typedef _Adapter = (String, String);
 
 /// Parsed source literals: qualified claims and tool delivery failures.
-typedef _Source = (
-  Map<_Adapter, List<String>>,
-  Map<_Adapter, String>,
-);
+typedef _Source = (Map<_Adapter, List<String>>, Map<_Adapter, String>);
 
 /// A pure audit result. Failures suppress the success verdict.
 class QualificationReport {
@@ -435,13 +432,7 @@ QualificationReport checkQualification(
       failures.add('$where: duplicate item row');
       continue;
     }
-    rows[item] = _Observation(
-      cells[1],
-      cells[2],
-      cells[4],
-      cells[5],
-      cells[3],
-    );
+    rows[item] = _Observation(cells[1], cells[2], cells[4], cells[5], cells[3]);
     if (cells[1] != 'user' && cells[1] != 'agent') {
       failures.add('$where: unknown kind "${cells[1]}"');
     }
@@ -481,9 +472,7 @@ QualificationReport checkQualification(
               final observed = _observedText(row.notes);
               final listed = listedFailures[entry.key];
               if (observed == null) {
-                failures.add(
-                  '$where: fail needs observed: "<text>" in Notes',
-                );
+                failures.add('$where: fail needs observed: "<text>" in Notes');
               } else if (listed == null) {
                 failures.add(
                   '$where: fail is not listed in toolDeliveryFailures',
@@ -493,9 +482,7 @@ QualificationReport checkQualification(
                   '$where: observed text differs from the toolDeliveryFailures entry',
                 );
               } else {
-                recorded.add(
-                  '${entry.key.$1} ${entry.key.$2} $os: $observed',
-                );
+                recorded.add('${entry.key.$1} ${entry.key.$2} $os: $observed');
               }
             } else {
               failures.add('$where: fail');
@@ -533,7 +520,11 @@ QualificationReport checkQualification(
         // missing evidence anywhere contradicts it.
         failures.add(
           '$where: toolDeliveryFailures lists this version but the evidence is '
-          '${row == null ? 'missing' : row.result.isEmpty ? 'blank' : row.result}',
+          '${row == null
+              ? 'missing'
+              : row.result.isEmpty
+              ? 'blank'
+              : row.result}',
         );
       }
     }

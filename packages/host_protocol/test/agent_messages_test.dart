@@ -83,13 +83,20 @@ void main() {
     });
 
     test('a malformed tools field never rejects the state message', () {
-      for (final bad in <Object?>['x', 3, {'status': 7}, <Object?>[]]) {
+      for (final bad in <Object?>[
+        'x',
+        3,
+        {'status': 7},
+        <Object?>[],
+      ]) {
         final parsed = AgentStateParams.fromJson(
           rt({'sessionId': 's', 'seq': 1, 'state': 'idle', 'tools': bad}),
         );
         expect(parsed.state, AgentState.idle);
-        expect(parsed.tools?.status ?? AgentToolsStatus.unknown,
-            AgentToolsStatus.unknown);
+        expect(
+          parsed.tools?.status ?? AgentToolsStatus.unknown,
+          AgentToolsStatus.unknown,
+        );
       }
     });
 

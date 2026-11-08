@@ -182,11 +182,11 @@ class LaunchExecutableResolver {
 
   Future<String> resolve(String executable) {
     if (_held >= slots) {
-      return Future.error(RpcException(
-        ErrorCode.busy,
-        'Executable resolution is busy.',
-        {'executable': executable},
-      ));
+      return Future.error(
+        RpcException(ErrorCode.busy, 'Executable resolution is busy.', {
+          'executable': executable,
+        }),
+      );
     }
     _held++;
     final fault = faults.takeResolveFault(executable);
@@ -199,11 +199,13 @@ class LaunchExecutableResolver {
     }
     final result = Completer<String>();
     final timer = Timer(timeout, () {
-      result.completeError(RpcException(
-        ErrorCode.busy,
-        'Executable resolution did not answer within ${timeout.inMilliseconds} ms.',
-        {'executable': executable},
-      ));
+      result.completeError(
+        RpcException(
+          ErrorCode.busy,
+          'Executable resolution did not answer within ${timeout.inMilliseconds} ms.',
+          {'executable': executable},
+        ),
+      );
     });
     void finished() {
       timer.cancel();
@@ -211,7 +213,12 @@ class LaunchExecutableResolver {
       _held--;
     }
 
-    _spawn(_resolver, executable, fault?.delay.inMilliseconds ?? 0, hangPort?.sendPort).then<void>(
+    _spawn(
+      _resolver,
+      executable,
+      fault?.delay.inMilliseconds ?? 0,
+      hangPort?.sendPort,
+    ).then<void>(
       (path) {
         finished();
         if (!result.isCompleted) result.complete(path);

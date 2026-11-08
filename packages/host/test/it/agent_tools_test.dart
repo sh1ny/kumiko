@@ -27,7 +27,9 @@ Json? entryIn(File report, {String? method}) {
         : p['method'] == method;
     if (!matches) continue;
     final servers = p['mcpServers'];
-    return servers is List && servers.isNotEmpty ? servers.single as Json : null;
+    return servers is List && servers.isNotEmpty
+        ? servers.single as Json
+        : null;
   }
   return null;
 }
@@ -37,7 +39,8 @@ String envValue(Json entry, String name) => [
     if ((e as Json)['name'] == name) e['value'] as String,
 ].single;
 
-String? toolsStatus(Json state) => (state['tools'] as Json?)?['status'] as String?;
+String? toolsStatus(Json state) =>
+    (state['tools'] as Json?)?['status'] as String?;
 
 String normalizePath(String p) {
   final real = File(p).resolveSymbolicLinksSync();
@@ -108,16 +111,18 @@ void main() {
     );
     List<String> listing() => [
       for (final e in work.listSync(recursive: true))
-        if (!e.path.endsWith('.report.jsonl') && !e.path.contains('kumiko-fixture-')) e.path,
+        if (!e.path.endsWith('.report.jsonl') &&
+            !e.path.contains('kumiko-fixture-'))
+          e.path,
     ]..sort();
     final before = listing();
     final a = AgentPeer(d);
     await a.start(w.workspace.id);
     await a.attach();
 
-    final reports = fixtureReports(
-      report,
-    ).where((p) => p.containsKey('newCwd')).toList();
+    final reports = fixtureReports(report)
+        .where((p) => p.containsKey('newCwd'))
+        .toList();
     final servers = reports.single['mcpServers'] as List;
     expect(servers, hasLength(1));
     final entry = servers.single as Json;
@@ -211,10 +216,7 @@ void main() {
     final reports = fixtureReports(report).where((p) => p['newCwd'] != null);
     expect(reports.single['mcpServers'], isEmpty);
     expect(a.started.tools?.status, AgentToolsStatus.unavailable);
-    expect(
-      a.started.tools?.reason,
-      'endpoint-unavailable: no endpoint here',
-    );
+    expect(a.started.tools?.reason, 'endpoint-unavailable: no endpoint here');
     final state = await a.wait(
       Method.agentState,
       where: (p) => toolsStatus(p) != null,
@@ -285,10 +287,7 @@ void main() {
   test('call before session/new returns waits for the record, or fails '
       'session unavailable when start fails', () async {
     final release = File(joinPath(work.path, 'release-new'));
-    final tool = {
-      'call': 'kumiko_session_info',
-      'when': 'session/new',
-    };
+    final tool = {'call': 'kumiko_session_info', 'when': 'session/new'};
     // Waits for the record.
     final d = await desktop();
     final w = await d.openWorkspace(work.path);
@@ -344,10 +343,7 @@ void main() {
     final b = AgentPeer(d);
     final failing = b.start(w.workspace.id, runtime: 'failing');
     final failed = expectLater(failing, throwsA(isA<RpcException>()));
-    final launched = await waitFixture(
-      report2,
-      (p) => p.containsKey('newCwd'),
-    );
+    final launched = await waitFixture(report2, (p) => p.containsKey('newCwd'));
     final secret = envValue(
       (launched['mcpServers'] as List).single as Json,
       'KUMIKO_TOOL_SECRET',
@@ -372,76 +368,85 @@ void main() {
     expect((response['error'] as Json)['message'], 'session unavailable');
   });
 
-  test('result names the original target after another workspace is focused',
-      () async {
-    final other = tempDir('tools_other_');
-    addTearDown(() => deleteTree(other));
-    final (d, a, report) = await session(
-      script: {
-        'kumikoTool': {'call': 'kumiko_session_info', 'when': 'prompt'},
-      },
-    );
-    await d.openWorkspace(other.path);
-    await a.prompt();
-    final result = await waitFixture(
-      report,
-      (p) => p.containsKey('kumikoToolResult'),
-    );
-    final info =
-        ((result['kumikoToolResult'] as Json)['result']
-                as Json)['structuredContent']
-            as Json;
-    final original = directoryIdentity(work.path) as ResolvedDirectory;
-    expect((info['target'] as Json)['path'], original.realPath);
-  });
+  test(
+    'result names the original target after another workspace is focused',
+    () async {
+      final other = tempDir('tools_other_');
+      addTearDown(() => deleteTree(other));
+      final (d, a, report) = await session(
+        script: {
+          'kumikoTool': {'call': 'kumiko_session_info', 'when': 'prompt'},
+        },
+      );
+      await d.openWorkspace(other.path);
+      await a.prompt();
+      final result = await waitFixture(
+        report,
+        (p) => p.containsKey('kumikoToolResult'),
+      );
+      final info =
+          ((result['kumikoToolResult'] as Json)['result']
+                  as Json)['structuredContent']
+              as Json;
+      final original = directoryIdentity(work.path) as ResolvedDirectory;
+      expect((info['target'] as Json)['path'], original.realPath);
+    },
+  );
 
-  test('status not yet used until the first successful call, then connected',
-      () async {
-    final (_, a, _) = await session(
-      script: {
-        'kumikoTool': {'call': 'kumiko_session_info', 'when': 'prompt'},
-      },
-    );
-    expect(a.started.tools?.status, AgentToolsStatus.notYetUsed);
-    final idle = await a.wait(
-      Method.agentState,
-      where: (p) => p['state'] == 'idle',
-    );
-    expect(toolsStatus(idle), 'notYetUsed');
-    await a.prompt();
-    final connected = await a.wait(
-      Method.agentState,
-      where: (p) => toolsStatus(p) == 'connected',
-    );
-    expect(toolsStatus(connected), 'connected');
-    await turnEnds(a, 1);
-    expect(
-      a.of(Method.agentState).last['tools'],
-      containsPair('status', 'connected'),
-    );
-  });
+  test(
+    'status not yet used until the first successful call, then connected',
+    () async {
+      final (_, a, _) = await session(
+        script: {
+          'kumikoTool': {'call': 'kumiko_session_info', 'when': 'prompt'},
+        },
+      );
+      expect(a.started.tools?.status, AgentToolsStatus.notYetUsed);
+      final idle = await a.wait(
+        Method.agentState,
+        where: (p) => p['state'] == 'idle',
+      );
+      expect(toolsStatus(idle), 'notYetUsed');
+      await a.prompt();
+      final connected = await a.wait(
+        Method.agentState,
+        where: (p) => toolsStatus(p) == 'connected',
+      );
+      expect(toolsStatus(connected), 'connected');
+      await turnEnds(a, 1);
+      expect(
+        a.of(Method.agentState).last['tools'],
+        containsPair('status', 'connected'),
+      );
+    },
+  );
 
-  test('first successful call publishes state seq+1 with tools connected',
-      () async {
-    final (_, a, _) = await session(
-      script: {
-        'kumikoTool': {'call': 'kumiko_session_info', 'when': 'prompt'},
-      },
-    );
-    await a.prompt();
-    await turnEnds(a, 1);
-    final states = a.of(Method.agentState);
-    final i = states.indexWhere((p) => toolsStatus(p) == 'connected');
-    expect(i, greaterThan(0));
-    final before = states[i - 1];
-    final at = states[i];
-    expect(at['seq'], (before['seq'] as int) + 1);
-    expect(at['state'], before['state'], reason: 'only the tools changed');
-    expect(toolsStatus(before), 'notYetUsed');
-    for (var k = 1; k < states.length; k++) {
-      expect(states[k]['seq'] as int, greaterThan(states[k - 1]['seq'] as int));
-    }
-  });
+  test(
+    'first successful call publishes state seq+1 with tools connected',
+    () async {
+      final (_, a, _) = await session(
+        script: {
+          'kumikoTool': {'call': 'kumiko_session_info', 'when': 'prompt'},
+        },
+      );
+      await a.prompt();
+      await turnEnds(a, 1);
+      final states = a.of(Method.agentState);
+      final i = states.indexWhere((p) => toolsStatus(p) == 'connected');
+      expect(i, greaterThan(0));
+      final before = states[i - 1];
+      final at = states[i];
+      expect(at['seq'], (before['seq'] as int) + 1);
+      expect(at['state'], before['state'], reason: 'only the tools changed');
+      expect(toolsStatus(before), 'notYetUsed');
+      for (var k = 1; k < states.length; k++) {
+        expect(
+          states[k]['seq'] as int,
+          greaterThan(states[k - 1]['seq'] as int),
+        );
+      }
+    },
+  );
 
   test('tools/list alone never yields connected', () async {
     final (_, a, report) = await session(
@@ -473,18 +478,16 @@ void main() {
     );
     expect(toolsStatus(notStarted), 'notStarted');
 
-    final secret = envValue(
-      entryIn(report)!,
-      'KUMIKO_TOOL_SECRET',
-    );
+    final secret = envValue(entryIn(report)!, 'KUMIKO_TOOL_SECRET');
     final c = await ToolClient.connect(await endpointOf(d));
     addTearDown(c.close);
     c.authenticate(secret);
     expect(await c.readJson(), {'ok': true});
     await a.wait(
       Method.agentState,
-      where: (p) => toolsStatus(p) == 'notYetUsed' && p['seq'] as int >
-          (notStarted['seq'] as int),
+      where: (p) =>
+          toolsStatus(p) == 'notYetUsed' &&
+          p['seq'] as int > (notStarted['seq'] as int),
     );
 
     c.send({
@@ -518,8 +521,7 @@ void main() {
     expect(a.of(Method.agentState).last['tools'], {'status': 'notYetUsed'});
   });
 
-  test('listed version failure shows unavailable with recorded text',
-      () async {
+  test('listed version failure shows unavailable with recorded text', () async {
     final (_, a, _) = await session(
       env: {
         'KUMIKO_TEST_TOOL_DELIVERY_FAILURES':
@@ -609,8 +611,7 @@ void main() {
     expect(LedgerView(profile).units(), isEmpty);
   });
 
-  test('bridge exits on endpoint EOF and reconciliation leaves none',
-      () async {
+  test('bridge exits on endpoint EOF and reconciliation leaves none', () async {
     final (d, a, report) = await session(
       script: {
         'kumikoTool': {'call': 'kumiko_session_info', 'when': 'prompt'},

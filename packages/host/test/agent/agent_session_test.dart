@@ -74,13 +74,20 @@ void main() {
     p.result(getPromptId(), {'stopReason': reason});
     await pumpAcp();
   }
+
   Future<void> saturatePermissionReplies() async {
     await pumpAcp();
     final ids = [for (var i = 0; i < 16; i++) '${'r' * 4090}-$i'];
     final options = <String>[];
     var remaining = 1024 * 1024;
     for (var i = 0; i < ids.length; i++) {
-      final emptyReply = {'jsonrpc': '2.0', 'id': ids[i], 'result': {'outcome': {'outcome': 'selected', 'optionId': ''}}};
+      final emptyReply = {
+        'jsonrpc': '2.0',
+        'id': ids[i],
+        'result': {
+          'outcome': {'outcome': 'selected', 'optionId': ''},
+        },
+      };
       final overhead = utf8.encode('${jsonEncode(emptyReply)}\n').length;
       final option = 'o' * (i < 15 ? 65000 : remaining - overhead);
       options.add(option);
@@ -168,11 +175,16 @@ void main() {
     final last = requests.last.requestId;
     expect(
       () => s.permissionReply(last, option),
-      throwsA(isA<RpcException>().having((e) => e.reason, 'reason', ErrorCode.busy)),
+      throwsA(
+        isA<RpcException>().having((e) => e.reason, 'reason', ErrorCode.busy),
+      ),
     );
     await pumpAcp();
     expect(s.pendingPermissionCount, 1);
-    expect(resolved.map((r) => r.requestId), requests.take(15).map((r) => r.requestId));
+    expect(
+      resolved.map((r) => r.requestId),
+      requests.take(15).map((r) => r.requestId),
+    );
     expect(s.state, AgentState.waitingApproval);
     expect(s.failure, isNull);
     expect(p.client.isClosed, isFalse);
@@ -184,26 +196,41 @@ void main() {
     expect(s.pendingPermissionCount, 0);
     expect(s.state, AgentState.running);
     expect(resolved.last.requestId, last);
-    expect(resolved.every((r) => r.outcome == AgentPermissionOutcome.selected), isTrue);
+    expect(
+      resolved.every((r) => r.outcome == AgentPermissionOutcome.selected),
+      isTrue,
+    );
     final replies = p.writes.where((message) => message.containsKey('result'));
     expect(replies.map((r) => r['id']), nativeIds);
-    expect(replies.map((r) => ((r['result'] as Json)['outcome'] as Json)['optionId']), everyElement(option));
+    expect(
+      replies.map(
+        (r) => ((r['result'] as Json)['outcome'] as Json)['optionId'],
+      ),
+      everyElement(option),
+    );
   });
 
-  test('a native write failure after its prompt result still fails the transport', () async {
-    p.blockedWrite = Completer<void>();
-    s.acceptPrompt('result won the native write acknowledgement race');
-    await finish('end_turn');
-    expect(s.state, AgentState.idle);
-    final failure = StateError('native stdin worker failed after response');
-    p.blockedWrite!.completeError(failure);
-    p.blockedWrite = null;
-    await pumpAcp();
-    expect(p.client.isClosed, isTrue);
-    expect(s.state, AgentState.failed);
-    expect(s.failure, same(failure));
-    expect(ends, hasLength(1), reason: 'transport failure is not a second turn result');
-  });
+  test(
+    'a native write failure after its prompt result still fails the transport',
+    () async {
+      p.blockedWrite = Completer<void>();
+      s.acceptPrompt('result won the native write acknowledgement race');
+      await finish('end_turn');
+      expect(s.state, AgentState.idle);
+      final failure = StateError('native stdin worker failed after response');
+      p.blockedWrite!.completeError(failure);
+      p.blockedWrite = null;
+      await pumpAcp();
+      expect(p.client.isClosed, isTrue);
+      expect(s.state, AgentState.failed);
+      expect(s.failure, same(failure));
+      expect(
+        ends,
+        hasLength(1),
+        reason: 'transport failure is not a second turn result',
+      );
+    },
+  );
 
   test('an admitted permission reply still fails the session if native writing fails', () async {
     s.acceptPrompt('native write failure');
@@ -224,7 +251,12 @@ void main() {
   test('Stop refuses saturated stdin without resolving choices or failing and retries after drain', () async {
     s.acceptPrompt('saturated Stop');
     await saturatePermissionReplies();
-    expect(() => s.stop(), throwsA(isA<RpcException>().having((e) => e.reason, 'reason', ErrorCode.busy)));
+    expect(
+      () => s.stop(),
+      throwsA(
+        isA<RpcException>().having((e) => e.reason, 'reason', ErrorCode.busy),
+      ),
+    );
     await pumpAcp();
     expect(s.state, AgentState.running);
     expect(s.failure, isNull);
@@ -234,7 +266,12 @@ void main() {
     await pumpAcp();
     final pending = requests.last.requestId;
     expect(s.pendingPermissionCount, 1);
-    expect(() => s.stop(), throwsA(isA<RpcException>().having((e) => e.reason, 'reason', ErrorCode.busy)));
+    expect(
+      () => s.stop(),
+      throwsA(
+        isA<RpcException>().having((e) => e.reason, 'reason', ErrorCode.busy),
+      ),
+    );
     await pumpAcp();
     expect(s.state, AgentState.waitingApproval);
     expect(s.pendingPermissionCount, 1);
@@ -262,18 +299,21 @@ void main() {
     expect(stops.last.late, isTrue);
   });
 
-  test('an admitted Stop still fails on actual native stdin I/O error', () async {
-    s.acceptPrompt('Stop write failure');
-    await pumpAcp();
-    p.blockedWrite = Completer<void>();
-    s.stop();
-    final failure = StateError('native cancel write failed');
-    p.blockedWrite!.completeError(failure);
-    p.blockedWrite = null;
-    await pumpAcp();
-    expect(s.state, AgentState.failed);
-    expect(s.failure, same(failure));
-  });
+  test(
+    'an admitted Stop still fails on actual native stdin I/O error',
+    () async {
+      s.acceptPrompt('Stop write failure');
+      await pumpAcp();
+      p.blockedWrite = Completer<void>();
+      s.stop();
+      final failure = StateError('native cancel write failed');
+      p.blockedWrite!.completeError(failure);
+      p.blockedWrite = null;
+      await pumpAcp();
+      expect(s.state, AgentState.failed);
+      expect(s.failure, same(failure));
+    },
+  );
 
   test('bounded native permission IDs preserve exact selected and cancelled replies', () async {
     s.acceptPrompt('bounded permission IDs');
@@ -287,7 +327,9 @@ void main() {
     s.permissionReply(requests.first.requestId, 'opaque/allow');
     s.stop();
     await pumpAcp();
-    final replies = p.writes.where((entry) => entry.containsKey('result')).toList();
+    final replies = p.writes
+        .where((entry) => entry.containsKey('result'))
+        .toList();
     expect(replies.map((entry) => entry['id']), [selectedId, cancelledId]);
     expect(replies.map((entry) => (entry['result'] as Json)['outcome']), [
       {'outcome': 'selected', 'optionId': 'opaque/allow'},
@@ -307,43 +349,61 @@ void main() {
     'escaped over budget': '\u0001' * 683,
     'UTF-8 over budget': '界' * 1366,
   }.entries) {
-    test('${entry.key} native permission ID fails before publishing or retaining it', () async {
-      s.acceptPrompt('invalid permission ID');
-      p.permission(entry.value);
-      await pumpAcp();
-      expect(s.state, AgentState.failed);
-      expect(s.failure, isA<AcpProtocolException>());
-      expect(s.failure.toString(), contains('request id'));
-      expect(s.pendingPermissionCount, 0);
-      expect(requests, isEmpty);
-      expect(resolved, isEmpty);
-      expect(p.writes.where((message) => message.containsKey('result')), isEmpty);
-      expect(p.client.largeLineOwned, isFalse);
-      expect(p.client.largeLineWaiting, isFalse);
-    });
+    test(
+      '${entry.key} native permission ID fails before publishing or retaining it',
+      () async {
+        s.acceptPrompt('invalid permission ID');
+        p.permission(entry.value);
+        await pumpAcp();
+        expect(s.state, AgentState.failed);
+        expect(s.failure, isA<AcpProtocolException>());
+        expect(s.failure.toString(), contains('request id'));
+        expect(s.pendingPermissionCount, 0);
+        expect(requests, isEmpty);
+        expect(resolved, isEmpty);
+        expect(
+          p.writes.where((message) => message.containsKey('result')),
+          isEmpty,
+        );
+        expect(p.client.largeLineOwned, isFalse);
+        expect(p.client.largeLineWaiting, isFalse);
+      },
+    );
   }
 
-  test('oversized native ID cannot accumulate behind existing pending permissions', () async {
-    s.acceptPrompt('multiple pending permissions');
-    p.permission('first');
-    p.permission('second');
-    await pumpAcp();
-    expect(s.pendingPermissionCount, 2);
-    p.permission('p' * (2 * 1024 * 1024));
-    await pumpAcp();
-    expect(s.state, AgentState.failed);
-    expect(requests, hasLength(2));
-    expect(s.pendingPermissionCount, 0);
-    expect(resolved.map((entry) => entry.outcome), [
-      AgentPermissionOutcome.cancelled,
-      AgentPermissionOutcome.cancelled,
-    ]);
-    expect(p.writes.where((message) => message.containsKey('result')), isEmpty);
-    expect(
-      () => s.permissionReply(requests.first.requestId, 'opaque/allow'),
-      throwsA(isA<RpcException>().having((error) => error.reason, 'reason', ErrorCode.unknownRequest)),
-    );
-  });
+  test(
+    'oversized native ID cannot accumulate behind existing pending permissions',
+    () async {
+      s.acceptPrompt('multiple pending permissions');
+      p.permission('first');
+      p.permission('second');
+      await pumpAcp();
+      expect(s.pendingPermissionCount, 2);
+      p.permission('p' * (2 * 1024 * 1024));
+      await pumpAcp();
+      expect(s.state, AgentState.failed);
+      expect(requests, hasLength(2));
+      expect(s.pendingPermissionCount, 0);
+      expect(resolved.map((entry) => entry.outcome), [
+        AgentPermissionOutcome.cancelled,
+        AgentPermissionOutcome.cancelled,
+      ]);
+      expect(
+        p.writes.where((message) => message.containsKey('result')),
+        isEmpty,
+      );
+      expect(
+        () => s.permissionReply(requests.first.requestId, 'opaque/allow'),
+        throwsA(
+          isA<RpcException>().having(
+            (error) => error.reason,
+            'reason',
+            ErrorCode.unknownRequest,
+          ),
+        ),
+      );
+    },
+  );
   test('a reply to a resolved request fails unknown-request and writes nothing to the transport', () async {
     s.acceptPrompt('hello');
     p.permission('p');
@@ -539,9 +599,13 @@ void main() {
     expect(resolved.single.outcome, AgentPermissionOutcome.cancelled);
     expect(
       () => s.permissionReply(request, 'opaque/allow'),
-      throwsA(isA<RpcException>().having(
-        (error) => error.reason, 'reason', ErrorCode.unknownRequest,
-      )),
+      throwsA(
+        isA<RpcException>().having(
+          (error) => error.reason,
+          'reason',
+          ErrorCode.unknownRequest,
+        ),
+      ),
     );
     expect(p.writes, hasLength(writesBeforeExit));
     expect(p.client.isClosed, isFalse);
@@ -560,7 +624,8 @@ void main() {
     expect(requests, hasLength(1));
     expect(resolved, hasLength(1));
     expect(
-      events.where((event) => event.kind == AgentEventKind.agentText)
+      events
+          .where((event) => event.kind == AgentEventKind.agentText)
           .map((event) => event.text),
       ['before late permission', 'after late permission'],
     );
@@ -748,30 +813,34 @@ void main() {
       ]);
     });
 
-    test('a secret begun in a short tail is redacted from the next chunk',
-        () async {
-      s.acceptPrompt('hello');
-      chunk('agent_message_chunk', 'key abc');
-      chunk('agent_message_chunk', '${secret.substring(3)} done');
-      await finish('end_turn');
-      expect(streamed(), [
-        (AgentEventKind.agentText, 'key abc'),
-        (AgentEventKind.agentText, '<redacted> done'),
-        (AgentEventKind.turn, null),
-      ]);
-    });
+    test(
+      'a secret begun in a short tail is redacted from the next chunk',
+      () async {
+        s.acceptPrompt('hello');
+        chunk('agent_message_chunk', 'key abc');
+        chunk('agent_message_chunk', '${secret.substring(3)} done');
+        await finish('end_turn');
+        expect(streamed(), [
+          (AgentEventKind.agentText, 'key abc'),
+          (AgentEventKind.agentText, '<redacted> done'),
+          (AgentEventKind.turn, null),
+        ]);
+      },
+    );
 
-    test('a held tail never completed is a cut-off secret and redacted',
-        () async {
-      s.acceptPrompt('hello');
-      chunk('agent_message_chunk', 'key ${secret.substring(0, 30)}');
-      await finish('end_turn');
-      expect(streamed(), [
-        (AgentEventKind.agentText, 'key '),
-        (AgentEventKind.agentText, '<redacted>'),
-        (AgentEventKind.turn, null),
-      ]);
-    });
+    test(
+      'a held tail never completed is a cut-off secret and redacted',
+      () async {
+        s.acceptPrompt('hello');
+        chunk('agent_message_chunk', 'key ${secret.substring(0, 30)}');
+        await finish('end_turn');
+        expect(streamed(), [
+          (AgentEventKind.agentText, 'key '),
+          (AgentEventKind.agentText, '<redacted>'),
+          (AgentEventKind.turn, null),
+        ]);
+      },
+    );
 
     test('another update releases the held tail first, in order', () async {
       s.acceptPrompt('hello');
@@ -815,8 +884,7 @@ void main() {
       expect(text, isNot(contains(secret.substring(3, 10))));
     });
 
-    test('a held tail continued by ordinary text is released joined',
-        () async {
+    test('a held tail continued by ordinary text is released joined', () async {
       s.acceptPrompt('hello');
       chunk('agent_message_chunk', 'abcd');
       chunk('agent_message_chunk', 'ef!');

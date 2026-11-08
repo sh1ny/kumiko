@@ -126,6 +126,7 @@ class AcpInitialization {
       );
     }
   }
+
   final int protocolVersion;
   final String adapterName;
   final String? adapterVersion;
@@ -181,7 +182,9 @@ class AcpClient {
   Object? Function(Object id, Json params)? onPermissionRequest;
   void Function(Object error)? onFailure;
 
-  Future<Json> request(String method, Json params, {
+  Future<Json> request(
+    String method,
+    Json params, {
     Duration? timeout,
     void Function(Json result)? onResult,
   }) {
@@ -193,7 +196,9 @@ class AcpClient {
   }
 
   /// Synchronous stdin admission precedes pending-request ownership.
-  Future<Json> _request(String method, Json params, {
+  Future<Json> _request(
+    String method,
+    Json params, {
     Duration? timeout,
     void Function(Json result)? onResult,
   }) {
@@ -205,12 +210,18 @@ class AcpClient {
       'method': method,
       'params': params,
     });
-    final pending = _Pending(timeout, () {
-      final expired = _pending.remove(id);
-      expired?.completeError(
-        TimeoutException('ACP $method timed out', timeout),
-      );
-    }, prompt: method == 'session/prompt', newSession: method == 'session/new', onResult: onResult);
+    final pending = _Pending(
+      timeout,
+      () {
+        final expired = _pending.remove(id);
+        expired?.completeError(
+          TimeoutException('ACP $method timed out', timeout),
+        );
+      },
+      prompt: method == 'session/prompt',
+      newSession: method == 'session/new',
+      onResult: onResult,
+    );
     _pending[id] = pending;
     if (!_consuming) pending.resume();
     // Admitted I/O failure closes ACP even if its response already arrived.
@@ -220,6 +231,7 @@ class AcpClient {
 
   Future<void> notify(String method, Json params) =>
       _send({'jsonrpc': '2.0', 'method': method, 'params': params});
+
   /// Returns native write completion after synchronous queue admission.
   /// A closed transport or full queue throws before accepting the reply.
   Future<void> reply(Object id, Json result) =>
@@ -256,35 +268,40 @@ class AcpClient {
     Duration timeout = const Duration(seconds: 60),
     void Function(String nativeSessionId)? onCreated,
   }) async {
-    final result = await request('session/new', {
-      'cwd': cwd,
-      'mcpServers': mcpServers,
-    }, timeout: timeout, onResult: onCreated == null ? null : (result) {
-      onCreated(result['sessionId']! as String);
-    });
+    final result = await request(
+      'session/new',
+      {'cwd': cwd, 'mcpServers': mcpServers},
+      timeout: timeout,
+      onResult: onCreated == null
+          ? null
+          : (result) {
+              onCreated(result['sessionId']! as String);
+            },
+    );
     return result['sessionId']! as String;
   }
 
   // Replay can block on the bounded event consumer. Count active time only,
   // never desktop credit starvation, against the same 60-second bound.
   Future<Json> loadSession(
-  String id,
-  String cwd, {
-  List<Json> mcpServers = const [],
-}) => request('session/load', {
+    String id,
+    String cwd, {
+    List<Json> mcpServers = const [],
+  }) => request('session/load', {
     'sessionId': id,
     'cwd': cwd,
     'mcpServers': mcpServers,
   }, timeout: const Duration(seconds: 60));
   Future<Json> resumeSession(
-  String id,
-  String cwd, {
-  List<Json> mcpServers = const [],
-}) => request(
-    'session/resume',
-    {'sessionId': id, 'cwd': cwd, 'mcpServers': mcpServers},
-    timeout: const Duration(seconds: 60),
-  );
+    String id,
+    String cwd, {
+    List<Json> mcpServers = const [],
+  }) => request('session/resume', {
+    'sessionId': id,
+    'cwd': cwd,
+    'mcpServers': mcpServers,
+  }, timeout: const Duration(seconds: 60));
+
   /// Throws local queue-admission refusals before accepting the prompt.
   Future<AcpPromptResult> prompt(String id, String text) =>
       _request('session/prompt', {
@@ -299,18 +316,29 @@ class AcpClient {
   /// Atomically admits pending permission cancellations before session/cancel.
   /// A local refusal throws before any message is accepted; the returned Future
   /// observes native I/O only, so callers can commit their Stop state afterward.
-  Future<void> cancelWithPermissions(String id, Iterable<Object> permissionIds) {
+  Future<void> cancelWithPermissions(
+    String id,
+    Iterable<Object> permissionIds,
+  ) {
     if (_closed) throw failure ?? const AcpClosedException();
-    final cancel = {'jsonrpc': '2.0', 'method': 'session/cancel', 'params': {'sessionId': id}};
+    final cancel = {
+      'jsonrpc': '2.0',
+      'method': 'session/cancel',
+      'params': {'sessionId': id},
+    };
     final ids = permissionIds.iterator;
     if (!ids.moveNext()) return _admit(cancel);
     final lines = StringBuffer();
     do {
-      lines.writeln(jsonEncode({
-        'jsonrpc': '2.0',
-        'id': ids.current,
-        'result': {'outcome': {'outcome': 'cancelled'}},
-      }));
+      lines.writeln(
+        jsonEncode({
+          'jsonrpc': '2.0',
+          'id': ids.current,
+          'result': {
+            'outcome': {'outcome': 'cancelled'},
+          },
+        }),
+      );
     } while (ids.moveNext());
     lines.writeln(jsonEncode(cancel));
     return _admitBytes(utf8.encode(lines.toString()));
@@ -654,9 +682,14 @@ class AcpClient {
 }
 
 class _Pending {
-  _Pending(Duration? timeout, this._expired, {required this.prompt, required this.newSession, this.onResult})
-    : _remaining = timeout,
-      _active = timeout == null ? null : Stopwatch();
+  _Pending(
+    Duration? timeout,
+    this._expired, {
+    required this.prompt,
+    required this.newSession,
+    this.onResult,
+  }) : _remaining = timeout,
+       _active = timeout == null ? null : Stopwatch();
   final bool prompt;
   final bool newSession;
   final void Function(Json result)? onResult;

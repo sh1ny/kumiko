@@ -97,77 +97,92 @@ void main() {
             as Json,
       );
 
-  test('admitted prompt stdin failure settles a live adapter and permits Continue', () async {
-    final d = await desktop();
-    final workspace = await d.openWorkspace(work.path);
-    final report = await saveAgentFixture(
-      d,
-      work,
-      script: {'closeStdinAfterNew': true},
-    );
-    final a = AgentPeer(d);
-    await a.start(workspace.workspace.id);
-    await a.attach();
-    await a.wait(Method.agentState, where: (p) => p['state'] == 'idle');
-    final row = agentRows(profile).single;
-    final tree = await waitReports(work, 1);
-    await waitFixture(report, (p) => p['stdinClosed'] == true);
-    expect(isProcessAlive(tree.single.pid, tree.single.startTime), isTrue);
-    a.notifications.clear();
-    await a.prompt('the native stdin read end is already closed');
-    await a.wait(Method.agentState, where: (p) => p['state'] == 'running');
-    await eventually(() {
-      final state = a.of(Method.agentState).last['state'];
-      return state == 'failed' || state == 'idle';
-    });
-    expect(a.of(Method.agentState).last['state'], 'failed');
-    final exited = await a.wait(Method.agentExited);
-    expect(exited['reason'], 'failed');
-    expect(exited['error'], 'adapter-exited');
-    expect(a.of(Method.agentTurnEnded), isEmpty);
-    await expectAllGone(tree);
-    expect(LedgerView(profile).units(), isEmpty);
-    expect(agentRows(profile).single, row);
-    await a.call(Method.agentRelease);
-    a.notifications.clear();
+  test(
+    'admitted prompt stdin failure settles a live adapter and permits Continue',
+    () async {
+      final d = await desktop();
+      final workspace = await d.openWorkspace(work.path);
+      final report = await saveAgentFixture(
+        d,
+        work,
+        script: {'closeStdinAfterNew': true},
+      );
+      final a = AgentPeer(d);
+      await a.start(workspace.workspace.id);
+      await a.attach();
+      await a.wait(Method.agentState, where: (p) => p['state'] == 'idle');
+      final row = agentRows(profile).single;
+      final tree = await waitReports(work, 1);
+      await waitFixture(report, (p) => p['stdinClosed'] == true);
+      expect(isProcessAlive(tree.single.pid, tree.single.startTime), isTrue);
+      a.notifications.clear();
+      await a.prompt('the native stdin read end is already closed');
+      await a.wait(Method.agentState, where: (p) => p['state'] == 'running');
+      await eventually(() {
+        final state = a.of(Method.agentState).last['state'];
+        return state == 'failed' || state == 'idle';
+      });
+      expect(a.of(Method.agentState).last['state'], 'failed');
+      final exited = await a.wait(Method.agentExited);
+      expect(exited['reason'], 'failed');
+      expect(exited['error'], 'adapter-exited');
+      expect(a.of(Method.agentTurnEnded), isEmpty);
+      await expectAllGone(tree);
+      expect(LedgerView(profile).units(), isEmpty);
+      expect(agentRows(profile).single, row);
+      await a.call(Method.agentRelease);
+      a.notifications.clear();
 
-    await saveAgentFixture(d, work, script: {
-      'agentCapabilities': advertisedHistory,
-    });
-    expect((await continuePeer(a, a.id)).mode, AgentContinueMode.load);
-    await a.attach();
-    await a.wait(Method.agentState, where: (p) => p['state'] == 'idle');
-    await a.prompt('the saved native reference can be used again');
-    await a.wait(Method.agentTurnEnded);
-    expect(agentRows(profile).single, row);
-    await a.close();
-  });
+      await saveAgentFixture(
+        d,
+        work,
+        script: {'agentCapabilities': advertisedHistory},
+      );
+      expect((await continuePeer(a, a.id)).mode, AgentContinueMode.load);
+      await a.attach();
+      await a.wait(Method.agentState, where: (p) => p['state'] == 'idle');
+      await a.prompt('the saved native reference can be used again');
+      await a.wait(Method.agentTurnEnded);
+      expect(agentRows(profile).single, row);
+      await a.close();
+    },
+  );
 
   for (final identity in {
     'multi-MiB name': {'name': 'n' * (2 * 1024 * 1024), 'version': 'test-only'},
-    'multi-MiB version': {'name': 'scripted-acp', 'version': 'v' * (2 * 1024 * 1024)},
+    'multi-MiB version': {
+      'name': 'scripted-acp',
+      'version': 'v' * (2 * 1024 * 1024),
+    },
     'escaped version': {'name': 'scripted-acp', 'version': '\u0001' * 683},
   }.entries) {
-    test('Continue rejects ${identity.key} without losing the host or saved record', () async {
-      final d = await desktop();
-      final (a, _, row) = await saved(d);
-      await saveAgentFixture(d, work, script: {
-        'agentInfo': identity.value,
-        'agentCapabilities': advertisedHistory,
-      });
-      final error = await rpcFailure(continuePeer(a, a.id));
-      expect(error.reason, ErrorCode.adapterProtocol);
-      expect(error.data['stage'], 'initialize');
-      expect(error.message, contains('adapter identity'));
-      expect(utf8.encode(jsonEncode(error.message)).length, lessThan(8192));
-      expect(agentRows(profile), [row]);
-      final inspected = (await records(d, [a.id])).records[a.id]!;
-      expect(inspected.known, isTrue);
-      expect(inspected.adapterVersion, 'test-only');
-      expect(inspected.workspaceAvailable, isTrue);
-      expect(LedgerView(profile).units(), isEmpty);
-      await expectAllGone(readReports(work));
-    });
+    test(
+      'Continue rejects ${identity.key} without losing the host or saved record',
+      () async {
+        final d = await desktop();
+        final (a, _, row) = await saved(d);
+        await saveAgentFixture(
+          d,
+          work,
+          script: {
+            'agentInfo': identity.value,
+            'agentCapabilities': advertisedHistory,
+          },
+        );
+        final error = await rpcFailure(continuePeer(a, a.id));
+        expect(error.reason, ErrorCode.adapterProtocol);
+        expect(error.data['stage'], 'initialize');
+        expect(error.message, contains('adapter identity'));
+        expect(utf8.encode(jsonEncode(error.message)).length, lessThan(8192));
+        expect(agentRows(profile), [row]);
+        final inspected = (await records(d, [a.id])).records[a.id]!;
+        expect(inspected.known, isTrue);
+        expect(inspected.adapterVersion, 'test-only');
+        expect(inspected.workspaceAvailable, isTrue);
+        expect(LedgerView(profile).units(), isEmpty);
+        await expectAllGone(readReports(work));
+      },
+    );
   }
 
   test('concurrent load and resume failures preserve inexact diagnostics after held cleanup', () async {

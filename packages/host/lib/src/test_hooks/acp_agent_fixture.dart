@@ -86,20 +86,27 @@ Future<int> _closedInputAgent(void Function(Json) report) async {
     } else {
       throw StateError('unexpected request before stdin close: $method');
     }
-    stdout.writeln(jsonEncode({
-      'jsonrpc': '2.0',
-      'id': request['id'],
-      'result': result,
-    }));
+    stdout.writeln(
+      jsonEncode({'jsonrpc': '2.0', 'id': request['id'], 'result': result}),
+    );
     await stdout.flush();
     if (method != 'session/new') continue;
     if (Platform.isWindows) {
       final kernel = DynamicLibrary.open('kernel32.dll');
-      final getStd = kernel.lookupFunction<IntPtr Function(Uint32), int Function(int)>('GetStdHandle');
-      final close = kernel.lookupFunction<Int32 Function(IntPtr), int Function(int)>('CloseHandle');
-      if (close(getStd(0xfffffff6)) == 0) throw StateError('could not close native stdin');
+      final getStd = kernel
+          .lookupFunction<IntPtr Function(Uint32), int Function(int)>(
+            'GetStdHandle',
+          );
+      final close = kernel
+          .lookupFunction<Int32 Function(IntPtr), int Function(int)>(
+            'CloseHandle',
+          );
+      if (close(getStd(0xfffffff6)) == 0) {
+        throw StateError('could not close native stdin');
+      }
     } else {
-      final close = DynamicLibrary.process().lookupFunction<Int32 Function(Int32), int Function(int)>('close');
+      final close = DynamicLibrary.process()
+          .lookupFunction<Int32 Function(Int32), int Function(int)>('close');
       if (close(0) != 0) throw StateError('could not close native stdin');
     }
     report({'stdinClosed': true});
@@ -260,16 +267,17 @@ Future<int> runAcpAgentScript({
   // <kumiko-secret-head> and <kumiko-secret-tail> are its first 20
   // characters and the rest, to split it across streamed chunks.
   Object? secretIn(Object? value) => switch (value) {
-    final String s when s.contains('<kumiko-secret') => s
-        .replaceAll(
-          '<kumiko-secret-head>',
-          kumikoSecret(mcpServers).substring(0, 20),
-        )
-        .replaceAll(
-          '<kumiko-secret-tail>',
-          kumikoSecret(mcpServers).substring(20),
-        )
-        .replaceAll('<kumiko-secret>', kumikoSecret(mcpServers)),
+    final String s when s.contains('<kumiko-secret') =>
+      s
+          .replaceAll(
+            '<kumiko-secret-head>',
+            kumikoSecret(mcpServers).substring(0, 20),
+          )
+          .replaceAll(
+            '<kumiko-secret-tail>',
+            kumikoSecret(mcpServers).substring(20),
+          )
+          .replaceAll('<kumiko-secret>', kumikoSecret(mcpServers)),
     final Map<Object?, Object?> m => <String, Object?>{
       for (final e in m.entries) e.key! as String: secretIn(e.value),
     },
@@ -450,9 +458,14 @@ Future<int> runAcpAgentScript({
         }
         final initial = script['newSessionUpdates'];
         if (initial is List) {
-          final burst = StringBuffer()..writeln(jsonEncode({
-            'jsonrpc': '2.0', 'id': id, 'result': {'sessionId': native},
-          }));
+          final burst = StringBuffer()
+            ..writeln(
+              jsonEncode({
+                'jsonrpc': '2.0',
+                'id': id,
+                'result': {'sessionId': native},
+              }),
+            );
           for (final update in initial) {
             burst.writeln(jsonEncode(updateMessage(update as Json)));
           }

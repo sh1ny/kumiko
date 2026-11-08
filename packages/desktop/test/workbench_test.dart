@@ -97,76 +97,117 @@ void main() {
     FakeHostLink host() => linkWith(
       docOf([], selected: 'A'),
       records: [workspaceRecord('A')],
-      hello: helloResult(capabilities: {
-        Capability.workbench, Capability.terminal, Capability.agent,
-      }),
+      hello: helloResult(
+        capabilities: {
+          Capability.workbench,
+          Capability.terminal,
+          Capability.agent,
+        },
+      ),
     );
 
-    uiTest('+ Claude Code opens an active, focused new tab with one agent-chat pane bound to A showing Starting', (tester) async {
-      final link = host()..agentStartGate = Completer<void>();
-      final rig = await pumpRig(tester, link);
-      await launch(tester, entry: 'launch-agent-chat');
-      final pane = rig.layout.panes.single;
-      expect(pane.kind, 'agent-chat');
-      expect(pane.workspace, 'A');
-      expect(rig.layout.focusedPane, pane.id);
-      expect(rig.layout.active!.panes.single.id, pane.id);
-      expect(find.text('Starting'), findsWidgets);
-      link.agentStartGate!.complete();
-      await flush(tester);
-    });
+    uiTest(
+      '+ Claude Code opens an active, focused new tab with one agent-chat pane bound to A showing Starting',
+      (tester) async {
+        final link = host()..agentStartGate = Completer<void>();
+        final rig = await pumpRig(tester, link);
+        await launch(tester, entry: 'launch-agent-chat');
+        final pane = rig.layout.panes.single;
+        expect(pane.kind, 'agent-chat');
+        expect(pane.workspace, 'A');
+        expect(rig.layout.focusedPane, pane.id);
+        expect(rig.layout.active!.panes.single.id, pane.id);
+        expect(find.text('Starting'), findsWidgets);
+        link.agentStartGate!.complete();
+        await flush(tester);
+      },
+    );
 
-    uiTest('a second Claude Code launch opens a second tab and leaves the first unchanged', (tester) async {
-      final link = host();
-      final rig = await pumpRig(tester, link);
-      await launch(tester, entry: 'launch-agent-chat');
-      final first = rig.layout.panes.single;
-      final original = rig.controller.agents.linkOf(first.id);
-      await launch(tester, entry: 'launch-agent-chat');
-      expect(rig.layout.tabs, hasLength(2));
-      expect(rig.layout.panes.last.item, isNot(first.item));
-      expect(rig.layout.pane(first.id)!.state, first.state);
-      expect(identical(rig.controller.agents.linkOf(first.id), original), isTrue);
-      expect(link.agentStarts, hasLength(2));
-    });
+    uiTest(
+      'a second Claude Code launch opens a second tab and leaves the first unchanged',
+      (tester) async {
+        final link = host();
+        final rig = await pumpRig(tester, link);
+        await launch(tester, entry: 'launch-agent-chat');
+        final first = rig.layout.panes.single;
+        final original = rig.controller.agents.linkOf(first.id);
+        await launch(tester, entry: 'launch-agent-chat');
+        expect(rig.layout.tabs, hasLength(2));
+        expect(rig.layout.panes.last.item, isNot(first.item));
+        expect(rig.layout.pane(first.id)!.state, first.state);
+        expect(
+          identical(rig.controller.agents.linkOf(first.id), original),
+          isTrue,
+        );
+        expect(link.agentStarts, hasLength(2));
+      },
+    );
 
-    uiTest('Personal with no workspace marks Claude Code as needing one with Open folder and sends no agent/start', (tester) async {
-      final rig = await pumpRig(tester, host());
-      rig.controller.selectPersonal();
-      await tester.pump();
-      await tester.tap(key('add-tab'));
-      await tester.pumpAndSettle();
-      expect(tester.widget<PopupMenuItem<String>>(key('launch-agent-chat')).enabled, isFalse);
-      expect(inside('launch-agent-chat', find.textContaining(RegExp('workspace', caseSensitive: false))), findsOneWidget);
-      expect(key('open-folder').hitTestable(), findsOneWidget);
-      expect(tester.widget<PopupMenuItem<String>>(key('open-folder')).enabled, isTrue);
-      expect(rig.link.agentStarts, isEmpty);
-      expect(rig.layout.tabs, isEmpty);
-    });
+    uiTest(
+      'Personal with no workspace marks Claude Code as needing one with Open folder and sends no agent/start',
+      (tester) async {
+        final rig = await pumpRig(tester, host());
+        rig.controller.selectPersonal();
+        await tester.pump();
+        await tester.tap(key('add-tab'));
+        await tester.pumpAndSettle();
+        expect(
+          tester
+              .widget<PopupMenuItem<String>>(key('launch-agent-chat'))
+              .enabled,
+          isFalse,
+        );
+        expect(
+          inside(
+            'launch-agent-chat',
+            find.textContaining(RegExp('workspace', caseSensitive: false)),
+          ),
+          findsOneWidget,
+        );
+        expect(key('open-folder').hitTestable(), findsOneWidget);
+        expect(
+          tester.widget<PopupMenuItem<String>>(key('open-folder')).enabled,
+          isTrue,
+        );
+        expect(rig.link.agentStarts, isEmpty);
+        expect(rig.layout.tabs, isEmpty);
+      },
+    );
 
-    uiTest('closing a tab with a running session and a live terminal shows one dialog naming both; confirm closes both and the tab', (tester) async {
-      final rig = await pumpRig(tester, host());
-      await launch(tester, entry: 'launch-agent-chat');
-      final pane = rig.layout.panes.single;
-      final id = rig.controller.agents.linkOf(pane.id)!.sessionId!;
-      rig.link.agentState(id, AgentState.running);
-      await rig.controller.splitWithTerminal(pane.id, SplitDirection.horizontal);
-      await flush(tester);
-      await tester.tap(key('close-${rig.layout.activeTab}'));
-      await tester.pumpAndSettle();
-      expect(key('close-warning'), findsOneWidget);
-      expect(find.textContaining('Are you sure you want to stop the running agent?'), findsOneWidget);
-      expect(find.textContaining('its shell is running'), findsOneWidget);
-      await tester.tap(key('close-warning-confirm'));
-      await flush(tester);
-      expect(rig.link.agentCloses, [id]);
-      expect(rig.link.closed, [rig.link.lastTerminal.id]);
-      expect(rig.layout.tabs, hasLength(1));
-      rig.link.agentExit(id);
-      rig.link.emitExit(rig.link.lastTerminal.id);
-      await flush(tester);
-      expect(rig.layout.tabs, isEmpty);
-    });
+    uiTest(
+      'closing a tab with a running session and a live terminal shows one dialog naming both; confirm closes both and the tab',
+      (tester) async {
+        final rig = await pumpRig(tester, host());
+        await launch(tester, entry: 'launch-agent-chat');
+        final pane = rig.layout.panes.single;
+        final id = rig.controller.agents.linkOf(pane.id)!.sessionId!;
+        rig.link.agentState(id, AgentState.running);
+        await rig.controller.splitWithTerminal(
+          pane.id,
+          SplitDirection.horizontal,
+        );
+        await flush(tester);
+        await tester.tap(key('close-${rig.layout.activeTab}'));
+        await tester.pumpAndSettle();
+        expect(key('close-warning'), findsOneWidget);
+        expect(
+          find.textContaining(
+            'Are you sure you want to stop the running agent?',
+          ),
+          findsOneWidget,
+        );
+        expect(find.textContaining('its shell is running'), findsOneWidget);
+        await tester.tap(key('close-warning-confirm'));
+        await flush(tester);
+        expect(rig.link.agentCloses, [id]);
+        expect(rig.link.closed, [rig.link.lastTerminal.id]);
+        expect(rig.layout.tabs, hasLength(1));
+        rig.link.agentExit(id);
+        rig.link.emitExit(rig.link.lastTerminal.id);
+        await flush(tester);
+        expect(rig.layout.tabs, isEmpty);
+      },
+    );
   });
 
   group('layout saver', () {

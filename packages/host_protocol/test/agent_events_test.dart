@@ -127,11 +127,17 @@ void main() {
   });
 
   test('locations-only truncation stays distinct from complete content through re-encoding', () {
-    final back = _round(AgentEvent.tool(
-      toolCallId: 'located',
-      content: [{'type': 'text', 'text': 'complete content'}],
-      locations: [for (var i = 0; i < 65; i++) {'path': 'file-$i.dart'}],
-    )).single;
+    final back = _round(
+      AgentEvent.tool(
+        toolCallId: 'located',
+        content: [
+          {'type': 'text', 'text': 'complete content'},
+        ],
+        locations: [
+          for (var i = 0; i < 65; i++) {'path': 'file-$i.dart'},
+        ],
+      ),
+    ).single;
     expect(back.locations, hasLength(64));
     expect(back.content.single['text'], 'complete content');
     expect(back.truncated, isTrue);
