@@ -41,6 +41,6 @@ Kumiko is a Flutter desktop environment for agentic software development on Wind
 
 - The first milestone targets the local loop. Planning and team collaboration follow in later milestones without reducing the agreed product scope.
 - Claude Code via ACP is the first structured runtime. Codex (ACP) and OMP (native RPC) follow (user decision, 2026-10-28).
-- Each milestone's exit criteria are demonstrated on all three desktop platforms (user decision, 2026-10-28).
+- Windows is the current delivery and qualification target (user decision, 2026-11-08, superseding the all-platform milestone gate of 2026-10-28). Linux/macOS ports and qualification follow in a later milestone; the long-term product scope remains cross-platform.
 - Dart is the implementation language for the desktop, the execution host and any future team server. Native code is used only where a platform API demands it (PTY, terminal emulation core).
 - Licensing of reference applications and selected packages is reviewed before the first distributed release; it does not block development.

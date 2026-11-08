@@ -2,7 +2,7 @@
 
 The current system shape. Change designs read this first. Strategy: [strategy.md](strategy.md). Product direction and decisions D1-D55: [`changes/document-kumiko-direction/design.md`](changes/document-kumiko-direction/design.md). Foundational decisions: [`docs/adr/`](../docs/adr/).
 
-The desktop and execution host are implemented. Runtime qualification is evidence-specific, not implied by implementation: Claude agent ACP 0.99.1 has confirmed Windows observations, while Linux/macOS user observations remain unproven (ADR 0012). M1 requires the qualification checker to report QUALIFIED, not provisional ACCEPTED.
+The desktop and execution host are implemented. Runtime qualification is evidence-specific, not implied by implementation: Claude agent ACP 0.99.1 has confirmed Windows observations, while Linux/macOS user observations remain unproven (ADR 0012). The user closed M1 for Windows on 2026-11-08, deferring Linux/macOS qualification and the Windows terminal latency finding; see [the close record](../docs/qualification/m1-close.md). The checker remains provisionally ACCEPTED across platforms; this is not a claim of all-platform qualification.
 
 ## System triage
 
@@ -75,7 +75,7 @@ flowchart LR
 
 - **Desktop-host protocol:** defined in the `host_protocol` package, versioned with a `hello` handshake and capability set (ADR 0002). Both sides use the generated or shared types only.
 - **Runtime protocols:** ACP v1 (stdio, newline-delimited JSON-RPC; `session/new`, and `session/load` or `session/resume` only when both advertised and qualified for the exact adapter name/version); OMP RPC later. Runtime and agent methods are additive desktop-host control methods gated on `Capability.agent`; raw ACP never crosses to the desktop (ADR 0004, ADR 0012).
-- **Runtime qualification evidence:** [`docs/qualification/`](../docs/qualification/) holds real per-version, per-OS observations independently of archived change artifacts. `qualified_adapters.dart` and `tool/check_qualification.dart` keep claims tied to this evidence; fake-agent tests prove Kumiko behaviour, not real-adapter qualification. Claude agent ACP 0.99.1 currently claims load and resume from confirmed Windows observations; Linux/macOS user items remain unproven, permitting only provisional ACCEPTED, not the QUALIFIED needed to close M1.
+- **Runtime qualification evidence:** [`docs/qualification/`](../docs/qualification/) holds real per-version, per-OS observations independently of archived change artifacts. `qualified_adapters.dart` and `tool/check_qualification.dart` keep claims tied to this evidence; fake-agent tests prove Kumiko behaviour, not real-adapter qualification. Claude agent ACP 0.99.1 currently claims load and resume from confirmed Windows observations; Linux/macOS user items remain unproven, permitting only provisional ACCEPTED across platforms. The Windows-only M1 close is an explicit scope decision, not an upgrade of this qualification evidence.
 - **Kumiko tools:** MCP tool schemas are owned by the host tool service and versioned with it. Authorization is per call against the session's role (ADR 0005). The endpoint, bridge handshake, MCP subset, per-role catalog, tools status semantics and the `kumiko tool call` qualification item with `toolDeliveryFailures` are defined in ADR 0013.
 - **Local store schema:** a version table in each database, with forward migrations run by the host (ADR 0003).
 - **Team API (M4+):** negotiated compatibility in both upgrade orders (D26). There are no message types for private data (ADR 0007).
