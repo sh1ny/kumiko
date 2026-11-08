@@ -23,14 +23,14 @@ Paths are relative to `packages/`. Where an existing test turns red because its 
 | app-exit → An exit that cannot be cancelled still ends everything | Host already lost at quit | desktop/test/exit_test.dart | host lost with every composer stored exits at once | red |
 | app-exit → An exit that cannot be cancelled still ends everything | Host lost with an unsaved draft | desktop/test/exit_test.dart | host lost with unsaved text lists Draft not saved: host lost | red |
 | app-exit → An exit that cannot be cancelled still ends everything | Host lost while the dialog is open | desktop/test/exit_test.dart | host loss removes process items and keeps draft items | red |
-| terminal-sessions → The host reports whether a terminal is busy | Shell at its prompt | host/test/it/terminal_activity_test.dart | idle shell reads idle | red |
-| terminal-sessions → The host reports whether a terminal is busy | Program running | host/test/it/terminal_activity_test.dart | child program reads busy with its name | red |
-| terminal-sessions → The host reports whether a terminal is busy | Background job | host/test/it/terminal_activity_test.dart | background sleep reads busy | red |
+| terminal-sessions → The host reports whether a terminal is busy | Shell at its prompt | host/test/it/terminal_activity_test.dart | idle shell reads idle | green |
+| terminal-sessions → The host reports whether a terminal is busy | Program running | host/test/it/terminal_activity_test.dart | child program reads busy with its name | green |
+| terminal-sessions → The host reports whether a terminal is busy | Background job | host/test/it/terminal_activity_test.dart | background sleep reads busy | green |
 | terminal-sessions → The host reports whether a terminal is busy | Shell replaced by exec | host/test/it/terminal_activity_test.dart | exec replaces leader image and reads busy (POSIX) | red |
 | terminal-sessions → The host reports whether a terminal is busy | Startup file runs exec | host/test/it/terminal_activity_test.dart | startup-file exec reads busy against resolved executable (POSIX) | red |
-| terminal-sessions → The host reports whether a terminal is busy | Leader image unreadable | host/test/it/terminal_activity_test.dart | injected unreadable leader image reads unknown | red |
-| terminal-sessions → The host reports whether a terminal is busy | Process table cannot be read in time | host/test/it/terminal_activity_test.dart | injected slow table read reads unknown at the deadline | red |
-| terminal-sessions → The host reports whether a terminal is busy | Unknown terminal id | host/test/it/terminal_activity_test.dart | unknown id reads ended | red |
+| terminal-sessions → The host reports whether a terminal is busy | Leader image unreadable | host/test/it/terminal_activity_test.dart | injected unreadable leader image reads unknown | green |
+| terminal-sessions → The host reports whether a terminal is busy | Process table cannot be read in time | host/test/it/terminal_activity_test.dart | injected slow table read reads unknown at the deadline | green |
+| terminal-sessions → The host reports whether a terminal is busy | Unknown terminal id | host/test/it/terminal_activity_test.dart | unknown id reads ended | green |
 | terminal-sessions → Closing live terminals warns about process loss | Close a terminal running vim | desktop/test/terminal_test.dart | close of a busy terminal warns naming its program | red |
 | terminal-sessions → Closing live terminals warns about process loss | Close a terminal at its prompt | desktop/test/terminal_test.dart | idle terminal closes without a warning | red |
 | terminal-sessions → Closing live terminals warns about process loss | Cancel the warning | desktop/test/terminal_test.dart | existing cancel-warning test, busy fixture | red |
