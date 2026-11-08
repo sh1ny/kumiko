@@ -32,43 +32,7 @@ Future<void> main(List<String> args) async {
   final draft = args.length > 5 && args[3] == '--draft';
   if (args.length > 4 && (args[3] == '--agent' || draft)) {
     final c = session.connection;
-    final reconciled = Completer<void>();
-    session.notifications.listen((n) {
-      if (n.method == Method.cleanupState &&
-          n.params['reconciling'] == false &&
-          !reconciled.isCompleted) {
-        reconciled.complete();
-      }
-    });
-    await reconciled.future;
-    final w = WorkspaceOpenResult.fromJson(
-      (await c.request(Method.workspaceOpen, WorkspaceOpenParams(args[2])))
-          as Json,
-    );
-    await c.request(
-      Method.runtimeSave,
-      RuntimeSaveParams(
-        RuntimeProfile(
-          id: 'standin-agent',
-          name: 'Stand-in agent',
-          runtimeKind: 'claude-code',
-          executable: args[0],
-          args: ['--test-fixture', 'acp-agent', '--script', args[4]],
-        ),
-      ),
-    );
-    final a = AgentStartResult.fromJson(
-      (await c.request(
-        Method.agentStart,
-        AgentStartParams(
-          workspaceId: w.workspace.id,
-          runtimeProfileId: 'standin-agent',
-        ),
-      )) as Json,
-    );
-    c.attachInbound(a.eventChannel, grantInitial: false).listen((_) {});
-    await c.request(Method.agentAttach, AgentSessionParams(a.sessionId));
-    c.grantInitial(a.eventChannel);
+    final a = await _agent(session, args);
     if (draft) {
       await c.request(
         Method.agentDraftSave,
@@ -95,6 +59,19 @@ Future<void> main(List<String> args) async {
     await stdout.flush();
     await Completer<void>().future;
   }
+  // `--terminal-and-agent <fixture-exe> <script>`: both of the above in one
+  // desktop, the agent's turn held running.
+  if (args.length > 5 && args[3] == '--terminal-and-agent') {
+    await _terminal(session, fixture: args[4], target: args[2]);
+    final a = await _agent(session, [...args.take(4), args[5]]);
+    await session.connection.request(
+      Method.agentPrompt,
+      AgentPromptParams(sessionId: a.sessionId, text: 'spawn tree'),
+    );
+    stdout.writeln('READY ${session.pid}');
+    await stdout.flush();
+    await Completer<void>().future;
+  }
   for (final fixture in [TestFixture.tree, TestFixture.escaper]) {
     await session.connection.request(
       Method.testUnitLaunch,
@@ -104,6 +81,50 @@ Future<void> main(List<String> args) async {
   stdout.writeln('READY ${session.pid}');
   await stdout.flush();
   await Completer<void>().future;
+}
+
+/// Starts one agent session of the script `args[4]` in `args[2]` and attaches
+/// its event channel.
+Future<AgentStartResult> _agent(HostSession session, List<String> args) async {
+  final c = session.connection;
+  final reconciled = Completer<void>();
+  session.notifications.listen((n) {
+    if (n.method == Method.cleanupState &&
+        n.params['reconciling'] == false &&
+        !reconciled.isCompleted) {
+      reconciled.complete();
+    }
+  });
+  await reconciled.future;
+  final w = WorkspaceOpenResult.fromJson(
+    (await c.request(Method.workspaceOpen, WorkspaceOpenParams(args[2])))
+        as Json,
+  );
+  await c.request(
+    Method.runtimeSave,
+    RuntimeSaveParams(
+      RuntimeProfile(
+        id: 'standin-agent',
+        name: 'Stand-in agent',
+        runtimeKind: 'claude-code',
+        executable: args[0],
+        args: ['--test-fixture', 'acp-agent', '--script', args[4]],
+      ),
+    ),
+  );
+  final a = AgentStartResult.fromJson(
+    (await c.request(
+      Method.agentStart,
+      AgentStartParams(
+        workspaceId: w.workspace.id,
+        runtimeProfileId: 'standin-agent',
+      ),
+    )) as Json,
+  );
+  c.attachInbound(a.eventChannel, grantInitial: false).listen((_) {});
+  await c.request(Method.agentAttach, AgentSessionParams(a.sessionId));
+  c.grantInitial(a.eventChannel);
+  return a;
 }
 
 Future<void> _terminal(
