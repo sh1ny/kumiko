@@ -35,7 +35,7 @@ refused by another ("Invalid SDK hash").
 | --- | --- |
 | `mise run check` | Pre-commit gate: `format:check`, `analyze`, `test:fast`. Must pass before you commit or report work as done |
 | `mise run analyze` | `dart analyze --fatal-infos` for the workspace, then `flutter analyze --fatal-infos` for the desktop |
-| `mise run format` / `format:check` | Format, or check formatting of, `packages/` and `tool/` |
+| `mise run format` / `format:check` | Format, or check formatting of, the source folders under `packages/` and `tool/` |
 | `mise run test:fast` | Every suite except the host's: the edit loop |
 | `mise run test:host` | Host tests, including the integration tests (builds the test host first; about a minute) |
 | `mise run test` | Every package's tests, as CI runs them |
