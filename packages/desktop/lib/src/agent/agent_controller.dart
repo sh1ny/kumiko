@@ -1128,7 +1128,7 @@ class AgentController extends ChangeNotifier implements ViewCloser {
         if (unchanged && link.prompt.text == text) {
           link._setComposer('');
           cleared = true;
-        } else if (submission == null && link.prompt.text == text) {
+        } else if (!retry && submission == null && link.prompt.text == text) {
           link.prompt.clear();
         }
       }

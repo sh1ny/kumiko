@@ -2106,6 +2106,48 @@ void main() {
       },
     );
 
+    uiTest('Retry leaves a composer that holds the failed prompt unchanged', (
+      tester,
+    ) async {
+      final host = agentHost();
+      final rig = await controllerRig(tester, host);
+      await start(rig, tester);
+      final pane = chat(rig).id;
+      final id = session(rig);
+      final link = agents(rig).linkOf(pane)!;
+      await agents(rig).send(pane, 'failed prompt');
+      host.agentState(id, AgentState.running);
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: AgentPaneView(
+              controller: agents(rig),
+              paneId: pane,
+              focused: false,
+            ),
+          ),
+        ),
+      );
+      host.agentTurnSource.add(
+        AgentTurnEndedParams(
+          sessionId: id,
+          error: ErrorCode.authRequired,
+          message: 'native sign-in expired',
+        ),
+      );
+      host.agentState(id, AgentState.idle, 2);
+      await tester.pump();
+
+      await tester.enterText(key('agent-prompt-$pane'), 'failed prompt');
+      await tester.tap(key('agent-retry-$pane'));
+      await flush(tester);
+      expect(host.agentPrompts.map((prompt) => prompt.text), [
+        'failed prompt',
+        'failed prompt',
+      ]);
+      expect(link.prompt.text, 'failed prompt');
+    });
+
     uiTest(
       'restoration authentication guidance Retry invokes Continue for the saved session',
       (tester) async {

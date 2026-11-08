@@ -321,6 +321,9 @@ class WorkbenchController extends ChangeNotifier {
     if (terminalsUnavailableReason == null) unawaited(refreshProfiles());
     final firstHost = !_previousExitAsked;
     _previousExitAsked = true;
+    // A replacement host (Restart host) never shows the first host's notice,
+    // dismissed or not.
+    if (!firstHost) _previousExit = null;
     if (firstHost && link.hello.capabilities.contains(Capability.lifecycle)) {
       unawaited(_askPreviousExit(link, generation));
     }

@@ -225,6 +225,26 @@ void main() {
       expect(notice, findsNothing);
     });
 
+    testWidgets('an undismissed notice is gone after Restart host', (
+      tester,
+    ) async {
+      final first = hostAfter(_unexpected);
+      final controller = await pumpWorkbenchWithNotice(tester, first);
+      expect(notice, findsOneWidget);
+
+      controller.detach();
+      final second = hostAfter(_unexpected);
+      unawaited(controller.attach(second));
+      await tester.pump();
+      second.emitState();
+      await tester.pump();
+      await tester.pump();
+
+      expect(second.calls, isNot(contains('app/previousExit')));
+      expect(controller.previousExitNoticeVisible, isFalse);
+      expect(notice, findsNothing);
+    });
+
     testWidgets('a dismissed notice stays dismissed after Restart host', (
       tester,
     ) async {
