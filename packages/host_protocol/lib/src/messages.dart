@@ -71,6 +71,8 @@ abstract final class Method {
   static const String agentTurnEnded = 'agent/turnEnded';
   static const String agentExited = 'agent/exited';
   static const String agentCloseFailed = 'agent/closeFailed';
+  static const String appQuit = 'app/quit';
+  static const String appPreviousExit = 'app/previousExit';
 }
 
 abstract final class Capability {
@@ -80,6 +82,9 @@ abstract final class Capability {
   static const String testFaults = 'test.faults';
   static const String terminal = 'terminal';
   static const String agent = 'agent';
+
+  /// `app/quit` and `app/previousExit` (app-exit-and-reopen D1, D5).
+  static const String lifecycle = 'lifecycle';
 }
 
 /// The capability a method needs; methods not listed need none.
@@ -123,6 +128,8 @@ const Map<String, String> methodCapability = {
   Method.agentDraftSave: Capability.agent,
   Method.agentDraftLoad: Capability.agent,
   Method.agentDraftReset: Capability.agent,
+  Method.appQuit: Capability.lifecycle,
+  Method.appPreviousExit: Capability.lifecycle,
 };
 
 /// Error reasons, carried as `error.data.reason`.
@@ -2548,6 +2555,44 @@ class AgentCloseFailedParams {
     'sessionId': sessionId,
     'reason': reason,
     'message': ?message,
+  };
+}
+
+// --- app/quit, app/previousExit -------------------------------------------
+
+/// How the immediately previous host instance ended (design D5): [quit] when
+/// the desktop announced a quit before closing the connection, [unexpected]
+/// for any other end, [none] when there was no earlier instance or its row
+/// could not be read.
+enum PreviousExitKind { quit, unexpected, none }
+
+/// The `app/previousExit` result: the snapshot the host took at lock time,
+/// before reconciliation.
+class PreviousExitResult {
+  const PreviousExitResult({required this.kind, this.openedAt});
+
+  factory PreviousExitResult.fromJson(Json json) {
+    final opened = _opt<String>(json, 'openedAt');
+    final DateTime? openedAt = opened == null
+        ? null
+        : DateTime.tryParse(opened);
+    if (opened != null && openedAt == null) {
+      throw RpcException(ErrorCode.invalidParams, 'invalid "openedAt"');
+    }
+    return PreviousExitResult(
+      kind: _enum(PreviousExitKind.values, json, 'kind'),
+      openedAt: openedAt,
+    );
+  }
+
+  final PreviousExitKind kind;
+
+  /// When the previous instance started; null for [PreviousExitKind.none].
+  final DateTime? openedAt;
+
+  Json toJson() => {
+    'kind': kind.name,
+    if (openedAt != null) 'openedAt': openedAt!.toUtc().toIso8601String(),
   };
 }
 

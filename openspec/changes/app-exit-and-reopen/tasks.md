@@ -83,18 +83,18 @@ Paths are relative to `packages/`. Where an existing test turns red because its 
 | agent-sessions → Closing a running agent asks for confirmation | Confirm closing a running session | host/test/it/agent_close_test.dart | 'running close cancels permissions before cancel…' | green |
 | agent-sessions → Closing a running agent asks for confirmation | Tab with a running agent and a live terminal | desktop/test/workbench_test.dart | 'closing a tab with a running session and a live terminal…', busy fixture | red |
 | agent-sessions → Closing a running agent asks for confirmation | Turn ends while the confirmation is open | desktop/test/agent_test.dart | existing turn-ends-while-confirmation test | green |
-| execution-host → The host records whether the desktop quit | Normal quit | host/test/it/previous_exit_test.dart | app/quit then input close writes exit_kind quit | red |
-| execution-host → The host records whether the desktop quit | Desktop killed | host/test/it/previous_exit_test.dart | killed stand-in desktop leaves exit_kind null | red |
-| execution-host → The host records whether the desktop quit | Host killed | host/test/it/previous_exit_test.dart | killed host leaves exit_kind null | red |
-| execution-host → An unexpected previous end is shown at the next launch | Reopen after the desktop was killed | desktop/test/cleanup_list_test.dart | notice shows did not close normally with all cleaned | red |
-| execution-host → An unexpected previous end is shown at the next launch | Reopen with unresolved cleanup | desktop/test/cleanup_list_test.dart | notice lists unresolved workspaces with Show cleanup list | red |
-| execution-host → An unexpected previous end is shown at the next launch | Reopen after a normal quit | host/test/it/previous_exit_test.dart | previousExit after quit reports quit; no notice | red |
-| execution-host → An unexpected previous end is shown at the next launch | First launch on a new profile | host/test/it/previous_exit_test.dart | new profile reports no previous instance | red |
-| execution-host → An unexpected previous end is shown at the next launch | Restart host after a loss | host/test/it/previous_exit_test.dart | Restart host shows the notice once for the lost instance | red |
-| execution-host → An unexpected previous end is shown at the next launch | Reconciliation removes the previous instance row | host/test/it/previous_exit_test.dart | snapshot taken before reconciliation deletes the row | red |
-| execution-host → An unexpected previous end is shown at the next launch | Previous exit cannot be read | host/test/it/previous_exit_test.dart | unreadable snapshot logs only and shows no notice | red |
-| desktop-host-protocol → Lifecycle, activity and draft methods are capability-gated | Both peers support lifecycle | host_protocol/test/lifecycle_messages_test.dart | lifecycle methods round-trip when both advertise it | red |
-| desktop-host-protocol → Lifecycle, activity and draft methods are capability-gated | Host without lifecycle | host/test/it/previous_exit_test.dart | host without lifecycle refuses method-not-available; quit still ends units | red |
+| execution-host → The host records whether the desktop quit | Normal quit | host/test/it/previous_exit_test.dart | app/quit then input close writes exit_kind quit | green |
+| execution-host → The host records whether the desktop quit | Desktop killed | host/test/it/previous_exit_test.dart | killed stand-in desktop leaves exit_kind null | green |
+| execution-host → The host records whether the desktop quit | Host killed | host/test/it/previous_exit_test.dart | killed host leaves exit_kind null | green |
+| execution-host → An unexpected previous end is shown at the next launch | Reopen after the desktop was killed | desktop/test/cleanup_list_test.dart | notice shows did not close normally with all cleaned | green |
+| execution-host → An unexpected previous end is shown at the next launch | Reopen with unresolved cleanup | desktop/test/cleanup_list_test.dart | notice lists unresolved workspaces with Show cleanup list | green |
+| execution-host → An unexpected previous end is shown at the next launch | Reopen after a normal quit | host/test/it/previous_exit_test.dart | previousExit after quit reports quit; no notice | green |
+| execution-host → An unexpected previous end is shown at the next launch | First launch on a new profile | host/test/it/previous_exit_test.dart | new profile reports no previous instance | green |
+| execution-host → An unexpected previous end is shown at the next launch | Restart host after a loss | desktop/test/cleanup_list_test.dart | Restart host neither asks again nor shows it again | green |
+| execution-host → An unexpected previous end is shown at the next launch | Reconciliation removes the previous instance row | host/test/it/previous_exit_test.dart | snapshot taken before reconciliation deletes the row | green |
+| execution-host → An unexpected previous end is shown at the next launch | Previous exit cannot be read | host/test/it/previous_exit_test.dart | unreadable snapshot logs only and shows no notice | green |
+| desktop-host-protocol → Lifecycle, activity and draft methods are capability-gated | Both peers support lifecycle | host_protocol/test/lifecycle_messages_test.dart | lifecycle methods round-trip when both advertise it | green |
+| desktop-host-protocol → Lifecycle, activity and draft methods are capability-gated | Host without lifecycle | host/test/it/previous_exit_test.dart | host without lifecycle refuses method-not-available; quit still ends units | green |
 | desktop-host-protocol → Activity and draft requests are bounded | Too many terminals | host/test/it/terminal_activity_test.dart | 65 ids refused invalid-params without a table read | green |
 | desktop-host-protocol → Activity and draft requests are bounded | Oversized draft | host_protocol/test/agent_messages_test.dart | draft one byte past 256 KiB encoded refused draft-too-large | green |
 | desktop-host-protocol → Activity and draft requests are bounded | Unknown session | host/test/it/draft_store_test.dart | draftSave for unknown session refused unknown-session | green |
@@ -135,8 +135,8 @@ Paths are relative to `packages/`. Where an existing test turns red because its 
 
 ## 6. Previous exit
 
-- [ ] 6.1 Store v6 migration adding `host_instance.exit_kind`, with a `migrations_test.dart` case. Then write the failing `previous_exit_test.dart` rows, add `app/quit` and `app/previousExit` with the `lifecycle` capability (`lifecycle_messages_test.dart`), and implement: write `exit_kind` in `_finish` only after `app/quit` plus an `inputClosed` close; snapshot the previous instance at lock time, before reconciliation. Verify: the execution-host and capability rows are green.
-- [ ] 6.2 Show the previous-exit notice in `workbench_page.dart` / `cleanup_list_view.dart` (*Kumiko did not close normally last time*, the cleanup outcome, *Show cleanup list*). Verify: the `cleanup_list_test.dart` rows are green.
+- [x] 6.1 Store v6 migration adding `host_instance.exit_kind`, with a `migrations_test.dart` case. Then write the failing `previous_exit_test.dart` rows, add `app/quit` and `app/previousExit` with the `lifecycle` capability (`lifecycle_messages_test.dart`), and implement: write `exit_kind` in `_finish` only after `app/quit` plus an `inputClosed` close; snapshot the previous instance at lock time, before reconciliation. Verify: the execution-host and capability rows are green.
+- [x] 6.2 Show the previous-exit notice in `workbench_page.dart` / `cleanup_list_view.dart` (*Kumiko did not close normally last time*, the cleanup outcome, *Show cleanup list*). Verify: the `cleanup_list_test.dart` rows are green.
 
 ## 7. App exit coordinator
 

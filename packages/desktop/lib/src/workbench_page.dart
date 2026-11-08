@@ -135,6 +135,18 @@ class _WorkbenchPageState extends State<WorkbenchPage> {
           color: scheme.secondaryContainer,
           text: 'Cleaning up after the previous session...',
         ),
+      if (controller.previousExitNoticeVisible)
+        PreviousExitNotice(
+          key: const Key('previous-exit'),
+          unresolvedWorkspaces: controller.unresolvedWorkspaces,
+          onDismiss: controller.dismissPreviousExit,
+          onShowCleanupList: cleanup == null
+              ? null
+              : () => showDialog<void>(
+                  context: context,
+                  builder: (_) => _CleanupDialog.shared(cleanup!),
+                ),
+        ),
       if (controller.restoreNotice case final notice?)
         _Banner(
           color: scheme.tertiaryContainer,

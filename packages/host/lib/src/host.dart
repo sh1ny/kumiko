@@ -89,6 +89,16 @@ class Host {
   ToolEndpoint? _toolEndpoint;
   bool _stopping = false;
 
+  /// The desktop sent `app/quit`: a close of its input is a quit (design D1).
+  bool _quitAnnounced = false;
+
+  /// How the instance before this one ended, read once under the profile lock
+  /// before this instance is recorded and before reconciliation starts, which
+  /// deletes unit-less earlier instance rows (design D5). Immutable.
+  PreviousExitResult _previousExit = const PreviousExitResult(
+    kind: PreviousExitKind.none,
+  );
+
   /// Runs until the desktop goes away; returns the exit code.
   Future<int> run() {
     _startup = _start();
@@ -101,6 +111,7 @@ class Host {
         Capability.workbench,
         Capability.terminal,
         Capability.agent,
+        if (options.advertiseLifecycle) Capability.lifecycle,
         ...?extension?.capabilities,
       },
       onHello: _onHello,
@@ -146,6 +157,13 @@ class Host {
     } on StoreError catch (e) {
       log.event('store-failed', code: e.code);
       return _StartFailure(_storeError(e), HostExit.startFailed);
+    }
+    // An unreadable row is logged and reported as no previous instance: the
+    // notice is a courtesy and must not block the start.
+    try {
+      _previousExit = Ledger.readPreviousExit(_store!);
+    } on Object catch (e) {
+      log.event('previous-exit-unreadable', code: '${e.runtimeType}');
     }
     log.event('host-start', ids: {'pid': pid});
     // The lock is held, so a socket file here is stale. A failure leaves the
@@ -351,6 +369,15 @@ class Host {
   Future<Object?> _onRequest(String method, Json params) async {
     final cleanup = _cleanup!;
     switch (method) {
+      case Method.appQuit:
+        EmptyParams.fromJson(params);
+        _quitAnnounced = true;
+        return <String, Object?>{};
+      case Method.appPreviousExit:
+        EmptyParams.fromJson(params);
+        return _previousExit.toJson();
+    }
+    switch (method) {
       case Method.cleanupList:
         return cleanup.list(CleanupListParams.fromJson(params)).toJson();
       case Method.cleanupUnits:
@@ -520,15 +547,23 @@ class Host {
       await units.shutdown(options.shutdownDeadline);
       await _agents?.finishShutdown();
     }
-    await _finish(code);
+    // A quit needs both: the desktop said so, and then closed its input. Any
+    // other end (broken pipe, violation, overflow) is not recorded as one.
+    await _finish(
+      code,
+      quit: _quitAnnounced && reason.kind == CloseReason.inputClosed,
+    );
   }
 
-  Future<void> _finish(int code) async {
+  Future<void> _finish(int code, {bool quit = false}) async {
     if (_stopping) return;
     _stopping = true;
     final units = _units;
     try {
-      _ledger?.closeInstance(cleanly: units != null && units.live.isEmpty);
+      _ledger?.closeInstance(
+        cleanly: units != null && units.live.isEmpty,
+        quit: quit,
+      );
     } on Object {
       // The row stays as it is; the next host reconciles.
     }

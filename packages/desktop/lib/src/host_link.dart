@@ -144,6 +144,14 @@ abstract interface class HostLink {
   Stream<AgentExitedParams> get agentExits;
   Stream<AgentCloseFailedParams> get agentCloseFailures;
 
+  /// `app/previousExit` (capability `lifecycle`): how the instance before
+  /// this host's ended, as the host captured it before reconciliation.
+  Future<PreviousExitResult> previousExit();
+
+  /// `app/quit` (capability `lifecycle`): tells the host that the connection
+  /// close which follows is a quit.
+  Future<void> announceQuit();
+
   /// Ends the host as the desktop quits.
   Future<void> quit();
 }

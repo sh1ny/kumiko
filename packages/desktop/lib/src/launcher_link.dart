@@ -451,6 +451,15 @@ class SessionLink implements HostLink {
       .map((n) => AgentCloseFailedParams.fromJson(n.params));
 
   @override
+  Future<PreviousExitResult> previousExit() async =>
+      PreviousExitResult.fromJson(
+        await _request(Method.appPreviousExit, const {}),
+      );
+
+  @override
+  Future<void> announceQuit() => _request(Method.appQuit, const {});
+
+  @override
   Future<void> quit() async {
     await session.quit();
   }

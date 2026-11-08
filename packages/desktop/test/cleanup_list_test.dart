@@ -1,13 +1,18 @@
 import 'dart:async';
 
+import 'package:desktop/src/cleanup_controller.dart';
 import 'package:desktop/src/cleanup_list_view.dart';
+import 'package:desktop/src/folder_picker.dart';
 import 'package:desktop/src/host_controller.dart';
 import 'package:desktop/src/host_status_page.dart';
+import 'package:desktop/src/workbench_controller.dart';
+import 'package:desktop/src/workbench_page.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:host_protocol/host_protocol.dart';
 
 import 'support/fake_host.dart';
+import 'support/fake_terminal_surface.dart';
 
 Future<HostController> pumpConnected(
   WidgetTester tester,
@@ -33,7 +38,214 @@ Future<HostController> pumpConnected(
   return controller;
 }
 
+const _lifecycle = {Capability.workbench, Capability.lifecycle};
+
+const _unexpected = PreviousExitResult(kind: PreviousExitKind.unexpected);
+
+/// The workbench over [link] with the host's whole cleanup list, as the app
+/// wires them. Returns the controller so a test can attach a second host.
+Future<WorkbenchController> pumpWorkbenchWithNotice(
+  WidgetTester tester,
+  FakeHostLink link,
+) async {
+  tester.view.physicalSize = const Size(1400, 900);
+  tester.view.devicePixelRatio = 1;
+  addTearDown(tester.view.reset);
+  final controller = WorkbenchController(
+    picker: _NoPicker(),
+    surfaceFactory: FakeSurfaces().call,
+  );
+  final cleanup = CleanupController(link);
+  addTearDown(() {
+    controller.dispose();
+    cleanup.dispose();
+  });
+  await tester.pumpWidget(
+    MaterialApp(
+      home: WorkbenchPage(controller: controller, cleanup: cleanup),
+    ),
+  );
+  unawaited(controller.attach(link));
+  await tester.pump();
+  link.emitState();
+  await tester.pump();
+  await tester.pump();
+  return controller;
+}
+
+class _NoPicker implements FolderPicker {
+  @override
+  Future<String?> pickFolder() async => null;
+}
+
+FakeHostLink hostAfter(
+  PreviousExitResult previous, {
+  List<CleanupWorkspace>? workspaces,
+  Set<String> capabilities = _lifecycle,
+}) => FakeHostLink(
+  hello: helloResult(capabilities: capabilities),
+  workspaces: workspaces,
+)..previousExitAnswer = previous;
+
 void main() {
+  group('previous-exit notice', () {
+    final notice = find.byKey(const Key('previous-exit'));
+    const heading = 'Kumiko did not close normally last time';
+
+    testWidgets('notice shows did not close normally with all cleaned', (
+      tester,
+    ) async {
+      final link = hostAfter(_unexpected);
+      await pumpWorkbenchWithNotice(tester, link);
+
+      expect(find.text(heading), findsOneWidget);
+      expect(find.text('Every process was cleaned.'), findsOneWidget);
+      expect(find.text('Show cleanup list'), findsNothing);
+      expect(link.calls.where((c) => c == 'app/previousExit'), hasLength(1));
+
+      await tester.tap(find.byTooltip('Dismiss'));
+      await tester.pump();
+      expect(notice, findsNothing);
+    });
+
+    testWidgets('notice lists unresolved workspaces with Show cleanup list', (
+      tester,
+    ) async {
+      final link = hostAfter(_unexpected, workspaces: [workspace(1)]);
+      await pumpWorkbenchWithNotice(tester, link);
+
+      expect(find.text(heading), findsOneWidget);
+      expect(find.text('1 workspace has cleanup unresolved.'), findsOneWidget);
+      expect(find.text('Every process was cleaned.'), findsNothing);
+
+      await tester.tap(find.text('Show cleanup list'));
+      await tester.pumpAndSettle();
+
+      expect(find.text('/work/project-1'), findsOneWidget);
+      expect(find.text('Retry cleanup'), findsOneWidget);
+    });
+
+    testWidgets('the outcome counts several workspaces', (tester) async {
+      final link = hostAfter(
+        _unexpected,
+        workspaces: [workspace(1), workspace(2)],
+      );
+      await pumpWorkbenchWithNotice(tester, link);
+
+      expect(
+        find.text('2 workspaces have cleanup unresolved.'),
+        findsOneWidget,
+      );
+    });
+
+    testWidgets('the notice waits until reconciliation ends', (tester) async {
+      final link = FakeHostLink(
+        hello: helloResult(
+          capabilities: _lifecycle,
+          state: HostState.reconciling,
+        ),
+      )..previousExitAnswer = _unexpected;
+      tester.view.physicalSize = const Size(1400, 900);
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.reset);
+      final controller = WorkbenchController(
+        picker: _NoPicker(),
+        surfaceFactory: FakeSurfaces().call,
+      );
+      addTearDown(controller.dispose);
+      await tester.pumpWidget(
+        MaterialApp(home: WorkbenchPage(controller: controller)),
+      );
+      unawaited(controller.attach(link));
+      await tester.pump();
+      await tester.pump();
+
+      expect(find.text(heading), findsNothing);
+
+      link.emitState();
+      await tester.pump();
+      await tester.pump();
+      expect(find.text(heading), findsOneWidget);
+    });
+
+    for (final previous in [
+      const PreviousExitResult(kind: PreviousExitKind.quit),
+      const PreviousExitResult(kind: PreviousExitKind.none),
+    ]) {
+      testWidgets('no notice after ${previous.kind.name}', (tester) async {
+        final link = hostAfter(previous);
+        await pumpWorkbenchWithNotice(tester, link);
+
+        expect(link.calls, contains('app/previousExit'));
+        expect(notice, findsNothing);
+      });
+    }
+
+    testWidgets('no notice when the previous exit cannot be asked', (
+      tester,
+    ) async {
+      final link = hostAfter(_unexpected)
+        ..previousExitAnswer = RpcException(ErrorCode.internalError, 'boom');
+      await pumpWorkbenchWithNotice(tester, link);
+
+      expect(notice, findsNothing);
+    });
+
+    testWidgets('a host without lifecycle is not asked and shows no notice', (
+      tester,
+    ) async {
+      final link = hostAfter(
+        _unexpected,
+        capabilities: const {Capability.workbench},
+      );
+      await pumpWorkbenchWithNotice(tester, link);
+
+      expect(link.calls, isNot(contains('app/previousExit')));
+      expect(notice, findsNothing);
+    });
+
+    testWidgets('Restart host neither asks again nor shows it again', (
+      tester,
+    ) async {
+      final first = hostAfter(
+        const PreviousExitResult(kind: PreviousExitKind.quit),
+      );
+      final controller = await pumpWorkbenchWithNotice(tester, first);
+      expect(notice, findsNothing);
+
+      controller.detach();
+      final second = hostAfter(_unexpected);
+      unawaited(controller.attach(second));
+      await tester.pump();
+      second.emitState();
+      await tester.pump();
+      await tester.pump();
+
+      expect(second.calls, isNot(contains('app/previousExit')));
+      expect(notice, findsNothing);
+    });
+
+    testWidgets('a dismissed notice stays dismissed after Restart host', (
+      tester,
+    ) async {
+      final first = hostAfter(_unexpected);
+      final controller = await pumpWorkbenchWithNotice(tester, first);
+      await tester.tap(find.byTooltip('Dismiss'));
+      await tester.pump();
+
+      controller.detach();
+      final second = hostAfter(_unexpected);
+      unawaited(controller.attach(second));
+      await tester.pump();
+      second.emitState();
+      await tester.pump();
+      await tester.pump();
+
+      expect(second.calls, isNot(contains('app/previousExit')));
+      expect(notice, findsNothing);
+    });
+  });
+
   testWidgets('list pages and shows counts', (tester) async {
     final link = FakeHostLink(
       workspaces: [for (var i = 0; i < 30; i++) workspace(i, unitCount: 3)],

@@ -23,6 +23,7 @@ const String fixtureReportSuffix = '.out';
 const Set<String> testCapabilities = {
   Capability.workbench,
   Capability.terminal,
+  Capability.lifecycle,
   Capability.testUnits,
   Capability.testChannels,
   Capability.testFaults,
@@ -271,6 +272,15 @@ class Desktop {
     final result = await connection.request(method, params);
     return result is Json ? result : <String, Object?>{};
   }
+
+  // --- lifecycle ---------------------------------------------------------
+
+  /// `app/quit`: the desktop announces that closing the connection is a quit.
+  Future<void> announceQuit() => _call(Method.appQuit, {});
+
+  /// `app/previousExit`: the snapshot of the previous instance.
+  Future<PreviousExitResult> previousExit() async =>
+      PreviousExitResult.fromJson(await _call(Method.appPreviousExit, {}));
 
   // --- workspaces --------------------------------------------------------
 

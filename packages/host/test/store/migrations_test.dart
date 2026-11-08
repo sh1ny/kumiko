@@ -70,10 +70,13 @@ void main() {
       final old = Store.open(profile, lock, migrations: v4());
       final before = oldRows(old);
       old.close();
-      final store = Store.open(profile, lock);
+      final store = Store.open(
+        profile,
+        lock,
+        migrations: schemaMigrations.take(5).toList(),
+      );
       addTearDown(store.close);
       expect(store.userVersion, 5);
-      expect(currentSchemaVersion, 5);
       expect(oldRows(store), before);
       expect(
         store
@@ -138,7 +141,11 @@ void main() {
     });
 
     test('v5 role check accepts coding only and profile deletion keeps native record', () {
-      final store = Store.open(profile, lock);
+      final store = Store.open(
+        profile,
+        lock,
+        migrations: schemaMigrations.take(5).toList(),
+      );
       addTearDown(store.close);
       store.execute(
         "INSERT INTO runtime_profile VALUES ('r', 'Claude', 'claude-code', 'node', '[]', '{}', 'a', 'a')",
@@ -214,7 +221,11 @@ void main() {
     });
 
     test('v4-only reader refuses v5 with database bytes unchanged', () {
-      Store.open(profile, lock).close();
+      Store.open(
+        profile,
+        lock,
+        migrations: schemaMigrations.take(5).toList(),
+      ).close();
       final before = dbFile().readAsBytesSync();
       expect(
         () => Store.open(profile, lock, migrations: v4()),
@@ -228,12 +239,151 @@ void main() {
     });
   });
 
+  group('v6 exit kind', () {
+    List<MigrationStep> v5() => schemaMigrations.take(5).toList();
+
+    void seedV5() {
+      Store.open(profile, lock, migrations: v5())
+        ..execute(
+          "INSERT INTO host_instance VALUES (3, 1, 'a', NULL, NULL, 'x', 'a', 1)",
+        )
+        ..execute(
+          "INSERT INTO host_instance VALUES (4, 2, 'b', 9, 'c', 'y', 'b', 0)",
+        )
+        ..execute(
+          "INSERT INTO unit VALUES ('c', 4, 'terminal', '/p', 'i', 'running', NULL, NULL, NULL, 'a', 'a')",
+        )
+        ..close();
+    }
+
+    List<List<Object?>> rows(Store store, String table) => [
+      for (final r in store.select('SELECT * FROM $table ORDER BY 1')) r.values,
+    ];
+
+    test('v5 migrates to v6 keeping every row with a null exit kind', () {
+      seedV5();
+      final old = Store.open(profile, lock, migrations: v5());
+      final before = rows(old, 'host_instance');
+      final unitBefore = rows(old, 'unit');
+      old.close();
+
+      final store = Store.open(profile, lock);
+      addTearDown(store.close);
+
+      expect(store.userVersion, 6);
+      expect(
+        store.select('PRAGMA table_info(host_instance)').map((r) => r['name']),
+        [
+          'id',
+          'host_pid',
+          'host_started_at',
+          'desktop_pid',
+          'desktop_started_at',
+          'os',
+          'opened_at',
+          'closed_cleanly',
+          'exit_kind',
+        ],
+      );
+      final column = store
+          .select('PRAGMA table_info(host_instance)')
+          .singleWhere((r) => r['name'] == 'exit_kind');
+      expect(column['type'], 'TEXT');
+      expect(column['notnull'], 0);
+      expect(column['dflt_value'], isNull);
+      expect([
+        for (final r in rows(store, 'host_instance')) r.sublist(0, 8),
+      ], before);
+      expect(
+        rows(store, 'host_instance').map((r) => r.last),
+        everyElement(isNull),
+      );
+      expect(rows(store, 'unit'), unitBefore);
+    });
+
+    test('exit kind accepts quit and null only', () {
+      final store = Store.open(profile, lock);
+      addTearDown(store.close);
+      void insert(int id, String? kind) => store.execute(
+        'INSERT INTO host_instance(id, host_pid, host_started_at, os, '
+        'opened_at, closed_cleanly, exit_kind) '
+        "VALUES (?, 1, 'a', 'x', 'a', 0, ?)",
+        [id, kind],
+      );
+      insert(1, 'quit');
+      insert(2, null);
+      expect(() => insert(3, 'unexpected'), throwsA(isA<SqliteException>()));
+      expect(() => insert(4, ''), throwsA(isA<SqliteException>()));
+      expect(
+        store
+            .select('SELECT id, exit_kind FROM host_instance ORDER BY id')
+            .map((r) => [r['id'], r['exit_kind']]),
+        [
+          [1, 'quit'],
+          [2, null],
+        ],
+      );
+    });
+
+    test('fault inside v6 rolls back the column and user_version to v5', () {
+      seedV5();
+      final old = Store.open(profile, lock, migrations: v5());
+      final before = rows(old, 'host_instance');
+      old.close();
+
+      expect(
+        () => Store.open(
+          profile,
+          lock,
+          migrations: [
+            ...v5(),
+            (db) {
+              schemaMigrations[5](db);
+              throw StateError('injected v6 fault');
+            },
+          ],
+        ),
+        throwsA(
+          isA<StoreMigrationFailed>()
+              .having((e) => e.fromVersion, 'from', 5)
+              .having((e) => e.toVersion, 'to', 6)
+              .having((e) => e.cause, 'cause', isA<StateError>()),
+        ),
+      );
+
+      final store = Store.open(profile, lock, migrations: v5());
+      addTearDown(store.close);
+      expect(store.userVersion, 5);
+      expect(rows(store, 'host_instance'), before);
+      expect(
+        store
+            .select('PRAGMA table_info(host_instance)')
+            .where((r) => r['name'] == 'exit_kind'),
+        isEmpty,
+      );
+    });
+
+    test('v5-only reader refuses v6 with database bytes unchanged', () {
+      Store.open(profile, lock).close();
+      final before = dbFile().readAsBytesSync();
+      expect(
+        () => Store.open(profile, lock, migrations: v5()),
+        throwsA(
+          isA<StoreNewer>()
+              .having((e) => e.storeVersion, 'store', 6)
+              .having((e) => e.supportedVersion, 'supported', 5),
+        ),
+      );
+      expect(dbFile().readAsBytesSync(), before);
+    });
+  });
+
   test('fresh store created at current version', () {
     final store = Store.open(profile, lock);
     addTearDown(store.close);
 
     expect(store.userVersion, currentSchemaVersion);
-    expect(currentSchemaVersion, 5);
+    expect(currentSchemaVersion, 6);
     expect(store.pragma('journal_mode'), 'wal');
     expect(store.pragma('synchronous'), 2); // FULL
     final tables = store
@@ -331,13 +481,13 @@ void main() {
       () => Store.open(profile, lock, migrations: steps),
       throwsA(
         isA<StoreMigrationFailed>()
-            .having((e) => e.fromVersion, 'from', 6)
-            .having((e) => e.toVersion, 'to', 7),
+            .having((e) => e.fromVersion, 'from', 7)
+            .having((e) => e.toVersion, 'to', 8),
       ),
     );
     final db = sqlite3.open(dbFile().path);
     addTearDown(db.close);
-    expect(db.select('PRAGMA user_version').single.values.first, 6);
+    expect(db.select('PRAGMA user_version').single.values.first, 7);
   });
 
   test('newer user_version is refused unchanged', () {
@@ -354,7 +504,7 @@ void main() {
         isA<StoreNewer>()
             .having((e) => e.code, 'code', 'store-newer')
             .having((e) => e.storeVersion, 'store', 9)
-            .having((e) => e.supportedVersion, 'supported', 5),
+            .having((e) => e.supportedVersion, 'supported', 6),
       ),
     );
 

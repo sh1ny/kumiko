@@ -218,6 +218,13 @@ class WorkbenchController extends ChangeNotifier {
   String? _restoreNotice;
   String? _message;
   bool _reconciling = false;
+  int _unresolvedWorkspaces = 0;
+
+  /// The desktop asks `app/previousExit` once, for its first host connection;
+  /// Restart host and a second host never ask or show it again.
+  bool _previousExitAsked = false;
+  PreviousExitResult? _previousExit;
+  bool _previousExitDismissed = false;
   ProfileListResult? _profiles;
 
   /// Names of every profile seen, to name a default that was removed.
@@ -266,6 +273,23 @@ class WorkbenchController extends ChangeNotifier {
   /// The host is still cleaning up after the previous session.
   bool get reconciling => _reconciling;
 
+  /// Show *Kumiko did not close normally last time*: the first host reported
+  /// that the previous instance did not record a quit, reconciliation has
+  /// ended and the user has not dismissed it (execution-host, design D5).
+  bool get previousExitNoticeVisible =>
+      !_reconciling &&
+      !_previousExitDismissed &&
+      _previousExit?.kind == PreviousExitKind.unexpected;
+
+  /// Workspaces with *cleanup unresolved* in the newest `cleanup/state`: the
+  /// outcome the notice states.
+  int get unresolvedWorkspaces => _unresolvedWorkspaces;
+
+  void dismissPreviousExit() {
+    _previousExitDismissed = true;
+    notifyListeners();
+  }
+
   WorkspaceRecord? workspace(String id) {
     for (final w in _workspaces) {
       if (w.id == id) return w;
@@ -295,6 +319,11 @@ class WorkbenchController extends ChangeNotifier {
       ..add(link.workspaceChanges.listen(_onWorkspaceChanged));
     notifyListeners();
     if (terminalsUnavailableReason == null) unawaited(refreshProfiles());
+    final firstHost = !_previousExitAsked;
+    _previousExitAsked = true;
+    if (firstHost && link.hello.capabilities.contains(Capability.lifecycle)) {
+      unawaited(_askPreviousExit(link, generation));
+    }
 
     final WorkbenchLoadResult result;
     try {
@@ -367,6 +396,21 @@ class WorkbenchController extends ChangeNotifier {
     if (_stale(generation)) return;
     notifyListeners();
     if (_latestStateRevision > _listApplied) unawaited(_refreshList());
+  }
+
+  /// An answer that cannot be had (the host refuses it or is gone) means no
+  /// notice: it is a courtesy, never a reason to fail the connection.
+  Future<void> _askPreviousExit(HostLink link, int generation) async {
+    try {
+      final result = await link.previousExit();
+      if (_stale(generation)) return;
+      _previousExit = result;
+      notifyListeners();
+    } on RpcException {
+      // No notice.
+    } on ConnectionClosedException {
+      // No notice.
+    }
   }
 
   /// The host is gone: keep the layout, forget the link.
@@ -1283,6 +1327,7 @@ class WorkbenchController extends ChangeNotifier {
   void _onCleanupState(CleanupState s) {
     if (_disposed) return;
     _reconciling = s.reconciling;
+    _unresolvedWorkspaces = s.unresolvedWorkspaces;
     if (s.revision > _latestStateRevision) _latestStateRevision = s.revision;
     notifyListeners();
     if (_listLoaded && s.revision > _listApplied) {

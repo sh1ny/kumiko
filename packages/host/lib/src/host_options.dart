@@ -20,6 +20,7 @@ class HostOptions {
     this.revokedSecretsKept = defaultRevokedSecretsKept,
     this.draftDeadline = defaultDraftDeadline,
     this.draftOpenHold = Duration.zero,
+    this.advertiseLifecycle = true,
   });
 
   /// Secrets of revoked tool grants still redacted from adapter text.
@@ -90,6 +91,10 @@ class HostOptions {
 
   /// Extra wait before the draft worker opens its file (tests only).
   final Duration draftOpenHold;
+
+  /// Whether `hello` offers the `lifecycle` capability; a test build turns it
+  /// off to play a host that predates it.
+  final bool advertiseLifecycle;
 
   /// Extra wait at the start of reconciliation (tests only).
   final Duration reconcileDelay;

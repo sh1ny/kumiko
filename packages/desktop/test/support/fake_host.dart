@@ -856,6 +856,28 @@ class FakeHostLink implements HostLink {
     ),
   );
 
+  /// What `app/previousExit` answers, or throws when it is an error.
+  Object previousExitAnswer = const PreviousExitResult(
+    kind: PreviousExitKind.none,
+  );
+
+  /// True once `app/quit` was sent.
+  bool quitAnnounced = false;
+
+  @override
+  Future<PreviousExitResult> previousExit() async {
+    calls.add('app/previousExit');
+    final answer = previousExitAnswer;
+    if (answer is Exception || answer is Error) throw answer;
+    return answer as PreviousExitResult;
+  }
+
+  @override
+  Future<void> announceQuit() async {
+    calls.add('app/quit');
+    quitAnnounced = true;
+  }
+
   @override
   Future<void> quit() async => quitCalled = true;
 }

@@ -29,7 +29,8 @@ class TestHostExtension implements HostExtension {
   /// `SHUTDOWN_DEADLINE_MS`, `WORKSPACE_CAP`, `RESOLVE_TIMEOUT_MS`,
   /// `ATTACH_TIMEOUT_MS`, `SETTLE_DEADLINE_MS`, `CONSOLE_CLOSE_TIMEOUT_MS`,
   /// `READ_DEADLINE_MS`, `REVOKED_SECRETS_KEPT`, `DRAFT_DEADLINE_MS`,
-  /// `DRAFT_OPEN_HOLD_MS`.
+  /// `DRAFT_OPEN_HOLD_MS`; `KUMIKO_TEST_NO_LIFECYCLE=1` withholds the
+  /// `lifecycle` capability.
   /// `KUMIKO_TEST_SHELL_PATH` replaces `PATH` for shell detection (entries
   /// split by the platform's path separator) and switches the well-known
   /// install locations off; `KUMIKO_TEST_SHELL_DIRS` lists them instead.
@@ -105,6 +106,7 @@ class TestHostExtension implements HostExtension {
         draftDeadline:
             millis('DRAFT_DEADLINE_MS') ?? HostOptions.defaultDraftDeadline,
         draftOpenHold: millis('DRAFT_OPEN_HOLD_MS') ?? Duration.zero,
+        advertiseLifecycle: env['KUMIKO_TEST_NO_LIFECYCLE'] != '1',
         postExitReadDeadline:
             millis('READ_DEADLINE_MS') ??
             HostOptions.defaultPostExitReadDeadline,
