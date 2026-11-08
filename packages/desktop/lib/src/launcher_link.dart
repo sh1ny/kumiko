@@ -280,13 +280,18 @@ class SessionLink implements HostLink {
 
   @override
   Future<AgentStartResult> startAgent(AgentStartParams params) async =>
-      AgentStartResult.fromJson(await _request(Method.agentStart, params.toJson()));
+      AgentStartResult.fromJson(
+        await _request(Method.agentStart, params.toJson()),
+      );
 
   @override
   Future<AgentContinueResult> continueAgent(String sessionId) async =>
-      AgentContinueResult.fromJson(await _request(
-        Method.agentContinue, AgentSessionParams(sessionId).toJson(),
-      ));
+      AgentContinueResult.fromJson(
+        await _request(
+          Method.agentContinue,
+          AgentSessionParams(sessionId).toJson(),
+        ),
+      );
 
   @override
   Stream<AgentEvent> attachAgent(String sessionId, int eventChannel) {
@@ -298,42 +303,53 @@ class SessionLink implements HostLink {
     Future<void> cancel() async {
       cancelled = true;
       await input?.cancel();
-      await connection.closeChannel(eventChannel).then<void>(
-        (_) {}, onError: (Object _) {},
-      );
+      await connection
+          .closeChannel(eventChannel)
+          .then<void>((_) {}, onError: (Object _) {});
     }
+
     events = StreamController<AgentEvent>(
       sync: true,
       onListen: () {
-        final bytes = connection.attachInbound(eventChannel, grantInitial: false);
-        input = bytes.listen((chunk) {
-          if (cancelled) return;
-          try {
-            for (final event in decoder.add(chunk)) {
-              events.add(event);
-            }
-          } on Object catch (error, stack) {
-            events.addError(error, stack);
-            unawaited(cancel());
-            unawaited(events.close());
-          }
-        }, onError: (Object error, StackTrace stack) {
-          if (!cancelled) events.addError(error, stack);
-          unawaited(cancel());
-          unawaited(events.close());
-        }, onDone: () {
-          if (!cancelled) {
+        final bytes = connection.attachInbound(
+          eventChannel,
+          grantInitial: false,
+        );
+        input = bytes.listen(
+          (chunk) {
+            if (cancelled) return;
             try {
-              decoder.close();
+              for (final event in decoder.add(chunk)) {
+                events.add(event);
+              }
             } on Object catch (error, stack) {
               events.addError(error, stack);
+              unawaited(cancel());
+              unawaited(events.close());
             }
-          }
-          unawaited(events.close());
-        });
+          },
+          onError: (Object error, StackTrace stack) {
+            if (!cancelled) events.addError(error, stack);
+            unawaited(cancel());
+            unawaited(events.close());
+          },
+          onDone: () {
+            if (!cancelled) {
+              try {
+                decoder.close();
+              } on Object catch (error, stack) {
+                events.addError(error, stack);
+              }
+            }
+            unawaited(events.close());
+          },
+        );
         unawaited(() async {
           try {
-            await _request(Method.agentAttach, AgentSessionParams(sessionId).toJson());
+            await _request(
+              Method.agentAttach,
+              AgentSessionParams(sessionId).toJson(),
+            );
             if (!cancelled) connection.grantInitial(eventChannel);
           } on Object catch (error, stack) {
             if (!cancelled) events.addError(error, stack);
@@ -366,22 +382,27 @@ class SessionLink implements HostLink {
       _request(Method.agentRelease, AgentSessionParams(sessionId).toJson());
   @override
   Future<AgentRecordsResult> agentRecords(List<String> sessionIds) async =>
-      AgentRecordsResult.fromJson(await _request(
-        Method.agentRecords, AgentRecordsParams(sessionIds).toJson(),
-      ));
+      AgentRecordsResult.fromJson(
+        await _request(
+          Method.agentRecords,
+          AgentRecordsParams(sessionIds).toJson(),
+        ),
+      );
 
   @override
   Stream<AgentStateParams> get agentStates => session.notifications
       .where((n) => n.method == Method.agentState)
       .map((n) => AgentStateParams.fromJson(n.params));
   @override
-  Stream<AgentPermissionRequestedParams> get agentPermissionRequests =>
-      session.notifications.where((n) => n.method == Method.agentPermissionRequested)
+  Stream<AgentPermissionRequestedParams> get agentPermissionRequests => session
+      .notifications
+      .where((n) => n.method == Method.agentPermissionRequested)
       .map((n) => AgentPermissionRequestedParams.fromJson(n.params));
   @override
   Stream<AgentPermissionResolvedParams> get agentPermissionResolutions =>
-      session.notifications.where((n) => n.method == Method.agentPermissionResolved)
-      .map((n) => AgentPermissionResolvedParams.fromJson(n.params));
+      session.notifications
+          .where((n) => n.method == Method.agentPermissionResolved)
+          .map((n) => AgentPermissionResolvedParams.fromJson(n.params));
   @override
   Stream<AgentStopResultParams> get agentStopResults => session.notifications
       .where((n) => n.method == Method.agentStopResult)

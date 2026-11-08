@@ -154,15 +154,24 @@ void main() {
         ? 'POSIX access(X_OK), pending three-OS CI'
         : false,
   );
-  test('launch worker preserves first-match batch refusal across the isolate', () async {
-    final batch = file('first/npx.cmd');
-    file('later/npx.exe');
-    final launch = LaunchExecutableResolver(
-      faults: HostFaults(),
-      resolver: resolver(os: 'windows', paths: ['${root.path}/first', '${root.path}/later']),
-    );
-    await expectLater(launch.resolve('npx'), refused(ErrorCode.notExecutable, batch));
-  });
+  test(
+    'launch worker preserves first-match batch refusal across the isolate',
+    () async {
+      final batch = file('first/npx.cmd');
+      file('later/npx.exe');
+      final launch = LaunchExecutableResolver(
+        faults: HostFaults(),
+        resolver: resolver(
+          os: 'windows',
+          paths: ['${root.path}/first', '${root.path}/later'],
+        ),
+      );
+      await expectLater(
+        launch.resolve('npx'),
+        refused(ErrorCode.notExecutable, batch),
+      );
+    },
+  );
 
   test('launch probes retain all four slots after timeout until their workers return', () async {
     final executable = file(Platform.isWindows ? 'node.exe' : 'node');
@@ -175,11 +184,19 @@ void main() {
     try {
       for (var i = 0; i < 4; i++) {
         faults.setResolveFault(executable, const ResolveFault(hang: true));
-        pending.add(expectLater(launch.resolve(executable), refused(ErrorCode.busy, executable)));
+        pending.add(
+          expectLater(
+            launch.resolve(executable),
+            refused(ErrorCode.busy, executable),
+          ),
+        );
       }
       await faults.ready.future.timeout(const Duration(seconds: 5));
       await Future.wait(pending);
-      await expectLater(launch.resolve(executable), refused(ErrorCode.busy, executable));
+      await expectLater(
+        launch.resolve(executable),
+        refused(ErrorCode.busy, executable),
+      );
     } finally {
       faults.releaseResolve(executable);
       await Future.wait(pending);

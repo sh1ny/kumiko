@@ -111,16 +111,28 @@ void main() {
   test("a profile's executable and args reach the adapter unchanged (fixture agent reports its argv)", () async {
     final d = await start();
     final w = await d.openWorkspace(bin.path);
-    const args = ['-y', '@agentclientprotocol/claude-agent-acp@0.99.1', '', '--setting="a b"'];
-    final report = await saveAgentFixture(d, bin, args: args, script: {'reportLaunch': true});
+    const args = [
+      '-y',
+      '@agentclientprotocol/claude-agent-acp@0.99.1',
+      '',
+      '--setting="a b"',
+    ];
+    final report = await saveAgentFixture(
+      d,
+      bin,
+      args: args,
+      script: {'reportLaunch': true},
+    );
     final saved = (await list(d)).profiles.single;
     final a = AgentPeer(d);
     await a.start(w.workspace.id, runtime: saved.id);
     await a.attach();
     final launch = await waitFixture(report, (p) => p.containsKey('argv'));
     expect(launch['argv'], saved.args);
-    expect(File(launch['executable'] as String).absolute.path,
-        File(saved.executable).absolute.path);
+    expect(
+      File(launch['executable'] as String).absolute.path,
+      File(saved.executable).absolute.path,
+    );
     expect((launch['argv'] as List).skip(4), args);
     expect(saved.executable.toLowerCase(), isNot(endsWith('.cmd')));
     await a.close();
@@ -129,18 +141,34 @@ void main() {
     final d = await start();
     final w = await d.openWorkspace(bin.path);
     const key = 'KUMIKO_PROFILE_ENV_CANARY';
-    final p = await saveAgentFixture(d, bin, id: 'p',
-      script: {'reportLaunch': true, 'reportEnv': [key]},
-      env: {key: 'debug'});
-    final q = await saveAgentFixture(d, bin, id: 'q',
-      script: {'reportLaunch': true, 'reportEnv': [key]});
+    final p = await saveAgentFixture(
+      d,
+      bin,
+      id: 'p',
+      script: {
+        'reportLaunch': true,
+        'reportEnv': [key],
+      },
+      env: {key: 'debug'},
+    );
+    final q = await saveAgentFixture(
+      d,
+      bin,
+      id: 'q',
+      script: {
+        'reportLaunch': true,
+        'reportEnv': [key],
+      },
+    );
     final a = AgentPeer(d);
     final b = AgentPeer(d);
     await a.start(w.workspace.id, runtime: 'p');
     await b.start(w.workspace.id, runtime: 'q');
     await a.attach();
     await b.attach();
-    expect((await waitFixture(p, (p) => p.containsKey('env')))['env'], {key: 'debug'});
+    expect((await waitFixture(p, (p) => p.containsKey('env')))['env'], {
+      key: 'debug',
+    });
     expect((await waitFixture(q, (p) => p.containsKey('env')))['env'], isEmpty);
     await d.saveFixtureProfile(cwd: bin.path);
     final terminal = await d.openTerminal('fixture');

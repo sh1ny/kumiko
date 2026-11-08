@@ -154,10 +154,12 @@ void main() {
             'KEEP': 'value',
           },
         );
-        final env = isolatedAuthEnvironment(profile.env, {
-          'ANTHROPIC_API_KEY': 'inherited-secret',
-          'UNRELATED': 'untouched',
-        }, 'isolated-config', os: 'windows');
+        final env = isolatedAuthEnvironment(
+          profile.env,
+          {'ANTHROPIC_API_KEY': 'inherited-secret', 'UNRELATED': 'untouched'},
+          'isolated-config',
+          os: 'windows',
+        );
         expect(env, {
           'ANTHROPIC_AUTH_TOKEN': '',
           'ANTHROPIC_API_KEY': '',
@@ -176,9 +178,18 @@ void main() {
         'ANTHROPIC_BASE_URL': 'gateway',
         'KEEP': 'value',
       };
-      final env = isolatedAuthEnvironment(original, {}, 'isolated-config', os: 'windows');
+      final env = isolatedAuthEnvironment(
+        original,
+        {},
+        'isolated-config',
+        os: 'windows',
+      );
       for (final key in original.keys.take(3)) {
-        expect(env[key], isEmpty, reason: 'credential spelling $key escaped isolation');
+        expect(
+          env[key],
+          isEmpty,
+          reason: 'credential spelling $key escaped isolation',
+        );
       }
       expect(env['ANTHROPIC_BASE_URL'], 'gateway');
       expect(env['KEEP'], 'value');
@@ -189,11 +200,16 @@ void main() {
     });
 
     test('Windows auth isolation blanks inherited mixed-case credentials without copying unrelated values', () {
-      final env = isolatedAuthEnvironment({}, {
-        'Anthropic_Api_Key': 'inherited-key',
-        'claude_CODE_oauth_TOKEN': 'inherited-oauth',
-        'UNRELATED': 'do not copy',
-      }, 'isolated-config', os: 'windows');
+      final env = isolatedAuthEnvironment(
+        {},
+        {
+          'Anthropic_Api_Key': 'inherited-key',
+          'claude_CODE_oauth_TOKEN': 'inherited-oauth',
+          'UNRELATED': 'do not copy',
+        },
+        'isolated-config',
+        os: 'windows',
+      );
       expect(env, {
         'Anthropic_Api_Key': '',
         'claude_CODE_oauth_TOKEN': '',
@@ -201,20 +217,28 @@ void main() {
       });
     });
     for (final os in ['linux', 'macos']) {
-      test('$os auth isolation preserves case-sensitive noncredential names', () {
-        final env = isolatedAuthEnvironment({
-          'anthropic_api_key': 'case-sensitive custom value',
-          'ANTHROPIC_AUTH_TOKEN': 'real documented token',
-        }, {
-          'claude_code_oauth_token': 'case-sensitive inherited value',
-          'CLAUDE_CODE_OAUTH_TOKEN': 'real documented inherited token',
-        }, 'isolated-config', os: os);
-        expect(env['anthropic_api_key'], 'case-sensitive custom value');
-        expect(env['ANTHROPIC_AUTH_TOKEN'], '');
-        expect(env['CLAUDE_CODE_OAUTH_TOKEN'], '');
-        expect(env.containsKey('claude_code_oauth_token'), isFalse);
-        expect(env.containsKey('ANTHROPIC_API_KEY'), isFalse);
-      });
+      test(
+        '$os auth isolation preserves case-sensitive noncredential names',
+        () {
+          final env = isolatedAuthEnvironment(
+            {
+              'anthropic_api_key': 'case-sensitive custom value',
+              'ANTHROPIC_AUTH_TOKEN': 'real documented token',
+            },
+            {
+              'claude_code_oauth_token': 'case-sensitive inherited value',
+              'CLAUDE_CODE_OAUTH_TOKEN': 'real documented inherited token',
+            },
+            'isolated-config',
+            os: os,
+          );
+          expect(env['anthropic_api_key'], 'case-sensitive custom value');
+          expect(env['ANTHROPIC_AUTH_TOKEN'], '');
+          expect(env['CLAUDE_CODE_OAUTH_TOKEN'], '');
+          expect(env.containsKey('claude_code_oauth_token'), isFalse);
+          expect(env.containsKey('ANTHROPIC_API_KEY'), isFalse);
+        },
+      );
     }
 
     test('selected and unavailable default profiles never fall back', () {
@@ -547,13 +571,7 @@ void main() {
             recorded.indexOf('### linux'),
           ),
         );
-        expect(
-          checkQualification(
-            updated,
-            _emptySource,
-          ).failures,
-          isEmpty,
-        );
+        expect(checkQualification(updated, _emptySource).failures, isEmpty);
       },
     );
     test('auth pass requires exact observed nontruncated native error', () {
@@ -664,14 +682,17 @@ void main() {
       stopReason: 'end_turn',
     );
 
-    test('item is part of every OS item list and the tool prompt names the tool', () {
-      for (final os in qualificationOses) {
-        expect(qualificationItems(os), contains('kumiko tool call'));
-      }
-      expect(toolCallQualificationItem, 'kumiko tool call');
-      expect(qualificationToolPrompt, contains(qualificationToolName));
-      expect(qualificationToolName, 'kumiko_session_info');
-    });
+    test(
+      'item is part of every OS item list and the tool prompt names the tool',
+      () {
+        for (final os in qualificationOses) {
+          expect(qualificationItems(os), contains('kumiko tool call'));
+        }
+        expect(toolCallQualificationItem, 'kumiko tool call');
+        expect(qualificationToolPrompt, contains(qualificationToolName));
+        expect(qualificationToolName, 'kumiko_session_info');
+      },
+    );
 
     test('connected status after a clean turn passes and names the tool', () {
       final result = evaluateQualificationToolCall(
@@ -684,62 +705,72 @@ void main() {
       expect(result.detail, contains('mcp__kumiko__kumiko_session_info'));
     });
 
-    test('any other status or a failed turn is a failure with checker-safe text', () {
-      for (final (tools, turn) in [
-        (const AgentTools(AgentToolsStatus.notYetUsed), ended),
-        (const AgentTools(AgentToolsStatus.notStarted), ended),
-        (const AgentTools(AgentToolsStatus.unknown), ended),
-        (null, ended),
-        (connected, null),
-        (
-          connected,
-          const AgentTurnEndedParams(sessionId: 'tool', error: 'acp-error'),
-        ),
-        (
-          const AgentTools(
-            AgentToolsStatus.unavailable,
-            reason: 'endpoint-unavailable: it\'s "bad" | \\ \$x\nnext',
+    test(
+      'any other status or a failed turn is a failure with checker-safe text',
+      () {
+        for (final (tools, turn) in [
+          (const AgentTools(AgentToolsStatus.notYetUsed), ended),
+          (const AgentTools(AgentToolsStatus.notStarted), ended),
+          (const AgentTools(AgentToolsStatus.unknown), ended),
+          (null, ended),
+          (connected, null),
+          (
+            connected,
+            const AgentTurnEndedParams(sessionId: 'tool', error: 'acp-error'),
           ),
-          ended,
-        ),
-      ]) {
-        final result = evaluateQualificationToolCall(
-          tools: tools,
-          toolTitles: const [],
-          turn: turn,
-        );
-        expect(result.passed, isFalse, reason: '$tools $turn');
-        expect(result.observed, isNotEmpty);
-        expect(result.observed, isNot(matches(RegExp(r'''['"|\\$\x00-\x1f]'''))));
-        expect(result.observed.length, lessThanOrEqualTo(200));
-      }
-    });
+          (
+            const AgentTools(
+              AgentToolsStatus.unavailable,
+              reason: 'endpoint-unavailable: it\'s "bad" | \\ \$x\nnext',
+            ),
+            ended,
+          ),
+        ]) {
+          final result = evaluateQualificationToolCall(
+            tools: tools,
+            toolTitles: const [],
+            turn: turn,
+          );
+          expect(result.passed, isFalse, reason: '$tools $turn');
+          expect(result.observed, isNotEmpty);
+          expect(
+            result.observed,
+            isNot(matches(RegExp(r'''['"|\\$\x00-\x1f]'''))),
+          );
+          expect(result.observed.length, lessThanOrEqualTo(200));
+        }
+      },
+    );
 
-    test('failure observed text is recorded in Notes and accepted by the checker', () {
-      const text = 'tools status notStarted; adapter did not start the entry';
-      Map<String, QualificationObservation> rows(String os) =>
-          observations(os: os)
-            ..[toolCallQualificationItem] = QualificationObservation.confirmed(
-              passed: false,
-              confirmed: true,
-              observed: text,
-            );
-      // A listed failure needs the observation on every OS (design D8).
-      var recorded = '# Evidence\n';
-      for (final os in ['windows', 'linux', 'macos']) {
-        recorded = merge(recorded, os, rows(os));
-      }
-      expect(recorded, contains('observed: "$text"'));
-      final report = checkQualification(
-        recorded,
-        "const qualifiedAdapters = <(String, String, List<String>)>["
-        "('observed-adapter', '0.99.1', <String>['load', 'resume']),];\n"
-        "const toolDeliveryFailures = <(String, String, String)>["
-        "('observed-adapter', '0.99.1', '$text'),];",
-      );
-      expect(report.failures, isEmpty);
-      expect(report.verdict, 'QUALIFIED');
-    });
+    test(
+      'failure observed text is recorded in Notes and accepted by the checker',
+      () {
+        const text = 'tools status notStarted; adapter did not start the entry';
+        Map<String, QualificationObservation> rows(String os) =>
+            observations(os: os)
+              ..[toolCallQualificationItem] =
+                  QualificationObservation.confirmed(
+                    passed: false,
+                    confirmed: true,
+                    observed: text,
+                  );
+        // A listed failure needs the observation on every OS (design D8).
+        var recorded = '# Evidence\n';
+        for (final os in ['windows', 'linux', 'macos']) {
+          recorded = merge(recorded, os, rows(os));
+        }
+        expect(recorded, contains('observed: "$text"'));
+        final report = checkQualification(
+          recorded,
+          "const qualifiedAdapters = <(String, String, List<String>)>["
+          "('observed-adapter', '0.99.1', <String>['load', 'resume']),];\n"
+          "const toolDeliveryFailures = <(String, String, String)>["
+          "('observed-adapter', '0.99.1', '$text'),];",
+        );
+        expect(report.failures, isEmpty);
+        expect(report.verdict, 'QUALIFIED');
+      },
+    );
 
     test('a failed tool call without observed text, or with unsafe text, cannot be recorded', () {
       for (final observed in ['', 'has "quote"', 'a|b', 'multi\nline']) {
@@ -761,8 +792,13 @@ void main() {
       var flutterRoot = Platform.environment['FLUTTER_ROOT'];
       if (flutterRoot == null || flutterRoot.isEmpty) {
         // <flutter>/bin/cache/dart-sdk/bin/dart
-        flutterRoot = File(Platform.resolvedExecutable).parent.parent.parent
-            .parent.parent.path;
+        flutterRoot = File(Platform.resolvedExecutable)
+            .parent
+            .parent
+            .parent
+            .parent
+            .parent
+            .path;
       }
       final result = await Process.run(
         Platform.resolvedExecutable,

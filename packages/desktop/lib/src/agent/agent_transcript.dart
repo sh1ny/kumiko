@@ -15,9 +15,15 @@ class AgentPermission {
   bool get pending => resolution == null && !unavailable;
   String get label {
     final answer = resolution;
-    if (answer == null) return unavailable ? 'Unanswerable: host or session ended' : 'Waiting for approval';
+    if (answer == null) {
+      return unavailable
+          ? 'Unanswerable: host or session ended'
+          : 'Waiting for approval';
+    }
     if (answer.outcome == AgentPermissionOutcome.cancelled) return 'Cancelled';
-    final option = request.options.where((o) => o.optionId == answer.optionId).firstOrNull;
+    final option = request.options
+        .where((o) => o.optionId == answer.optionId)
+        .firstOrNull;
     return 'Answered: ${option?.name ?? answer.optionId}';
   }
 }
@@ -42,6 +48,7 @@ class AgentTranscriptEntry {
     textBytes += bytes;
     this.bytes += bytes;
   }
+
   String get plainText {
     if (permission case final p?) return '${p.request.title}\n${p.label}';
     if (kind == AgentEventKind.replay) return 'Replay ${fields['phase']}';
@@ -67,13 +74,18 @@ class AgentTranscript {
   void add(AgentEvent event) {
     final fields = event.toJson()..remove('kind');
     final text = event.text;
-    final isText = event.kind == AgentEventKind.user ||
-        event.kind == AgentEventKind.agentText || event.kind == AgentEventKind.thought;
+    final isText =
+        event.kind == AgentEventKind.user ||
+        event.kind == AgentEventKind.agentText ||
+        event.kind == AgentEventKind.thought;
     if (text != null && isText) {
       final size = utf8.encode(text).length;
       final tail = _entries.lastOrNull;
-      if (tail != null && tail.permission == null && tail.kind == event.kind &&
-          tail.textBytes + size <= maxAgentTextEventBytes && tail.fields['truncated'] != true) {
+      if (tail != null &&
+          tail.permission == null &&
+          tail.kind == event.kind &&
+          tail.textBytes + size <= maxAgentTextEventBytes &&
+          tail.fields['truncated'] != true) {
         tail.append(text, size);
         if (event.truncated) tail.fields['truncated'] = true;
         bytes += size;
@@ -91,19 +103,24 @@ class AgentTranscript {
           ..remove('contentTruncated')
           ..remove('omittedItems');
       }
-      if (fields.containsKey('locations')) prior.fields.remove('locationsTruncated');
+      if (fields.containsKey('locations')) {
+        prior.fields.remove('locationsTruncated');
+      }
       prior.fields.addAll(fields);
-      if (prior.fields['contentTruncated'] == true || prior.fields['locationsTruncated'] == true) {
+      if (prior.fields['contentTruncated'] == true ||
+          prior.fields['locationsTruncated'] == true) {
         prior.fields['truncated'] = true;
       } else {
         prior.fields.remove('truncated');
       }
-      if (event.status case final status? when prior.statuses.lastOrNull != status) {
+      if (event.status case final status?
+          when prior.statuses.lastOrNull != status) {
         prior.statuses.add(status);
         // Runtime status history is display metadata and is bounded too.
         if (prior.statuses.length > 32) prior.statuses.removeAt(0);
       }
-      prior.bytes = utf8.encode(jsonEncode(prior.fields)).length +
+      prior.bytes =
+          utf8.encode(jsonEncode(prior.fields)).length +
           prior.statuses.fold<int>(0, (n, s) => n + utf8.encode(s).length);
       bytes += prior.bytes;
       _evict();
@@ -125,7 +142,11 @@ class AgentTranscript {
   }
 
   void addPermission(AgentPermission permission) {
-    final entry = AgentTranscriptEntry(AgentEventKind.notice, {}, permission: permission);
+    final entry = AgentTranscriptEntry(
+      AgentEventKind.notice,
+      {},
+      permission: permission,
+    );
     entry.bytes = utf8.encode(jsonEncode(permission.request.toJson())).length;
     _entries.add(entry);
     bytes += entry.bytes;
@@ -133,7 +154,8 @@ class AgentTranscript {
   }
 
   void _evict() {
-    while (_entries.length > maxTranscriptEntries || bytes > maxTranscriptBytes) {
+    while (_entries.length > maxTranscriptEntries ||
+        bytes > maxTranscriptBytes) {
       final entry = _entries.removeFirst();
       bytes -= entry.bytes;
       final id = entry.fields['toolCallId'];

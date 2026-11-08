@@ -6,7 +6,11 @@
 /// Runtime claim logic must also require the adapter to advertise each feature.
 /// An empty list makes no adapter qualification claim.
 const qualifiedAdapters = <(String, String, List<String>)>[
-  ('@agentclientprotocol/claude-agent-acp', '0.99.1', <String>['load', 'resume']),
+  (
+    '@agentclientprotocol/claude-agent-acp',
+    '0.99.1',
+    <String>['load', 'resume'],
+  ),
 ];
 
 /// Adapter name, version and failure text for versions whose Kumiko tool delivery

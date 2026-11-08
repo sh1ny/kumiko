@@ -143,16 +143,25 @@ class UnitManager {
         throw RpcException(ErrorCode.shuttingDown, 'the host is shutting down');
       }
       if (reconciling) {
-        throw RpcException(ErrorCode.reconciling, 'the host is reconciling earlier units');
+        throw RpcException(
+          ErrorCode.reconciling,
+          'the host is reconciling earlier units',
+        );
       }
       final ResolvedDirectory identity;
       switch (resolved) {
         case ResolveFound(:final directory):
           identity = directory;
         case ResolveBusy() || ResolveStarved():
-          throw RpcException(ErrorCode.busy, 'target resolution is busy', {'target': target});
+          throw RpcException(ErrorCode.busy, 'target resolution is busy', {
+            'target': target,
+          });
         case ResolveTimedOut():
-          throw RpcException(ErrorCode.targetUnavailable, 'target resolution did not answer', {'target': target});
+          throw RpcException(
+            ErrorCode.targetUnavailable,
+            'target resolution did not answer',
+            {'target': target},
+          );
         case ResolveMissing(:final detail):
           throw RpcException(
             ErrorCode.targetUnavailable,

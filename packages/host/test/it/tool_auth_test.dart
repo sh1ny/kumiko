@@ -92,9 +92,8 @@ void main() {
   }
 
   String secretIn(File report) {
-    final launch = fixtureReports(report).lastWhere(
-      (p) => p.containsKey('newCwd'),
-    );
+    final launch = fixtureReports(report)
+        .lastWhere((p) => p.containsKey('newCwd'));
     final entry = (launch['mcpServers'] as List).single as Json;
     return [
       for (final e in entry['env'] as List)
@@ -337,10 +336,7 @@ void main() {
       final after = await ToolClient.connect(await endpointOf(d));
       addTearDown(after.close);
       after.authenticate(secret);
-      expect(await after.readJson(), {
-        'ok': false,
-        'error': 'unauthenticated',
-      });
+      expect(await after.readJson(), {'ok': false, 'error': 'unauthenticated'});
       expect(
         a.of(Method.agentExited),
         isEmpty,
@@ -462,7 +458,8 @@ void main() {
       final surfaces = <String, String>{
         'start result': jsonEncode(a.started.toJson()),
         'notifications': jsonEncode([
-          for (final n in a.notifications) {'method': n.method, 'params': n.params},
+          for (final n in a.notifications)
+            {'method': n.method, 'params': n.params},
         ]),
         for (final f in prof.listSync(recursive: true).whereType<File>())
           if (readable(f) case final String text) f.path: text,

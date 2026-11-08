@@ -1,0 +1,4 @@
+# Official Dart and Flutter MCP server. mise supplies the pinned SDK and DART_DATA_HOME.
+[mcp_servers.dart]
+command = "mise"
+args = ["exec", "--", "dart", "mcp-server", "--enable", "cli,flutter_app_lifecycle"]

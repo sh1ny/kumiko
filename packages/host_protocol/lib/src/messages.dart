@@ -1770,7 +1770,13 @@ int _eventChannel(Json json) {
 
 /// Kumiko tools status of one live session run. `unknown` is only ever a
 /// decode result for a status string this build does not recognise.
-enum AgentToolsStatus { notYetUsed, connected, notStarted, unavailable, unknown }
+enum AgentToolsStatus {
+  notYetUsed,
+  connected,
+  notStarted,
+  unavailable,
+  unknown,
+}
 
 /// Additive `tools: {status, reason?}` object. Decoding never throws: a
 /// missing, malformed or unrecognised value must not break agent control.

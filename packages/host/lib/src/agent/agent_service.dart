@@ -406,7 +406,10 @@ class AgentService {
         {'workspaceId': params.workspaceId},
       );
     }
-    final resolved = await workspaces.resolver.resolve(workspace.path, queue: false);
+    final resolved = await workspaces.resolver.resolve(
+      workspace.path,
+      queue: false,
+    );
     _available();
     if (resolved is ResolveBusy || resolved is ResolveStarved) {
       throw RpcException(ErrorCode.busy, 'workspace resolution is busy');
@@ -725,31 +728,35 @@ class AgentService {
       if (saved == null) {
         final startingIo = io;
         stage = 'session/new';
-        await io.client.newSession(target.path, mcpServers: mcpServers, onCreated: (native) {
-          _available();
-          final now = DateTime.now().toUtc().toIso8601String();
-          final record = AgentSessionRecord(
-            id: _newId(),
-            runtimeKind: profile.runtimeKind,
-            runtimeProfileId: profile.id,
-            adapter: adapter,
-            nativeSessionId: native,
-            target: target,
-            createdAt: now,
-            updatedAt: now,
-          );
-          stage = 'record';
-          _insert(record);
-          a = _registerNativeSession(
-            record: record,
-            io: startingIo,
-            reservation: reservation,
-            claims: claims,
-            grant: grant,
-            mcpServers: mcpServers,
-          );
-          live = a;
-        });
+        await io.client.newSession(
+          target.path,
+          mcpServers: mcpServers,
+          onCreated: (native) {
+            _available();
+            final now = DateTime.now().toUtc().toIso8601String();
+            final record = AgentSessionRecord(
+              id: _newId(),
+              runtimeKind: profile.runtimeKind,
+              runtimeProfileId: profile.id,
+              adapter: adapter,
+              nativeSessionId: native,
+              target: target,
+              createdAt: now,
+              updatedAt: now,
+            );
+            stage = 'record';
+            _insert(record);
+            a = _registerNativeSession(
+              record: record,
+              io: startingIo,
+              reservation: reservation,
+              claims: claims,
+              grant: grant,
+              mcpServers: mcpServers,
+            );
+            live = a;
+          },
+        );
       } else {
         if (!claims.canLoad && !claims.canResume) {
           throw _resumeUnavailable(
@@ -762,7 +769,9 @@ class AgentService {
           io: io,
           reservation: reservation,
           claims: claims,
-          mode: claims.canLoad ? AgentContinueMode.load : AgentContinueMode.resume,
+          mode: claims.canLoad
+              ? AgentContinueMode.load
+              : AgentContinueMode.resume,
           grant: grant,
           mcpServers: mcpServers,
         );
@@ -815,9 +824,11 @@ class AgentService {
         rethrow;
       }
       if (error is AcpProtocolException) {
-        throw RpcException(ErrorCode.adapterProtocol, _redact(error.message, grant), {
-          'stage': stage,
-        });
+        throw RpcException(
+          ErrorCode.adapterProtocol,
+          _redact(error.message, grant),
+          {'stage': stage},
+        );
       }
       final tail = _redact(io?.stderr.tail() ?? '', grant);
       final status = io?.status;
@@ -934,8 +945,7 @@ class AgentService {
     if (grant == null) {
       return AgentTools(
         AgentToolsStatus.unavailable,
-        reason:
-            tools.unavailableReason ?? 'endpoint-unavailable: not started',
+        reason: tools.unavailableReason ?? 'endpoint-unavailable: not started',
       );
     }
     if (grant.everCalled) return const AgentTools(AgentToolsStatus.connected);

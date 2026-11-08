@@ -590,8 +590,7 @@ class AgentController extends ChangeNotifier implements ViewCloser {
         if (chooseProfile == null) {
           throw RpcException(
             ErrorCode.noRuntimeProfile,
-            list.defaultReason ??
-                'The default runtime profile is unavailable. Choose or add a profile.',
+            list.defaultReason ?? 'The default runtime profile is unavailable. Choose or add a profile.',
           );
         }
         final selected = await chooseProfile(list);

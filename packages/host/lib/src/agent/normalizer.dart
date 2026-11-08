@@ -24,11 +24,13 @@ Iterable<Uint8List> normalizeAcpUpdate(Json update) {
           : kind == 'agent_message_chunk'
           ? AgentEventKind.agentText
           : AgentEventKind.thought;
-      return encodeAgentEvent(AgentEvent.fromJson({
-        'kind': eventKind.name,
-        'text': text,
-        if (text.length != source.length) 'truncated': true,
-      }));
+      return encodeAgentEvent(
+        AgentEvent.fromJson({
+          'kind': eventKind.name,
+          'text': text,
+          if (text.length != source.length) 'truncated': true,
+        }),
+      );
     }
   } else if (kind == 'tool_call' || kind == 'tool_call_update') {
     final id = update['toolCallId'];

@@ -219,9 +219,8 @@ void main() {
   }, timeout: const Timeout(Duration(minutes: 5)));
 
   String secretOf(File report) {
-    final launch = fixtureReports(
-      report,
-    ).firstWhere((p) => p.containsKey('newCwd'));
+    final launch = fixtureReports(report)
+        .firstWhere((p) => p.containsKey('newCwd'));
     final entry = (launch['mcpServers'] as List).single as Json;
     return [
       for (final e in entry['env'] as List)
@@ -233,10 +232,7 @@ void main() {
     'jsonrpc': '2.0',
     'id': id,
     'method': 'tools/call',
-    'params': {
-      'name': 'kumiko_session_info',
-      'arguments': <String, Object?>{},
-    },
+    'params': {'name': 'kumiko_session_info', 'arguments': <String, Object?>{}},
   };
 
   test('tool call answered within the control-latency bound under '

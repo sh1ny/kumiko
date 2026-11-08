@@ -38,62 +38,37 @@ jobs:
         if: runner.os == 'macOS'
         run: brew install vttest
 
-      # The terminal engine's native crate builds from the vendored, patched
-      # Alacritty core (third_party/; ADR 0010). macOS builds universal binaries.
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: ${{ runner.os == 'macOS' && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
+      # Flutter (with its bundled Dart) and Rust come from mise.toml, the same
+      # pins as local development. The terminal engine's native crate builds
+      # from the vendored, patched Alacritty core (third_party/; ADR 0010)
+      # through cargokit, which adds the macOS universal targets itself.
+      - name: Install tools from mise.toml
+        uses: jdx/mise-action@b44d12e7d0d8ee7461bb893e1b1993500433185b # v5.2.7
 
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: third_party/rust_lib_flutter_alacritty/rust
 
-      - uses: subosito/flutter-action@v2
-        with:
-          channel: stable
-          flutter-version: 3.47.7
-          cache: true
-
       - name: Resolve workspace
-        run: flutter pub get
+        run: mise exec -- flutter pub get
 
       - name: Audit dependencies
-        run: |
-          dart run tool/audit_dependencies.dart
-          dart run tool/check_qualification.dart
+        run: mise run audit
 
-      - name: Analyze Dart packages
-        run: dart analyze --fatal-infos
+      - name: Check formatting
+        run: mise run format:check
 
-      - name: Analyze desktop
-        working-directory: packages/desktop
-        run: flutter analyze --fatal-infos
+      - name: Analyze
+        run: mise run analyze
 
       - name: Test
-        run: |
-          echo "::group::test tool"
-          dart test tool/test
-          echo "::endgroup::"
-          echo "::group::build test host"
-          (cd packages/host && dart build cli -t tool/kumiko_host_test.dart -o build/host-test)
-          echo "::endgroup::"
-          for dir in packages/*/; do
-            [ -d "${dir}test" ] || continue
-            echo "::group::test ${dir}"
-            if [ "${dir}" = "packages/desktop/" ]; then
-              (cd "${dir}" && flutter test)
-            else
-              (cd "${dir}" && dart test)
-            fi
-            echo "::endgroup::"
-          done
+        run: mise run test
 
       # The release contract test (packages/host/test/it/release_contract_test.dart)
       # runs with the host package tests above; it builds the release host itself.
 
       - name: Build release host
-        working-directory: packages/host
-        run: dart build cli -o build/host
+        run: mise run build:host
 
       - name: Desktop integration test
         working-directory: packages/desktop
@@ -113,9 +88,9 @@ jobs:
               *) host="$release_host" ;;
             esac
             case "$RUNNER_OS" in
-              Windows) flutter test "$file" -d windows --dart-define=KUMIKO_HOST="$(cygpath -w "$host.exe")" ;;
-              Linux) xvfb-run -a flutter test "$file" -d linux --dart-define=KUMIKO_HOST="$host" ;;
-              macOS) flutter test "$file" -d macos --dart-define=KUMIKO_HOST="$host" ;;
+              Windows) mise exec -- flutter test "$file" -d windows --dart-define=KUMIKO_HOST="$(cygpath -w "$host.exe")" ;;
+              Linux) xvfb-run -a mise exec -- flutter test "$file" -d linux --dart-define=KUMIKO_HOST="$host" ;;
+              macOS) mise exec -- flutter test "$file" -d macos --dart-define=KUMIKO_HOST="$host" ;;
             esac
           done
 
@@ -130,17 +105,17 @@ jobs:
           for file in integration_test/profile/*_test.dart; do
             args=(--profile --driver=test_driver/integration_test.dart --target="$file")
             case "$RUNNER_OS" in
-              Windows) flutter drive "${args[@]}" -d windows --dart-define=KUMIKO_HOST="$(cygpath -w "$host.exe")" ;;
-              Linux) xvfb-run -a flutter drive "${args[@]}" -d linux --dart-define=KUMIKO_HOST="$host" ;;
-              macOS) flutter drive "${args[@]}" -d macos --dart-define=KUMIKO_HOST="$host" ;;
+              Windows) mise exec -- flutter drive "${args[@]}" -d windows --dart-define=KUMIKO_HOST="$(cygpath -w "$host.exe")" ;;
+              Linux) xvfb-run -a mise exec -- flutter drive "${args[@]}" -d linux --dart-define=KUMIKO_HOST="$host" ;;
+              macOS) mise exec -- flutter drive "${args[@]}" -d macos --dart-define=KUMIKO_HOST="$host" ;;
             esac
           done
 
       - name: Build desktop release with the host bundled
         run: |
           os=$(echo "$RUNNER_OS" | tr '[:upper:]' '[:lower:]')
-          (cd packages/desktop && flutter build "$os" --release)
-          dart run tool/bundle_host.dart --skip-build
+          (cd packages/desktop && mise exec -- flutter build "$os" --release)
+          mise exec -- dart run tool/bundle_host.dart --skip-build
           case "$RUNNER_OS" in
             Windows) bundle=packages/desktop/build/windows/x64/runner/Release; exe=host/bin/kumiko_host.exe ;;
             Linux) bundle=packages/desktop/build/linux/x64/release/bundle; exe=host/bin/kumiko_host ;;

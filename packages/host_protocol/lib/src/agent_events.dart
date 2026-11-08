@@ -101,7 +101,11 @@ class AgentEvent {
         json['phase'] != 'end') {
       throw const FormatException('invalid replay phase');
     }
-    for (final key in const ['truncated', 'contentTruncated', 'locationsTruncated']) {
+    for (final key in const [
+      'truncated',
+      'contentTruncated',
+      'locationsTruncated',
+    ]) {
       if (json.containsKey(key) && json[key] is! bool) {
         throw FormatException('invalid $key marker');
       }
@@ -259,7 +263,9 @@ Iterable<Uint8List> encodeAgentEvent(AgentEvent event) sync* {
       final contentTruncated = prefixTruncated[n] || omitted > 0;
       return baseBytes +
           prefixBytes[n] +
-          (contentTruncated || locationsTruncated ? ',"truncated":true'.length : 0) +
+          (contentTruncated || locationsTruncated
+              ? ',"truncated":true'.length
+              : 0) +
           (!plan && contentTruncated ? ',"contentTruncated":true'.length : 0) +
           (locationsTruncated ? ',"locationsTruncated":true'.length : 0) +
           (omitted > 0 ? ',"omittedItems":$omitted'.length : 0);

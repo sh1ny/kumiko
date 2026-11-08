@@ -185,10 +185,9 @@ class AgentSession {
     final held = _flushHeld();
     _sentKind = null;
     if (held.isNotEmpty) _enqueue(held).ignore();
-    return _enqueue(
-      encodeAgentEvent(AgentEvent.replay(AgentReplayPhase.end)),
-    );
+    return _enqueue(encodeAgentEvent(AgentEvent.replay(AgentReplayPhase.end)));
   }
+
   Future<void> notice(String text) =>
       _enqueue(encodeAgentEvent(AgentEvent.notice(text)));
 
@@ -212,7 +211,8 @@ class AgentSession {
     _set(AgentState.running);
     _enqueue(encodeAgentEvent(AgentEvent.text(AgentEventKind.user, text)))
         .ignore();
-    completion.then<void>(
+    completion
+        .then<void>(
           (result) => _finish(turn, result, null),
           onError: (Object error, StackTrace stack) =>
               _finish(turn, null, error),
@@ -255,9 +255,10 @@ class AgentSession {
         if (emit.isNotEmpty)
           ...normalizeAcpUpdate(
             _redactJson({
-              ...update,
-              'content': {...content, 'text': emit},
-            })! as Json,
+                  ...update,
+                  'content': {...content, 'text': emit},
+                })!
+                as Json,
           ),
       ];
     }
@@ -426,8 +427,7 @@ class AgentSession {
         nativeMessage: nativeMessage,
         nativeMessageTruncated:
             error is AcpRemoteException &&
-            (error.messageTruncated ||
-                nativeMessage != _redact(error.message)),
+            (error.messageTruncated || nativeMessage != _redact(error.message)),
       ),
     );
     _set(AgentState.idle);
@@ -571,6 +571,7 @@ class AgentSession {
     }
     _observeWrite(write);
   }
+
   void _cancelPermissions({bool answer = true}) {
     final pending = Map<String, _Permission>.of(_permissions);
     _permissions.clear();

@@ -1,3 +1,116 @@
 [tools]
-dart = "3.13.7"
-flutter = "3.47.7"
+# Flutter only: its bundled Dart runs the pure-Dart packages too. A separate
+# `dart` pin is a different SDK, and build hooks compiled by one are refused
+# by the other ("Invalid SDK hash").
+flutter = "3.47.9"
+# The terminal engine's native crate builds through cargokit, which always
+# runs `rustup run stable`; an exact version here would not reach that build.
+rust = { version = "stable", profile = "minimal" }
+
+[env]
+# Keep Dart's app bundles (such as dart_mcp_server) per project. With the
+# shared default, a server started by one project or agent locks the bundle
+# and `dart mcp-server` fails in every other one.
+DART_DATA_HOME = "{{config_root}}/.dart_tool/dart-data"
+
+# --- format and analysis -----------------------------------------------------
+
+[tasks.format]
+description = "Format Dart source (packages and tool; third_party is vendored)"
+run = "dart format packages tool"
+
+[tasks."format:check"]
+description = "Check Dart formatting without changing files"
+run = "dart format --output=none --set-exit-if-changed packages tool"
+
+[tasks.analyze]
+description = "Analyze the workspace and the desktop app, infos fatal"
+run = [
+  "dart analyze --fatal-infos",
+  { task = "analyze:desktop" },
+]
+
+[tasks."analyze:desktop"]
+description = "Flutter analysis of packages/desktop"
+dir = "{{config_root}}/packages/desktop"
+run = "flutter analyze --fatal-infos"
+
+[tasks.audit]
+description = "Audit dependencies and the qualification record"
+run = [
+  "dart run tool/audit_dependencies.dart",
+  "dart run tool/check_qualification.dart",
+]
+
+# --- builds ------------------------------------------------------------------
+
+[tasks."build:host"]
+description = "Build the release host bundle (packages/host/build/host)"
+dir = "{{config_root}}/packages/host"
+run = "dart build cli -o build/host"
+
+[tasks."build:host-test"]
+description = "Build the test host bundle (packages/host/build/host-test)"
+dir = "{{config_root}}/packages/host"
+run = "dart build cli -t tool/kumiko_host_test.dart -o build/host-test"
+
+# --- tests -------------------------------------------------------------------
+
+[tasks."test:tool"]
+description = "Tests of the repository tools"
+run = "dart test tool/test"
+
+[tasks."test:domain"]
+description = "packages/domain tests"
+dir = "{{config_root}}/packages/domain"
+run = "dart test"
+
+[tasks."test:host_protocol"]
+description = "packages/host_protocol tests"
+dir = "{{config_root}}/packages/host_protocol"
+run = "dart test"
+
+[tasks."test:process_containment"]
+description = "packages/process_containment tests"
+dir = "{{config_root}}/packages/process_containment"
+run = "dart test"
+
+[tasks."test:host"]
+description = "packages/host tests, including the integration tests (slow)"
+dir = "{{config_root}}/packages/host"
+run = [
+  { task = "build:host-test" },
+  "dart test",
+]
+
+[tasks."test:desktop"]
+description = "packages/desktop widget and unit tests"
+dir = "{{config_root}}/packages/desktop"
+run = "flutter test"
+
+[tasks."test:fast"]
+description = "Every test suite except the host's (the edit loop)"
+run = [
+  { task = "test:tool" },
+  { task = "test:domain" },
+  { task = "test:host_protocol" },
+  { task = "test:process_containment" },
+  { task = "test:desktop" },
+]
+
+[tasks.test]
+description = "Every package's tests, as CI runs them (desktop integration tests excluded)"
+run = [
+  { task = "test:fast" },
+  { task = "test:host" },
+]
+
+# --- gates -------------------------------------------------------------------
+
+[tasks.check]
+description = "Pre-commit gate: format:check, analyze, test:fast"
+run = [
+  { task = "format:check" },
+  { task = "analyze" },
+  { task = "test:fast" },
+]

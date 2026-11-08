@@ -127,46 +127,52 @@ void main() {
     }
   });
 
-  test('attach expiry during held failure settlement frees its reservation', () async {
-    final (d, a, _) = await open(
-      attach: false,
-      env: {
-        'KUMIKO_TEST_ATTACH_TIMEOUT_MS': '500',
-        'KUMIKO_TEST_SETTLE_DEADLINE_MS': '5000',
-      },
-      script: {
-        'prompt': [{'oversizedBytes': 1}],
-      },
-    );
-    await d.setFault(TestFault.terminateHangs);
-    try {
-      await a.prompt('fail before attaching');
-      await a.wait(Method.agentState, where: (p) => p['state'] == 'failed');
-      await eventually(() async {
-        final stats = await d.connection.request('test/agent.stats', {}) as Json;
-        return ((stats['sessions'] as Json)[a.id] as Json)['ending'] == true;
-      });
-      await Future<void>.delayed(const Duration(milliseconds: 650));
-      expect(a.of(Method.agentExited), isEmpty);
-    } finally {
-      await d.setFault(TestFault.terminateHangs, enabled: false);
-    }
-    await a.wait(Method.agentExited);
-    await eventually(() => LedgerView(profile).units().isEmpty);
-    await expectAllGone(readReports(work));
-    expect(agentRows(profile).single['id'], a.id);
-    await expectLater(
-      a.call(Method.agentAttach),
-      rpcCode(ErrorCode.unknownSession),
-    );
-    for (var i = 0; i < maxChannels; i++) {
-      await d.connection.request(
-        Method.testChannelOpen,
-        const TestChannelOpenParams(0),
+  test(
+    'attach expiry during held failure settlement frees its reservation',
+    () async {
+      final (d, a, _) = await open(
+        attach: false,
+        env: {
+          'KUMIKO_TEST_ATTACH_TIMEOUT_MS': '500',
+          'KUMIKO_TEST_SETTLE_DEADLINE_MS': '5000',
+        },
+        script: {
+          'prompt': [
+            {'oversizedBytes': 1},
+          ],
+        },
       );
-    }
-    expect(d.connection.isClosed, isFalse);
-  });
+      await d.setFault(TestFault.terminateHangs);
+      try {
+        await a.prompt('fail before attaching');
+        await a.wait(Method.agentState, where: (p) => p['state'] == 'failed');
+        await eventually(() async {
+          final stats =
+              await d.connection.request('test/agent.stats', {}) as Json;
+          return ((stats['sessions'] as Json)[a.id] as Json)['ending'] == true;
+        });
+        await Future<void>.delayed(const Duration(milliseconds: 650));
+        expect(a.of(Method.agentExited), isEmpty);
+      } finally {
+        await d.setFault(TestFault.terminateHangs, enabled: false);
+      }
+      await a.wait(Method.agentExited);
+      await eventually(() => LedgerView(profile).units().isEmpty);
+      await expectAllGone(readReports(work));
+      expect(agentRows(profile).single['id'], a.id);
+      await expectLater(
+        a.call(Method.agentAttach),
+        rpcCode(ErrorCode.unknownSession),
+      );
+      for (var i = 0; i < maxChannels; i++) {
+        await d.connection.request(
+          Method.testChannelOpen,
+          const TestChannelOpenParams(0),
+        );
+      }
+      expect(d.connection.isClosed, isFalse);
+    },
+  );
   test('cleanup failure reports closeFailed never false exited and preserves unresolved launch gate', () async {
     final (d, a, _) = await open(
       env: {'KUMIKO_TEST_SETTLE_DEADLINE_MS': '250'},
@@ -275,114 +281,111 @@ void main() {
     expect(agentRows(profile).single['id'], a.id);
   });
 
-  test(
-    'native exit retires permissions and drains trailing updates after credit resumes',
-    () async {
-      final text = '\u0001' * maxAgentTextChunkBytes;
-      const trailing = 'accepted after the expanded final update';
-      final (d, a, _) = await open(
-        attach: false,
-        script: {
-          'prompt': [
-            {...permissionAction, 'waitPermission': false},
-            {'update': textUpdate(text)},
-            {
-              ...permissionAction,
-              'rpcId': 'late-draining-permission',
-              'waitPermission': false,
-            },
-            {'update': textUpdate(trailing)},
-            {'exit': 7},
-          ],
-        },
-      );
-      final unit = LedgerView(profile).units().single;
-      final adapterPid = unit['pid'] as int;
-      final adapterStart = processStartTime(adapterPid)!;
-      final decoder = AgentEventDecoder();
-      final record = agentRows(profile).single;
-      final received = <AgentEvent>[];
-      final input = d.connection
-          .attachInbound(a.started.eventChannel, grantInitial: false)
-          .listen((bytes) => received.addAll(decoder.add(bytes)));
-      addTearDown(input.cancel);
-      await a.call(Method.agentAttach);
-      await a.prompt('exit under backpressure');
-      final permission = await a.wait(Method.agentPermissionRequested);
-      Json stats = {};
-      await eventually(() async {
-        final snapshot =
-            await d.connection.request('test/agent.stats', {}) as Json;
-        stats = (snapshot['sessions'] as Json)[a.id] as Json;
-        return stats['paused'] == true &&
-            !isProcessAlive(adapterPid, adapterStart);
-      }, reason: 'adapter did not exit while normalized admission was blocked');
-      expect(stats['queuedBytes'] as int, greaterThanOrEqualTo(1024 * 1024));
-      expect(
-        stats['queuedBytes'] as int,
-        lessThan(1024 * 1024 + maxAgentEventBytes + 1),
-      );
-      expect(
-        stats['channelQueuedBytes'] as int,
-        lessThanOrEqualTo(channelWindow),
-      );
-      expect(stats['largeLineOwned'], isFalse);
-      expect(received, isEmpty);
-      await a.wait(
-        Method.agentState,
-        where: (p) => p['state'] == 'failed',
-        within: const Duration(seconds: 3),
-      );
-      final resolved = await a.wait(Method.agentPermissionResolved);
-      expect(resolved['requestId'], permission['requestId']);
-      expect(resolved['outcome'], 'cancelled');
-      await expectLater(
-        a.call(Method.agentPermissionReply, {
-          'sessionId': a.id,
-          'requestId': permission['requestId'],
-          'optionId': 'yes',
-        }),
-        rpcCode(ErrorCode.unknownRequest),
-      );
-      expect(
-        a.of(Method.agentExited),
-        isEmpty,
-        reason: 'a final count cannot be sealed during partial admission',
-      );
-      d.connection.grantInitial(a.started.eventChannel);
-      final exited = await a.wait(
-        Method.agentExited,
-        where: (p) => p['reason'] == 'failed',
-      );
-      final expectedCount =
-          encodeAgentEvent(
-            AgentEvent.text(AgentEventKind.user, 'exit under backpressure'),
-          ).length +
-          encodeAgentEvent(AgentEvent.text(AgentEventKind.agentText, text))
-              .length +
-          encodeAgentEvent(AgentEvent.text(AgentEventKind.agentText, trailing))
-              .length;
-      expect(exited['status'], 7);
-      expect(exited['eventCount'], expectedCount);
-      await eventually(() => received.length == expectedCount);
-      expect(
-        received
-            .where((event) => event.kind == AgentEventKind.agentText)
-            .map((event) => event.text)
-            .join(),
-        '$text$trailing',
-      );
-      expect(received.every((event) => !event.truncated), isTrue);
-      expect(a.of(Method.agentPermissionRequested), hasLength(1));
-      expect(a.of(Method.agentPermissionResolved), [resolved]);
-      expect(a.of(Method.agentExited), hasLength(1));
-      expect(isProcessAlive(adapterPid, adapterStart), isFalse);
-      expect(LedgerView(profile).units(), isEmpty);
-      expect(agentRows(profile).single, record);
-      await a.call(Method.agentRelease);
-      decoder.close();
-    },
-  );
+  test('native exit retires permissions and drains trailing updates after credit resumes', () async {
+    final text = '\u0001' * maxAgentTextChunkBytes;
+    const trailing = 'accepted after the expanded final update';
+    final (d, a, _) = await open(
+      attach: false,
+      script: {
+        'prompt': [
+          {...permissionAction, 'waitPermission': false},
+          {'update': textUpdate(text)},
+          {
+            ...permissionAction,
+            'rpcId': 'late-draining-permission',
+            'waitPermission': false,
+          },
+          {'update': textUpdate(trailing)},
+          {'exit': 7},
+        ],
+      },
+    );
+    final unit = LedgerView(profile).units().single;
+    final adapterPid = unit['pid'] as int;
+    final adapterStart = processStartTime(adapterPid)!;
+    final decoder = AgentEventDecoder();
+    final record = agentRows(profile).single;
+    final received = <AgentEvent>[];
+    final input = d.connection
+        .attachInbound(a.started.eventChannel, grantInitial: false)
+        .listen((bytes) => received.addAll(decoder.add(bytes)));
+    addTearDown(input.cancel);
+    await a.call(Method.agentAttach);
+    await a.prompt('exit under backpressure');
+    final permission = await a.wait(Method.agentPermissionRequested);
+    Json stats = {};
+    await eventually(() async {
+      final snapshot =
+          await d.connection.request('test/agent.stats', {}) as Json;
+      stats = (snapshot['sessions'] as Json)[a.id] as Json;
+      return stats['paused'] == true &&
+          !isProcessAlive(adapterPid, adapterStart);
+    }, reason: 'adapter did not exit while normalized admission was blocked');
+    expect(stats['queuedBytes'] as int, greaterThanOrEqualTo(1024 * 1024));
+    expect(
+      stats['queuedBytes'] as int,
+      lessThan(1024 * 1024 + maxAgentEventBytes + 1),
+    );
+    expect(
+      stats['channelQueuedBytes'] as int,
+      lessThanOrEqualTo(channelWindow),
+    );
+    expect(stats['largeLineOwned'], isFalse);
+    expect(received, isEmpty);
+    await a.wait(
+      Method.agentState,
+      where: (p) => p['state'] == 'failed',
+      within: const Duration(seconds: 3),
+    );
+    final resolved = await a.wait(Method.agentPermissionResolved);
+    expect(resolved['requestId'], permission['requestId']);
+    expect(resolved['outcome'], 'cancelled');
+    await expectLater(
+      a.call(Method.agentPermissionReply, {
+        'sessionId': a.id,
+        'requestId': permission['requestId'],
+        'optionId': 'yes',
+      }),
+      rpcCode(ErrorCode.unknownRequest),
+    );
+    expect(
+      a.of(Method.agentExited),
+      isEmpty,
+      reason: 'a final count cannot be sealed during partial admission',
+    );
+    d.connection.grantInitial(a.started.eventChannel);
+    final exited = await a.wait(
+      Method.agentExited,
+      where: (p) => p['reason'] == 'failed',
+    );
+    final expectedCount =
+        encodeAgentEvent(
+          AgentEvent.text(AgentEventKind.user, 'exit under backpressure'),
+        ).length +
+        encodeAgentEvent(AgentEvent.text(AgentEventKind.agentText, text))
+            .length +
+        encodeAgentEvent(AgentEvent.text(AgentEventKind.agentText, trailing))
+            .length;
+    expect(exited['status'], 7);
+    expect(exited['eventCount'], expectedCount);
+    await eventually(() => received.length == expectedCount);
+    expect(
+      received
+          .where((event) => event.kind == AgentEventKind.agentText)
+          .map((event) => event.text)
+          .join(),
+      '$text$trailing',
+    );
+    expect(received.every((event) => !event.truncated), isTrue);
+    expect(a.of(Method.agentPermissionRequested), hasLength(1));
+    expect(a.of(Method.agentPermissionResolved), [resolved]);
+    expect(a.of(Method.agentExited), hasLength(1));
+    expect(isProcessAlive(adapterPid, adapterStart), isFalse);
+    expect(LedgerView(profile).units(), isEmpty);
+    expect(agentRows(profile).single, record);
+    await a.call(Method.agentRelease);
+    decoder.close();
+  });
 
   for (final fault in [TestFault.killFails, TestFault.terminateHangs]) {
     test(

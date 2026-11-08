@@ -55,36 +55,51 @@ void main() {
     AgentSession? created;
     addTearDown(() => created?.dispose());
     final events = <AgentEvent>[];
-    final creation = p.client.newSession('/target', onCreated: (native) {
-      created = AgentSession(
-        sessionId: 'host',
-        client: p.client,
-        onState: (_) {},
-        onPermissionRequested: (_) {},
-        onPermissionResolved: (_) {},
-        onStopResult: (_) {},
-        onTurnEnded: (_) {},
-        enqueueEvents: (lines) {
-          final decoder = AgentEventDecoder();
-          for (final line in lines) {
-            events.addAll(decoder.add(line));
-          }
-          decoder.close();
-        },
-      )..ready(nativeSessionId: native);
-    });
-    p.input.add(utf8.encode([
-      jsonEncode({'jsonrpc': '2.0', 'id': p.writes.single['id'], 'result': {'sessionId': 'native'}}),
-      for (final text in ['first', 'second']) jsonEncode({
-        'jsonrpc': '2.0',
-        'method': 'session/update',
-        'params': {'sessionId': 'native', 'update': {
-          'sessionUpdate': 'agent_message_chunk',
-          'content': {'type': 'text', 'text': text},
-        }},
-      }),
-      '',
-    ].join('\n')));
+    final creation = p.client.newSession(
+      '/target',
+      onCreated: (native) {
+        created = AgentSession(
+          sessionId: 'host',
+          client: p.client,
+          onState: (_) {},
+          onPermissionRequested: (_) {},
+          onPermissionResolved: (_) {},
+          onStopResult: (_) {},
+          onTurnEnded: (_) {},
+          enqueueEvents: (lines) {
+            final decoder = AgentEventDecoder();
+            for (final line in lines) {
+              events.addAll(decoder.add(line));
+            }
+            decoder.close();
+          },
+        )..ready(nativeSessionId: native);
+      },
+    );
+    p.input.add(
+      utf8.encode(
+        [
+          jsonEncode({
+            'jsonrpc': '2.0',
+            'id': p.writes.single['id'],
+            'result': {'sessionId': 'native'},
+          }),
+          for (final text in ['first', 'second'])
+            jsonEncode({
+              'jsonrpc': '2.0',
+              'method': 'session/update',
+              'params': {
+                'sessionId': 'native',
+                'update': {
+                  'sessionUpdate': 'agent_message_chunk',
+                  'content': {'type': 'text', 'text': text},
+                },
+              },
+            }),
+          '',
+        ].join('\n'),
+      ),
+    );
     expect(await creation, 'native');
     await pumpAcp();
     expect(events.map((event) => event.text), ['first', 'second']);
@@ -462,18 +477,21 @@ void main() {
     });
     expect((await response).protocolVersion, 1);
   });
-  test('initialize preserves adapter identities at the escaped UTF-8 boundary', () async {
-    final name = '${'\u0001' * 682}tail';
-    final version = '${'界' * 1365}v';
-    final response = p.client.initialize();
-    p.result(p.writes.single['id']!, {
-      'protocolVersion': 1,
-      'agentInfo': {'name': name, 'version': version},
-    });
-    final initialized = await response;
-    expect(initialized.adapterName, name);
-    expect(initialized.adapterVersion, version);
-  });
+  test(
+    'initialize preserves adapter identities at the escaped UTF-8 boundary',
+    () async {
+      final name = '${'\u0001' * 682}tail';
+      final version = '${'界' * 1365}v';
+      final response = p.client.initialize();
+      p.result(p.writes.single['id']!, {
+        'protocolVersion': 1,
+        'agentInfo': {'name': name, 'version': version},
+      });
+      final initialized = await response;
+      expect(initialized.adapterName, name);
+      expect(initialized.adapterVersion, version);
+    },
+  );
 
   test('permission preserves opaque request id and unsupported requests get -32601', () async {
     p.client.onPermissionRequest = (id, params) {

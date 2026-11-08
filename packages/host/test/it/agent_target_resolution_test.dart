@@ -133,21 +133,24 @@ void main() {
                 : saved.call(Method.agentContinue),
           );
           try {
-            await eventually(() async {
-              final stats =
-                  await desktop.connection.request('test/agent.stats', {})
-                      as Json;
-              return (stats['heldResolutions'] as Json)[executable] == 1;
-            }, reason: 'executable probe must hold the already captured target');
+            await eventually(
+              () async {
+                final stats = await desktop.connection.request(
+                  'test/agent.stats',
+                  {},
+                ) as Json;
+                return (stats['heldResolutions'] as Json)[executable] == 1;
+              },
+              reason: 'executable probe must hold the already captured target',
+            );
             if (outcome == 'timeout') {
               await desktop.resolveFault(targetPath, delayMs: 3000);
             } else {
               savedWork.renameSync(original.path);
               if (outcome == 'replacement') {
                 savedWork.createSync();
-                File(joinPath(original.path, 'saved.script.json')).copySync(
-                  joinPath(savedWork.path, 'saved.script.json'),
-                );
+                File(joinPath(original.path, 'saved.script.json'))
+                    .copySync(joinPath(savedWork.path, 'saved.script.json'));
               }
             }
             await controlResponds();
@@ -157,7 +160,9 @@ void main() {
           final error = await pending.timeout(const Duration(seconds: 5));
           expect(
             error.reason,
-            start ? ErrorCode.workspaceUnavailable : ErrorCode.resumeUnavailable,
+            start
+                ? ErrorCode.workspaceUnavailable
+                : ErrorCode.resumeUnavailable,
           );
           if (!start) {
             expect(
@@ -165,7 +170,9 @@ void main() {
               outcome == 'replacement' ? 'target-changed' : 'target-missing',
             );
           }
-          if (outcome == 'timeout') expect(error.message, contains('did not answer'));
+          if (outcome == 'timeout') {
+            expect(error.message, contains('did not answer'));
+          }
           expect(
             readHostLog(profile)
                 .where((row) => row['op'] == 'unit-launched')
@@ -184,10 +191,15 @@ void main() {
 
   test('Start stalled workspace target leaves native controls responsive and creates no record', () async {
     await desktop.resolveFault(savedWorkspacePath, delayMs: 3000);
-    final pending = rpcFailure(saved.call(Method.agentStart, AgentStartParams(
-      workspaceId: savedWorkspaceId,
-      runtimeProfileId: 'saved',
-    ).toJson()));
+    final pending = rpcFailure(
+      saved.call(
+        Method.agentStart,
+        AgentStartParams(
+          workspaceId: savedWorkspaceId,
+          runtimeProfileId: 'saved',
+        ).toJson(),
+      ),
+    );
     await desktop.listWorkspaces();
     await controlResponds();
     final error = await pending.timeout(const Duration(seconds: 5));
@@ -198,40 +210,53 @@ void main() {
     await live.close();
   });
 
-  test('unit launch target recheck remains bounded beside live native controls', () async {
-    await desktop.resolveFault(targetPath, delayMs: 3000);
-    final pending = rpcFailure(desktop.launch(Directory(targetPath), TestFixture.sleeper));
-    await desktop.listWorkspaces();
-    await controlResponds();
-    final error = await pending.timeout(const Duration(seconds: 5));
-    expect(error.reason, ErrorCode.targetUnavailable);
-    expect(error.message, contains('did not answer'));
-    expect(LedgerView(profile).units(), hasLength(1));
-    expect(agentRows(profile), hasLength(2));
-    await live.close();
-  });
-
-  for (final start in [true, false]) {
-    test('${start ? 'Start' : 'Continue'} stalled executable leaves native control responsive and times out before spawn', () async {
-      final executable = testHostExecutable();
-      await desktop.resolveFault(executable, delayMs: 3000);
-      final pending = rpcFailure(start
-          ? saved.call(Method.agentStart, AgentStartParams(
-              workspaceId: savedWorkspaceId,
-              runtimeProfileId: 'saved',
-            ).toJson())
-          : saved.call(Method.agentContinue));
+  test(
+    'unit launch target recheck remains bounded beside live native controls',
+    () async {
+      await desktop.resolveFault(targetPath, delayMs: 3000);
+      final pending = rpcFailure(
+        desktop.launch(Directory(targetPath), TestFixture.sleeper),
+      );
       await desktop.listWorkspaces();
       await controlResponds();
       final error = await pending.timeout(const Duration(seconds: 5));
-      expect(error.reason, ErrorCode.busy);
-      expect(error.data['executable'], executable);
+      expect(error.reason, ErrorCode.targetUnavailable);
       expect(error.message, contains('did not answer'));
       expect(LedgerView(profile).units(), hasLength(1));
-      expect(agentRows(profile).first, savedRow);
       expect(agentRows(profile), hasLength(2));
       await live.close();
-    });
+    },
+  );
+
+  for (final start in [true, false]) {
+    test(
+      '${start ? 'Start' : 'Continue'} stalled executable leaves native control responsive and times out before spawn',
+      () async {
+        final executable = testHostExecutable();
+        await desktop.resolveFault(executable, delayMs: 3000);
+        final pending = rpcFailure(
+          start
+              ? saved.call(
+                  Method.agentStart,
+                  AgentStartParams(
+                    workspaceId: savedWorkspaceId,
+                    runtimeProfileId: 'saved',
+                  ).toJson(),
+                )
+              : saved.call(Method.agentContinue),
+        );
+        await desktop.listWorkspaces();
+        await controlResponds();
+        final error = await pending.timeout(const Duration(seconds: 5));
+        expect(error.reason, ErrorCode.busy);
+        expect(error.data['executable'], executable);
+        expect(error.message, contains('did not answer'));
+        expect(LedgerView(profile).units(), hasLength(1));
+        expect(agentRows(profile).first, savedRow);
+        expect(agentRows(profile), hasLength(2));
+        await live.close();
+      },
+    );
   }
 
   test('saved records stalled target leaves native control responsive and times out unavailable', () async {
