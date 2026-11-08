@@ -432,53 +432,48 @@ void main() {
     );
   });
 
-  Matcher draftRefusal(String reason) => throwsA(
-    isA<RpcException>().having((e) => e.reason, 'reason', reason),
-  );
+  Matcher draftRefusal(String reason) =>
+      throwsA(isA<RpcException>().having((e) => e.reason, 'reason', reason));
 
-  test(
-    'draft one byte past 256 KiB encoded refused draft-too-large',
-    () {
-      Json save(String text) => {'sessionId': 's', 'text': text, 'revision': 1};
-      // Plain bytes: the bound itself passes, one more is refused.
-      expect(
-        AgentDraftSaveParams.fromJson(save('a' * maxDraftBytes)).text,
-        hasLength(maxDraftBytes),
-      );
-      expect(
-        () => AgentDraftSaveParams.fromJson(save('a' * (maxDraftBytes + 1))),
-        draftRefusal(ErrorCode.draftTooLarge),
-      );
-      // Escaping is counted: a quote encodes to two bytes, a control
-      // character to six, so 131072 quotes fill the bound exactly.
-      expect(
-        AgentDraftSaveParams.fromJson(save('"' * (maxDraftBytes ~/ 2))).text,
-        hasLength(maxDraftBytes ~/ 2),
-      );
-      expect(
-        () => AgentDraftSaveParams.fromJson(
-          save('${'"' * (maxDraftBytes ~/ 2)}a'),
-        ),
-        draftRefusal(ErrorCode.draftTooLarge),
-      );
-      expect(
-        () => AgentDraftSaveParams.fromJson(save('\u0001' * 43691)),
-        draftRefusal(ErrorCode.draftTooLarge),
-      );
-      // UTF-8 is counted: a 4-byte emoji is two UTF-16 units.
-      expect(
-        AgentDraftSaveParams.fromJson(save('😀' * (maxDraftBytes ~/ 4))).text,
-        isNotEmpty,
-      );
-      expect(
-        () => AgentDraftSaveParams.fromJson(
-          save('${'😀' * (maxDraftBytes ~/ 4)}a'),
-        ),
-        draftRefusal(ErrorCode.draftTooLarge),
-      );
-      expect(jsonStringContentBytes('a"\n\u0001é😀'), 1 + 2 + 2 + 6 + 2 + 4);
-    },
-  );
+  test('draft one byte past 256 KiB encoded refused draft-too-large', () {
+    Json save(String text) => {'sessionId': 's', 'text': text, 'revision': 1};
+    // Plain bytes: the bound itself passes, one more is refused.
+    expect(
+      AgentDraftSaveParams.fromJson(save('a' * maxDraftBytes)).text,
+      hasLength(maxDraftBytes),
+    );
+    expect(
+      () => AgentDraftSaveParams.fromJson(save('a' * (maxDraftBytes + 1))),
+      draftRefusal(ErrorCode.draftTooLarge),
+    );
+    // Escaping is counted: a quote encodes to two bytes, a control
+    // character to six, so 131072 quotes fill the bound exactly.
+    expect(
+      AgentDraftSaveParams.fromJson(save('"' * (maxDraftBytes ~/ 2))).text,
+      hasLength(maxDraftBytes ~/ 2),
+    );
+    expect(
+      () =>
+          AgentDraftSaveParams.fromJson(save('${'"' * (maxDraftBytes ~/ 2)}a')),
+      draftRefusal(ErrorCode.draftTooLarge),
+    );
+    expect(
+      () => AgentDraftSaveParams.fromJson(save('\u0001' * 43691)),
+      draftRefusal(ErrorCode.draftTooLarge),
+    );
+    // UTF-8 is counted: a 4-byte emoji is two UTF-16 units.
+    expect(
+      AgentDraftSaveParams.fromJson(save('😀' * (maxDraftBytes ~/ 4))).text,
+      isNotEmpty,
+    );
+    expect(
+      () => AgentDraftSaveParams.fromJson(
+        save('${'😀' * (maxDraftBytes ~/ 4)}a'),
+      ),
+      draftRefusal(ErrorCode.draftTooLarge),
+    );
+    expect(jsonStringContentBytes('a"\n\u0001é😀'), 1 + 2 + 2 + 6 + 2 + 4);
+  });
 
   test('draft messages round-trip; the prompt carries the draft fields', () {
     Json rt(Json j) => jsonDecode(jsonEncode(j)) as Json;
@@ -489,9 +484,8 @@ void main() {
     ).toJson();
     expect(AgentDraftSaveParams.fromJson(rt(save)).toJson(), save);
     expect(
-      AgentDraftSaveResult.fromJson(
-        rt(const AgentDraftSaveResult(7).toJson()),
-      ).revision,
+      AgentDraftSaveResult.fromJson(rt(const AgentDraftSaveResult(7).toJson()))
+          .revision,
       7,
     );
     expect(

@@ -2098,11 +2098,7 @@ class AgentDraftSaveParams {
   final String sessionId;
   final String text;
   final int revision;
-  Json toJson() => {
-    'sessionId': sessionId,
-    'text': text,
-    'revision': revision,
-  };
+  Json toJson() => {'sessionId': sessionId, 'text': text, 'revision': revision};
 }
 
 /// The acknowledgement of a save: the stored revision.
@@ -2126,7 +2122,6 @@ class AgentDraftLoadResult {
   final String? text;
   Json toJson() => {'revision': revision, 'text': ?text};
 }
-
 
 class AgentPermissionReplyParams {
   const AgentPermissionReplyParams({
