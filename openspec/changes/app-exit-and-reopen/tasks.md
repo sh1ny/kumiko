@@ -95,7 +95,7 @@ Paths are relative to `packages/`. Where an existing test turns red because its 
 | execution-host → An unexpected previous end is shown at the next launch | Previous exit cannot be read | host/test/it/previous_exit_test.dart | unreadable snapshot logs only and shows no notice | red |
 | desktop-host-protocol → Lifecycle, activity and draft methods are capability-gated | Both peers support lifecycle | host_protocol/test/lifecycle_messages_test.dart | lifecycle methods round-trip when both advertise it | red |
 | desktop-host-protocol → Lifecycle, activity and draft methods are capability-gated | Host without lifecycle | host/test/it/previous_exit_test.dart | host without lifecycle refuses method-not-available; quit still ends units | red |
-| desktop-host-protocol → Activity and draft requests are bounded | Too many terminals | host/test/it/terminal_activity_test.dart | 65 ids refused invalid-params without a table read | red |
+| desktop-host-protocol → Activity and draft requests are bounded | Too many terminals | host/test/it/terminal_activity_test.dart | 65 ids refused invalid-params without a table read | green |
 | desktop-host-protocol → Activity and draft requests are bounded | Oversized draft | host_protocol/test/agent_messages_test.dart | draft one byte past 256 KiB encoded refused draft-too-large | red |
 | desktop-host-protocol → Activity and draft requests are bounded | Unknown session | host/test/it/draft_store_test.dart | draftSave for unknown session refused unknown-session | red |
 | desktop-host-protocol → Activity and draft requests are bounded | Draft save under saturated output | host/test/it/draft_store_test.dart | draft save acked within control latency under saturated output | red |
