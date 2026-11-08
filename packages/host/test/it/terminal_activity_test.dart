@@ -129,7 +129,9 @@ void main() {
     final a = await until(
       desktop,
       t.id,
-      (a) => a.state == TerminalActivityState.busy,
+      (a) =>
+          a.state == TerminalActivityState.busy &&
+          a.programs.contains(expected),
     );
     expect(a.programs, contains(expected));
     expect(a.programs.length, lessThanOrEqualTo(3));
@@ -152,7 +154,9 @@ void main() {
     final a = await until(
       desktop,
       t.id,
-      (a) => a.state == TerminalActivityState.busy,
+      (a) =>
+          a.state == TerminalActivityState.busy &&
+          a.programs.contains(Platform.isWindows ? 'PING.EXE' : 'sleep'),
     );
     expect(a.programs, contains(Platform.isWindows ? 'PING.EXE' : 'sleep'));
   });
@@ -165,7 +169,8 @@ void main() {
     final a = await until(
       desktop,
       t.id,
-      (a) => a.state == TerminalActivityState.busy,
+      (a) =>
+          a.state == TerminalActivityState.busy && a.programs.contains('sleep'),
     );
     expect(a.programs, ['sleep']);
   }, testOn: 'linux || mac-os');
