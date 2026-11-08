@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "dart": {
+      "type": "stdio",
+      "command": "mise",
+      "args": ["exec", "--", "dart", "mcp-server", "--enable", "cli,flutter_app_lifecycle"]
+    }
+  }
+}

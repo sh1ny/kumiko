@@ -29,3 +29,17 @@ and any changes Kumiko makes to it.
 The vendored `flutter_alacritty` package contains comments, written by its
 upstream author, that credit Orca for terminal scrolling behaviour. Those
 comments are part of the upstream package, and Kumiko leaves them unchanged.
+
+## Agent skills
+
+`.claude/skills/` and `.agents/skills/` include the official Dart and Flutter
+agent skills, copied unchanged from these projects (installed through the
+owner's PromptHub library). They guide coding agents working on this
+repository; they are not part of Kumiko and do not ship with it.
+
+| Skills | Repository | Licence |
+|---|---|---|
+| `dart-*` | <https://github.com/dart-lang/skills> | BSD-3-Clause |
+| `flutter-*` | <https://github.com/flutter/agent-plugins> | BSD-3-Clause |
+
+Their licence texts are in `.claude/licenses/` and `.agents/licenses/`.
