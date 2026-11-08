@@ -191,6 +191,9 @@ class Desktop {
   final Directory profile;
   final List<CleanupState> states = [];
   final List<WorkspaceChanged> changes = [];
+
+  /// The `agent/draftStoreReady` notifications received.
+  int draftStoreReady = 0;
   StreamSubscription<HostNotification>? _states;
 
   static HostLauncher newLauncher(
@@ -229,6 +232,8 @@ class Desktop {
       switch (n.method) {
         case Method.cleanupState:
           states.add(CleanupState.fromJson(n.params));
+        case Method.agentDraftStoreReady:
+          draftStoreReady++;
         case Method.workspaceChanged:
           changes.add(WorkspaceChanged.fromJson(n.params));
       }
@@ -241,6 +246,7 @@ class Desktop {
     await _states?.cancel();
     states.clear();
     changes.clear();
+    draftStoreReady = 0;
     session = await launcher.start();
     _listen();
   }

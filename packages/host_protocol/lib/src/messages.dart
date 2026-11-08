@@ -60,6 +60,10 @@ abstract final class Method {
   static const String agentClose = 'agent/close';
   static const String agentRelease = 'agent/release';
   static const String agentRecords = 'agent/records';
+  static const String agentDraftSave = 'agent/draftSave';
+  static const String agentDraftLoad = 'agent/draftLoad';
+  static const String agentDraftReset = 'agent/draftReset';
+  static const String agentDraftStoreReady = 'agent/draftStoreReady';
   static const String agentState = 'agent/state';
   static const String agentPermissionRequested = 'agent/permissionRequested';
   static const String agentPermissionResolved = 'agent/permissionResolved';
@@ -116,6 +120,9 @@ const Map<String, String> methodCapability = {
   Method.agentClose: Capability.agent,
   Method.agentRelease: Capability.agent,
   Method.agentRecords: Capability.agent,
+  Method.agentDraftSave: Capability.agent,
+  Method.agentDraftLoad: Capability.agent,
+  Method.agentDraftReset: Capability.agent,
 };
 
 /// Error reasons, carried as `error.data.reason`.
@@ -165,6 +172,12 @@ abstract final class ErrorCode {
   static const String authRequired = 'auth-required';
   static const String resumeUnavailable = 'resume-unavailable';
   static const String workspaceRequired = 'workspace-required';
+
+  /// Draft storage (app-exit-and-reopen design D3, D4, ADR 0014).
+  static const String draftTooLarge = 'draft-too-large';
+  static const String draftCap = 'draft-cap';
+  static const String draftUnavailable = 'draft-unavailable';
+  static const String draftStoreInUse = 'draft-store-in-use';
 
   /// A terminal was opened for a workspace whose directory is unavailable.
   static const String workspaceUnavailable = 'workspace-unavailable';
@@ -453,32 +466,44 @@ String clampUtf8(String value, int maxBytes) {
   return utf8.decode(bytes.sublist(0, end));
 }
 
+/// UTF-8 bytes [rune] takes inside an encoded JSON string, escapes counted.
+int _jsonRuneBytes(int rune) {
+  if (rune == 34 ||
+      rune == 92 ||
+      rune == 8 ||
+      rune == 9 ||
+      rune == 10 ||
+      rune == 12 ||
+      rune == 13) {
+    return 2;
+  }
+  if (rune < 32 || (rune >= 0xd800 && rune <= 0xdfff)) return 6;
+  return rune < 0x80
+      ? 1
+      : rune < 0x800
+      ? 2
+      : rune < 0x10000
+      ? 3
+      : 4;
+}
+
+/// Bytes of [value] as encoded JSON string contents (excluding quotes), with
+/// UTF-8 and escaping counted: the measure of the draft bounds.
+int jsonStringContentBytes(String value) {
+  var bytes = 0;
+  for (final rune in value.runes) {
+    bytes += _jsonRuneBytes(rune);
+  }
+  return bytes;
+}
+
 /// Prefix bounded by encoded JSON string contents (excluding quotes), counting
 /// escapes and preserving code point boundaries in one pass.
 String clampJsonString(String value, int maxEncodedBytes) {
   var bytes = 0;
   var end = 0;
   for (final rune in value.runes) {
-    final int cost;
-    if (rune == 34 ||
-        rune == 92 ||
-        rune == 8 ||
-        rune == 9 ||
-        rune == 10 ||
-        rune == 12 ||
-        rune == 13) {
-      cost = 2;
-    } else if (rune < 32 || (rune >= 0xd800 && rune <= 0xdfff)) {
-      cost = 6;
-    } else {
-      cost = rune < 0x80
-          ? 1
-          : rune < 0x800
-          ? 2
-          : rune < 0x10000
-          ? 3
-          : 4;
-    }
+    final cost = _jsonRuneBytes(rune);
     if (bytes + cost > maxEncodedBytes) break;
     bytes += cost;
     end += rune > 0xffff ? 2 : 1;
@@ -1519,6 +1544,17 @@ enum TestFault {
   /// `terminal/activity` reads take 3 s, past the 1 s deadline.
   activityReadSlow,
 
+  /// The draft worker fails a commit (rolled back) while this stays on.
+  draftCommitFails,
+
+  /// The draft worker holds a commit open, inside its transaction, until the
+  /// fault is turned off.
+  draftCommitHangs,
+
+  /// `agent/draftReset` waits, under its reservation, until the fault is
+  /// turned off.
+  draftResetHangs,
+
   /// Windows: the pseudo-console close never returns (a stuck closer).
   consoleCloseHangs,
   crashAfterPendingWrite,
@@ -1982,7 +2018,12 @@ class AgentContinueResult {
 }
 
 class AgentPromptParams {
-  const AgentPromptParams({required this.sessionId, required this.text});
+  const AgentPromptParams({
+    required this.sessionId,
+    required this.text,
+    this.draftRevision,
+    this.draftSynced,
+  });
   factory AgentPromptParams.fromJson(Json json) {
     final text = _req<String>(json, 'text');
     if (utf8.encode(text).length > maxAgentPromptBytes) {
@@ -1991,15 +2032,101 @@ class AgentPromptParams {
         'prompt exceeds $maxAgentPromptBytes bytes',
       );
     }
+    final revision = _opt<int>(json, 'draftRevision');
+    if (revision != null && revision < 0) {
+      throw RpcException(ErrorCode.invalidParams, 'invalid "draftRevision"');
+    }
     return AgentPromptParams(
       sessionId: _req<String>(json, 'sessionId'),
       text: text,
+      draftRevision: revision,
+      draftSynced: _opt<bool>(json, 'draftSynced'),
     );
   }
   final String sessionId;
   final String text;
-  Json toJson() => {'sessionId': sessionId, 'text': text};
+
+  /// The composer revision whose text is sent (ADR 0014 decision 11); absent
+  /// for a Retry, which neither reads nor removes the stored draft.
+  final int? draftRevision;
+
+  /// Whether the link had learned the stored revision when it sent. Absent
+  /// reads as unsynced.
+  final bool? draftSynced;
+  Json toJson() => {
+    'sessionId': sessionId,
+    'text': text,
+    'draftRevision': ?draftRevision,
+    'draftSynced': ?draftSynced,
+  };
 }
+
+// --- unsent drafts (app-exit-and-reopen design D3, D4; ADR 0014) ----------
+
+/// One draft's text, as encoded JSON string contents (design D3).
+const int maxDraftBytes = 256 * 1024;
+
+/// All stored drafts together, summed over their `bytes`.
+const int maxStoredDraftBytes = 32 * 1024 * 1024;
+
+/// `agent/draftSave`: the composer text of one session at one revision. Empty
+/// text clears the draft.
+class AgentDraftSaveParams {
+  const AgentDraftSaveParams({
+    required this.sessionId,
+    required this.text,
+    required this.revision,
+  });
+  factory AgentDraftSaveParams.fromJson(Json json) {
+    final text = _req<String>(json, 'text');
+    final revision = _req<int>(json, 'revision');
+    if (revision < 0) {
+      throw RpcException(ErrorCode.invalidParams, 'invalid "revision"');
+    }
+    if (jsonStringContentBytes(text) > maxDraftBytes) {
+      throw RpcException(
+        ErrorCode.draftTooLarge,
+        'a draft is at most $maxDraftBytes bytes',
+      );
+    }
+    return AgentDraftSaveParams(
+      sessionId: _req<String>(json, 'sessionId'),
+      text: text,
+      revision: revision,
+    );
+  }
+  final String sessionId;
+  final String text;
+  final int revision;
+  Json toJson() => {
+    'sessionId': sessionId,
+    'text': text,
+    'revision': revision,
+  };
+}
+
+/// The acknowledgement of a save: the stored revision.
+class AgentDraftSaveResult {
+  const AgentDraftSaveResult(this.revision);
+  factory AgentDraftSaveResult.fromJson(Json json) =>
+      AgentDraftSaveResult(_req<int>(json, 'revision'));
+  final int revision;
+  Json toJson() => {'revision': revision};
+}
+
+/// `agent/draftLoad` answers the stored text (absent when none) and the
+/// stored revision, which is 0 for a session never saved.
+class AgentDraftLoadResult {
+  const AgentDraftLoadResult({required this.revision, this.text});
+  factory AgentDraftLoadResult.fromJson(Json json) => AgentDraftLoadResult(
+    revision: _req<int>(json, 'revision'),
+    text: _opt<String>(json, 'text'),
+  );
+  final int revision;
+  final String? text;
+  Json toJson() => {'revision': revision, 'text': ?text};
+}
+
 
 class AgentPermissionReplyParams {
   const AgentPermissionReplyParams({

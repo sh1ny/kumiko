@@ -17,6 +17,7 @@ import '../workspace_service.dart';
 import '../workspace_resolver.dart';
 import 'acp/acp_client.dart';
 import 'agent_session.dart';
+import 'draft_store.dart';
 import 'executable_resolver.dart';
 import 'qualification.dart';
 import 'qualified_adapters.dart';
@@ -269,6 +270,9 @@ class _Agent {
   bool attached = false;
   bool ending = false;
   bool closeRequested = false;
+
+  /// A prompt is committing its draft removal; no second prompt starts.
+  bool sending = false;
   bool exited = false;
   bool closeFailed = false;
   bool consumerClosed = false;
@@ -289,9 +293,12 @@ class AgentService {
     required this.store,
     required this.options,
     required this.tools,
+    required this.drafts,
     this.qualifiedAdaptersOverride,
     this.toolDeliveryFailuresOverride,
-  });
+  }) {
+    drafts.onAvailable = _draftStoreReady;
+  }
   final Connection connection;
   final UnitManager units;
   final WorkspaceService workspaces;
@@ -300,6 +307,9 @@ class AgentService {
   final HostOptions options;
   final List<(String, String, List<String>)>? qualifiedAdaptersOverride;
   final ToolService tools;
+
+  /// Unsent composer drafts; the worker behind it never blocks this isolate.
+  final DraftStore drafts;
   final List<(String, String, String)>? toolDeliveryFailuresOverride;
   late final _executables = LaunchExecutableResolver(
     faults: workspaces.resolver.faults,
@@ -1072,10 +1082,88 @@ class AgentService {
     }
   }
 
-  void prompt(AgentPromptParams params) {
+  /// Validates, commits the removal of the draft the prompt carries, and only
+  /// then dispatches (design D4): a failed or late commit refuses the prompt,
+  /// so a sent text is never left stored. Everything before the first await
+  /// runs in arrival order, so a later `agent/draftSave` queues behind the
+  /// removal. A retry carries no draft fields and removes nothing.
+  Future<void> prompt(AgentPromptParams params) async {
     final a = _require(params.sessionId);
-    a.session.acceptPrompt(params.text);
+    a.session.checkCanPrompt(params.text);
+    final revision = params.draftRevision;
+    if (revision == null) {
+      a.session.acceptPrompt(params.text);
+      return;
+    }
+    if (a.sending) {
+      throw RpcException(
+        ErrorCode.turnRunning,
+        'a turn is already running or the session is unavailable',
+      );
+    }
+    a.sending = true;
+    try {
+      await drafts.commitSend(
+        params.sessionId,
+        revision,
+        synced: params.draftSynced ?? false,
+      );
+    } finally {
+      a.sending = false;
+    }
+    _available();
+    final again = _require(params.sessionId);
+    again.session.acceptPrompt(params.text);
   }
+
+  Future<AgentDraftSaveResult> draftSave(AgentDraftSaveParams params) async {
+    _available();
+    _requireRecord(params.sessionId);
+    return AgentDraftSaveResult(
+      await drafts.save(params.sessionId, params.text, params.revision),
+    );
+  }
+
+  Future<AgentDraftLoadResult> draftLoad(AgentSessionParams params) async {
+    _available();
+    _requireRecord(params.sessionId);
+    final loaded = await drafts.load(params.sessionId);
+    return AgentDraftLoadResult(revision: loaded.revision, text: loaded.text);
+  }
+
+  Future<void> draftReset() async {
+    _available();
+    await drafts.reset();
+  }
+
+  void _requireRecord(String id) {
+    if (_record(id) == null) {
+      throw RpcException(
+        ErrorCode.unknownSession,
+        'there is no agent session $id',
+        {'sessionId': id},
+      );
+    }
+  }
+
+  /// The store opened or answers again: tell a desktop that can use it.
+  void _draftStoreReady() {
+    if (_disposed) return;
+    if (connection.negotiated?.capabilities.contains(Capability.agent) ??
+        false) {
+      connection.notify(Method.agentDraftStoreReady, <String, Object?>{});
+    }
+  }
+
+  /// Read only on demand by the test extension.
+  Json draftSnapshot() => {
+    'phase': drafts.phase.name,
+    'notResponding': drafts.notResponding,
+    'pending': drafts.pending,
+    'workersSpawned': drafts.workersSpawned,
+    'disabledReason': drafts.disabledReason,
+    'pragmas': drafts.pragmas,
+  };
 
   void stop(AgentSessionParams params) {
     final a = _require(params.sessionId);
@@ -1362,6 +1450,7 @@ class AgentService {
   void dispose() {
     if (_disposed) return;
     _disposed = true;
+    drafts.dispose();
     for (final grant in _grants.toList()) {
       _revoke(grant);
     }

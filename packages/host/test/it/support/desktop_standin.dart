@@ -3,6 +3,10 @@
 // launches a `tree` and an `escaper` unit in <target>, prints
 // `READY <host pid>` and then waits until it is killed.
 //
+// `desktop_standin <host-exe> <profile> <target> --draft <script> <text>`
+// starts one agent session, saves <text> as its draft at revision 1, prints
+// `SESSION <id>` and `READY <host pid>`, and waits until it is killed.
+//
 // `desktop_standin <host-exe> <profile> <target> --terminal <fixture-exe>`
 // instead opens one terminal running the fixture shell in <target>, makes
 // the shell start a child, and prints `READY <host pid>` once both run.
@@ -25,7 +29,8 @@ Future<void> main(List<String> args) async {
     },
   );
   final session = await launcher.start();
-  if (args.length > 4 && args[3] == '--agent') {
+  final draft = args.length > 5 && args[3] == '--draft';
+  if (args.length > 4 && (args[3] == '--agent' || draft)) {
     final c = session.connection;
     final reconciled = Completer<void>();
     session.notifications.listen((n) {
@@ -64,10 +69,22 @@ Future<void> main(List<String> args) async {
     c.attachInbound(a.eventChannel, grantInitial: false).listen((_) {});
     await c.request(Method.agentAttach, AgentSessionParams(a.sessionId));
     c.grantInitial(a.eventChannel);
-    await c.request(
-      Method.agentPrompt,
-      AgentPromptParams(sessionId: a.sessionId, text: 'spawn tree'),
-    );
+    if (draft) {
+      await c.request(
+        Method.agentDraftSave,
+        AgentDraftSaveParams(
+          sessionId: a.sessionId,
+          text: args[5],
+          revision: 1,
+        ).toJson(),
+      );
+      stdout.writeln('SESSION ${a.sessionId}');
+    } else {
+      await c.request(
+        Method.agentPrompt,
+        AgentPromptParams(sessionId: a.sessionId, text: 'spawn tree'),
+      );
+    }
     stdout.writeln('READY ${session.pid}');
     await stdout.flush();
     await Completer<void>().future;

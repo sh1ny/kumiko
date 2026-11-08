@@ -5,6 +5,7 @@ import 'package:host_protocol/host_protocol.dart';
 import 'package:process_containment/process_containment.dart';
 
 import 'agent/agent_service.dart';
+import 'agent/draft_store.dart';
 import 'agent/runtime_profile_service.dart';
 import 'agent/tools/tool_endpoint.dart';
 import 'agent/tools/tool_service.dart';
@@ -297,6 +298,14 @@ class Host {
       options: options,
       log: log,
     );
+    final drafts = DraftStore(
+      file: File('${profile.path}${Platform.pathSeparator}drafts.sqlite'),
+      faults: faults,
+      deadline: options.draftDeadline,
+      openHold: options.draftOpenHold,
+      log: (op, {code}) => log.event(op, code: code),
+    );
+    faults.onDraftRelease = drafts.releaseHeld;
     _agents = AgentService(
       connection: _connection,
       units: units,
@@ -306,6 +315,7 @@ class Host {
       options: options,
       qualifiedAdaptersOverride: extension?.qualifiedAdaptersOverride,
       tools: _tools!,
+      drafts: drafts,
       toolDeliveryFailuresOverride: extension?.toolDeliveryFailuresOverride,
     );
     _workbench = WorkbenchService(
@@ -323,6 +333,9 @@ class Host {
       notify: _connection.notify,
       workspaceTarget: workspaces.cleanupTarget,
     )..startReconciliation(params.priorHost);
+    // After reconciliation has started: the open of the draft file must not
+    // delay it.
+    drafts.start();
     units.onUnresolved = cleanup.sendState;
     log.event(
       'hello',
@@ -438,7 +451,17 @@ class Host {
         _agents!.attach(AgentSessionParams.fromJson(params));
         return <String, Object?>{};
       case Method.agentPrompt:
-        _agents!.prompt(AgentPromptParams.fromJson(params));
+        await _agents!.prompt(AgentPromptParams.fromJson(params));
+        return <String, Object?>{};
+      case Method.agentDraftSave:
+        return (await _agents!.draftSave(AgentDraftSaveParams.fromJson(params)))
+            .toJson();
+      case Method.agentDraftLoad:
+        return (await _agents!.draftLoad(AgentSessionParams.fromJson(params)))
+            .toJson();
+      case Method.agentDraftReset:
+        EmptyParams.fromJson(params);
+        await _agents!.draftReset();
         return <String, Object?>{};
       case Method.agentStop:
         _agents!.stop(AgentSessionParams.fromJson(params));

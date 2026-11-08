@@ -48,36 +48,36 @@ Paths are relative to `packages/`. Where an existing test turns red because its 
 | workbench-layout → Closing a pane or tab checks for live work | Tab with no live work | desktop/test/workbench_test.dart | tab with idle agent and terminal at prompt closes silently | green |
 | workbench-layout → Closing a pane or tab checks for live work | Part of a tab close fails | desktop/test/workbench_test.dart | existing partial-tab-close test, busy fixture | green |
 | agent-sessions → Unsent drafts are stored per session | Draft survives quit | desktop/integration_test/exit_reopen_test.dart | composer text returns after quit and reopen | red |
-| agent-sessions → Unsent drafts are stored per session | Draft survives a desktop kill | host/test/it/draft_store_test.dart | draft saved by the stand-in desktop survives its kill | red |
+| agent-sessions → Unsent drafts are stored per session | Draft survives a desktop kill | host/test/it/draft_store_test.dart | draft saved by the stand-in desktop survives its kill | green |
 | agent-sessions → Unsent drafts are stored per session | Draft survives closing the pane | desktop/test/draft_test.dart | pane close flushes the draft before agent/close | red |
 | agent-sessions → Unsent drafts are stored per session | No saved record yet | desktop/test/draft_test.dart | starting link keeps text in memory and shows Draft not saved | red |
 | agent-sessions → Unsent drafts are stored per session | Draft too large | desktop/test/draft_test.dart | draft-too-large shows reason and keeps text | red |
-| agent-sessions → Unsent drafts are stored per session | Draft storage full | host/test/it/draft_store_test.dart | save past 32 MiB total refused draft-cap | red |
+| agent-sessions → Unsent drafts are stored per session | Draft storage full | host/test/it/draft_store_test.dart | save past 32 MiB total refused draft-cap | green |
 | agent-sessions → Unsent drafts are stored per session | Save fails | desktop/test/draft_test.dart | host-lost save leaves link unsaved and visible | red |
 | agent-sessions → Closing with an unsaved draft says it will be lost | Close a pane with a refused draft | desktop/test/draft_test.dart | close confirmation names the unsaved draft; Cancel keeps it | red |
 | agent-sessions → Closing with an unsaved draft says it will be lost | Close a pane with a stored draft | desktop/test/draft_test.dart | stored idle draft closes silently and stays stored | red |
 | agent-sessions → A restored pane shows its session's draft | Draft returns on reopen | desktop/integration_test/exit_reopen_test.dart | restored pane shows draft before Continue; nothing sent | red |
 | agent-sessions → A restored pane shows its session's draft | New session after resume unavailable | desktop/test/draft_test.dart | New session starts empty and the old draft stays | red |
 | agent-sessions → A restored pane shows its session's draft | Stored draft cannot be read | desktop/test/draft_test.dart | failed load shows Draft not loaded, stored draft untouched | red |
-| agent-sessions → A restored pane shows its session's draft | Typing after a failed load | host/test/it/draft_store_test.dart | failed load then edit at low revision recovers floor via stale reply | red |
-| agent-sessions → A restored pane shows its session's draft | Send right after a failed load | host/test/it/draft_store_test.dart | unsynced send removes stored P; kill after ack leaves neither | red |
-| agent-sessions → A restored pane shows its session's draft | Send before a slow load returns | host/test/it/draft_store_test.dart | send before held load returns removes P | red |
+| agent-sessions → A restored pane shows its session's draft | Typing after a failed load | host/test/it/draft_store_test.dart | failed load then edit at low revision recovers floor via stale reply | green |
+| agent-sessions → A restored pane shows its session's draft | Send right after a failed load | host/test/it/draft_store_test.dart | unsynced send removes stored P; kill after ack leaves neither | green |
+| agent-sessions → A restored pane shows its session's draft | Send before a slow load returns | host/test/it/draft_store_test.dart | send before held load returns removes P | green |
 | agent-sessions → A restored pane shows its session's draft | Load arrives after the user typed | desktop/test/draft_test.dart | late load raises revision and keeps typed text | red |
-| agent-sessions → A sent or cleared draft cannot be recovered | Send removes the draft | host/test/it/draft_store_test.dart | canary d1f9 absent from every profile file after ack | red |
-| agent-sessions → A sent or cleared draft cannot be recovered | Clearing removes the draft | host/test/it/draft_store_test.dart | empty save tombstones and the text is absent from every file | red |
+| agent-sessions → A sent or cleared draft cannot be recovered | Send removes the draft | host/test/it/draft_store_test.dart | canary d1f9 absent from every profile file after ack | green |
+| agent-sessions → A sent or cleared draft cannot be recovered | Clearing removes the draft | host/test/it/draft_store_test.dart | empty save tombstones and the text is absent from every file | green |
 | agent-sessions → A sent or cleared draft cannot be recovered | Retry with a different draft | desktop/test/draft_test.dart | Retry carries no draftRevision and Q stays | red |
 | agent-sessions → A sent or cleared draft cannot be recovered | Stale save while a prompt is being sent | desktop/test/draft_test.dart | guard skips stale re-save of the submitted snapshot | red |
-| agent-sessions → A sent or cleared draft cannot be recovered | Edits while a prompt is being sent | host/test/it/draft_store_test.dart | R saved above r survives; P absent from every file | red |
+| agent-sessions → A sent or cleared draft cannot be recovered | Edits while a prompt is being sent | host/test/it/draft_store_test.dart | R saved above r survives; P absent from every file | green |
 | agent-sessions → A sent or cleared draft cannot be recovered | Prompt refused by the adapter | desktop/test/draft_test.dart | adapter refusal re-saves composer above r | red |
-| agent-sessions → A sent or cleared draft cannot be recovered | Removal fails | host/test/it/draft_store_test.dart | injected commit failure refuses the prompt before dispatch | red |
+| agent-sessions → A sent or cleared draft cannot be recovered | Removal fails | host/test/it/draft_store_test.dart | injected commit failure refuses the prompt before dispatch | green |
 | agent-sessions → A sent or cleared draft cannot be recovered | Removal commits after its deadline | desktop/test/draft_test.dart | draftStoreReady retries the unsaved link without typing | red |
-| agent-sessions → A sent or cleared draft cannot be recovered | Send while draft storage is unavailable | host/test/it/draft_store_test.dart | disabled store refuses composer send; P kept for healthy restart | red |
-| agent-sessions → A sent or cleared draft cannot be recovered | Reset draft storage | host/test/it/draft_store_test.dart | confirmed reset deletes files, sends draftStoreReady, saves succeed | red |
-| agent-sessions → A sent or cleared draft cannot be recovered | Draft storage not responding at send | host/test/it/draft_store_test.dart | held commit refuses send draft-unavailable within the deadline | red |
+| agent-sessions → A sent or cleared draft cannot be recovered | Send while draft storage is unavailable | host/test/it/draft_store_test.dart | disabled store refuses composer send; P kept for healthy restart | green |
+| agent-sessions → A sent or cleared draft cannot be recovered | Reset draft storage | host/test/it/draft_store_test.dart | confirmed reset deletes files, sends draftStoreReady, saves succeed | green |
+| agent-sessions → A sent or cleared draft cannot be recovered | Draft storage not responding at send | host/test/it/draft_store_test.dart | held commit refuses send draft-unavailable within the deadline | green |
 | agent-sessions → Each session keeps a saved record; transcripts stay in the runtime | Record survives restart | host/test/it/agent_test.dart | 'after a host restart the store holds the same ids…' | green |
 | agent-sessions → Each session keeps a saved record; transcripts stay in the runtime | Start fails before a native id | host/test/it/agent_test.dart | 'no record is inserted while session/new is still pending' | green |
 | agent-sessions → Each session keeps a saved record; transcripts stay in the runtime | No transcript in Kumiko's files | host/test/it/agent_close_test.dart | existing transcript-absence scan | green |
-| agent-sessions → Each session keeps a saved record; transcripts stay in the runtime | An unsent draft is the only stored text | host/test/it/draft_store_test.dart | canary 5b2e found only in drafts.sqlite | red |
+| agent-sessions → Each session keeps a saved record; transcripts stay in the runtime | An unsent draft is the only stored text | host/test/it/draft_store_test.dart | canary 5b2e found only in drafts.sqlite | green |
 | agent-sessions → Closing a running agent asks for confirmation | Close an idle session | desktop/test/agent_test.dart | 'rejected pending prompt restores idle close without confirmation' | green |
 | agent-sessions → Closing a running agent asks for confirmation | Cancel closing a running session | desktop/test/agent_test.dart | existing cancel-running-close test | green |
 | agent-sessions → Closing a running agent asks for confirmation | Confirm closing a running session | host/test/it/agent_close_test.dart | 'running close cancels permissions before cancel…' | green |
@@ -96,16 +96,16 @@ Paths are relative to `packages/`. Where an existing test turns red because its 
 | desktop-host-protocol → Lifecycle, activity and draft methods are capability-gated | Both peers support lifecycle | host_protocol/test/lifecycle_messages_test.dart | lifecycle methods round-trip when both advertise it | red |
 | desktop-host-protocol → Lifecycle, activity and draft methods are capability-gated | Host without lifecycle | host/test/it/previous_exit_test.dart | host without lifecycle refuses method-not-available; quit still ends units | red |
 | desktop-host-protocol → Activity and draft requests are bounded | Too many terminals | host/test/it/terminal_activity_test.dart | 65 ids refused invalid-params without a table read | green |
-| desktop-host-protocol → Activity and draft requests are bounded | Oversized draft | host_protocol/test/agent_messages_test.dart | draft one byte past 256 KiB encoded refused draft-too-large | red |
-| desktop-host-protocol → Activity and draft requests are bounded | Unknown session | host/test/it/draft_store_test.dart | draftSave for unknown session refused unknown-session | red |
-| desktop-host-protocol → Activity and draft requests are bounded | Draft save under saturated output | host/test/it/draft_store_test.dart | draft save acked within control latency under saturated output | red |
-| desktop-host-protocol → Draft storage never delays control or cleanup | Draft store stalls at start | host/test/it/draft_store_test.dart | held draft open: reconciliation and launches proceed | red |
-| desktop-host-protocol → Draft storage never delays control or cleanup | Draft commit stalls | host/test/it/draft_store_test.dart | held commit: Stop and permission reply within control latency | red |
-| desktop-host-protocol → Draft storage never delays control or cleanup | Desktop lost while a draft commit stalls | host/test/it/draft_store_test.dart | held commit: desktop kill ends every unit within the bound | red |
-| desktop-host-protocol → Draft storage never delays control or cleanup | Stale save reports the stored revision | host/test/it/draft_store_test.dart | stale-revision reply carries the stored revision | red |
-| desktop-host-protocol → Draft storage never delays control or cleanup | Store answers again | host/test/it/draft_store_test.dart | released commit clears not responding and sends draftStoreReady | red |
-| desktop-host-protocol → Draft storage never delays control or cleanup | Reset refused while storage works | host/test/it/draft_store_test.dart | reset on a working store refused draft-store-in-use | red |
-| desktop-host-protocol → Draft storage never delays control or cleanup | Second reset during a reset | host/test/it/draft_store_test.dart | concurrent reset refused; one successor; acked save survives restart | red |
+| desktop-host-protocol → Activity and draft requests are bounded | Oversized draft | host_protocol/test/agent_messages_test.dart | draft one byte past 256 KiB encoded refused draft-too-large | green |
+| desktop-host-protocol → Activity and draft requests are bounded | Unknown session | host/test/it/draft_store_test.dart | draftSave for unknown session refused unknown-session | green |
+| desktop-host-protocol → Activity and draft requests are bounded | Draft save under saturated output | host/test/it/draft_store_test.dart | draft save acked within control latency under saturated output | green |
+| desktop-host-protocol → Draft storage never delays control or cleanup | Draft store stalls at start | host/test/it/draft_store_test.dart | held draft open: reconciliation and launches proceed | green |
+| desktop-host-protocol → Draft storage never delays control or cleanup | Draft commit stalls | host/test/it/draft_store_test.dart | held commit: Stop and permission reply within control latency | green |
+| desktop-host-protocol → Draft storage never delays control or cleanup | Desktop lost while a draft commit stalls | host/test/it/draft_store_test.dart | held commit: desktop kill ends every unit within the bound | green |
+| desktop-host-protocol → Draft storage never delays control or cleanup | Stale save reports the stored revision | host/test/it/draft_store_test.dart | stale-revision reply carries the stored revision | green |
+| desktop-host-protocol → Draft storage never delays control or cleanup | Store answers again | host/test/it/draft_store_test.dart | released commit clears not responding and sends draftStoreReady | green |
+| desktop-host-protocol → Draft storage never delays control or cleanup | Reset refused while storage works | host/test/it/draft_store_test.dart | reset on a working store refused draft-store-in-use | green |
+| desktop-host-protocol → Draft storage never delays control or cleanup | Second reset during a reset | host/test/it/draft_store_test.dart | concurrent reset refused; one successor; acked save survives restart | green |
 
 ## 1. ADR and architecture
 
@@ -124,10 +124,10 @@ Paths are relative to `packages/`. Where an existing test turns red because its 
 
 ## 4. Draft store on the host
 
-- [ ] 4.1 Write failing host tests for the draft store worker: `drafts.sqlite` opened after reconciliation starts; draft schema v1; `journal_mode=DELETE`, `synchronous=EXTRA` and `secure_delete=ON` read back and verified; a hot journal rolled back on open; ≤ 16 pending operations; 5 s deadline; *not responding*; `draftStoreReady`. Verify: they fail for the missing worker.
-- [ ] 4.2 Implement the draft worker isolate and `AgentService` integration: `agent/draftSave` (stored revision in acknowledgements and `stale-revision` replies, `draft-too-large`, `draft-cap`, `unknown-session`), `agent/draftLoad`, `agent/draftReset` (synchronous reservation, old-worker exit before delete, one successor, `draft-store-in-use`) and `agent/draftStoreReady`, with protocol types and capability gating. Verify: the draft rows in `draft_store_test.dart` for bounds, stalls, reset and stale replies are green.
-- [ ] 4.3 Implement the prompt send order: validate, then commit the draft change (removal when unsynced or when stored ≤ r; tombstone at max(stored, r)), then dispatch. A failed commit is refused `store-error` and a deadline or disabled store is refused `draft-unavailable`, both before dispatch; Retry sets neither field. Add the profile-file canary scan helper (all files under the profile, including the stores, journals and host logs). Verify: the canary, removal, unsynced-send and disabled-store rows are green.
-- [ ] 4.4 Measure draft save and removal latency (`EXTRA`: journal, database and directory syncs) on the Windows dev machine and in CI, and record it in the ADR 0014 evidence and the architecture bound row. Verify: the numbers are recorded; a cost above 100 ms per save reopens D4.
+- [x] 4.1 Write failing host tests for the draft store worker: `drafts.sqlite` opened after reconciliation starts; draft schema v1; `journal_mode=DELETE`, `synchronous=EXTRA` and `secure_delete=ON` read back and verified; a hot journal rolled back on open; ≤ 16 pending operations; 5 s deadline; *not responding*; `draftStoreReady`. Verify: they fail for the missing worker.
+- [x] 4.2 Implement the draft worker isolate and `AgentService` integration: `agent/draftSave` (stored revision in acknowledgements and `stale-revision` replies, `draft-too-large`, `draft-cap`, `unknown-session`), `agent/draftLoad`, `agent/draftReset` (synchronous reservation, old-worker exit before delete, one successor, `draft-store-in-use`) and `agent/draftStoreReady`, with protocol types and capability gating. Verify: the draft rows in `draft_store_test.dart` for bounds, stalls, reset and stale replies are green.
+- [x] 4.3 Implement the prompt send order: validate, then commit the draft change (removal when unsynced or when stored ≤ r; tombstone at max(stored, r)), then dispatch. A failed commit is refused `store-error` and a deadline or disabled store is refused `draft-unavailable`, both before dispatch; Retry sets neither field. Add the profile-file canary scan helper (all files under the profile, including the stores, journals and host logs). Verify: the canary, removal, unsynced-send and disabled-store rows are green.
+- [x] 4.4 Measure draft save and removal latency (`EXTRA`: journal, database and directory syncs) on the Windows dev machine and in CI, and record it in the ADR 0014 evidence and the architecture bound row. Verify: the numbers are recorded; a cost above 100 ms per save reopens D4.
 
 ## 5. Drafts on the desktop
 
