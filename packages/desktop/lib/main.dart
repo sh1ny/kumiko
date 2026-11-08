@@ -1,9 +1,9 @@
 import 'dart:io';
-import 'dart:ui';
 
 import 'package:flutter/material.dart';
 import 'package:host_protocol/host_protocol.dart';
 
+import 'src/exit_coordinator.dart';
 import 'src/folder_picker.dart';
 import 'src/host_controller.dart';
 import 'src/host_link.dart';
@@ -50,6 +50,7 @@ Future<void> main() async {
             capabilities: {
               Capability.workbench,
               Capability.agent,
+              Capability.lifecycle,
               if (surfaceFactory != null) Capability.terminal,
             },
           ),
@@ -96,6 +97,12 @@ class _KumikoAppState extends State<KumikoApp> {
     picker: widget.folderPicker,
     surfaceFactory: widget.surfaceFactory,
   );
+  final GlobalKey<NavigatorState> _navigator = GlobalKey<NavigatorState>();
+  late final ExitCoordinator _exit = ExitCoordinator(
+    workbench: _workbench,
+    navigatorKey: _navigator,
+    quit: _controller.shutdown,
+  );
   late final AppLifecycleListener _lifecycle;
   HostLink? _attached;
 
@@ -103,13 +110,9 @@ class _KumikoAppState extends State<KumikoApp> {
   void initState() {
     super.initState();
     _lifecycle = AppLifecycleListener(
-      onExitRequested: () async {
-        // Pending layout changes go out first (bounded); a failure only sets
-        // the notice.
-        await _workbench.flush();
-        await _controller.shutdown();
-        return AppExitResponse.exit;
-      },
+      // Asks when work is running or a draft is unsaved; otherwise flushes,
+      // tells the host it is a quit and shuts it down (design D1).
+      onExitRequested: _exit.requestExit,
     );
     _controller.addListener(_syncWorkbench);
     _controller.start();
@@ -132,6 +135,7 @@ class _KumikoAppState extends State<KumikoApp> {
   void dispose() {
     _lifecycle.dispose();
     _controller.removeListener(_syncWorkbench);
+    _exit.dispose();
     _workbench.dispose();
     _controller.dispose();
     super.dispose();
@@ -140,6 +144,7 @@ class _KumikoAppState extends State<KumikoApp> {
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
+      navigatorKey: _navigator,
       title: 'Kumiko',
       home: ListenableBuilder(
         listenable: _controller,

@@ -68,6 +68,14 @@ final int Function(int, int, int) openProcessNative = _kernel32
       int Function(int, int, int)
     >('OpenProcess');
 
+/// `QueryFullProcessImageNameW(process, 0, buffer, size)`.
+final int Function(int, int, Pointer<Utf16>, Pointer<Uint32>)
+queryFullProcessImageName = _kernel32
+    .lookupFunction<
+      Int32 Function(IntPtr, Uint32, Pointer<Utf16>, Pointer<Uint32>),
+      int Function(int, int, Pointer<Utf16>, Pointer<Uint32>)
+    >('QueryFullProcessImageNameW');
+
 final int Function(int) closeHandleNative = _kernel32
     .lookupFunction<Int32 Function(IntPtr), int Function(int)>('CloseHandle');
 
@@ -463,6 +471,25 @@ ntWriteFile = _ntdll
       )
     >('NtWriteFile');
 
+/// `DuplicateHandle(source process, handle, target process, out, access,
+/// inherit, options)`.
+final int Function(int, int, int, Pointer<IntPtr>, int, int, int)
+duplicateHandleNative = _kernel32
+    .lookupFunction<
+      Int32 Function(
+        IntPtr,
+        IntPtr,
+        IntPtr,
+        Pointer<IntPtr>,
+        Uint32,
+        Int32,
+        Uint32,
+      ),
+      int Function(int, int, int, Pointer<IntPtr>, int, int, int)
+    >('DuplicateHandle');
+
+const int duplicateSameAccess = 0x2;
+
 final int Function() getCurrentProcess = _kernel32
     .lookupFunction<IntPtr Function(), int Function()>('GetCurrentProcess');
 
@@ -589,6 +616,7 @@ const int infinite = 0xFFFFFFFF;
 
 const int errorFileNotFound = 2;
 const int errorAccessDenied = 5;
+const int errorMoreData = 234;
 const int errorPipeBusy = 231;
 const int errorPipeNotConnected = 233;
 const int errorPipeConnected = 535;

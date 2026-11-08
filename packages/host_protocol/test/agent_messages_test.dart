@@ -147,6 +147,9 @@ void main() {
     Method.agentClose: 'agent/close',
     Method.agentRelease: 'agent/release',
     Method.agentRecords: 'agent/records',
+    Method.agentDraftSave: 'agent/draftSave',
+    Method.agentDraftLoad: 'agent/draftLoad',
+    Method.agentDraftReset: 'agent/draftReset',
   };
   test('all request names are gated; notifications are not gated', () {
     expect(Capability.agent, 'agent');
@@ -162,6 +165,7 @@ void main() {
       Method.agentTurnEnded: 'agent/turnEnded',
       Method.agentExited: 'agent/exited',
       Method.agentCloseFailed: 'agent/closeFailed',
+      Method.agentDraftStoreReady: 'agent/draftStoreReady',
     };
     notifications.forEach((method, wire) {
       expect(method, wire);
@@ -426,6 +430,99 @@ void main() {
       }),
       _invalid(),
     );
+  });
+
+  Matcher draftRefusal(String reason) =>
+      throwsA(isA<RpcException>().having((e) => e.reason, 'reason', reason));
+
+  test('draft one byte past 256 KiB encoded refused draft-too-large', () {
+    Json save(String text) => {'sessionId': 's', 'text': text, 'revision': 1};
+    // Plain bytes: the bound itself passes, one more is refused.
+    expect(
+      AgentDraftSaveParams.fromJson(save('a' * maxDraftBytes)).text,
+      hasLength(maxDraftBytes),
+    );
+    expect(
+      () => AgentDraftSaveParams.fromJson(save('a' * (maxDraftBytes + 1))),
+      draftRefusal(ErrorCode.draftTooLarge),
+    );
+    // Escaping is counted: a quote encodes to two bytes, a control
+    // character to six, so 131072 quotes fill the bound exactly.
+    expect(
+      AgentDraftSaveParams.fromJson(save('"' * (maxDraftBytes ~/ 2))).text,
+      hasLength(maxDraftBytes ~/ 2),
+    );
+    expect(
+      () =>
+          AgentDraftSaveParams.fromJson(save('${'"' * (maxDraftBytes ~/ 2)}a')),
+      draftRefusal(ErrorCode.draftTooLarge),
+    );
+    expect(
+      () => AgentDraftSaveParams.fromJson(save('\u0001' * 43691)),
+      draftRefusal(ErrorCode.draftTooLarge),
+    );
+    // UTF-8 is counted: a 4-byte emoji is two UTF-16 units.
+    expect(
+      AgentDraftSaveParams.fromJson(save('😀' * (maxDraftBytes ~/ 4))).text,
+      isNotEmpty,
+    );
+    expect(
+      () => AgentDraftSaveParams.fromJson(
+        save('${'😀' * (maxDraftBytes ~/ 4)}a'),
+      ),
+      draftRefusal(ErrorCode.draftTooLarge),
+    );
+    expect(jsonStringContentBytes('a"\n\u0001é😀'), 1 + 2 + 2 + 6 + 2 + 4);
+  });
+
+  test('draft messages round-trip; the prompt carries the draft fields', () {
+    Json rt(Json j) => jsonDecode(jsonEncode(j)) as Json;
+    final save = const AgentDraftSaveParams(
+      sessionId: 's',
+      text: 'check the tests',
+      revision: 7,
+    ).toJson();
+    expect(AgentDraftSaveParams.fromJson(rt(save)).toJson(), save);
+    expect(
+      AgentDraftSaveResult.fromJson(rt(const AgentDraftSaveResult(7).toJson()))
+          .revision,
+      7,
+    );
+    expect(
+      AgentDraftLoadResult.fromJson(
+        rt(const AgentDraftLoadResult(revision: 3, text: 'x').toJson()),
+      ).text,
+      'x',
+    );
+    expect(
+      AgentDraftLoadResult.fromJson(
+        rt(const AgentDraftLoadResult(revision: 0).toJson()),
+      ).text,
+      isNull,
+    );
+    expect(
+      () => AgentDraftSaveParams.fromJson({
+        'sessionId': 's',
+        'text': 'x',
+        'revision': -1,
+      }),
+      _invalid(),
+    );
+    final send = AgentPromptParams.fromJson({
+      'sessionId': 's',
+      'text': 'go',
+      'draftRevision': 4,
+      'draftSynced': true,
+    });
+    expect(send.draftRevision, 4);
+    expect(send.draftSynced, isTrue);
+    final retry = AgentPromptParams.fromJson({'sessionId': 's', 'text': 'go'});
+    expect(retry.draftRevision, isNull);
+    expect(retry.toJson(), {'sessionId': 's', 'text': 'go'});
+    final stale = RpcException(ErrorCode.staleRevision, 'stale', {
+      'storedRevision': 500,
+    });
+    expect(storedRevisionOf(RpcException.fromJson(stale.toJson())), 500);
   });
 
   test(

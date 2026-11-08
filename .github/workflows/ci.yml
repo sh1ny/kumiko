@@ -83,7 +83,7 @@ jobs:
           set -e
           for file in integration_test/*_test.dart; do
             case "$file" in
-              integration_test/agent_test.dart|integration_test/agent_reopen_test.dart)
+              integration_test/agent_test.dart|integration_test/agent_reopen_test.dart|integration_test/exit_reopen_test.dart)
                 host="$PWD/../host/build/host-test/bundle/bin/kumiko_host_test" ;;
               *) host="$release_host" ;;
             esac

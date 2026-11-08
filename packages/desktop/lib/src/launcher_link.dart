@@ -245,6 +245,16 @@ class SessionLink implements HostLink {
       _request(Method.terminalClose, TerminalCloseParams(terminalId).toJson());
 
   @override
+  Future<TerminalActivityResult> terminalActivity(
+    List<String> terminalIds,
+  ) async => TerminalActivityResult.fromJson(
+    await _request(
+      Method.terminalActivity,
+      TerminalActivityParams(terminalIds).toJson(),
+    ),
+  );
+
+  @override
   Future<void> releaseTerminal(String terminalId) => _request(
     Method.terminalRelease,
     TerminalReleaseParams(terminalId).toJson(),
@@ -390,6 +400,26 @@ class SessionLink implements HostLink {
       );
 
   @override
+  Future<AgentDraftSaveResult> draftSave(AgentDraftSaveParams params) async =>
+      AgentDraftSaveResult.fromJson(
+        await _request(Method.agentDraftSave, params.toJson()),
+      );
+  @override
+  Future<AgentDraftLoadResult> draftLoad(String sessionId) async =>
+      AgentDraftLoadResult.fromJson(
+        await _request(
+          Method.agentDraftLoad,
+          AgentSessionParams(sessionId).toJson(),
+        ),
+      );
+  @override
+  Future<void> draftReset() => _request(Method.agentDraftReset, const {});
+  @override
+  Stream<void> get draftStoreReady => session.notifications
+      .where((n) => n.method == Method.agentDraftStoreReady)
+      .map((_) {});
+
+  @override
   Stream<AgentStateParams> get agentStates => session.notifications
       .where((n) => n.method == Method.agentState)
       .map((n) => AgentStateParams.fromJson(n.params));
@@ -419,6 +449,15 @@ class SessionLink implements HostLink {
   Stream<AgentCloseFailedParams> get agentCloseFailures => session.notifications
       .where((n) => n.method == Method.agentCloseFailed)
       .map((n) => AgentCloseFailedParams.fromJson(n.params));
+
+  @override
+  Future<PreviousExitResult> previousExit() async =>
+      PreviousExitResult.fromJson(
+        await _request(Method.appPreviousExit, const {}),
+      );
+
+  @override
+  Future<void> announceQuit() => _request(Method.appQuit, const {});
 
   @override
   Future<void> quit() async {

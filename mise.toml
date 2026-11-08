@@ -13,15 +13,20 @@ rust = { version = "stable", profile = "minimal" }
 # and `dart mcp-server` fails in every other one.
 DART_DATA_HOME = "{{config_root}}/.dart_tool/dart-data"
 
+[vars]
+# Source folders only: packages/desktop/build holds generated Dart that a
+# desktop build rewrites, and it would fail format:check.
+format_paths = "packages/desktop/lib packages/desktop/test packages/desktop/integration_test packages/desktop/test_driver packages/domain packages/host packages/host_protocol packages/process_containment tool"
+
 # --- format and analysis -----------------------------------------------------
 
 [tasks.format]
 description = "Format Dart source (packages and tool; third_party is vendored)"
-run = "dart format packages tool"
+run = "dart format {{vars.format_paths}}"
 
 [tasks."format:check"]
 description = "Check Dart formatting without changing files"
-run = "dart format --output=none --set-exit-if-changed packages tool"
+run = "dart format --output=none --set-exit-if-changed {{vars.format_paths}}"
 
 [tasks.analyze]
 description = "Analyze the workspace and the desktop app, infos fatal"

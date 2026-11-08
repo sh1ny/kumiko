@@ -2,11 +2,14 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:host/src/host_options.dart';
 import 'package:host_protocol/host_protocol.dart';
 import 'package:process_containment/process_containment.dart';
 import 'package:test/test.dart';
 
+import 'support/agent_support.dart';
 import 'support/harness.dart';
+import 'support/terminal_support.dart';
 
 void main() {
   setUpAll(buildTestHost);
@@ -90,6 +93,197 @@ void main() {
       '${watch.elapsedMilliseconds} ms on ${Platform.operatingSystem}',
     );
     await expectAllGone(reports);
+  });
+
+  test('killed stand-in desktop leaves no host, shell, child or adapter '
+      'process', () async {
+    final home = tempDir('life_home_');
+    addTearDown(() => deleteTree(home));
+    final script = File(joinPath(target.path, 'standin-script.json'))
+      ..writeAsStringSync(
+        jsonEncode({
+          'prompt': [
+            {'spawnTree': true},
+          ],
+          'holdPrompt': true,
+        }),
+      );
+    final standin = await Process.start(
+      desktopStandinExecutable(),
+      [
+        testHostExecutable(),
+        profile.path,
+        target.path,
+        '--terminal-and-agent',
+        terminalFixtureExecutable(),
+        script.path,
+      ],
+      environment: {
+        'USERPROFILE': home.path,
+        'HOME': home.path,
+        'KUMIKO_TEST_RUNTIME_PATH': '',
+        'KUMIKO_TEST_SHELL_PATH': '',
+      },
+    );
+    final standinStart = processStartTime(standin.pid)!;
+    addTearDown(() async {
+      standin.kill(ProcessSignal.sigkill);
+      await standin.exitCode;
+    });
+    final lines = standin.stdout
+        .transform(utf8.decoder)
+        .transform(const LineSplitter());
+    final errors = StringBuffer();
+    standin.stderr.transform(utf8.decoder).listen(errors.write);
+    final ready = await lines
+        .firstWhere(
+          (l) => l.startsWith('READY '),
+          orElse: () => throw StateError('stand-in failed: $errors'),
+        )
+        .timeout(const Duration(seconds: 90));
+    final hostPid = int.parse(ready.split(' ')[1]);
+    final hostStart = processStartTime(hostPid)!;
+
+    // The terminal reports its shell and a child; the agent session reports
+    // its adapter and a three-process tree. Each is known by pid and start
+    // time, so a reused pid can neither pass nor fail the test.
+    final reports = await waitReports(target, 6);
+    expect(
+      reports.map((p) => p.role),
+      containsAll(['shell', 'sleeper']),
+      reason: 'the terminal runs a shell and a child',
+    );
+    expect(reports.every((p) => p.alive), isTrue, reason: '$errors');
+    expect(isProcessAlive(hostPid, hostStart), isTrue);
+
+    standin.kill(ProcessSignal.sigkill);
+    await standin.exitCode;
+    expect(isProcessAlive(standin.pid, standinStart), isFalse);
+
+    await eventually(
+      () => !isProcessAlive(hostPid, hostStart),
+      within: const Duration(seconds: 40),
+      reason: 'host still running',
+    );
+    await expectAllGone(reports);
+    expect(
+      LedgerView(profile).instances().single['exit_kind'],
+      isNull,
+      reason: 'a kill is not a quit',
+    );
+  });
+
+  test('desktop closing input without app/quit ends every unit, no dialog '
+      'path', () async {
+    final home = tempDir('life_home_');
+    addTearDown(() => deleteTree(home));
+    final desktop = await Desktop.start(
+      profile,
+      capabilities: {...testCapabilities, Capability.agent},
+      environment: {
+        'USERPROFILE': home.path,
+        'HOME': home.path,
+        'KUMIKO_TEST_RUNTIME_PATH': '',
+        'KUMIKO_TEST_SHELL_PATH': '',
+      },
+    );
+    addTearDown(desktop.dispose);
+    await desktop.waitState();
+    final hostPid = desktop.session.pid;
+    final hostStart = processStartTime(hostPid)!;
+    final instance = int.parse(desktop.session.hello.instanceId);
+
+    // A session running a turn with tools, a terminal with a child, a unit.
+    final workspace = (await desktop.openWorkspace(target.path)).workspace;
+    await saveAgentFixture(
+      desktop,
+      target,
+      script: {
+        'prompt': [
+          {'spawnTree': true},
+        ],
+        'holdPrompt': true,
+      },
+    );
+    final agent = AgentPeer(desktop);
+    await agent.start(workspace.id, runtime: 'acp');
+    await agent.attach();
+    await agent.prompt();
+    await desktop.saveFixtureProfile(cwd: target.path);
+    final terminal = await desktop.openTerminal('fixture');
+    await terminal.waitForText('READY;');
+    await terminal.send('child');
+    await terminal.waitForText('CHILD:');
+    await desktop.launch(target, TestFixture.tree);
+    final reports = await waitReports(target, 9);
+    expect(reports.every((p) => p.alive), isTrue);
+
+    // The desktop closes its input; it never sent app/quit and is never
+    // asked anything.
+    final clock = Stopwatch()..start();
+    final quit = await desktop.session.quit();
+    final took = clock.elapsed;
+
+    expect(quit.timedOut, isFalse);
+    expect(quit.exitCode, 0);
+    expect(took, lessThan(HostOptions.defaultShutdownDeadline));
+    expect(isProcessAlive(hostPid, hostStart), isFalse);
+    await expectAllGone(reports);
+    final view = LedgerView(profile);
+    expect(view.units(), isEmpty, reason: 'every unit was cleaned');
+    final row = view.instances().firstWhere((r) => r['id'] == instance);
+    expect(row['exit_kind'], isNull, reason: 'no quit was announced');
+    expect(row['closed_cleanly'], 1);
+    expect(
+      agentRows(profile).single['id'],
+      agent.id,
+      reason: "the session's record remains",
+    );
+  });
+
+  test('unendable unit at quit is cleanup unresolved at next launch', () async {
+    // The kill fault is the host's; the unit's processes are real.
+    final first = await Desktop.start(profile);
+    await first.waitState();
+    final id = await first.launch(target, TestFixture.sleeper);
+    final reports = await waitReports(target, 1);
+    await first.setFault(TestFault.killFails);
+    await first.announceQuit();
+
+    final quit = await first.session.quit();
+
+    expect(quit.timedOut, isFalse, reason: 'quit still ends at the deadline');
+    expect(quit.exitCode, 0);
+    final kept = LedgerView(profile).unit(id);
+    expect(kept, isNotNull, reason: 'the unit stays in the ledger');
+    expect(kept!['state'], isNot('pending'));
+
+    // The next launch, with kills still failing, cannot confirm the unit
+    // ended: reconciliation is held so the fault is set before it begins.
+    // (A new desktop carries no attestation of the earlier host's job, which
+    // is what leaves a Windows unit unconfirmed.)
+    final second = await Desktop.start(
+      profile,
+      environment: {'KUMIKO_TEST_RECONCILE_DELAY_MS': '2000'},
+    );
+    addTearDown(second.dispose);
+    await second.setFault(TestFault.killFails);
+    final state = await second.waitState(where: (s) => !s.reconciling);
+
+    expect(state.unresolvedWorkspaces, 1);
+    expect(state.unresolvedUnits, 1);
+    final workspaces = await second.allWorkspaces();
+    expect(workspaces.single.unitCount, 1);
+    final row = LedgerView(profile).unit(id)!;
+    expect(row['state'], 'unresolved');
+    expect(row['unresolved_reason'], isNotNull);
+    expect(
+      await second.launchRefusal(target, TestFixture.sleeper),
+      ErrorCode.cleanupUnresolved,
+      reason: 'the workspace is gated until cleanup is resolved',
+    );
+    // Cleaned up by the tearDown; the reports show the process was real.
+    expect(reports, isNotEmpty);
   });
 
   test('shutdown waits for an end already in progress', () async {

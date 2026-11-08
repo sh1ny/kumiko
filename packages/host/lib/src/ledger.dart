@@ -105,12 +105,38 @@ class Ledger {
     return instanceId;
   });
 
-  void closeInstance({required bool cleanly}) => _guard(
+  /// Records the end of this instance. [quit] marks it as a quit the desktop
+  /// announced (`exit_kind = 'quit'`); otherwise `exit_kind` stays NULL.
+  void closeInstance({required bool cleanly, bool quit = false}) => _guard(
     () => _store.execute(
-      'UPDATE host_instance SET closed_cleanly = ? WHERE id = ?',
-      [cleanly ? 1 : 0, instanceId],
+      'UPDATE host_instance SET closed_cleanly = ?, exit_kind = ? '
+      'WHERE id = ?',
+      [cleanly ? 1 : 0, quit ? 'quit' : null, instanceId],
     ),
   );
+
+  /// How the newest instance row ended, read before this host's own row is
+  /// written and before reconciliation can delete it (design D5). Throws if
+  /// the row cannot be read or makes no sense.
+  static PreviousExitResult readPreviousExit(Store store) {
+    final rows = store.select(
+      'SELECT opened_at, exit_kind FROM host_instance '
+      'ORDER BY id DESC LIMIT 1',
+    );
+    if (rows.isEmpty) {
+      return const PreviousExitResult(kind: PreviousExitKind.none);
+    }
+    final row = rows.single;
+    final kind = switch (row['exit_kind']) {
+      'quit' => PreviousExitKind.quit,
+      null => PreviousExitKind.unexpected,
+      final other => throw FormatException('unknown exit_kind $other'),
+    };
+    return PreviousExitResult(
+      kind: kind,
+      openedAt: DateTime.parse(row['opened_at'] as String),
+    );
+  }
 
   InstanceRow? instance(int id) => _guard(() {
     final rows = _store.select(

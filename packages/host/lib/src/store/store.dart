@@ -10,7 +10,8 @@ import 'store_error.dart';
 typedef MigrationStep = void Function(Database db);
 
 /// Schema v1 (design D4), v2 (design D3), v3 (host-terminals design D6) and
-/// v4 (host-terminals design D11), and v5 (agent sessions design D7).
+/// v4 (host-terminals design D11), v5 (agent sessions design D7) and v6
+/// (app-exit-and-reopen design D5).
 final List<MigrationStep> schemaMigrations = <MigrationStep>[
   (db) {
     db.execute('''
@@ -124,6 +125,14 @@ CREATE TABLE agent_session(
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
 )''');
+  },
+  // v6 (app-exit-and-reopen D5): whether the desktop quit. NULL until the host
+  // records a quit in `_finish`; every earlier row stays NULL (not quit).
+  (db) {
+    db.execute(
+      'ALTER TABLE host_instance ADD COLUMN exit_kind TEXT '
+      "CHECK (exit_kind IN ('quit'))",
+    );
   },
 ];
 

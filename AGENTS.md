@@ -35,7 +35,7 @@ refused by another ("Invalid SDK hash").
 | --- | --- |
 | `mise run check` | Pre-commit gate: `format:check`, `analyze`, `test:fast`. Must pass before you commit or report work as done |
 | `mise run analyze` | `dart analyze --fatal-infos` for the workspace, then `flutter analyze --fatal-infos` for the desktop |
-| `mise run format` / `format:check` | Format, or check formatting of, `packages/` and `tool/` |
+| `mise run format` / `format:check` | Format, or check formatting of, the source folders under `packages/` and `tool/` |
 | `mise run test:fast` | Every suite except the host's: the edit loop |
 | `mise run test:host` | Host tests, including the integration tests (builds the test host first; about a minute) |
 | `mise run test` | Every package's tests, as CI runs them |
@@ -51,9 +51,12 @@ refused by another ("Invalid SDK hash").
 - Desktop integration tests (`packages/desktop/integration_test/`) run one file
   per `flutter test` with `--dart-define=KUMIKO_HOST=<host bundle>`; CI shows the
   exact invocation per OS in `.github/workflows/ci.yml`.
-- Two timing rows in the host suite (`protocol_qualification_test` and
-  `agent_qualification_test`, the 250 ms control round-trip bounds) can fail
-  under a loaded machine. Re-run them alone before treating a failure as real.
+- Timing rows in the host suite can fail under a loaded machine: the 250 ms
+  control round-trip bounds in `protocol_qualification_test` and
+  `agent_qualification_test`, and the close-acknowledgement bound in
+  `terminal_qualification_test`. `terminal_test`'s "no terminal start leaves a
+  reserved channel behind" has also failed intermittently on macOS. Re-run them
+  alone before treating a failure as real.
 - Enable the pre-commit hook once per clone: `git config core.hooksPath .githooks`.
   It runs `mise run check`.
 

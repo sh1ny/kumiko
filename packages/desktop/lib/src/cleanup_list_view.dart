@@ -5,6 +5,64 @@ import 'cleanup_controller.dart';
 
 String _plural(int n, String one, String many) => '$n ${n == 1 ? one : many}';
 
+/// *Kumiko did not close normally last time*, with the cleanup outcome: every
+/// process cleaned, or the count of workspaces with *cleanup unresolved* and
+/// *Show cleanup list* (execution-host "An unexpected previous end is shown
+/// at the next launch"). Dismissible.
+class PreviousExitNotice extends StatelessWidget {
+  const PreviousExitNotice({
+    super.key,
+    required this.unresolvedWorkspaces,
+    required this.onDismiss,
+    this.onShowCleanupList,
+  });
+
+  final int unresolvedWorkspaces;
+  final VoidCallback onDismiss;
+
+  /// Opens the cleanup list; null when there is no list to open.
+  final VoidCallback? onShowCleanupList;
+
+  @override
+  Widget build(BuildContext context) {
+    final n = unresolvedWorkspaces;
+    return Material(
+      color: Theme.of(context).colorScheme.tertiaryContainer,
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+        child: Row(
+          children: [
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Text('Kumiko did not close normally last time'),
+                  Text(
+                    n == 0
+                        ? 'Every process was cleaned.'
+                        : '$n ${n == 1 ? 'workspace has' : 'workspaces have'} '
+                              'cleanup unresolved.',
+                  ),
+                ],
+              ),
+            ),
+            if (n > 0 && onShowCleanupList != null)
+              TextButton(
+                onPressed: onShowCleanupList,
+                child: const Text('Show cleanup list'),
+              ),
+            IconButton(
+              tooltip: 'Dismiss',
+              icon: const Icon(Icons.close),
+              onPressed: onDismiss,
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
 /// The *cleanup unresolved* list with counts, paging, Retry cleanup and
 /// Confirm processes are gone.
 class CleanupListView extends StatelessWidget {

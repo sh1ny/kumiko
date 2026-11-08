@@ -57,6 +57,7 @@ class AgentHarness {
           Capability.workbench,
           Capability.terminal,
           Capability.agent,
+          Capability.lifecycle,
         },
         environment: {
           'KUMIKO_TEST_QUALIFIED_ADAPTERS': jsonEncode([
@@ -214,6 +215,24 @@ class AgentHarness {
     );
     await tester.pumpWidget(const SizedBox());
     link = null;
+  }
+
+  /// Asks the app to quit while work is running: the exit dialog opens and
+  /// the quit waits for the decision. `answer` completes with the request's
+  /// response.
+  Future<({Future<AppExitResponse?> answer})> requestQuit(
+    WidgetTester tester,
+  ) async {
+    FocusManager.instance.primaryFocus?.unfocus();
+    await tester.pumpAndSettle();
+    final Future<AppExitResponse?> answer = tester.binding
+        .handleRequestAppExit();
+    await until(
+      tester,
+      () => find.byKey(const Key('exit-dialog')).evaluate().isNotEmpty,
+      'exit dialog',
+    );
+    return (answer: answer);
   }
 
   Future<void> dispose() async {

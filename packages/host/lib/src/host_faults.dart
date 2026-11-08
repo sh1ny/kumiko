@@ -74,6 +74,35 @@ class HostFaults {
   /// Writing a profile or the default profile fails.
   bool get profileWriteFails => _active.contains(TestFault.profileWriteFails);
 
+  /// `terminal/activity` reads every leader image as unreadable.
+  bool get activityImageUnreadable =>
+      _active.contains(TestFault.activityImageUnreadable);
+
+  /// `terminal/activity` reads take [activitySlowRead], past the deadline.
+  bool get activityReadSlow => _active.contains(TestFault.activityReadSlow);
+
+  static const Duration activitySlowRead = Duration(seconds: 3);
+
+  /// Process-table reads `terminal/activity` started, for the bound test.
+  int activityReads = 0;
+
+  /// The draft worker fails the commit of every draft change.
+  bool get draftCommitFails => _active.contains(TestFault.draftCommitFails);
+
+  /// The draft worker holds a commit open until this fault is turned off;
+  /// turning it off calls [onDraftRelease] to let the held commit go.
+  bool get draftCommitHangs => _active.contains(TestFault.draftCommitHangs);
+  void Function()? onDraftRelease;
+
+  /// `agent/draftReset` waits under its reservation while enabled.
+  bool get draftResetHangs => _active.contains(TestFault.draftResetHangs);
+  Completer<void>? _draftResetRelease;
+
+  Future<void> waitForDraftResetRelease() {
+    if (!draftResetHangs) return Future<void>.value();
+    return (_draftResetRelease ??= Completer<void>()).future;
+  }
+
   /// Saving the Personal layout fails.
   bool get layoutSaveFails => _active.contains(TestFault.layoutSaveFails);
 
@@ -132,6 +161,11 @@ class HostFaults {
       if (fault == TestFault.terminateHangs) {
         _terminationRelease?.complete();
         _terminationRelease = null;
+      }
+      if (fault == TestFault.draftCommitHangs) onDraftRelease?.call();
+      if (fault == TestFault.draftResetHangs) {
+        _draftResetRelease?.complete();
+        _draftResetRelease = null;
       }
       if (fault == TestFault.runningWriteFails) {
         _runningWriteFailureRelease?.complete();

@@ -193,7 +193,9 @@ class AgentSession {
 
   /// Acceptance only: the host ACK must not wait for the adapter's result.
   /// One turn is active; completion is reported through control callbacks.
-  void acceptPrompt(String text) {
+  /// The checks of [acceptPrompt], without its effect: a prompt that would
+  /// be refused must not first remove a stored draft.
+  void checkCanPrompt(String text) {
     if (_state != AgentState.idle || _disposed) {
       throw RpcException(
         ErrorCode.turnRunning,
@@ -203,6 +205,10 @@ class AgentSession {
     if (utf8.encode(text).length > 256 * 1024) {
       throw RpcException(ErrorCode.invalidParams, 'prompt exceeds 256 KiB');
     }
+  }
+
+  void acceptPrompt(String text) {
+    checkCanPrompt(text);
     final completion = client.prompt(_nativeSessionId!, text);
     final turn = ++_turn;
     _hasTurn = true;

@@ -102,10 +102,24 @@ void main() {
     /// The app's exit path: the lifecycle listener's flush-then-shutdown, then
     /// the app is removed and the host is gone.
     Future<void> quit(WidgetTester tester) async {
-      final response = await tester.runAsync(
-        tester.binding.handleRequestAppExit,
+      // A cancellable quit: with work running (or its activity unknown) the
+      // exit dialog asks first; **Stop processes and close** ends it.
+      AppExitResponse? response;
+      final request = tester.binding.handleRequestAppExit().then(
+        (r) => response = r,
       );
-      expect(response, AppExitResponse.exit);
+      for (var i = 0; i < 200 && response == null; i++) {
+        await tester.runAsync(
+          () => Future<void>.delayed(const Duration(milliseconds: 50)),
+        );
+        await tester.pump();
+        final stopAll = find.byKey(const Key('exit-stop-all'));
+        if (stopAll.evaluate().isNotEmpty) {
+          await tester.tap(stopAll);
+          await tester.pump();
+        }
+      }
+      expect(await request, AppExitResponse.exit);
       await tester.pumpWidget(const SizedBox());
       link = null;
       await tester.runAsync(

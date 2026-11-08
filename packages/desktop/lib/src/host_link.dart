@@ -88,6 +88,10 @@ abstract interface class HostLink {
   /// `terminal/close`.
   Future<void> closeTerminal(String terminalId);
 
+  /// `terminal/activity`: what each of at most 64 terminals runs now. The
+  /// host refuses a concurrent request (`busy`).
+  Future<TerminalActivityResult> terminalActivity(List<String> terminalIds);
+
   /// `terminal/release`: closes an ended terminal's channels.
   Future<void> releaseTerminal(String terminalId);
 
@@ -116,6 +120,22 @@ abstract interface class HostLink {
   Future<void> releaseAgent(String sessionId);
   Future<AgentRecordsResult> agentRecords(List<String> sessionIds);
 
+  /// `agent/draftSave`: stores one session's composer text at one revision.
+  /// The host refuses a revision not above the stored one with
+  /// `stale-revision` ([storedRevisionOf]).
+  Future<AgentDraftSaveResult> draftSave(AgentDraftSaveParams params);
+
+  /// `agent/draftLoad`: the stored text (if any) and the stored revision.
+  Future<AgentDraftLoadResult> draftLoad(String sessionId);
+
+  /// `agent/draftReset`: discards the draft store. The host refuses it
+  /// (`draft-store-in-use`) unless drafts are disabled.
+  Future<void> draftReset();
+
+  /// The `agent/draftStoreReady` notifications: the draft store became
+  /// available (after a slow open, a stall, or a reset).
+  Stream<void> get draftStoreReady;
+
   Stream<AgentStateParams> get agentStates;
   Stream<AgentPermissionRequestedParams> get agentPermissionRequests;
   Stream<AgentPermissionResolvedParams> get agentPermissionResolutions;
@@ -123,6 +143,14 @@ abstract interface class HostLink {
   Stream<AgentTurnEndedParams> get agentTurnEnds;
   Stream<AgentExitedParams> get agentExits;
   Stream<AgentCloseFailedParams> get agentCloseFailures;
+
+  /// `app/previousExit` (capability `lifecycle`): how the instance before
+  /// this host's ended, as the host captured it before reconciliation.
+  Future<PreviousExitResult> previousExit();
+
+  /// `app/quit` (capability `lifecycle`): tells the host that the connection
+  /// close which follows is a quit.
+  Future<void> announceQuit();
 
   /// Ends the host as the desktop quits.
   Future<void> quit();

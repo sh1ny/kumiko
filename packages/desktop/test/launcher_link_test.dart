@@ -441,6 +441,48 @@ void main() {
     });
   });
 
+  test('previousExit and announceQuit cross the real wire', () async {
+    final toHost = _Pipe();
+    final toDesktop = _Pipe();
+    final calls = <String>[];
+    final opened = DateTime.utc(2026, 11, 2, 9, 0, 1);
+    final host = Connection(
+      input: toHost.controller.stream,
+      output: toDesktop,
+      capabilities: const {Capability.lifecycle},
+      onHello: (_, _) => const HelloInfo.ready('host-1'),
+      onRequest: (method, params) {
+        calls.add(method);
+        return switch (method) {
+          Method.appPreviousExit => PreviousExitResult(
+            kind: PreviousExitKind.unexpected,
+            openedAt: opened,
+          ).toJson(),
+          Method.appQuit => <String, Object?>{},
+          _ => throw RpcException(ErrorCode.methodNotAvailable, method),
+        };
+      },
+    );
+    final desktop = Connection(
+      input: toDesktop.controller.stream,
+      output: toHost,
+      capabilities: const {Capability.lifecycle},
+    );
+    final hello = await desktop.hello();
+    final link = SessionLink(
+      _MemorySession(desktop, hello, const Stream.empty()),
+    );
+
+    final previous = await link.previousExit();
+    await link.announceQuit();
+
+    expect(previous.kind, PreviousExitKind.unexpected);
+    expect(previous.openedAt, opened);
+    expect(calls, [Method.appPreviousExit, Method.appQuit]);
+    await desktop.close();
+    await host.close();
+  });
+
   group('cleanup state replay', () {
     test('a late listener receives the newest state first', () async {
       final source = StreamController<CleanupState>(sync: true);

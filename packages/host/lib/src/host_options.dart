@@ -18,6 +18,9 @@ class HostOptions {
     this.postExitReadDeadline = defaultPostExitReadDeadline,
     this.toolEndpointFault,
     this.revokedSecretsKept = defaultRevokedSecretsKept,
+    this.draftDeadline = defaultDraftDeadline,
+    this.draftOpenHold = Duration.zero,
+    this.advertiseLifecycle = true,
   });
 
   /// Secrets of revoked tool grants still redacted from adapter text.
@@ -49,6 +52,10 @@ class HostOptions {
   /// exited (design D5).
   static const Duration defaultPostExitReadDeadline = Duration(seconds: 1);
 
+  /// How long one draft operation may take before the store counts as not
+  /// responding (app-exit-and-reopen design D4, ADR 0014 decision 14).
+  static const Duration defaultDraftDeadline = Duration(seconds: 5);
+
   /// Folder resolutions that may run at once (design D5).
   static const int resolveSlots = 4;
 
@@ -78,6 +85,16 @@ class HostOptions {
 
   /// How many revoked secrets stay redacted; each run always redacts its own.
   final int revokedSecretsKept;
+
+  /// The deadline of one draft operation.
+  final Duration draftDeadline;
+
+  /// Extra wait before the draft worker opens its file (tests only).
+  final Duration draftOpenHold;
+
+  /// Whether `hello` offers the `lifecycle` capability; a test build turns it
+  /// off to play a host that predates it.
+  final bool advertiseLifecycle;
 
   /// Extra wait at the start of reconciliation (tests only).
   final Duration reconcileDelay;

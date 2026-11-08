@@ -89,17 +89,23 @@ Future<bool> showCloseWarning(
   BuildContext context,
   List<CloseWarning> warnings,
 ) async {
+  // An unsaved draft is named as `Draft not saved: ...` (agent-sessions).
+  final draftsOnly = warnings.every(
+    (w) => w.reason.startsWith('Draft not saved'),
+  );
+  final agentWork = warnings.any(
+    (w) =>
+        w.reason.contains('Are you sure you want to stop the running agent?'),
+  );
   final confirmed = await showDialog<bool>(
     context: context,
     builder: (context) => AlertDialog(
       key: const Key('close-warning'),
       title: Text(
-        warnings.any(
-              (w) =>
-                  w.reason ==
-                  'Are you sure you want to stop the running agent?',
-            )
+        agentWork
             ? 'Close running work?'
+            : draftsOnly
+            ? 'Close with an unsaved draft?'
             : 'Close running terminals?',
       ),
       content: Column(
@@ -107,12 +113,10 @@ Future<bool> showCloseWarning(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Text(
-            warnings.any(
-                  (w) =>
-                      w.reason ==
-                      'Are you sure you want to stop the running agent?',
-                )
+            agentWork
                 ? 'Closing ends the named running work:'
+                : draftsOnly
+                ? 'Closing loses the text of these drafts:'
                 : 'Closing ends their shells:',
           ),
           // Closing the workbench can name every terminal: the list scrolls.

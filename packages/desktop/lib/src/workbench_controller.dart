@@ -218,6 +218,13 @@ class WorkbenchController extends ChangeNotifier {
   String? _restoreNotice;
   String? _message;
   bool _reconciling = false;
+  int _unresolvedWorkspaces = 0;
+
+  /// The desktop asks `app/previousExit` once, for its first host connection;
+  /// Restart host and a second host never ask or show it again.
+  bool _previousExitAsked = false;
+  PreviousExitResult? _previousExit;
+  bool _previousExitDismissed = false;
   ProfileListResult? _profiles;
 
   /// Names of every profile seen, to name a default that was removed.
@@ -266,6 +273,23 @@ class WorkbenchController extends ChangeNotifier {
   /// The host is still cleaning up after the previous session.
   bool get reconciling => _reconciling;
 
+  /// Show *Kumiko did not close normally last time*: the first host reported
+  /// that the previous instance did not record a quit, reconciliation has
+  /// ended and the user has not dismissed it (execution-host, design D5).
+  bool get previousExitNoticeVisible =>
+      !_reconciling &&
+      !_previousExitDismissed &&
+      _previousExit?.kind == PreviousExitKind.unexpected;
+
+  /// Workspaces with *cleanup unresolved* in the newest `cleanup/state`: the
+  /// outcome the notice states.
+  int get unresolvedWorkspaces => _unresolvedWorkspaces;
+
+  void dismissPreviousExit() {
+    _previousExitDismissed = true;
+    notifyListeners();
+  }
+
   WorkspaceRecord? workspace(String id) {
     for (final w in _workspaces) {
       if (w.id == id) return w;
@@ -295,6 +319,14 @@ class WorkbenchController extends ChangeNotifier {
       ..add(link.workspaceChanges.listen(_onWorkspaceChanged));
     notifyListeners();
     if (terminalsUnavailableReason == null) unawaited(refreshProfiles());
+    final firstHost = !_previousExitAsked;
+    _previousExitAsked = true;
+    // A replacement host (Restart host) never shows the first host's notice,
+    // dismissed or not.
+    if (!firstHost) _previousExit = null;
+    if (firstHost && link.hello.capabilities.contains(Capability.lifecycle)) {
+      unawaited(_askPreviousExit(link, generation));
+    }
 
     final WorkbenchLoadResult result;
     try {
@@ -367,6 +399,21 @@ class WorkbenchController extends ChangeNotifier {
     if (_stale(generation)) return;
     notifyListeners();
     if (_latestStateRevision > _listApplied) unawaited(_refreshList());
+  }
+
+  /// An answer that cannot be had (the host refuses it or is gone) means no
+  /// notice: it is a courtesy, never a reason to fail the connection.
+  Future<void> _askPreviousExit(HostLink link, int generation) async {
+    try {
+      final result = await link.previousExit();
+      if (_stale(generation)) return;
+      _previousExit = result;
+      notifyListeners();
+    } on RpcException {
+      // No notice.
+    } on ConnectionClosedException {
+      // No notice.
+    }
   }
 
   /// The host is gone: keep the layout, forget the link.
@@ -492,6 +539,7 @@ class WorkbenchController extends ChangeNotifier {
   }
 
   void _setLayout(LayoutDocument d, {bool refocus = false}) {
+    if (_frozen) return;
     final focusedBefore = _layout?.focusedPane;
     _layout = d;
     _message = null;
@@ -508,6 +556,7 @@ class WorkbenchController extends ChangeNotifier {
   }
 
   bool _commit(LayoutResult r, {bool refocus = false}) {
+    if (_frozen) return false;
     final d = r.document;
     if (d == null) {
       _message = switch (r.refusal!) {
@@ -612,14 +661,27 @@ class WorkbenchController extends ChangeNotifier {
   /// one [confirm]ation first (design D9). Cancel changes nothing. On confirm
   /// each view's owner is asked to close in parallel; plain panes go at once.
   Future<void> requestClose(List<String> paneIds, ConfirmClose confirm) async {
-    final warnings = <CloseWarning>[];
+    // Panes are grouped by owner so each asks once for all of its panes.
+    final byCloser = <ViewCloser, List<String>>{};
     for (final id in paneIds) {
       final pane = _layout?.pane(id);
       if (pane == null) continue;
       final closer = viewKindOf(pane.kind)?.closer?.call(this);
-      final reason = closer?.warnsOnClose(id);
-      if (reason != null) {
-        warnings.add((paneId: id, title: paneTitle(pane), reason: reason));
+      if (closer != null) (byCloser[closer] ??= []).add(id);
+    }
+    final reasons = await Future.wait([
+      for (final e in byCloser.entries) e.key.warningsFor(e.value),
+    ]);
+    final warnings = <CloseWarning>[];
+    for (final id in paneIds) {
+      final pane = _layout?.pane(id);
+      if (pane == null) continue;
+      for (final r in reasons) {
+        final reason = r[id];
+        if (reason != null) {
+          warnings.add((paneId: id, title: paneTitle(pane), reason: reason));
+          break;
+        }
       }
     }
     if (warnings.isNotEmpty && !await confirm(warnings)) return;
@@ -1112,6 +1174,36 @@ class WorkbenchController extends ChangeNotifier {
   /// Sends pending layout changes before the desktop quits.
   Future<void> flush() => _saver.flush();
 
+  bool _frozen = false;
+
+  /// The app is quitting: no layout change is applied or saved from here on,
+  /// so the stored layout is the one the quit flushed (design D1).
+  void freezeLayout() => _frozen = true;
+
+  /// The quit went back to the exit dialog: the layout is live again.
+  void unfreezeLayout() => _frozen = false;
+
+  /// The quit flush (design D1): pending layout and draft saves go out
+  /// together and share one 2 s bound.
+  Future<void> flushForExit() =>
+      Future.wait([_saver.flush(), agents.flushDrafts()]).then<void>((_) {});
+
+  /// `app/quit`, before the connection closes. A host without the `lifecycle`
+  /// capability is not asked, and one that does not answer in time or refuses
+  /// never holds the quit back.
+  Future<void> announceQuit() async {
+    final link = _link;
+    if (link == null ||
+        !link.hello.capabilities.contains(Capability.lifecycle)) {
+      return;
+    }
+    try {
+      await link.announceQuit().timeout(const Duration(seconds: 2));
+    } on Object {
+      // The quit goes on; the next launch shows the previous-exit notice.
+    }
+  }
+
   // --- workspaces ---------------------------------------------------------
 
   /// Open folder: the native picker, then `workspace/open`; the folder
@@ -1270,6 +1362,7 @@ class WorkbenchController extends ChangeNotifier {
   void _onCleanupState(CleanupState s) {
     if (_disposed) return;
     _reconciling = s.reconciling;
+    _unresolvedWorkspaces = s.unresolvedWorkspaces;
     if (s.revision > _latestStateRevision) _latestStateRevision = s.revision;
     notifyListeners();
     if (_listLoaded && s.revision > _listApplied) {

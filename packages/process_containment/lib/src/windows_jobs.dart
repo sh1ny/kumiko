@@ -108,6 +108,31 @@ bool isPidInJob(int pid, int job) {
   }
 }
 
+/// A second handle to [handle] with the same access, for a reader that must
+/// not race the owner's close; the reader closes it with [closeHandle].
+/// Throws [WindowsApiException] when it cannot be duplicated.
+int duplicateHandle(int handle) {
+  final out = calloc<IntPtr>();
+  try {
+    final self = getCurrentProcess();
+    if (duplicateHandleNative(
+          self,
+          handle,
+          self,
+          out,
+          0,
+          0,
+          duplicateSameAccess,
+        ) ==
+        0) {
+      throw WindowsApiException('DuplicateHandle', getLastError());
+    }
+    return out.value;
+  } finally {
+    calloc.free(out);
+  }
+}
+
 void closeHandle(int handle) {
   closeHandleNative(handle);
 }
