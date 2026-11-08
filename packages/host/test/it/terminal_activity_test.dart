@@ -187,10 +187,14 @@ void main() {
         ),
       );
       final t = await desktop.openTerminal('startup-exec');
+      // On macOS sh hands off to bash first, which also reads busy, so wait for
+      // the program the startup file execs.
       final a = await until(
         desktop,
         t.id,
-        (a) => a.state == TerminalActivityState.busy,
+        (a) =>
+            a.state == TerminalActivityState.busy &&
+            a.programs.contains('sleep'),
       );
       expect(a.programs, ['sleep']);
     },
