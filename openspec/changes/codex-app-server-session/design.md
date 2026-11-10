@@ -514,6 +514,46 @@ The architecture document remains unchanged during planning, as required by the 
 
 
 
+## Implementation sequence amendment (2026-11-10)
+
+The owner approved revising task order and reviewing this amendment before
+implementation resumes. Inspection found that `_AgentIO` constructs `AcpClient`
+and `AgentSession` directly consumes ACP notifications and prompt results.
+Shared Codex startup therefore depends on the driver seam, runtime-kind routing,
+native mapping and negotiated peer gates together. A standalone contained-client
+test cannot establish shared startup admission or channel release.
+
+Preserve completed group 1 and its task IDs. The remaining dependency order is:
+
+1. Bounded native wire client and reusable mechanics, tested independently of
+   production startup. No production Codex launch is exposed by this group.
+2. Additive protocol DTOs and refusal gates before any Codex spawn. Codec and
+   Connection-pair tests establish gates and stale-control rejection without
+   claiming successful native startup or complete end-to-end scenarios.
+3. Shared host integration: test-host scripting, contained version probe,
+   profile detection/routing, native driver mapping and root controls. Test
+   startup failure, unit/channel release and probe cleanup through AgentService,
+   not a parallel test-only start path. Implement these interdependent foundations
+   in one group, with failing tests before each corresponding behavior.
+4. Desktop launcher, compatible profile choices, native guidance, forms and
+   explicit steering after the host path is usable. Host profile filtering is
+   checked in the previous group; UI selection is checked here; full Continue
+   history is checked with recovery in the next group.
+5. Native recovery and isolated MCP delivery, then child attribution/lifecycle,
+   then qualification and the separately approved real Windows walk.
+
+This changes sequencing and task boundaries only. D1-D7, every scenario, resource
+bound and refusal remains in force. Test-map rows remain red until their full
+named verification passes; an earlier codec or primitive test cannot turn a
+later end-to-end row green. Keep the test-only/release capability fence from the
+first fixture addition. Until safe MCP delivery is established, use the reviewed
+tools-unavailable behavior without minting or leaking a usable bridge secret.
+Known child work must follow the reviewed attribution/refusal rules as soon as
+its native events can arrive; the later child group completes registry, summary
+and lifecycle behavior, never authorizes flattening or automatic approval during
+the earlier root-only work. The release fixture fence and peer gates cannot wait
+for later UI or qualification work.
+
 ## Open Questions
 
 
