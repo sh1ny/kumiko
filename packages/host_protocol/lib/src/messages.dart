@@ -1896,15 +1896,22 @@ class RuntimeSetDefaultParams {
 }
 
 class AgentStartParams {
-  const AgentStartParams({required this.workspaceId, this.runtimeProfileId});
+  const AgentStartParams({
+    required this.workspaceId,
+    this.runtimeProfileId,
+    this.runtimeKind,
+  });
   factory AgentStartParams.fromJson(Json json) => AgentStartParams(
     workspaceId: _req<String>(json, 'workspaceId'),
     runtimeProfileId: _opt<String>(json, 'runtimeProfileId'),
+    runtimeKind: _opt<String>(json, 'runtimeKind'),
   );
+  final String? runtimeKind;
   final String workspaceId;
   final String? runtimeProfileId;
   Json toJson() => {
     'workspaceId': workspaceId,
+    'runtimeKind': ?runtimeKind,
     'runtimeProfileId': ?runtimeProfileId,
   };
 }

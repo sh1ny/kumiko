@@ -327,6 +327,7 @@ class Host {
     );
     faults.onDraftRelease = drafts.releaseHeld;
     _agents = AgentService(
+      profileDirectory: profile,
       connection: _connection,
       units: units,
       workspaces: workspaces,
@@ -483,7 +484,7 @@ class Host {
         await _agents!.prompt(AgentPromptParams.fromJson(params));
         return <String, Object?>{};
       case Method.agentSteer:
-        _agents!.steer(AgentSteerParams.fromJson(params));
+        await _agents!.steer(AgentSteerParams.fromJson(params));
         return <String, Object?>{};
       case Method.agentQuestionAnswer:
         _agents!.questionAnswer(AgentQuestionAnswerParams.fromJson(params));

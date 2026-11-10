@@ -188,6 +188,9 @@ Future<PosixUnit> spawnPosixUnit({
   String? workingDirectory,
   PtyOptions? pty,
   bool pipes = false,
+  // False supplies only explicit variables plus the containment marker; the
+  // exec shim inherits this already-filtered environment, never the host copy.
+  bool inheritParentEnvironment = true,
 }) async {
   if (pipes && pty != null) {
     throw ArgumentError('pipes and pty are mutually exclusive');
@@ -209,6 +212,7 @@ Future<PosixUnit> spawnPosixUnit({
         ...argv,
       ],
       environment: {...?environment, unitMarkerVariable: containmentId},
+      includeParentEnvironment: inheritParentEnvironment,
       workingDirectory: workingDirectory,
     );
   } catch (_) {

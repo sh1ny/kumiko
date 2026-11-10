@@ -50,6 +50,44 @@ Future<void> main(List<String> args) async {
       case 'pipes-argv':
         stdout.write(jsonEncode(args.sublist(2)));
         await stdout.flush();
+      case 'pipes-env-parent':
+        final inherit = args[2] == 'true';
+        final childArgs = ['--fixture', 'pipes-env-child'];
+        final child = Platform.isWindows
+            ? spawnWindowsUnit(
+                executable: _self,
+                args: childArgs,
+                containmentId: 'env-child',
+                environment: {'PC_RESOLUTION': 'explicit'},
+                inheritParentEnvironment: inherit,
+                pipes: true,
+              )
+            : await spawnPosixUnit(
+                shimExecutable: _self,
+                argv: [_self, ...childArgs],
+                containmentId: 'env-child',
+                environment: {'PC_RESOLUTION': 'explicit'},
+                inheritParentEnvironment: inherit,
+                pipes: true,
+              );
+        final errors = child.pipes!.stderr.drain<void>();
+        await stdout.addStream(child.pipes!.stdout);
+        await child.exitCode;
+        await errors;
+        await child.terminate();
+        await child.pipes!.close();
+        if (child is WindowsUnit) child.close();
+      case 'pipes-env-child':
+        stdout.write(
+          jsonEncode({
+            'parentMarker':
+                Platform.environment['PC_PARENT_CANARY'] == 'controlled',
+            'explicit': Platform.environment['PC_RESOLUTION'] == 'explicit',
+            'unitMarker':
+                Platform.environment[unitMarkerVariable] == 'env-child',
+          }),
+        );
+        await stdout.flush();
       case 'pipes-options':
         stdout.write(
           jsonEncode({

@@ -19,19 +19,28 @@ class CodexOptionalUnsupported implements Exception {
   CodexOptionalUnsupported(this.feature, this.reason);
   final String feature;
   final String reason;
+  @override
+  String toString() => '$feature unavailable: $reason';
 }
 
 class CodexRemoteException implements Exception {
-  CodexRemoteException(this.code, String message)
-    : message = clampUtf8(message, 4096);
-  final int code;
+  CodexRemoteException(
+    this.code,
+    String message, {
+    this.isAuthenticationRequired = false,
+  }) : message = clampUtf8(message, 4096),
+       messageTruncated = clampUtf8(message, 4096) != message;
+  final bool messageTruncated;
+  final int? code;
+  final bool isAuthenticationRequired;
   final String message;
   @override
-  String toString() => 'Codex error $code: $message';
+  String toString() => 'Codex error${code == null ? '' : ' $code'}: $message';
 }
 
 class CodexInitialization {
-  CodexInitialization(this.userAgent);
+  CodexInitialization(this.userAgent, {this.version});
+  final String? version;
   final String userAgent;
 }
 
@@ -46,6 +55,7 @@ class CodexClient implements RuntimeTransport {
     required Stream<List<int>> input,
     required Future<void> Function(List<int>) write,
     LargeLinePermit? largeLinePermit,
+    this.authSignatures = const [],
   }) {
     _writer = NativeWriteAdmission(write, _fail, _closedError);
     _reader = NativeLineReader(
@@ -62,11 +72,14 @@ class CodexClient implements RuntimeTransport {
   factory CodexClient.pipes(
     UnitPipes pipes, {
     LargeLinePermit? largeLinePermit,
+    List<(int, String)> authSignatures = const [],
   }) => CodexClient(
     input: pipes.stdout,
     write: pipes.stdin.write,
     largeLinePermit: largeLinePermit,
+    authSignatures: authSignatures,
   );
+  final List<(int, String)> authSignatures;
   late final NativeLineReader _reader;
   late final NativeWriteAdmission _writer;
   final _pending = <Object, _Pending<Object?>>{};
@@ -85,7 +98,8 @@ class CodexClient implements RuntimeTransport {
   Object? Function(Object id, String method, Object? params)? onRequest;
   @override
   void Function(Object error)? onFailure;
-  void Function(String feature, String reason)? onUnsupported;
+  Object? Function(String feature, String reason)? onUnsupported;
+  Object? Function()? takeBuffered;
   @override
   bool get isClosed => _closed;
   bool get largeLineOwned => _reader.largeLineOwned;
@@ -119,7 +133,14 @@ class CodexClient implements RuntimeTransport {
             throw CodexProtocolException('invalid initialize $key');
           }
         }
-        return CodexInitialization(result['userAgent']! as String);
+        final userAgent = result['userAgent']! as String;
+        // Exact 0.166.0 server builds userAgent's first product with its native
+        // build version. Platform/client suffixes and additive fields are not
+        // identities. Unknown future UA grammar leaves the probe authoritative.
+        final first = RegExp(
+          r'^[^/\s]+/((?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?)(?:\s|$)',
+        ).firstMatch(userAgent);
+        return CodexInitialization(userAgent, version: first?.group(1));
       },
     );
     await notify('initialized', {});
@@ -133,6 +154,9 @@ class CodexClient implements RuntimeTransport {
     Json params, {
     required T Function(Object? result) decodeResult,
     Duration timeout = const Duration(seconds: 60),
+    bool requireAdmission = false,
+    List<Json> preceding = const [],
+    bool pauseForOutput = true,
   }) {
     try {
       if (_closed) throw _closedError();
@@ -140,32 +164,41 @@ class CodexClient implements RuntimeTransport {
         throw RpcException('busy', '32 native requests pending');
       }
       final id = _nextId;
-      final bytes = _encode({'id': id, 'method': method, 'params': params});
+      final bytes = <int>[
+        for (final reply in preceding) ..._encode(reply),
+        ..._encode({'id': id, 'method': method, 'params': params}),
+      ];
       final pending = _Pending<T>(decodeResult, timeout, () {
         _pending
             .remove(id)
             ?.completeError(
               TimeoutException('Codex $method timed out', timeout),
             );
-      });
+      }, pauseForOutput: pauseForOutput);
       _writer
           .admit(
             bytes,
             beforeWrite: () {
               _nextId++;
               _pending[id] = pending;
-              if (!_consuming) pending.resume();
+              if (!_consuming || !pauseForOutput) pending.resume();
             },
           )
           .ignore();
       return pending.result.future;
     } on Object catch (e, st) {
+      if (requireAdmission) rethrow;
       return Future.error(e, st);
     }
   }
 
   Future<void> notify(String method, Json params) =>
       _send({'method': method, 'params': params});
+  Future<void> replyAdmitted(Object id, Json result) {
+    if (_closed) throw _closedError();
+    return _writer.admit(_encode({'id': id, 'result': result}));
+  }
+
   Future<void> reply(Object id, Json result) =>
       _send({'id': id, 'result': result});
   Future<void> replyError(Object id, int code, String message) => _send({
@@ -211,17 +244,16 @@ class CodexClient implements RuntimeTransport {
         try {
           return handler(id, method, params);
         } on CodexOptionalUnsupported catch (error) {
-          _unsupported(error);
+          final notice = _unsupported(error);
           _deny(id, -32602, 'unsupported optional request');
-          return null;
+          return notice;
         }
       }
       try {
         final value = normalizeNotification?.call(method, params);
         return value is Future<Object?> ? _optional(value) : value;
       } on CodexOptionalUnsupported catch (e) {
-        _unsupported(e);
-        return null;
+        return _unsupported(e);
       }
     }
     if ((id is! String && id is! int) ||
@@ -244,6 +276,11 @@ class CodexClient implements RuntimeTransport {
         CodexRemoteException(
           error['code']! as int,
           error['message']! as String,
+          isAuthenticationRequired: authSignatures.any(
+            (signature) =>
+                signature.$1 == error['code'] &&
+                signature.$2 == error['message'],
+          ),
         ),
       );
     } else {
@@ -253,7 +290,7 @@ class CodexClient implements RuntimeTransport {
         // This request no longer belongs to _pending. Settle it before a
         // notice callback can throw and send the transport down its fail path.
         pending.completeError(e);
-        _unsupported(e);
+        return _unsupported(e);
       } on Object catch (e, st) {
         final malformed = e is CodexProtocolException
             ? e
@@ -262,16 +299,17 @@ class CodexClient implements RuntimeTransport {
         _fail(malformed);
       }
     }
-    return null;
+    return takeBuffered?.call();
   }
 
+  void deny(Object id, int code, String message) => _deny(id, code, message);
   void _deny(Object id, int code, String message) {
     replyError(id, code, message).catchError((Object error) {
       if (!_closed) _fail(error);
     });
   }
 
-  void _unsupported(CodexOptionalUnsupported e) => onUnsupported?.call(
+  Object? _unsupported(CodexOptionalUnsupported e) => onUnsupported?.call(
     clampJsonString(e.feature, 128),
     clampJsonString(e.reason, 4096),
   );
@@ -279,15 +317,14 @@ class CodexClient implements RuntimeTransport {
     try {
       return await _untilClosed(value);
     } on CodexOptionalUnsupported catch (e) {
-      _unsupported(e);
-      return null;
+      return _unsupported(e);
     }
   }
 
   Future<void> _consume(Object value) async {
     _consuming = true;
     for (final pending in _pending.values) {
-      pending.pause();
+      if (pending.pauseForOutput) pending.pause();
     }
     try {
       await _untilClosed(
@@ -353,7 +390,13 @@ class CodexClient implements RuntimeTransport {
 }
 
 class _Pending<T> {
-  _Pending(this.decode, this._remaining, this.expired);
+  _Pending(
+    this.decode,
+    this._remaining,
+    this.expired, {
+    this.pauseForOutput = true,
+  });
+  final bool pauseForOutput;
   final T Function(Object? result) decode;
   final void Function() expired;
   final result = Completer<T>();

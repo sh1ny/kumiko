@@ -9,6 +9,7 @@ import 'package:test/test.dart';
 import 'support/harness.dart';
 import 'support/agent_support.dart';
 import 'support/terminal_support.dart' show rpcFailure;
+import 'support/codex_support.dart' show NativeFixture, codexCaps;
 
 /// Every file under [dir] with its bytes, so any write is visible.
 Map<String, String> snapshot(Directory dir) {
@@ -105,6 +106,7 @@ void main() {
       ['sleeper'],
       ['stubborn'],
       ['acp-agent'],
+      ['codex-agent'],
       ['lock-holder', profile.path],
     ]) {
       final result = await Process.run(releaseHostExecutable(), [
@@ -193,6 +195,44 @@ void main() {
       }
     },
   );
+
+  test('release ignores native probe and auth candidate overrides', () async {
+    await buildTestHost();
+    final f = NativeFixture(profile, cwd);
+    await f.open();
+    await f.desktop.dispose();
+    final session = await HostLauncher(
+      executable: releaseHostExecutable(),
+      profileDir: profile.path,
+      capabilities: {Capability.workbench, ...codexCaps},
+      environment: {
+        'KUMIKO_TEST_CODEX_PROBE_ARGS': jsonEncode([
+          '--test-fixture',
+          'codex-agent',
+          '--script',
+          f.scriptFile.path,
+          '--probe',
+        ]),
+        'KUMIKO_TEST_CODEX_AUTH_SIGNATURES':
+            '[[-32123,"fixture-confirmed-native-auth"]]',
+      },
+    ).start();
+    try {
+      final error = await rpcFailure(
+        session.connection.request(Method.agentStart, {
+          'workspaceId': f.workspace,
+          'runtimeProfileId': 'native',
+        }),
+      );
+      expect(error.reason, ErrorCode.adapterProtocol);
+      expect(error.message, contains('probe exited'));
+      expect(f.report.existsSync(), false);
+      expect(LedgerView(profile).units(), isEmpty);
+      expect(agentRows(profile), isEmpty);
+    } finally {
+      await session.quit();
+    }
+  });
 
   group('unit-exec', () {
     final skip = Platform.isWindows ? 'unit-exec is POSIX only' : null;

@@ -99,6 +99,19 @@ and Kumiko profile files for a per-run canary without printing matches. A fixtur
 only proves Kumiko behavior; a separately approved real run is needed to prove
 Codex persistence behavior. No safe native tools claim is made here.
 
+## Initialize user-agent identity research (group 4)
+
+Exact-tag primary references studied for behavior only:
+[initialize response](https://github.com/openai/codex/blob/rust-v0.166.0/codex-rs/app-server/src/request_processors/initialize_processor.rs)
+and [user-agent construction](https://github.com/openai/codex/blob/rust-v0.166.0/codex-rs/login/src/auth/default_client.rs).
+The response uses a user-agent whose first product token carries the native
+build version. Its later platform and client-information suffixes carry other
+versions and must not be interpreted as native identity. Compare only a
+recognized leading product token with the contained probe. A future valid
+string with unrecognized grammar leaves the probe authoritative; an unknown
+additive `version` property has no established identity semantics and is ignored.
+No App Server was started and no source was copied for this research.
+
 ## Version parsing and native launch environment
 
 The observed identity line is exactly `codex-cli 0.166.0`; one observed line does
@@ -142,3 +155,54 @@ operations and possible provider cost, obtain explicit approval, then record the
 actual results and canary scan. Linux/macOS remain unverified. Missing evidence
 does not block compatible Codex versions; M2 close still needs real Windows
 evidence for its then-installed version.
+
+
+## Native host integration and profile guidance
+
+Use an installed native Codex 0.166.0 or newer. Kumiko does not install Codex,
+run npm during discovery, execute Windows batch shims, or scan another app's
+private packages. Discovery checks native PATH files and matching installed npm
+platform-package metadata. Other installations use an explicit profile: kind
+`codex`, an absolute native executable, and argv `app-server` (plus user settings
+as individual argv entries). Native provider sign-in stays user-owned.
+An existing global default is preserved; launch intent and saved records filter
+profiles by runtime kind. Removing a profile does not change a live run or its
+saved immutable target.
+
+AgentService owns containment, records, channels and failed-start cleanup.
+AgentSession owns root state, drafts, pending interactions and Stop outcomes.
+The operation driver maps native requests/events and bounded correlation only.
+A separate ledgered probe uses the host's owner-only profile directory, selected
+executable plus `--version`, resolution-essential environment, 4 KiB combined
+output and a five-second limit; it settles before the root App Server starts.
+The root uses the selected workspace and profile argv unchanged.
+
+Core initialize/thread/turn/message/command/file/approval shapes are validated.
+Unknown additive fields/events remain compatible. Optional questions, steering,
+elicitation and child metadata have visible feature-local refusal. Unknown-child
+content is withheld immediately with a bounded notice until the later child
+registry is implemented. Early events reserve bytes from the same relay budget;
+response-side delivery awaits bounded enqueue outside the large-line permit.
+Steering reserves canonical-event capacity before draft removal or native writes.
+Control acknowledgement remains separate from native completion; Stop timeout
+leaves Stopping and a late terminal event reports its actual outcome.
+
+This host integration does not yet expose the desktop launcher, restore native
+history, or deliver a Kumiko MCP entry. Until safe entry-only delivery is proven,
+Codex starts without a usable ToolGrant and reports the Codex safe-delivery
+limitation even when the tool endpoint exists. No real runtime or authentication
+observation is established by the authored fixtures or candidate-only signatures.
+
+
+The published 0.166.0 npm metadata uses platform dependency aliases:
+[main package metadata](https://registry.npmjs.org/@openai/codex/0.166.0)
+and [Windows x64 alias target](https://registry.npmjs.org/@openai/codex/0.166.0-win32-x64).
+The installed dependency directory has the platform alias name, but its own
+metadata retains the declared underlying `@openai/codex` name and platform
+package version. Discovery validates that declared alias identity, OS and CPU;
+it never treats the packaging suffix as native semver. The contained native
+probe remains authoritative. Native npm launch retains its validated package
+root, one npm manager marker and existing bundled resource PATH directory;
+stale other-manager markers are removed without modifying the host environment.
+Probe stdout supplies identity; stderr remains diagnostic and counts toward the
+same four-KiB combined output limit.

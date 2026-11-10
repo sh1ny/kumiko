@@ -21,6 +21,8 @@ class HostOptions {
     this.draftDeadline = defaultDraftDeadline,
     this.draftOpenHold = Duration.zero,
     this.advertiseLifecycle = true,
+    this.codexProbeArgs,
+    this.codexAuthSignatures = const [],
   });
 
   /// Secrets of revoked tool grants still redacted from adapter text.
@@ -95,6 +97,13 @@ class HostOptions {
   /// Whether `hello` offers the `lifecycle` capability; a test build turns it
   /// off to play a host that predates it.
   final bool advertiseLifecycle;
+
+  /// Test entry-point only: overrides probe argv, never executable or containment.
+  /// Release does not read candidate environment variables.
+  final List<String>? codexProbeArgs;
+
+  /// Exact test-only candidates. Production has no observed native auth signature.
+  final List<(int, String)> codexAuthSignatures;
 
   /// Extra wait at the start of reconciliation (tests only).
   final Duration reconcileDelay;

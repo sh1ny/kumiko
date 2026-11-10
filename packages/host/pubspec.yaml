@@ -10,6 +10,7 @@ executables:
   kumiko_host:
 
 dependencies:
+  path: ^1.9.1
   domain: any
   host_protocol: any
   process_containment: any

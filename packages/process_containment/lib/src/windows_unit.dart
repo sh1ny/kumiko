@@ -203,6 +203,8 @@ WindowsUnit spawnWindowsUnit({
   String? workingDirectory,
   PtyOptions? pty,
   bool pipes = false,
+  // False supplies only explicit variables plus the mandatory unit marker.
+  bool inheritParentEnvironment = true,
 }) {
   if (pipes && pty != null) {
     throw ArgumentError('pipes and pty are mutually exclusive');
@@ -380,7 +382,7 @@ WindowsUnit spawnWindowsUnit({
     final env = _environmentBlock({
       ...?environment,
       unitMarkerVariable: containmentId,
-    });
+    }, inheritParentEnvironment: inheritParentEnvironment);
     toFree.add(env);
     final cwd = workingDirectory?.toNativeUtf16();
     if (cwd != null) toFree.add(cwd);
@@ -488,10 +490,15 @@ WindowsUnit spawnWindowsUnit({
 
 /// `NAME=value\0...\0\0` in UTF-16, the parent's environment overridden by
 /// [overrides]. Windows names compare case-insensitively.
-Pointer<Utf16> _environmentBlock(Map<String, String> overrides) {
+Pointer<Utf16> _environmentBlock(
+  Map<String, String> overrides, {
+  bool inheritParentEnvironment = true,
+}) {
   final merged = <String, MapEntry<String, String>>{};
-  for (final e in Platform.environment.entries) {
-    merged[e.key.toUpperCase()] = e;
+  if (inheritParentEnvironment) {
+    for (final e in Platform.environment.entries) {
+      merged[e.key.toUpperCase()] = e;
+    }
   }
   for (final e in overrides.entries) {
     merged[e.key.toUpperCase()] = e;

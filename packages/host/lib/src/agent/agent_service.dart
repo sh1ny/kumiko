@@ -16,7 +16,11 @@ import '../unit_manager.dart';
 import '../workspace_service.dart';
 import '../workspace_resolver.dart';
 import 'acp/acp_client.dart';
+import 'codex/codex_client.dart';
+import 'codex/version_probe.dart';
+import 'runtime_driver.dart';
 import 'agent_session.dart';
+import 'adapter_detector.dart';
 import 'draft_store.dart';
 import 'executable_resolver.dart';
 import 'qualification.dart';
@@ -100,7 +104,20 @@ class _StderrRing {
 /// UnitManager removes its live handle. Failed cleanup retains this owner until
 /// containment is confirmed settled, not merely until its leader exits.
 class _AgentIO {
-  _AgentIO(this.launch) : client = AcpClient.pipes(launch.pipes!) {
+  _AgentIO(
+    this.launch, {
+    String? codexVersion,
+    List<(String, String, List<String>)> qualified = qualifiedAdapters,
+    List<(int, String)> authSignatures = const [],
+  }) : client = codexVersion == null
+           ? AcpRuntimeDriver(
+               AcpClient.pipes(launch.pipes!),
+               qualified: qualified,
+             )
+           : CodexRuntimeDriver(
+               CodexClient.pipes(launch.pipes!, authSignatures: authSignatures),
+               codexVersion,
+             ) {
     errors = launch.pipes!.stderr.listen(
       stderr.add,
       onDone: () {
@@ -113,7 +130,7 @@ class _AgentIO {
     launch.unit.exitCode.then((value) => status = value).ignore();
   }
   final UnitLaunch launch;
-  final AcpClient client;
+  final RuntimeDriver client;
   final stderr = _StderrRing();
   final errorsDone = Completer<void>();
   late final StreamSubscription<Uint8List> errors;
@@ -131,6 +148,34 @@ class AgentEventRelay {
   final void Function(bool paused)? onPauseChanged;
   final Queue<Uint8List> _queue = Queue();
   int _bytes = 0;
+  int _reserved = 0;
+  int get reservedBytes => _reserved;
+  bool reserveEarly(int bytes) {
+    if (bytes < 0 || _bytes + _reserved + bytes > 1024 * 1024) return false;
+    _reserved += bytes;
+    return true;
+  }
+
+  void releaseEarly(int bytes) {
+    _reserved = max(0, _reserved - bytes);
+    if (_bytes + _reserved < 1024 * 1024) _wake();
+  }
+
+  Future<void> enqueueReserved(RuntimeDelivery delivery) async {
+    if (_closed || _sealed) {
+      delivery.release();
+      return;
+    }
+    delivery.release();
+    for (final line in delivery.lines) {
+      _queue.add(line);
+      _bytes += line.length;
+      _eventCount++;
+    }
+    _pump();
+    await _admit();
+  }
+
   int _offset = 0;
   ChannelWriter? _writer;
   Completer<void>? _space;
@@ -153,7 +198,7 @@ class AgentEventRelay {
   }
 
   Future<void> _admit() async {
-    while (!_closed && !_sealed && _bytes >= 1024 * 1024) {
+    while (!_closed && !_sealed && _bytes + _reserved >= 1024 * 1024) {
       _pause(true);
       await (_space ??= Completer<void>()).future;
     }
@@ -289,6 +334,7 @@ class _Agent {
 class AgentService {
   AgentService({
     required this.connection,
+    required this.profileDirectory,
     required this.units,
     required this.workspaces,
     required this.profiles,
@@ -302,6 +348,7 @@ class AgentService {
     drafts.onAvailable = _draftStoreReady;
   }
   final Connection connection;
+  final Directory profileDirectory;
   final UnitManager units;
   final WorkspaceService workspaces;
   final RuntimeProfileService profiles;
@@ -360,8 +407,10 @@ class AgentService {
     for (final entry in _agents.entries)
       entry.key: {
         'ending': entry.value.ending,
+        'hasGrant': entry.value.grant?.isLive ?? false,
         'paused': entry.value.relay.isPaused,
         'queuedBytes': entry.value.relay.queuedBytes,
+        'reservedBytes': entry.value.relay.reservedBytes,
         'channelQueuedBytes': entry.value.relay.channelQueuedBytes,
         'channelSentBytes': entry.value.relay.channelSentBytes,
         'largeLineOwned': entry.value.io.client.largeLineOwned,
@@ -452,6 +501,13 @@ class AgentService {
         'Runtime profile "${profileId ?? params.runtimeProfileId ?? 'default'}" is unavailable. Choose or add a runtime profile.',
       );
     }
+    if (params.runtimeKind != null &&
+        profile.runtimeKind != params.runtimeKind) {
+      throw RpcException(
+        ErrorCode.noRuntimeProfile,
+        'Choose a compatible ${params.runtimeKind} runtime profile.',
+      );
+    }
     final (a, adapter, claims) = await _open(target, profile);
     return AgentStartResult(
       sessionId: a.record.id,
@@ -462,10 +518,14 @@ class AgentService {
     );
   }
 
-  RpcException _resumeUnavailable(String reason, String message) =>
-      RpcException(ErrorCode.resumeUnavailable, message, {
-        'resumeReason': reason,
-      });
+  RpcException _resumeUnavailable(
+    String reason,
+    String message, {
+    AgentTools? tools,
+  }) => RpcException(ErrorCode.resumeUnavailable, message, {
+    'resumeReason': reason,
+    'tools': ?tools?.toJson(),
+  });
 
   AgentSessionRecord? _record(String id) {
     try {
@@ -582,10 +642,6 @@ class AgentService {
     }
     if (record.runtimeKind == 'codex') {
       _requireCodexPeer();
-      throw RpcException(
-        ErrorCode.methodNotAvailable,
-        'Codex native runtime is not available',
-      );
     }
     final previous = _agents[record.id];
     if (_continuing.contains(record.id) ||
@@ -618,6 +674,12 @@ class AgentService {
           'The saved session runtime profile and current default are unavailable. Choose or add a runtime profile.',
         );
       }
+      if (profile.runtimeKind != record.runtimeKind) {
+        throw RpcException(
+          ErrorCode.noRuntimeProfile,
+          'Choose a compatible ${record.runtimeKind} runtime profile.',
+        );
+      }
       _available();
       final (a, adapter, claims) = await _open(
         record.target,
@@ -644,6 +706,9 @@ class AgentService {
     RuntimeProfile profile,
     String executable,
   ) {
+    if (profile.runtimeKind == 'codex') {
+      return nativeCodexLaunchEnvironment(profile, executable);
+    }
     if (profile.runtimeKind != 'claude-code') return profile.env;
     final windows = Platform.isWindows;
     final name = executable.substring(
@@ -676,17 +741,42 @@ class AgentService {
   }) async {
     if (profile.runtimeKind == 'codex') {
       _requireCodexPeer();
-      // Native startup is connected by the shared driver integration. Never
-      // send synthetic ACP operations to a Codex profile in the meantime.
+    }
+    if (!const ['claude-code', 'codex'].contains(profile.runtimeKind)) {
       throw RpcException(
-        ErrorCode.methodNotAvailable,
-        'Codex native runtime is not available',
+        ErrorCode.invalidProfile,
+        'Unsupported runtime kind ${profile.runtimeKind}',
       );
     }
     // Profile detection may have awaited. Continue rechecks through the bounded
     // resolver; UnitManager verifies the captured identity before spawn for both.
     if (saved != null) await _checkContinueTarget(target);
     final executable = await _executables.resolve(profile.executable);
+    final executableFile = File(executable);
+    final identity = await executableFile.stat();
+    String? codexVersion;
+    if (profile.runtimeKind == 'codex') {
+      try {
+        codexVersion = await probeCodexVersion(
+          units,
+          profileDirectory,
+          executable,
+          options,
+          resolutionEnvironment: _launchEnvironment(profile, executable),
+        );
+      } on CodexProtocolException catch (e) {
+        throw RpcException(ErrorCode.adapterProtocol, e.message);
+      }
+      final again = await executableFile.stat();
+      if (again.size != identity.size ||
+          again.modified != identity.modified ||
+          await _executables.resolve(profile.executable) != executable) {
+        throw RpcException(
+          ErrorCode.adapterProtocol,
+          'Codex executable changed after version probe',
+        );
+      }
+    }
     _available();
     final reservation = connection.reserveChannels(1);
     _AgentIO? io;
@@ -698,7 +788,7 @@ class AgentService {
       // `session/new` can authenticate and wait for the record. Without an
       // endpoint the adapter gets no `kumiko` entry at all.
       final endpoint = tools.endpoint;
-      if (endpoint != null) {
+      if (endpoint != null && profile.runtimeKind != 'codex') {
         grant = tools.register(
           target: target.path,
           role: ToolRole.coding,
@@ -722,9 +812,15 @@ class AgentService {
         argv: [executable, ...profile.args],
         workingDirectory: target.path,
         environment: _launchEnvironment(profile, executable),
+        inheritParentEnvironment: profile.runtimeKind != 'codex',
         pipes: true,
       );
-      io = _AgentIO(launch);
+      io = _AgentIO(
+        launch,
+        codexVersion: codexVersion,
+        qualified: qualifiedAdaptersOverride ?? qualifiedAdapters,
+        authSignatures: options.codexAuthSignatures,
+      );
       _io.add(io);
       final mcpServers = <Json>[
         if (grant != null)
@@ -743,13 +839,10 @@ class AgentService {
       stage = 'initialize';
       final initialization = await io.client.initialize();
       _available();
-      final claims = qualifyAdapter(
-        initialization,
-        qualified: qualifiedAdaptersOverride ?? qualifiedAdapters,
-      );
+      final claims = initialization.claims;
       final adapter = AgentAdapter(
-        name: initialization.adapterName,
-        version: initialization.adapterVersion ?? '',
+        name: initialization.name,
+        version: initialization.version,
       );
       grant?.setAdapter(adapter.name, adapter.version);
       late final _Agent a;
@@ -790,6 +883,12 @@ class AgentService {
           throw _resumeUnavailable(
             claims.unavailableReason!,
             'Adapter ${adapter.name} version ${adapter.version} cannot continue this session: ${claims.unavailableReason}.',
+            tools: profile.runtimeKind == 'codex'
+                ? const AgentTools(
+                    AgentToolsStatus.unavailable,
+                    reason: 'Codex safe private tool delivery is unavailable',
+                  )
+                : null,
           );
         }
         a = _registerNativeSession(
@@ -851,6 +950,11 @@ class AgentService {
         }
         rethrow;
       }
+      if (error is CodexProtocolException) {
+        throw RpcException(ErrorCode.adapterProtocol, error.message, {
+          'stage': stage,
+        });
+      }
       if (error is AcpProtocolException) {
         throw RpcException(
           ErrorCode.adapterProtocol,
@@ -861,9 +965,11 @@ class AgentService {
       final tail = _redact(io?.stderr.tail() ?? '', grant);
       final status = io?.status;
       final reason =
-          stage == 'session/new' &&
-              error is AcpRemoteException &&
-              error.isAuthenticationRequired
+          error is CodexRemoteException && error.isAuthenticationRequired
+          ? ErrorCode.authRequired
+          : stage == 'session/new' &&
+                error is AcpRemoteException &&
+                error.isAuthenticationRequired
           ? ErrorCode.authRequired
           : stage == 'initialize' && tail.startsWith('unit-exec:')
           ? status == 127
@@ -873,10 +979,16 @@ class AgentService {
                 : ErrorCode.adapterStartFailed
           : ErrorCode.adapterStartFailed;
       final message = _redact(
-        error is AcpRemoteException ? error.message : error.toString(),
+        error is AcpRemoteException
+            ? error.message
+            : error is CodexRemoteException
+            ? error.message
+            : error.toString(),
         grant,
       );
       final nativeMessage = error is AcpRemoteException
+          ? clampUtf8(_redact(error.message, grant), 4096)
+          : error is CodexRemoteException
           ? clampUtf8(_redact(error.message, grant), 4096)
           : null;
       throw RpcException(
@@ -890,10 +1002,13 @@ class AgentService {
           'detail': tail.isEmpty ? clampUtf8(message, 4096) : tail,
           'status': ?status,
           if (error is AcpRemoteException) 'nativeCode': error.code,
+          if (error is CodexRemoteException) 'nativeCode': error.code,
           'nativeMessage': ?nativeMessage,
           if (error is AcpRemoteException &&
               (error.messageTruncated ||
                   nativeMessage != _redact(error.message, grant)))
+            'nativeMessageTruncated': true,
+          if (error is CodexRemoteException && error.messageTruncated)
             'nativeMessageTruncated': true,
         },
       );
@@ -923,14 +1038,23 @@ class AgentService {
     a.relay.onFailure = (error) => _fail(a, error);
     a.session = AgentSession(
       sessionId: record.id,
-      client: io.client,
+      driver: io.client,
+      runId: record.runtimeKind == 'codex' ? a.runId : null,
       claims: claims,
       nativeSessionId: record.nativeSessionId,
-      tools: _startTools(grant, record.adapter),
+      tools: record.runtimeKind == 'codex'
+          ? const AgentTools(
+              AgentToolsStatus.unavailable,
+              reason: 'Codex safe private tool delivery is unavailable',
+            )
+          : _startTools(grant, record.adapter),
       toolsAuthenticated: grant?.everAuthenticated ?? false,
       redact: (text) => _redact(text, grant),
       secrets: () => _secretsFor(grant),
       enqueueEvents: a.relay.enqueue,
+      reserveEarly: a.relay.reserveEarly,
+      releaseEarly: a.relay.releaseEarly,
+      enqueueReserved: a.relay.enqueueReserved,
       onState: (p) {
         _notify(a, Method.agentState, p.toJson());
         if (p.state == AgentState.failed) {
@@ -942,6 +1066,10 @@ class AgentService {
           );
         }
       },
+      onQuestionRequested: (p) =>
+          _notify(a, Method.agentQuestionRequested, p.toJson()),
+      onQuestionResolved: (p) =>
+          _notify(a, Method.agentQuestionResolved, p.toJson()),
       onPermissionRequested: (p) =>
           _notify(a, Method.agentPermissionRequested, p.toJson()),
       onPermissionResolved: (p) =>
@@ -1199,20 +1327,40 @@ class AgentService {
     return a;
   }
 
-  void steer(AgentSteerParams params) {
-    _extensionRun(params.sessionId, params.runId);
-    throw RpcException(
-      ErrorCode.methodNotAvailable,
-      'native steering is not available',
-    );
+  Future<void> steer(AgentSteerParams params) async {
+    final a = _extensionRun(params.sessionId, params.runId);
+    a.session.checkCanSteer(params.expectedTurnId, params.text);
+    if (a.sending) {
+      throw RpcException(
+        ErrorCode.turnRunning,
+        'another input is being admitted',
+      );
+    }
+    final delivery = a.session.prepareSteer(params.expectedTurnId, params.text);
+    try {
+      if (params.draftRevision != null) {
+        a.sending = true;
+        try {
+          await drafts.commitSend(
+            params.sessionId,
+            params.draftRevision!,
+            synced: params.draftSynced ?? false,
+          );
+        } finally {
+          a.sending = false;
+        }
+      }
+      final current = _extensionRun(params.sessionId, params.runId);
+      current.session.acceptSteer(params.expectedTurnId, params.text, delivery);
+    } on Object {
+      delivery.release();
+      rethrow;
+    }
   }
 
   void questionAnswer(AgentQuestionAnswerParams params) {
-    _extensionRun(params.sessionId, params.runId);
-    throw RpcException(
-      ErrorCode.methodNotAvailable,
-      'native questions are not available',
-    );
+    final a = _extensionRun(params.sessionId, params.runId);
+    a.session.questionAnswer(params);
   }
 
   void stop(AgentSessionParams params) {
@@ -1429,6 +1577,11 @@ class AgentService {
       if (a.closeRequested) a.session.ended();
       a.session.dispose();
       a.relay.seal();
+      final protocolMessage = error is AcpProtocolException
+          ? error.message
+          : error is CodexProtocolException
+          ? error.message
+          : null;
       final exited = a.exitNotification = AgentExitedParams(
         sessionId: a.record.id,
         reason: a.closeRequested
@@ -1438,7 +1591,7 @@ class AgentService {
         status: a.io.status,
         error: restoring
             ? ErrorCode.resumeUnavailable
-            : error is AcpProtocolException
+            : protocolMessage != null
             ? ErrorCode.adapterProtocol
             : 'adapter-exited',
         resumeReason: restoring
@@ -1458,8 +1611,8 @@ class AgentService {
                       ),
                       4096,
                     )
-            : error is AcpProtocolException
-            ? _redact(error.message, a.grant)
+            : protocolMessage != null
+            ? _redact(protocolMessage, a.grant)
             : null,
       );
       _notify(a, Method.agentExited, exited.toJson());

@@ -402,4 +402,38 @@ void main() {
       expect(events, 2);
     },
   );
+  test(
+    'optional response and async-normalizer notices use bounded consumption',
+    () async {
+      final notices = <Object>[];
+      p.client.onUnsupported = (feature, reason) => '$feature: $reason';
+      p.client.consumeNotification = notices.add;
+      final response = p.client.request<void>(
+        'optional',
+        {},
+        decodeResult: (_) => throw CodexOptionalUnsupported(
+          'optional-response',
+          'shape changed',
+        ),
+      );
+      final error = expectLater(
+        response,
+        throwsA(isA<CodexOptionalUnsupported>()),
+      );
+      p.result(p.writes.last['id']!, {});
+      await error;
+      await pumpCodex();
+      p.client.normalizeNotification = (_, _) => Future<Object?>.error(
+        CodexOptionalUnsupported('optional-event', 'shape changed'),
+      );
+      p.event('optional/event', {});
+      await pumpCodex();
+      await pumpCodex();
+      expect(notices, [
+        'optional-response: shape changed',
+        'optional-event: shape changed',
+      ]);
+      expect(p.client.isClosed, false);
+    },
+  );
 }

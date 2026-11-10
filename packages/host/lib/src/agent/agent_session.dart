@@ -6,8 +6,10 @@ import 'dart:typed_data';
 import 'package:host_protocol/host_protocol.dart';
 
 import 'acp/acp_client.dart';
+import 'codex/codex_client.dart';
 import 'normalizer.dart';
 import 'qualification.dart';
+import 'runtime_driver.dart';
 
 abstract interface class AgentDeadline {
   void cancel();
@@ -33,7 +35,8 @@ class _TimerDeadline implements AgentDeadline {
 class AgentSession {
   AgentSession({
     required this.sessionId,
-    required this.client,
+    AcpClient? client,
+    RuntimeDriver? driver,
     required this.onState,
     required this.onPermissionRequested,
     required this.onPermissionResolved,
@@ -46,22 +49,43 @@ class AgentSession {
     String Function(String)? redact,
     Iterable<String> Function()? secrets,
     this.claims,
+    this.runId,
+    this.onQuestionRequested,
+    this.onQuestionResolved,
+    this.reserveEarly,
+    this.releaseEarly,
+    this.enqueueReserved,
     this._nativeSessionId,
-  }) : _deadlineFactory = deadlineFactory ?? _TimerDeadline.new,
+  }) : client = driver ?? AcpRuntimeDriver(client!),
+       _deadlineFactory = deadlineFactory ?? _TimerDeadline.new,
        _redact = redact ?? _unredacted,
        _secrets = secrets ?? _noSecrets,
        // ignore: prefer_initializing_formals
        _tools = tools,
        // ignore: prefer_initializing_formals
        _toolsAuthenticated = toolsAuthenticated {
-    client.normalizeNotification = _normalize;
-    client.consumeNotification = _consume;
-    client.onPermissionRequest = _permission;
-    client.onFailure = fail;
+    this.client.acp?.normalizeNotification = _normalize;
+    this.client.consumeNotification = _consume;
+    this.client.acp?.onPermissionRequest = _permission;
+    this.client.onFailure = fail;
+    this.client.normalizeUpdate = _nativeUpdate;
+    this.client.onTurnIdentity = _publish;
+    this.client.onPermission = _nativePermission;
+    this.client.onQuestion = _nativeQuestion;
+    this.client.onRetired = _nativeRetired;
+    this.client.reserveEarly = reserveEarly;
+    this.client.releaseEarly = releaseEarly;
     _publish();
   }
   final String sessionId;
-  final AcpClient client;
+  final String? runId;
+  final RuntimeDriver client;
+  final bool Function(int)? reserveEarly;
+  final void Function(int)? releaseEarly;
+  final Future<void> Function(RuntimeDelivery)? enqueueReserved;
+  final void Function(AgentQuestionRequestedParams)? onQuestionRequested;
+  final void Function(AgentQuestionResolvedParams)? onQuestionResolved;
+  final _questions = <String, _Question>{};
 
   /// Removes Kumiko tool secrets from adapter text before it leaves the host
   /// (transcript notices, turn-end and stop messages).
@@ -155,6 +179,8 @@ class AgentSession {
       seq: ++_seq,
       state: _state,
       tools: _tools,
+      runId: runId,
+      turnId: client.turnId,
     ),
   );
   void _set(AgentState state) {
@@ -224,6 +250,58 @@ class AgentSession {
               _finish(turn, null, error),
         )
         .ignore();
+  }
+
+  Object? _nativeUpdate(RuntimeUpdate update) {
+    Iterable<Uint8List> prefix = const [];
+    if (update.optionalNotice != null) {
+      prefix = encodeAgentEvent(AgentEvent.notice(update.optionalNotice!));
+    }
+    if (update.question != null) {
+      final result = _nativeQuestion(update.question!);
+      if (result is Iterable<Uint8List>) prefix = prefix.followedBy(result);
+    }
+    if (update.event case final event?) {
+      return _flushHeld().followedBy(
+        encodeAgentEvent(
+          AgentEvent.fromJson(_redactJson(event.toJson())! as Json),
+        ),
+      );
+    }
+    if (update.kind == AgentEventKind.notice) {
+      return _flushHeld().followedBy(
+        encodeAgentEvent(AgentEvent.notice(_redact(update.text))),
+      );
+    }
+    final kind = 'native:${update.kind.name}';
+    final continues = _heldKind == kind;
+    final flushed = continues ? const <Uint8List>[] : _flushHeld();
+    if (_sentKind != kind) {
+      _sentKind = kind;
+      _sent = '';
+    }
+    final carry = _redactAfterSent('${continues ? _held : ''}${update.text}');
+    final hold = _heldLength(carry);
+    _held = carry.substring(carry.length - hold);
+    _heldKind = hold == 0 ? null : kind;
+    final emit = carry.substring(0, carry.length - hold);
+    final sent = '$_sent$emit';
+    _sent = sent.length > _sentWindow
+        ? sent.substring(sent.length - _sentWindow)
+        : sent;
+    return prefix
+        .followedBy(flushed)
+        .followedBy(
+          emit.isEmpty
+              ? const <Uint8List>[]
+              : encodeAgentEvent(
+                  AgentEvent.fromJson({
+                    'kind': update.kind.name,
+                    'text': emit,
+                    if (update.truncated) 'truncated': true,
+                  }),
+                ),
+        );
   }
 
   Object? _normalize(String method, Json params) {
@@ -322,6 +400,14 @@ class AgentSession {
     _heldKind = null;
     _held = '';
     _sentKind = null;
+    if (kind.startsWith('native:')) {
+      return encodeAgentEvent(
+        AgentEvent.text(
+          AgentEventKind.values.byName(kind.substring(7)),
+          '<redacted>',
+        ),
+      ).toList();
+    }
     return normalizeAcpUpdate({
       'sessionUpdate': kind,
       'content': {'type': 'text', 'text': '<redacted>'},
@@ -339,7 +425,32 @@ class AgentSession {
     _ => value,
   };
 
-  Future<void> _consume(Object value) => _enqueue(value as Iterable<Uint8List>);
+  Future<void> _consume(Object value) async {
+    if (value is RuntimeDelivery) {
+      if (_disposed) {
+        value.release();
+        return;
+      }
+      final queued = _events.then<void>((_) async {
+        if (_disposed) {
+          value.release();
+          return;
+        }
+        if (enqueueReserved != null) {
+          await enqueueReserved!(value);
+        } else {
+          value.release();
+          await enqueueEvents(value.lines);
+        }
+      });
+      _events = queued;
+      await queued;
+      value.after?.call();
+      return;
+    }
+    await _enqueue(value as Iterable<Uint8List>);
+  }
+
   Future<void> _enqueue(Iterable<Uint8List> lines) {
     if (_disposed) return Future.value();
     final queued = _events.then<void>((_) {
@@ -357,8 +468,13 @@ class AgentSession {
     return queued;
   }
 
-  Future<void> _finish(int turn, AcpPromptResult? result, Object? error) async {
+  Future<void> _finish(
+    int turn,
+    RuntimeTurnResult? result,
+    Object? error,
+  ) async {
     if (!_hasTurn || turn != _turn || _disposed || _terminal) return;
+    error ??= result?.error;
     if (error != null && client.isClosed) {
       fail(error);
       return;
@@ -418,6 +534,8 @@ class AgentSession {
     }
     final nativeMessage = error is AcpRemoteException
         ? clampUtf8(_redact(error.message), 4096)
+        : error is CodexRemoteException
+        ? clampUtf8(_redact(error.message), 4096)
         : null;
     onTurnEnded(
       AgentTurnEndedParams(
@@ -425,28 +543,293 @@ class AgentSession {
         stopReason: stopReason,
         error: error == null
             ? null
-            : error is AcpRemoteException && error.isAuthenticationRequired
+            : (error is AcpRemoteException && error.isAuthenticationRequired) ||
+                  (error is CodexRemoteException &&
+                      error.isAuthenticationRequired)
             ? ErrorCode.authRequired
             : 'adapter-error',
         message: message,
-        nativeCode: error is AcpRemoteException ? error.code : null,
+        nativeCode: error is AcpRemoteException
+            ? error.code
+            : error is CodexRemoteException
+            ? error.code
+            : null,
         nativeMessage: nativeMessage,
         nativeMessageTruncated:
             error is AcpRemoteException &&
-            (error.messageTruncated || nativeMessage != _redact(error.message)),
+                (error.messageTruncated ||
+                    nativeMessage != _redact(error.message)) ||
+            error is CodexRemoteException && error.messageTruncated,
       ),
     );
     _set(AgentState.idle);
   }
 
   String _message(Object error) => clampJsonString(
-    _redact(error is AcpRemoteException ? error.message : error.toString()),
+    _redact(
+      error is AcpRemoteException
+          ? error.message
+          : error is CodexRemoteException
+          ? error.message
+          : error.toString(),
+    ),
     4096,
   );
   bool get _terminal =>
       _state == AgentState.closing ||
       _state == AgentState.ended ||
       _state == AgentState.failed;
+
+  void checkCanSteer(String expectedTurnId, String text) {
+    if (_disposed ||
+        _terminal ||
+        !_hasTurn ||
+        _stopped ||
+        client.turnId != expectedTurnId) {
+      throw RpcException(
+        ErrorCode.turnRunning,
+        'the native turn is no longer current',
+      );
+    }
+    if (utf8.encode(text).length > 256 * 1024) {
+      throw RpcException(ErrorCode.invalidParams, 'steering exceeds 256 KiB');
+    }
+    client.checkCanSteer(expectedTurnId);
+  }
+
+  RuntimeDelivery prepareSteer(String expectedTurnId, String text) {
+    checkCanSteer(expectedTurnId, text);
+    final lines = encodeAgentEvent(AgentEvent.text(AgentEventKind.user, text))
+        .toList();
+    final bytes = lines.fold<int>(0, (n, line) => n + line.length);
+    if (!(reserveEarly?.call(bytes) ?? true)) {
+      throw RpcException(ErrorCode.busy, 'transcript admission is full');
+    }
+    return RuntimeDelivery(lines, bytes, releaseEarly, null);
+  }
+
+  void acceptSteer(
+    String expectedTurnId,
+    String text,
+    RuntimeDelivery delivery,
+  ) {
+    checkCanSteer(expectedTurnId, text);
+    final completion = client.steer(_nativeSessionId!, expectedTurnId, text);
+    _consume(delivery).catchError((Object error) {
+      fail(error);
+    });
+    _observeNativeControl(completion, 'Steering');
+  }
+
+  Object? _nativePermission(RuntimePermission request) {
+    if (_terminal ||
+        _stopped ||
+        !_hasTurn ||
+        _permissions.length + _questions.length >= 16) {
+      _observeWrite(client.reply(request.id, request.cancellation));
+      return encodeAgentEvent(
+        AgentEvent.notice(
+          'Native interaction capacity or turn unavailable; request cancelled.',
+        ),
+      );
+    }
+    final id = '$runId:permission-${++_requestId}';
+    final options = <String, Object?>{};
+    final display = <AgentPermissionOption>[];
+    for (var i = 0; i < request.choices.length; i++) {
+      final token = 'choice-$i';
+      final c = request.choices[i];
+      options[token] = c.result;
+      display.add(
+        AgentPermissionOption(
+          optionId: token,
+          name: _redact(c.label),
+          kind: c.kind,
+        ),
+      );
+    }
+    _permissions[id] = _Permission(
+      request.id,
+      options,
+      native: true,
+      turnId: request.turnId,
+      cancellation: request.cancellation,
+    );
+    _set(AgentState.waitingApproval);
+    onPermissionRequested(
+      AgentPermissionRequestedParams(
+        sessionId: sessionId,
+        requestId: id,
+        title: _redact(request.title),
+        preview: request.preview == null ? null : _redact(request.preview!),
+        options: display,
+      ),
+    );
+    return null;
+  }
+
+  Object? _nativeQuestion(RuntimeQuestion request) {
+    if (_terminal ||
+        _stopped ||
+        !_hasTurn ||
+        _permissions.length + _questions.length >= 16) {
+      if (!request.asyncItem) {
+        _observeWrite(client.reply(request.id, {'answers': {}}));
+      }
+      return encodeAgentEvent(
+        AgentEvent.notice(
+          'Native question capacity or turn unavailable; request cancelled.',
+        ),
+      );
+    }
+    final id = '$runId:question-${++_requestId}';
+    final display = <AgentQuestion>[];
+    for (var i = 0; i < request.questions.length; i++) {
+      final q = request.questions[i];
+      display.add(
+        AgentQuestion(
+          id: 'question-$i',
+          header: _redact(q.header),
+          text: _redact(q.text),
+          secret: q.secret,
+          allowOther: q.allowOther || q.options.isEmpty,
+          options: [
+            for (var j = 0; j < q.options.length; j++)
+              AgentQuestionOption(
+                id: 'option-$j',
+                label: _redact(q.options[j].label),
+                description: q.options[j].description == null
+                    ? null
+                    : _redact(q.options[j].description!),
+              ),
+          ],
+        ),
+      );
+    }
+    final checked = AgentQuestionRequestedParams(
+      sessionId: sessionId,
+      seq: 0,
+      runId: runId!,
+      requestId: id,
+      turnId: request.turnId,
+      rootThreadId: _nativeSessionId,
+      threadId: _nativeSessionId,
+      questions: display,
+    );
+    _set(AgentState.waitingApproval);
+    final dto = AgentQuestionRequestedParams.fromJson({
+      ...checked.toJson(),
+      'seq': ++_seq,
+    });
+    _questions[id] = _Question(request, display);
+    onQuestionRequested?.call(dto);
+    return null;
+  }
+
+  void questionAnswer(AgentQuestionAnswerParams answer) {
+    final pending = _questions[answer.requestId];
+    if (pending == null ||
+        answer.turnId != pending.request.turnId ||
+        !_hasTurn ||
+        _stopped) {
+      throw RpcException(
+        ErrorCode.unknownRequest,
+        'native question is no longer pending',
+      );
+    }
+    if (answer.answers.length != pending.display.length) {
+      throw RpcException(
+        ErrorCode.invalidParams,
+        'answer every offered question exactly once',
+      );
+    }
+    final native = <String, Object?>{};
+    for (var i = 0; i < pending.display.length; i++) {
+      final q = pending.display[i];
+      final original = pending.request.questions[i];
+      final matching = answer.answers.where((a) => a.questionId == q.id);
+      if (matching.length != 1) {
+        throw RpcException(
+          ErrorCode.invalidParams,
+          'unknown question identity',
+        );
+      }
+      final values = <String>[];
+      for (final value in matching.single.values) {
+        final option = q.options.indexWhere((o) => o.id == value);
+        if (option >= 0) {
+          values.add(original.options[option].label);
+        } else if (q.allowOther) {
+          values.add(value);
+        } else {
+          throw RpcException(ErrorCode.invalidParams, 'answer was not offered');
+        }
+      }
+      native[original.id] = {'answers': values};
+    }
+    final write = pending.request.asyncItem
+        ? client.steer(
+            _nativeSessionId!,
+            pending.request.turnId,
+            'Answers for ${pending.request.id}: ${jsonEncode(native)}',
+          )
+        : client.reply(pending.request.id, {'answers': native});
+    _questions.remove(answer.requestId);
+    if (pending.request.asyncItem) {
+      _observeNativeControl(write, 'Steering');
+    } else {
+      _observeWrite(write);
+    }
+    _resolveQuestion(answer.requestId, pending, AgentQuestionOutcome.answered);
+    if (_questions.isEmpty &&
+        _permissions.isEmpty &&
+        _state == AgentState.waitingApproval) {
+      _set(AgentState.running);
+    }
+  }
+
+  void _resolveQuestion(String id, _Question q, AgentQuestionOutcome outcome) =>
+      onQuestionResolved?.call(
+        AgentQuestionResolvedParams(
+          sessionId: sessionId,
+          seq: ++_seq,
+          runId: runId!,
+          requestId: id,
+          outcome: outcome,
+          turnId: q.request.turnId,
+          rootThreadId: _nativeSessionId,
+          threadId: _nativeSessionId,
+        ),
+      );
+  void _nativeRetired(Object? rpcId) {
+    for (final e in _permissions.entries.toList()) {
+      if (!e.value.native || (rpcId != null && e.value.rpcId != rpcId)) {
+        continue;
+      }
+      _permissions.remove(e.key);
+      onPermissionResolved(
+        AgentPermissionResolvedParams(
+          sessionId: sessionId,
+          requestId: e.key,
+          outcome: AgentPermissionOutcome.cancelled,
+        ),
+      );
+    }
+    for (final e in _questions.entries.toList()) {
+      if (rpcId != null &&
+          (e.value.request.asyncItem || e.value.request.id != rpcId)) {
+        continue;
+      }
+      _questions.remove(e.key);
+      _resolveQuestion(e.key, e.value, AgentQuestionOutcome.cancelled);
+    }
+    if (_hasTurn &&
+        _questions.isEmpty &&
+        _permissions.isEmpty &&
+        _state == AgentState.waitingApproval) {
+      _set(AgentState.running);
+    }
+  }
 
   Object? _permission(Object rpcId, Json params) {
     if (params['sessionId'] != _nativeSessionId) {
@@ -488,7 +871,7 @@ class AgentSession {
     );
     // The desktop sees redacted option ids; the adapter gets its own back.
     // If two native ids redact alike, the first one offered is kept.
-    final native = <String, String>{};
+    final native = <String, Object?>{};
     for (final option in options) {
       if (option is Json && option['optionId'] is String) {
         final nativeId = option['optionId']! as String;
@@ -534,9 +917,20 @@ class AgentSession {
     }
     // Admission can refuse synchronously without consuming the user's choice.
     // Accepted native-write failures still fail the session asynchronously.
-    final write = client.reply(permission.rpcId, {
-      'outcome': {'outcome': 'selected', 'optionId': nativeOptionId},
-    });
+    if (permission.native && (!_hasTurn || _stopped)) {
+      throw RpcException(
+        ErrorCode.unknownRequest,
+        'native permission is no longer pending',
+      );
+    }
+    final write = client.reply(
+      permission.rpcId,
+      permission.native
+          ? nativeOptionId as Json
+          : {
+              'outcome': {'outcome': 'selected', 'optionId': nativeOptionId},
+            },
+    );
     _permissions.remove(requestId);
     _observeWrite(write);
     onPermissionResolved(
@@ -547,9 +941,29 @@ class AgentSession {
         optionId: optionId,
       ),
     );
-    if (_permissions.isEmpty && _state == AgentState.waitingApproval) {
+    if (_permissions.isEmpty &&
+        _questions.isEmpty &&
+        _state == AgentState.waitingApproval) {
       _set(AgentState.running);
     }
+  }
+
+  // Local admission is already complete. Optional rejection or an unknown
+  // remote outcome must not retire the turn or resend the operation.
+  void _observeNativeControl(Future<void> completion, String operation) {
+    completion.then<void>(
+      (_) {},
+      onError: (Object error, StackTrace stack) {
+        if (_disposed || _terminal) return;
+        if (client.isClosed) {
+          fail(error);
+        } else {
+          notice(
+            '$operation outcome unavailable or unknown: ${_redact(error.toString())}',
+          ).ignore();
+        }
+      },
+    );
   }
 
   void _observeWrite(Future<void> write) {
@@ -561,15 +975,19 @@ class AgentSession {
     );
   }
 
-  void _answerCancelled(Object rpcId) {
+  void _answerCancelled(Object rpcId, [Json? nativeCancellation]) {
     // Leader exit closes native stdin before buffered stdout reaches EOF.
     // Retire desktop choices without writing into that lossless drain.
     if (_nativeExited) return;
     Future<void> write;
     try {
-      write = client.reply(rpcId, {
-        'outcome': {'outcome': 'cancelled'},
-      });
+      write = client.reply(
+        rpcId,
+        nativeCancellation ??
+            {
+              'outcome': {'outcome': 'cancelled'},
+            },
+      );
     } on Object catch (error, stack) {
       // Automatic cancellation has no caller to receive an admission refusal.
       // Observe it on the same asynchronous failure path as native I/O.
@@ -579,10 +997,18 @@ class AgentSession {
   }
 
   void _cancelPermissions({bool answer = true}) {
+    final questions = Map<String, _Question>.of(_questions);
+    _questions.clear();
+    for (final q in questions.entries) {
+      if (answer && !q.value.request.asyncItem) {
+        _answerCancelled(q.value.request.id, {'answers': {}});
+      }
+      _resolveQuestion(q.key, q.value, AgentQuestionOutcome.cancelled);
+    }
     final pending = Map<String, _Permission>.of(_permissions);
     _permissions.clear();
     for (final entry in pending.entries) {
-      if (answer) _answerCancelled(entry.value.rpcId);
+      if (answer) _answerCancelled(entry.value.rpcId, entry.value.cancellation);
       onPermissionResolved(
         AgentPermissionResolvedParams(
           sessionId: sessionId,
@@ -607,10 +1033,14 @@ class AgentSession {
       return;
     }
     if (_stopped) return;
-    final write = client.cancelWithPermissions(
-      _nativeSessionId!,
-      _permissions.values.map((permission) => permission.rpcId),
-    );
+    final write = client.cancelWithPermissions(_nativeSessionId!, [
+      for (final permission in _permissions.values)
+        permission.native
+            ? RuntimeReply(permission.rpcId, permission.cancellation!)
+            : permission.rpcId,
+      for (final q in _questions.values)
+        if (!q.request.asyncItem) RuntimeReply(q.request.id, {'answers': {}}),
+    ]);
     _stopped = true;
     _cancelPermissions(answer: false);
     _set(AgentState.stopping);
@@ -624,7 +1054,11 @@ class AgentSession {
         ),
       );
     });
-    _observeWrite(write);
+    if (client.acp == null) {
+      _observeNativeControl(write, 'Interruption');
+    } else {
+      _observeWrite(write);
+    }
   }
 
   /// Immediate close transition; the service owns cancel grace and settlement.
@@ -635,7 +1069,12 @@ class AgentSession {
     _deadline?.cancel();
     _cancelPermissions();
     if (running && _nativeSessionId != null) {
-      _observeWrite(client.cancel(_nativeSessionId!));
+      final cancellation = client.cancel(_nativeSessionId!);
+      if (client.acp == null) {
+        _observeNativeControl(cancellation, 'Interruption');
+      } else {
+        _observeWrite(cancellation);
+      }
     }
   }
 
@@ -650,6 +1089,7 @@ class AgentSession {
   /// Buffered updates and late permission requests still drain through EOF.
   void observeExit() {
     _nativeExited = true;
+    client.observeExit();
     fail(const AcpClosedException());
   }
 
@@ -669,17 +1109,37 @@ class AgentSession {
     _cancelPermissions();
     _disposed = true;
     _deadline?.cancel();
-    client.normalizeNotification = null;
+    client.acp?.normalizeNotification = null;
     client.consumeNotification = null;
-    client.onPermissionRequest = null;
+    client.acp?.onPermissionRequest = null;
     client.onFailure = null;
+    client.normalizeUpdate = null;
+    client.onPermission = null;
+    client.onQuestion = null;
+    client.onRetired = null;
+    client.onTurnIdentity = null;
   }
 }
 
 class _Permission {
-  _Permission(this.rpcId, this.options);
+  _Permission(
+    this.rpcId,
+    this.options, {
+    this.native = false,
+    this.turnId,
+    this.cancellation,
+  });
+  final bool native;
+  final String? turnId;
+  final Json? cancellation;
   final Object rpcId;
 
   /// Desktop (redacted) option id to the adapter's own id.
-  final Map<String, String> options;
+  final Map<String, Object?> options;
+}
+
+class _Question {
+  _Question(this.request, this.display);
+  final RuntimeQuestion request;
+  final List<AgentQuestion> display;
 }

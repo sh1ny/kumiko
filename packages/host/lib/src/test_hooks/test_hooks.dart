@@ -70,6 +70,16 @@ class TestHostExtension implements HostExtension {
                 ),
             ],
       options: HostOptions(
+        codexAuthSignatures: [
+          for (final row in (jsonDecode(
+            env['KUMIKO_TEST_CODEX_AUTH_SIGNATURES'] ?? '[]',
+          ) as List))
+            ((row as List)[0] as int, row[1] as String),
+        ],
+        codexProbeArgs: env['KUMIKO_TEST_CODEX_PROBE_ARGS'] == null
+            ? null
+            : (jsonDecode(env['KUMIKO_TEST_CODEX_PROBE_ARGS']!) as List)
+                  .cast<String>(),
         runtimeSearchPath: runtimePath == null
             ? null
             : splitSearchPath(runtimePath, separator),
