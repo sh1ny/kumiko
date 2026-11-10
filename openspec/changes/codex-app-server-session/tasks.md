@@ -150,7 +150,9 @@ Every delta scenario is mapped below. Red rows name prospective tests, not exist
 
 ## 3. Establish additive protocol contracts and pre-spawn gates
 
-- [ ] 3.1 Add failing codec and real Connection-pair tests in packages/host_protocol/test/codex_messages_test.dart and affected host/desktop suites, then implement additive capability gates, sequenced run/turn identity, questions/resolutions and steer DTOs. Verify missing agent/codex/agent-extensions-v1 refuses Codex start/Continue before any spawn, stale-run controls cause no native write, and Claude/terminals still work. No compatible native start is claimed before group 4. Run host-protocol and affected desktop suites; keep complete scenario-map rows red until their named end-to-end checks pass in groups 4-7.
+- [x] 3.1 Add failing codec and real Connection-pair tests in packages/host_protocol/test/codex_messages_test.dart and affected host/desktop suites, then implement additive capability gates, sequenced run/turn identity, questions/resolutions and steer DTOs. Verify missing agent/codex/agent-extensions-v1 refuses Codex start/Continue before any spawn, stale-run controls cause no native write, and Claude/terminals still work. No compatible native start is claimed before group 4. Run host-protocol and affected desktop suites; keep complete scenario-map rows red until their named end-to-end checks pass in groups 4-7.
+
+- [x] 3.2 Correct terminal input qualification measurement (owner-approved 2026-11-10). Measure host-owned retained input directly, including queued/paused delivery and the writer-owned chunk, against the unchanged 576 KiB bound; keep aggregate completed writes and OS-dependent acceptance separate. Preserve the real fixture's byte-order and every-accepted-byte drain checks. Add meaningful red-first accounting/backpressure tests and expose measurements through test-host-only diagnostics without a new production control method or flow-policy change. Record the original 2,816 KiB versus 704 KiB failure and the isolated 8,192 KiB unobservable/skipped rerun in docs/qualification/windows-terminal-input-measurement.md; the skip does not clear the failure. Run affected tests directly, the terminal qualification file, mise run check and mise run test:host before ticking either group 3 task. Keep accepted ADRs and buffer limits unchanged; report any actual host-bound breach rather than weakening the check.
 
 ## 4. Integrate shared native startup, profiles and root controls
 
@@ -203,6 +205,7 @@ had been ticked or implemented before this amendment. Test-map rows are unchange
 | 6.1, 6.2, 6.3 | 7.1, 7.2, 7.3 respectively |
 | 7.1, 7.2, 7.3, 7.4 | 8.1, 8.2, 8.3, 8.4 respectively |
 | Research record "group 3 fixtures" (docs/qualification/codex-app-server.md:111) | 4.2 red version/mismatch rows; 4.4 implementation |
+| Owner-approved terminal qualification measurement correction (2026-11-10) | New task 3.2; existing host input bound and byte-order contract retained |
 
 ## Workflow follow-up
 

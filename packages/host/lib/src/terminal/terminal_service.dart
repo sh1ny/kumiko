@@ -83,6 +83,19 @@ class _Terminal {
   late PtyWriterIsolate writer;
   ChannelWriter? output;
   StreamSubscription<Uint8List>? input;
+  int inboundRetainedBytes = 0;
+  int writerRetainedBytes = 0;
+  int peakInputRetainedBytes = 0;
+
+  void recordInputRetention({int? inbound, int? writer}) {
+    if (inbound != null) inboundRetainedBytes = inbound;
+    if (writer != null) writerRetainedBytes = writer;
+    peakInputRetainedBytes = max(
+      peakInputRetainedBytes,
+      inboundRetainedBytes + writerRetainedBytes,
+    );
+  }
+
   Timer? attachTimer;
 
   // Exit.
@@ -149,6 +162,20 @@ class TerminalService {
 
   /// Terminals the service still tracks (until released or closed).
   int get terminalCount => _terminals.length;
+
+  /// Passive payload ownership measurements for the test-host extension.
+  /// Includes the inbound queue/controller and the outstanding PTY write,
+  /// including its isolate transfer; excludes peer and OS-owned buffers.
+  List<Json> inputBufferSnapshot() => [
+    for (final t in _terminals.values)
+      {
+        'terminalId': t.id,
+        'inboundRetainedBytes': t.inboundRetainedBytes,
+        'writerRetainedBytes': t.writerRetainedBytes,
+        'retainedBytes': t.inboundRetainedBytes + t.writerRetainedBytes,
+        'peakRetainedBytes': t.peakInputRetainedBytes,
+      },
+  ];
 
   int get _activeTerminals =>
       _opening +
@@ -257,7 +284,11 @@ class TerminalService {
           suppressEof: faults.ptyNoEof,
           scripted: faults.ptyScriptedOutput ? scriptedPtyOutput : const [],
         );
-        t.writer = await PtyWriterIsolate.start(handles.writeHandle);
+        t.writer = await PtyWriterIsolate.start(
+          handles.writeHandle,
+          onRetainedBytesChanged: (bytes) =>
+              t.recordInputRetention(writer: bytes),
+        );
       } on Object {
         await _abandonOpen(t);
         rethrow;
@@ -418,7 +449,11 @@ class TerminalService {
     t.output = connection.attachOutbound(t.outputId);
     t.attached = true;
     t.input = connection
-        .attachInbound(t.inputId)
+        .attachInbound(
+          t.inputId,
+          onRetainedBytesChanged: (bytes) =>
+              t.recordInputRetention(inbound: bytes),
+        )
         .listen((bytes) => _onInput(t, bytes));
     t.status = TerminalStatus.live;
     t.parked = false;

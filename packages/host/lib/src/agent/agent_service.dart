@@ -249,6 +249,7 @@ class _Agent {
     required this.record,
     required this.io,
     required this.reservation,
+    required this.runId,
     this.mode,
     this.grant,
     this.mcpServers = const [],
@@ -256,6 +257,7 @@ class _Agent {
   final AgentSessionRecord record;
   final _AgentIO io;
   final ChannelReservation reservation;
+  final String runId;
   final AgentContinueMode? mode;
 
   /// This run's tool grant, revoked when the run ends; null without an endpoint.
@@ -578,6 +580,13 @@ class AgentService {
         'the saved session is unknown',
       );
     }
+    if (record.runtimeKind == 'codex') {
+      _requireCodexPeer();
+      throw RpcException(
+        ErrorCode.methodNotAvailable,
+        'Codex native runtime is not available',
+      );
+    }
     final previous = _agents[record.id];
     if (_continuing.contains(record.id) ||
         (previous != null && !previous.exited)) {
@@ -665,6 +674,15 @@ class AgentService {
     RuntimeProfile profile, {
     AgentSessionRecord? saved,
   }) async {
+    if (profile.runtimeKind == 'codex') {
+      _requireCodexPeer();
+      // Native startup is connected by the shared driver integration. Never
+      // send synthetic ACP operations to a Codex profile in the meantime.
+      throw RpcException(
+        ErrorCode.methodNotAvailable,
+        'Codex native runtime is not available',
+      );
+    }
     // Profile detection may have awaited. Continue rechecks through the bounded
     // resolver; UnitManager verifies the captured identity before spawn for both.
     if (saved != null) await _checkContinueTarget(target);
@@ -895,6 +913,7 @@ class AgentService {
       record: record,
       io: io,
       reservation: reservation,
+      runId: _newId(),
       mode: mode,
       grant: grant,
       mcpServers: mcpServers,
@@ -1164,6 +1183,37 @@ class AgentService {
     'disabledReason': drafts.disabledReason,
     'pragmas': drafts.pragmas,
   };
+
+  void _requireCodexPeer() =>
+      requireCodexCapabilities(connection.negotiated?.capabilities ?? const {});
+
+  _Agent _extensionRun(String sessionId, String runId) {
+    _requireCodexPeer();
+    final a = _require(sessionId);
+    if (a.ending || a.runId != runId) {
+      throw RpcException(
+        ErrorCode.staleRun,
+        'the native run is no longer current',
+      );
+    }
+    return a;
+  }
+
+  void steer(AgentSteerParams params) {
+    _extensionRun(params.sessionId, params.runId);
+    throw RpcException(
+      ErrorCode.methodNotAvailable,
+      'native steering is not available',
+    );
+  }
+
+  void questionAnswer(AgentQuestionAnswerParams params) {
+    _extensionRun(params.sessionId, params.runId);
+    throw RpcException(
+      ErrorCode.methodNotAvailable,
+      'native questions are not available',
+    );
+  }
 
   void stop(AgentSessionParams params) {
     final a = _require(params.sessionId);

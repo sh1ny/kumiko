@@ -208,7 +208,7 @@ void main() {
   }, timeout: const Timeout(Duration(minutes: 5)));
 
   test('a shell that stops reading input bounds what the host queues: '
-      'accepted input <= 576 KiB plus the OS buffer, and all of it arrives '
+      'host-retained input <= 576 KiB, and all accepted input arrives '
       'in order once the shell reads', () async {
     final desktop = await start();
     await desktop.saveFixtureProfile(
@@ -228,8 +228,9 @@ void main() {
       return bytes;
     }
 
-    // Write until a write stays pending. A write waits for room as a whole,
-    // so what completed is what the host accepted.
+    // Completed writes reached the desktop transport sink. The bytes may
+    // precede host delivery or already be in OS/ConPTY buffers, so aggregate
+    // acceptance does not measure host-owned retention.
     var accepted = 0;
     Future<void>? pending;
     const attemptLimit = 8 * mib;
@@ -260,23 +261,26 @@ void main() {
     final correct = tokenOf(t.text, 'GOT')!.split(':').last;
     expect(correct, '1', reason: 'every byte arrived, in order');
     expect(delivered, next, reason: 'every accepted byte arrived');
-    if (!blocked) {
-      // The OS took all of it: ConPTY's input queue is not bounded by
-      // the host, so the host-side bound cannot be observed here.
-      expect(
-        Platform.isWindows,
-        isTrue,
-        reason: 'writes never blocked on a platform with a bounded PTY',
+    final stats =
+        (await desktop.connection.request('test/terminal.stats'))! as Json;
+    final buffers = (stats['inputBuffers']! as List).cast<Json>();
+    final input = buffers.singleWhere((row) => row['terminalId'] == t.id);
+    final peak = input['peakRetainedBytes']! as int;
+    print(
+      'measured: host input retained peak $peak bytes (limit ${576 * 1024}), '
+      'delivered $delivered ordered bytes; aggregate accepted '
+      '$accepted bytes, blocked=$blocked on ${Platform.operatingSystem}',
+    );
+    expect(peak, greaterThan(0), reason: 'the live host measured actual input');
+    expect(peak, lessThanOrEqualTo(576 * 1024));
+    await eventually(() async {
+      final current =
+          (await desktop.connection.request('test/terminal.stats'))! as Json;
+      final row = (current['inputBuffers']! as List).cast<Json>().singleWhere(
+        (row) => row['terminalId'] == t.id,
       );
-      markTestSkipped(
-        'the OS input queue absorbed ${accepted ~/ 1024} KiB; the host-side '
-        'bound is not observable',
-      );
-      return;
-    }
-    // 576 KiB of host buffers (design, Resource Bounds) plus what a PTY
-    // holds (64 KiB on Linux, less elsewhere) and one write in flight.
-    expect(accepted, lessThanOrEqualTo(576 * 1024 + 128 * 1024));
+      return row['retainedBytes'] == 0;
+    }, reason: 'host input ownership was not released after draining');
   });
 }
 

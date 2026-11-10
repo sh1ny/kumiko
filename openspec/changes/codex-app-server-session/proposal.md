@@ -34,3 +34,15 @@ Touches `packages/host/lib/src/agent/`, the domain runtime profile, host-protoco
 Sources: parked `document-kumiko-direction` agent-sessions and agent-tool-access requirements; decisions D4-D7, D14-D15, D20, D28-D30 and D37. Original ACP-specific intent is amended explicitly here, not silently rewritten in the parked backlog. No requirement is added for the later personal read-only role or full subagent UI.
 
 This request produces planning only. Real provider requests and qualification require the existing explicit approval process; implementation completeness cannot be substituted for real Windows evidence.
+
+## Release Notes
+
+Codex compatibility checks and more accurate terminal input qualification.
+
+### Added
+
+- Codex startup and continuation refuse missing peer capabilities before launching a process.
+
+### Fixed
+
+- Terminal input qualification measures host-owned retained bytes against the existing 576 KiB limit, separately from OS buffering, while preserving byte-order checks.

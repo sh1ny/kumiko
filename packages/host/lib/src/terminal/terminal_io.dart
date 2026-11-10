@@ -152,15 +152,22 @@ class PtyWriteFailed implements Exception {
 /// answers when the native write returned (design D3). A shell that does not
 /// read its input keeps the chunk, and so the caller waiting for the answer.
 class PtyWriterIsolate {
-  PtyWriterIsolate._(this._commands, this.exited);
+  PtyWriterIsolate._(this._commands, this.exited, this._onRetainedBytesChanged);
 
   final SendPort _commands;
+  final void Function(int bytes)? _onRetainedBytesChanged;
 
   /// Completes when the isolate ended. The write handle may be closed after.
   final Future<void> exited;
   Completer<void>? _pending;
 
-  static Future<PtyWriterIsolate> start(int handle) async {
+  /// Starts the writer. [onRetainedBytesChanged] observes the actual pending
+  /// payload size from submission (including isolate transfer) until its
+  /// native write replies or the writer exits; OS-owned bytes are excluded.
+  static Future<PtyWriterIsolate> start(
+    int handle, {
+    void Function(int bytes)? onRetainedBytesChanged,
+  }) async {
     final port = ReceivePort();
     final exit = ReceivePort();
     final exited = exit.first.then<void>((_) => exit.close());
@@ -184,13 +191,18 @@ class PtyWriterIsolate {
       _WriterInit(port.sendPort, handle),
       onExit: exit.sendPort,
     );
-    return writer = PtyWriterIsolate._(await ready.future, exited);
+    return writer = PtyWriterIsolate._(
+      await ready.future,
+      exited,
+      onRetainedBytesChanged,
+    );
   }
 
   void _onReply(Object? message) {
     final pending = _pending;
     _pending = null;
     if (pending == null) return;
+    _onRetainedBytesChanged?.call(0);
     if (message == _written) {
       pending.complete();
     } else {
@@ -201,6 +213,7 @@ class PtyWriterIsolate {
   void _onDone() {
     final pending = _pending;
     _pending = null;
+    if (pending != null) _onRetainedBytesChanged?.call(0);
     pending?.completeError(PtyWriteFailed('the writer ended'));
   }
 
@@ -209,6 +222,7 @@ class PtyWriterIsolate {
   Future<void> write(Uint8List chunk) {
     assert(_pending == null, 'one chunk at a time');
     final pending = _pending = Completer<void>();
+    _onRetainedBytesChanged?.call(chunk.length);
     _commands.send(TransferableTypedData.fromList([chunk]));
     return pending.future;
   }

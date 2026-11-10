@@ -111,6 +111,8 @@ class Host {
         Capability.workbench,
         Capability.terminal,
         Capability.agent,
+        Capability.codex,
+        Capability.agentExtensionsV1,
         if (options.advertiseLifecycle) Capability.lifecycle,
         ...?extension?.capabilities,
       },
@@ -480,6 +482,12 @@ class Host {
       case Method.agentPrompt:
         await _agents!.prompt(AgentPromptParams.fromJson(params));
         return <String, Object?>{};
+      case Method.agentSteer:
+        _agents!.steer(AgentSteerParams.fromJson(params));
+        return <String, Object?>{};
+      case Method.agentQuestionAnswer:
+        _agents!.questionAnswer(AgentQuestionAnswerParams.fromJson(params));
+        return <String, Object?>{};
       case Method.agentDraftSave:
         return (await _agents!.draftSave(AgentDraftSaveParams.fromJson(params)))
             .toJson();
@@ -511,6 +519,7 @@ class Host {
           connection: _connection,
           agents: _agents!,
           tools: _tools!,
+          terminals: _terminals!,
         ),
         method,
         params,
