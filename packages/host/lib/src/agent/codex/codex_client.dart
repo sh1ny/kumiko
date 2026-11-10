@@ -65,8 +65,13 @@ class CodexClient implements RuntimeTransport {
       consume: _consume,
       protocolError: CodexProtocolException.new,
       onEof: () => _fail(CodexProtocolException('native output closed')),
-      onError: (e) =>
-          _fail(e is CodexProtocolException ? e : CodexProtocolException('$e')),
+      onError: (e) => _fail(
+        e is CodexProtocolException
+            ? e
+            : CodexProtocolException(
+                e is FormatException ? 'malformed native JSON or UTF-8' : '$e',
+              ),
+      ),
     )..start();
   }
   factory CodexClient.pipes(

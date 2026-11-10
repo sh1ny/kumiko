@@ -48,6 +48,22 @@ void main() {
   });
 
   test(
+    'malformed native JSON never includes source text in diagnostics',
+    () async {
+      const privateValue = 'fixture-private-native-configuration';
+      final outcome = request().then<Object?>(
+        (value) => value,
+        onError: (Object error) => error,
+      );
+      p.input.add(utf8.encode('{"private":"$privateValue", broken}\n'));
+      final error = await outcome;
+      expect(error, isA<CodexProtocolException>());
+      expect(error.toString().contains(privateValue), isFalse);
+      expect(p.client.isClosed, isTrue);
+    },
+  );
+
+  test(
     'requests are correlated before write can expose early native request',
     () async {
       final requests = <String>[];

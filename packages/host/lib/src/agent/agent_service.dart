@@ -1078,9 +1078,11 @@ class AgentService {
         rethrow;
       }
       if (error is CodexProtocolException) {
-        throw RpcException(ErrorCode.adapterProtocol, error.message, {
-          'stage': stage,
-        });
+        throw RpcException(
+          ErrorCode.adapterProtocol,
+          _redact(error.message, grant),
+          {'stage': stage},
+        );
       }
       if (error is AcpProtocolException) {
         throw RpcException(
