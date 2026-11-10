@@ -99,6 +99,83 @@ and Kumiko profile files for a per-run canary without printing matches. A fixtur
 only proves Kumiko behavior; a separately approved real run is needed to prove
 Codex persistence behavior. No safe native tools claim is made here.
 
+## Group 6: owned idle restoration and private tool configuration
+
+Restoration reads native metadata before resume, validates the original thread
+ID and inactive status, and requires `idle` after resume and history delivery.
+Host prompt admission stays closed until replay ends. Duplicate Continue is
+refused. Missing, empty, omitted, summary-only, active, changed-identity and
+oversized history retain the saved record and report resume unavailable; no
+prompt or replacement thread is submitted.
+
+Positional cursors are not frozen snapshots. The basis for safe idle paging is
+[native writer ownership](https://github.com/openai/codex/blob/rust-v0.166.0/codex-rs/rollout/src/writer_lock.rs):
+an exclusive OS lock refuses an existing active writer.
+[The local store](https://github.com/openai/codex/blob/rust-v0.166.0/codex-rs/thread-store/src/local/mod.rs)
+retains the guard in its live recorder. This is primary-source contract
+research, not a real-runtime lock observation. Actual work or unmatched live
+items during restoration invalidates the boundary and fails replay.
+
+Paginated threads use `excludeTurns: true` and `thread/items/list`, requesting
+at most 50 full items per page. Cursors stay opaque and must make progress.
+Legacy threads reject item paging; the supported full `thread/resume` reply is
+their bounded fallback. Summary/unloaded history is never treated as full.
+Frames retain the shared 16 MiB cap; normalized history is capped at 256 KiB
+per page/full fallback. Encoded pages reserve existing relay bytes before
+leaving native response decoding and release them only when relay ownership
+transfers or the run closes. The 4096-key deduplication window evicts oldest
+identities with a visible loss marker; it does not cap total paged history.
+Snapshot/live races reserve existing relay credit
+(64 messages / 256 KiB). Completed native item IDs deduplicate replay. Pages
+flow through the ordinary event channel between replay markers, with one read
+in flight and one 60-second active history deadline excluding awaited display
+backpressure. No all-history collection survives outside a bounded native frame.
+
+Private tools first call `config/read` with root cwd and `includeLayers: true`.
+The effective MCP map and complete raw layers are checked; any `kumiko` entry
+is refused without overwrite. Missing/malformed layers cannot prove absence.
+Typed Config omission alone is insufficient. The primary
+[configuration reader](https://github.com/openai/codex/blob/rust-v0.166.0/codex-rs/app-server/src/config_manager_service.rs)
+loads cwd-effective configuration and raw layers. Per-thread stdin overrides
+use [the in-memory builder](https://github.com/openai/codex/blob/rust-v0.166.0/codex-rs/app-server/src/config_manager.rs);
+the override contains only `mcp_servers.kumiko`, with endpoint/secret/unit in
+that entry's env. [MCP launch](https://github.com/openai/codex/blob/rust-v0.166.0/codex-rs/rmcp-client/src/stdio_server_launcher.rs)
+applies entry env to its child command. No parent env, argv, config-write API
+or secret file delivers it. Unsupported absence verification revokes the unused
+grant and keeps chat available with its precise tools-unavailable reason.
+The minimum [named profile contract](https://github.com/openai/codex/blob/rust-v0.166.0/codex-rs/config/src/profile_toml.rs)
+does not support MCP server overlays. Raw `profiles` tables containing MCP
+definitions fail closed as unsupported rather than bypassing absence checks
+under unknown/newer profile semantics.
+
+Source review found enumerated rollout metadata rather than arbitrary config
+persistence and ordinary request tracing records method/IDs rather than bodies.
+MCP child stderr is a potential native log sink: the bundled bridge must never
+echo its secret. This supports the chosen contract path, not a real canary pass.
+
+Authored fixtures launch the actual bundled bridge, exercise pending binding
+and root authorization, inspect separate command/MCP environments, and scan
+runtime session/log/state, work/report and profile files without printing the
+secret or matching contents. Incomplete/unreadable scans fail verification.
+An intentionally persisted canary is a negative detector control, never a
+skipped pass. These are modeled native writes. Task 8.3 must separately approve
+and record the real native tool call and post-run home/log/state/profile scan.
+Every real-runtime observation remains unverified until that walk.
+
+After fixture root close and before release, the existing test-only
+`test/agent.stats` diagnostic accepts `secretScanSessionId` and
+`secretScanRoots`. It uses only that retained run's grant and returns counts,
+completeness and errors, never secrets or matching contents. At most four roots
+are allowed within the host profile or immutable target, with limits of 4096
+regular files, 16 MiB per file and 32 MiB total. Nonempty unreadable, changing or
+oversized files make the scan incomplete. Two stable metadata observations can
+account an empty regular file as zero bytes scanned without opening it. This
+handles the observed Windows `kumiko.lock` error 33, length zero, without a path
+exemption. An intentionally leaked fixture file proves detection; an exclusively
+locked nonempty fixture file proves unreadable bytes cannot pass as clean.
+These diagnostics are unavailable in release hosts and establish no real Codex
+persistence observation.
+
 ## Initialize user-agent identity research (group 4)
 
 Exact-tag primary references studied for behavior only:
@@ -202,11 +279,12 @@ include the requested scope and working directory. Requests whose complete
 details or choice labels exceed the existing 16 KiB preview, 256-byte choice label
 or 64 KiB notification bounds are refused with a visible capacity reason.
 
-Native history restoration, MCP delivery and child lifecycle remain later work.
-Until safe entry-only delivery is proven,
-Codex starts without a usable ToolGrant and reports the Codex safe-delivery
-limitation even when the tool endpoint exists. No real runtime or authentication
-observation is established by the authored fixtures or candidate-only signatures.
+Native history and root-scoped MCP now use the group 6 contract path above.
+Unsupported history retains the saved identity; unsupported or conflicting MCP
+configuration keeps chat available with tools unavailable and no usable grant.
+The child registry and full delegated-work browser remain later work. No real
+runtime, persistence or authentication observation is established by authored
+fixtures, source research or candidate-only signatures.
 
 
 The published 0.166.0 npm metadata uses platform dependency aliases:

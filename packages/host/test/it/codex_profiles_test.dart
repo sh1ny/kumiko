@@ -25,6 +25,106 @@ void main() {
   Future<RuntimeListResult> list(Desktop d) async => RuntimeListResult.fromJson(
     await d.connection.request(Method.runtimeList, {}) as Json,
   );
+  const resumableHistory = <String, Object?>{
+    'readThread': {
+      'id': 'root-thread',
+      'historyMode': 'legacy',
+      'status': {'type': 'notLoaded'},
+    },
+    'afterReadThread': {
+      'id': 'root-thread',
+      'historyMode': 'legacy',
+      'status': {'type': 'idle'},
+    },
+    'resumeThread': {
+      'id': 'root-thread',
+      'historyMode': 'legacy',
+      'status': {'type': 'idle'},
+      'turns': [
+        {
+          'id': 'turn-1',
+          'status': 'completed',
+          'itemsView': 'full',
+          'items': [
+            {
+              'id': 'saved-user',
+              'type': 'userMessage',
+              'content': [
+                {'type': 'text', 'text': 'saved question'},
+              ],
+            },
+            {
+              'id': 'message-turn-1',
+              'type': 'agentMessage',
+              'text': 'native reply',
+            },
+          ],
+        },
+      ],
+    },
+  };
+  Future<AgentPeer> restore(
+    NativeFixture f,
+    String id, {
+    String? runtime,
+  }) async {
+    final peer = AgentPeer(f.desktop);
+    final result = AgentContinueResult.fromJson(
+      await peer.call(Method.agentContinue, {
+        'sessionId': id,
+        'runtimeProfileId': ?runtime,
+      }),
+    );
+    peer.started = AgentStartResult(
+      sessionId: id,
+      eventChannel: result.eventChannel,
+      adapter: result.adapter,
+      capabilities: result.capabilities,
+    );
+    expect(result.mode, AgentContinueMode.load);
+    expect(f.requests.where((r) => r['method'] == 'thread/resume'), isEmpty);
+    await peer.attach();
+    await peer.wait(
+      Method.agentState,
+      where: (state) => state['state'] == 'idle',
+    );
+    await eventually(() => peer.events.any((event) => event['phase'] == 'end'));
+    expect(
+      peer.events
+          .where((event) => event['kind'] == 'replay')
+          .map((event) => event['phase']),
+      ['start', 'end'],
+    );
+    expect(
+      peer.events
+          .where((event) => event['kind'] == 'user')
+          .map((event) => event['text']),
+      ['saved question'],
+    );
+    expect(
+      peer.events
+          .where((event) => event['kind'] == 'agentText')
+          .map((event) => event['text']),
+      ['native reply'],
+    );
+    expect(
+      f.requests.where((r) => r['method'] == 'thread/resume'),
+      hasLength(1),
+    );
+    expect(
+      (f.requests.singleWhere((r) => r['method'] == 'thread/resume')['params']
+          as Json)['threadId'],
+      'root-thread',
+    );
+    expect(
+      f.requests.where(
+        (r) => r['method'] == 'thread/start' || r['method'] == 'turn/start',
+      ),
+      isEmpty,
+    );
+    return peer;
+  }
+
   for (final version in [
     'codex-cli 0.166.0',
     'codex-cli 0.167.0',
@@ -67,9 +167,11 @@ void main() {
   }
   for (final selection in ['replacement', 'claude', 'missing']) {
     test('Codex: Continue selected profile $selection', () async {
-      final f = NativeFixture(profile, work);
+      final f = NativeFixture(profile, work, script: resumableHistory);
       await f.open();
       final a = await f.start();
+      await a.prompt('saved question');
+      await a.wait(Method.agentTurnEnded);
       await a.close();
       await a.call(Method.agentRelease);
       final saved = agentRows(profile);
@@ -98,20 +200,22 @@ void main() {
         );
       }
       f.report.writeAsStringSync('');
-      final error = await rpcFailure(
-        f.desktop.connection.request(Method.agentContinue, {
-          'sessionId': a.id,
-          'runtimeProfileId': selection,
-        }),
-      );
       if (selection == 'replacement') {
-        expect(error.reason, ErrorCode.resumeUnavailable);
-        expect(error.data['resumeReason'], 'native-history-unavailable');
+        final continued = await restore(f, a.id, runtime: selection);
         expect(
           f.reports.singleWhere((r) => r['launch'] == 'root')['argv'],
           contains('--chosen-continue-profile'),
         );
+        expect(agentRows(profile), saved);
+        await continued.close();
+        await continued.call(Method.agentRelease);
       } else {
+        final error = await rpcFailure(
+          f.desktop.connection.request(Method.agentContinue, {
+            'sessionId': a.id,
+            'runtimeProfileId': selection,
+          }),
+        );
         expect(error.reason, ErrorCode.noRuntimeProfile);
         expect(
           f.reports,
@@ -128,9 +232,11 @@ void main() {
     test(
       'Codex: Continue legacy profile preference original=$originalAvailable',
       () async {
-        final f = NativeFixture(profile, work);
+        final f = NativeFixture(profile, work, script: resumableHistory);
         await f.open();
         final a = await f.start();
+        await a.prompt('saved question');
+        await a.wait(Method.agentTurnEnded);
         await a.close();
         await a.call(Method.agentRelease);
         final saved = agentRows(profile);
@@ -158,13 +264,7 @@ void main() {
           );
         }
         f.report.writeAsStringSync('');
-        final error = await rpcFailure(
-          f.desktop.connection.request(Method.agentContinue, {
-            'sessionId': a.id,
-          }),
-        );
-        expect(error.reason, ErrorCode.resumeUnavailable);
-        expect(error.data['resumeReason'], 'native-history-unavailable');
+        final continued = await restore(f, a.id);
         final root = f.reports.singleWhere((r) => r['launch'] == 'root');
         expect(
           (root['argv'] as List).contains('--compatible-default'),
@@ -172,6 +272,10 @@ void main() {
         );
         expect((await list(f.desktop)).defaultId, 'replacement');
         expect(agentRows(profile), saved);
+        await continued.close();
+        await continued.call(Method.agentRelease);
+        expect(agentRows(profile), saved);
+        expect(LedgerView(profile).units(), isEmpty);
       },
     );
   }

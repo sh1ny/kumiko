@@ -37,7 +37,7 @@ This request produces planning only. Real provider requests and qualification re
 
 ## Release Notes
 
-Native Codex desktop controls and more accurate terminal input qualification.
+Native Codex sessions and more accurate terminal input qualification.
 
 ### Added
 
@@ -45,6 +45,9 @@ Native Codex desktop controls and more accurate terminal input qualification.
 
 - Codex launcher and runtime profile editing preserve the selected runtime kind, including compatible profile selection for Continue without changing the global default.
 - Native approvals show their complete bounded request details and offered choices; structured questions and explicit Steer preserve run identity and drafts.
+
+- Saved Codex conversations restore bounded native history without replaying prompts; unsafe or unavailable recovery retains the saved identity with its reason.
+- Root-scoped Kumiko tools use private MCP entry configuration, fresh grants and native-thread binding; configuration conflicts keep tools unavailable.
 
 ### Fixed
 

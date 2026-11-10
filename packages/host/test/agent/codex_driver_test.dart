@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 
 import 'package:host/src/agent/agent_session.dart';
+import 'package:host/src/agent/codex/codex_client.dart';
 
 import 'dart:typed_data';
 
@@ -49,6 +50,156 @@ void main() {
   tearDown(() async {
     await driver.close();
     await peer.dispose();
+  });
+  test(
+    'healthy optional config read timeout keeps native chat usable',
+    () async {
+      await driver.close();
+      await peer.dispose();
+      peer = CodexPeer(configReadTimeout: const Duration(milliseconds: 1));
+      driver = CodexRuntimeDriver(peer.client, '0.166.0');
+      peer.onWrite = (request) {
+        if (request['method'] == 'thread/start') {
+          expect((request['params'] as Json)['config'], isNull);
+          peer.result(request['id']!, {
+            'thread': {'id': 'root'},
+            'model': 'fixture',
+            'modelProvider': 'fixture',
+            'cwd': '/fixture',
+            'approvalPolicy': 'untrusted',
+            'approvalsReviewer': 'user',
+            'sandbox': <String, Object?>{},
+          });
+        }
+      };
+      final reason = await driver.prepareTools(
+        '/fixture',
+        mcpServers: [
+          {
+            'name': 'kumiko',
+            'command': '/bridge',
+            'args': <Object?>[],
+            'env': [
+              {'name': 'KUMIKO_TOOL_ENDPOINT', 'value': 'endpoint'},
+              {'name': 'KUMIKO_TOOL_SECRET', 'value': 'private'},
+              {'name': 'KUMIKO_UNIT', 'value': 'unit'},
+            ],
+          },
+        ],
+      );
+      expect(reason, contains('timed out'));
+      expect(peer.client.isClosed, false);
+      expect(await driver.newSession('/fixture'), 'root');
+    },
+  );
+  test(
+    'optional config preparation does not hide a closed native transport',
+    () async {
+      peer.onWrite = (request) {
+        if (request['method'] == 'config/read') unawaited(driver.close());
+      };
+      await expectLater(
+        driver.prepareTools(
+          '/fixture',
+          mcpServers: [
+            {'name': 'kumiko'},
+          ],
+        ),
+        throwsA(isA<CodexProtocolException>()),
+      );
+      expect(peer.client.isClosed, true);
+    },
+  );
+  test(
+    'history page bytes reserve shared relay capacity before delivery',
+    () async {
+      var reads = 0;
+      var reserved = 0;
+      final observed = <int>[];
+      driver.reserveEarly = (bytes) {
+        reserved += bytes;
+        return true;
+      };
+      driver.releaseEarly = (bytes) => reserved -= bytes;
+      driver.consumeNotification = (value) async {
+        observed.add(reserved);
+        if (value is RuntimeDelivery) value.release();
+      };
+      peer.onWrite = (request) {
+        if (request['method'] == 'thread/read') {
+          peer.result(request['id']!, {
+            'thread': {
+              'id': 'root',
+              'historyMode': 'legacy',
+              'status': {'type': reads++ == 0 ? 'notLoaded' : 'idle'},
+            },
+          });
+        } else if (request['method'] == 'thread/resume') {
+          peer.result(request['id']!, {
+            'thread': {
+              'id': 'root',
+              'historyMode': 'legacy',
+              'status': {'type': 'idle'},
+              'turns': [
+                {
+                  'id': 'old',
+                  'status': 'completed',
+                  'items': [
+                    {
+                      'id': 'message',
+                      'type': 'agentMessage',
+                      'text': 'history',
+                    },
+                  ],
+                },
+              ],
+            },
+          });
+        }
+      };
+      await driver.loadSession('root', '/fixture');
+      expect(observed, isNotEmpty);
+      expect(observed.first, greaterThan(0));
+      expect(reserved, 0);
+    },
+  );
+  test('unknown profile MCP overlays cannot bypass absence proof', () async {
+    peer.onWrite = (request) {
+      if (request['method'] == 'config/read') {
+        peer.result(request['id']!, {
+          'config': <String, Object?>{},
+          'layers': [
+            {
+              'config': {
+                'profiles': {
+                  'selected': {
+                    'mcp_servers': {
+                      'kumiko': {'command': 'user-owned'},
+                    },
+                  },
+                },
+              },
+            },
+          ],
+        });
+      }
+    };
+    final reason = await driver.prepareTools(
+      '/fixture',
+      mcpServers: [
+        {
+          'name': 'kumiko',
+          'command': '/bridge',
+          'args': <Object?>[],
+          'env': [
+            {'name': 'KUMIKO_TOOL_ENDPOINT', 'value': 'endpoint'},
+            {'name': 'KUMIKO_TOOL_SECRET', 'value': 'private'},
+            {'name': 'KUMIKO_UNIT', 'value': 'unit'},
+          ],
+        },
+      ],
+    );
+    expect(reason, contains('profile'));
   });
   for (final loss in ['eof', 'failure', 'close']) {
     test('accepted native turn settles exactly once on $loss', () async {

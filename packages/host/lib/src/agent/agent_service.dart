@@ -6,6 +6,7 @@ import 'dart:math';
 import 'dart:typed_data';
 
 import 'package:host_protocol/host_protocol.dart';
+import 'package:path/path.dart' as p;
 import 'package:process_containment/process_containment.dart';
 import 'package:sqlite3/sqlite3.dart';
 
@@ -418,6 +419,108 @@ class AgentService {
       },
   };
 
+  /// Passive test-build diagnostic; the release host exposes no test method.
+  /// Only counts are returned, including when a canary deliberately fails.
+  Future<Json> auditToolFilesForTesting(
+    String sessionId,
+    List<String> roots,
+  ) async {
+    final a = _agents[sessionId];
+    final secret = a?.grant?.secret;
+    if (a == null || secret == null || roots.isEmpty || roots.length > 4) {
+      throw RpcException(ErrorCode.invalidParams, 'invalid test secret scan');
+    }
+    final allowed = [
+      await profileDirectory.resolveSymbolicLinks(),
+      await Directory(a.record.target.path).resolveSymbolicLinks(),
+    ];
+    var errorCount = 0;
+    var scannedFiles = 0;
+    var matchedFiles = 0;
+    var scannedBytes = 0;
+    const fileBound = 16 * 1024 * 1024;
+    const totalBound = 32 * 1024 * 1024;
+    final seen = <String>{};
+    for (final root in roots) {
+      String canonical;
+      try {
+        canonical = await Directory(root).resolveSymbolicLinks();
+      } on FileSystemException {
+        errorCount++;
+        continue;
+      }
+      if (!allowed.any(
+        (base) => p.equals(base, canonical) || p.isWithin(base, canonical),
+      )) {
+        throw RpcException(
+          ErrorCode.invalidParams,
+          'test secret scan must stay in the run target or host profile',
+        );
+      }
+      try {
+        await for (final entity in Directory(
+          canonical,
+        ).list(recursive: true, followLinks: false)) {
+          if (entity is! File || !seen.add(p.normalize(entity.path))) continue;
+          if (seen.length > 4096 || scannedBytes >= totalBound) {
+            errorCount++;
+            break;
+          }
+          try {
+            final before = await entity.stat();
+            if (before.type == FileSystemEntityType.file && before.size == 0) {
+              final after = await entity.stat();
+              if (after.type == before.type &&
+                  after.size == 0 &&
+                  after.modified == before.modified &&
+                  after.changed == before.changed) {
+                // Empty bytes are fully accounted without trying to read an
+                // intentionally locked, empty profile coordination file.
+                scannedFiles++;
+                continue;
+              }
+            }
+            if (before.size > fileBound ||
+                scannedBytes + before.size > totalBound) {
+              errorCount++;
+              continue;
+            }
+            final reader = await entity.open();
+            try {
+              final bytes = await reader.read(before.size + 1);
+              final after = await entity.stat();
+              if (bytes.length != before.size ||
+                  after.size != before.size ||
+                  after.modified != before.modified ||
+                  after.changed != before.changed) {
+                errorCount++;
+                continue;
+              }
+              scannedFiles++;
+              scannedBytes += bytes.length;
+              if (utf8.decode(bytes, allowMalformed: true).contains(secret)) {
+                matchedFiles++;
+              }
+            } finally {
+              await reader.close();
+            }
+          } on FileSystemException {
+            errorCount++;
+          }
+        }
+      } on FileSystemException {
+        errorCount++;
+      }
+    }
+    return {
+      'complete': errorCount == 0,
+      'errorCount': errorCount,
+      'scannedFiles': scannedFiles,
+      'matchedFiles': matchedFiles,
+      'scannedBytes': scannedBytes,
+    };
+  }
+
   String _newId() {
     final bytes = List<int>.generate(16, (_) => _random.nextInt(256));
     bytes[6] = (bytes[6] & 15) | 64;
@@ -782,6 +885,7 @@ class AgentService {
     final reservation = connection.reserveChannels(1);
     _AgentIO? io;
     ToolGrant? grant;
+    String? toolsUnavailableReason;
     _Agent? live;
     var stage = 'spawn';
     try {
@@ -789,7 +893,7 @@ class AgentService {
       // `session/new` can authenticate and wait for the record. Without an
       // endpoint the adapter gets no `kumiko` entry at all.
       final endpoint = tools.endpoint;
-      if (endpoint != null && profile.runtimeKind != 'codex') {
+      if (endpoint != null) {
         grant = tools.register(
           target: target.path,
           role: ToolRole.coding,
@@ -803,6 +907,12 @@ class AgentService {
             final a = live;
             if (a != null && _current(a)) a.session.toolsCalled();
           },
+          onConnectionLimit: profile.runtimeKind != 'codex'
+              ? null
+              : () {
+                  final a = live;
+                  if (a != null && _current(a)) _toolConnectionLimit(a);
+                },
         );
         _grants.add(grant);
       }
@@ -846,6 +956,20 @@ class AgentService {
         version: initialization.version,
       );
       grant?.setAdapter(adapter.name, adapter.version);
+      if (grant != null) {
+        stage = 'tools/config';
+        final unavailable = await io.client.prepareTools(
+          target.path,
+          mcpServers: mcpServers,
+        );
+        _available();
+        if (unavailable != null) {
+          toolsUnavailableReason = clampUtf8(_redact(unavailable, grant), 4096);
+          _revoke(grant);
+          grant = null;
+          mcpServers.clear();
+        }
+      }
       late final _Agent a;
       if (saved == null) {
         final startingIo = io;
@@ -875,6 +999,7 @@ class AgentService {
               claims: claims,
               grant: grant,
               mcpServers: mcpServers,
+              toolsUnavailableReason: toolsUnavailableReason,
             );
             live = a;
           },
@@ -884,12 +1009,12 @@ class AgentService {
           throw _resumeUnavailable(
             claims.unavailableReason!,
             'Adapter ${adapter.name} version ${adapter.version} cannot continue this session: ${claims.unavailableReason}.',
-            tools: profile.runtimeKind == 'codex'
-                ? const AgentTools(
+            tools: toolsUnavailableReason == null
+                ? _startTools(grant, adapter)
+                : AgentTools(
                     AgentToolsStatus.unavailable,
-                    reason: 'Codex safe private tool delivery is unavailable',
-                  )
-                : null,
+                    reason: toolsUnavailableReason,
+                  ),
           );
         }
         a = _registerNativeSession(
@@ -902,6 +1027,7 @@ class AgentService {
               : AgentContinueMode.resume,
           grant: grant,
           mcpServers: mcpServers,
+          toolsUnavailableReason: toolsUnavailableReason,
         );
         live = a;
       }
@@ -1024,6 +1150,7 @@ class AgentService {
     AgentContinueMode? mode,
     ToolGrant? grant,
     List<Json> mcpServers = const [],
+    String? toolsUnavailableReason,
   }) {
     final a = _Agent(
       record: record,
@@ -1035,7 +1162,9 @@ class AgentService {
       mcpServers: mcpServers,
     );
     _agents[record.id] = a;
-    grant?.bind(record.id);
+    // A saved Codex record is not a native binding until thread/resume and
+    // bounded history restoration succeed. Early bridge calls keep waiting.
+    if (record.runtimeKind != 'codex' || mode == null) grant?.bind(record.id);
     a.relay.onFailure = (error) => _fail(a, error);
     a.session = AgentSession(
       sessionId: record.id,
@@ -1043,10 +1172,10 @@ class AgentService {
       runId: record.runtimeKind == 'codex' ? a.runId : null,
       claims: claims,
       nativeSessionId: record.nativeSessionId,
-      tools: record.runtimeKind == 'codex'
-          ? const AgentTools(
+      tools: toolsUnavailableReason != null
+          ? AgentTools(
               AgentToolsStatus.unavailable,
-              reason: 'Codex safe private tool delivery is unavailable',
+              reason: toolsUnavailableReason,
             )
           : _startTools(grant, record.adapter),
       toolsAuthenticated: grant?.everAuthenticated ?? false,
@@ -1081,6 +1210,10 @@ class AgentService {
     if (mode == null) {
       a.session.ready(nativeSessionId: record.nativeSessionId);
     }
+    if (record.runtimeKind == 'codex' &&
+        grant?.connectionLimitReached == true) {
+      _toolConnectionLimit(a);
+    }
     a.attachTimer = Timer(options.attachTimeout, () {
       if (!_current(a) || a.attached) return;
       // Expiry owns abandonment even if failure settlement already owns
@@ -1095,6 +1228,14 @@ class AgentService {
     });
     unawaited(_watchExit(a));
     return a;
+  }
+
+  void _toolConnectionLimit(_Agent a) {
+    a.session
+        .notice(
+          'Kumiko child tools unavailable: bridge connection capacity reached.',
+        )
+        .ignore();
   }
 
   /// The tools status a run starts with (design D6), seeded from what the
@@ -1222,6 +1363,7 @@ class AgentService {
         );
       }
       if (_current(a) && !a.ending) {
+        if (a.record.runtimeKind == 'codex') a.grant?.bind(a.record.id);
         a.session.ready(nativeSessionId: a.record.nativeSessionId);
         a.restoring = false;
       }

@@ -57,6 +57,7 @@ class ToolGrant {
     this.profile,
     this.onAuthenticated,
     this.onCallSucceeded,
+    this.onConnectionLimit,
   ) {
     // Waiting calls observe a failure; nobody else has to.
     _binding.future.ignore();
@@ -74,8 +75,8 @@ class ToolGrant {
   String? _adapterName;
   String? _adapterVersion;
 
-  /// base64url (no padding) of 32 random bytes. Put it in the adapter
-  /// environment; never log it.
+  /// base64url (no padding) of 32 random bytes. Deliver only through the
+  /// run's Kumiko MCP entry environment; never log it.
   final String secret;
   final ToolRole role;
 
@@ -91,6 +92,11 @@ class ToolGrant {
 
   /// Called after every successful `tools/call` for this grant.
   void Function()? onCallSucceeded;
+
+  /// Called once when an authenticated bridge exceeds connection capacity.
+  void Function()? onConnectionLimit;
+  bool _connectionLimitReached = false;
+  bool get connectionLimitReached => _connectionLimitReached;
 
   bool _everAuthenticated = false;
   bool _everCalled = false;
@@ -287,6 +293,10 @@ class ToolService {
   int get unauthenticatedCount => _unauthenticated;
   int get authenticatedCount => _authenticated;
 
+  /// Calls admitted by bridges still waiting for their native run binding.
+  int get pendingBindingCount =>
+      _grants.fold(0, (count, grant) => count + grant.pendingBindingWaiters);
+
   /// Authentication failures so far (a counter; secrets are never logged).
   int get authFailureCount => _authFailures;
 
@@ -298,6 +308,7 @@ class ToolService {
     required String profile,
     void Function()? onAuthenticated,
     void Function()? onCallSucceeded,
+    void Function()? onConnectionLimit,
   }) {
     final bytes = Uint8List.fromList([
       for (var i = 0; i < 32; i++) _random.nextInt(256),
@@ -312,6 +323,7 @@ class ToolService {
       profile,
       onAuthenticated,
       onCallSucceeded,
+      onConnectionLimit,
     );
     _grants.add(grant);
     return grant;
@@ -453,6 +465,10 @@ class ToolService {
     }
     if (match._connections.length >= _maxAuthenticatedPerGrant ||
         _authenticated >= _maxAuthenticatedTotal) {
+      if (!match._connectionLimitReached) {
+        match._connectionLimitReached = true;
+        match.onConnectionLimit?.call();
+      }
       c.send({'ok': false, 'error': 'busy'});
       _closeConn(c);
       return;

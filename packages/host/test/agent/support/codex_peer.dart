@@ -8,8 +8,8 @@ import 'package:host_protocol/host_protocol.dart';
 /// Scripted in-memory byte peer. This fixture is test-package-only and cannot
 /// add a mode to the release host or discover an installed runtime.
 class CodexPeer {
-  CodexPeer({LargeLinePermit? permit}) {
-    client = CodexClient(
+  CodexPeer({LargeLinePermit? permit, Duration? configReadTimeout}) {
+    client = _PeerClient(
       input: input.stream,
       write: (bytes) {
         for (final line in const LineSplitter().convert(utf8.decode(bytes))) {
@@ -20,6 +20,7 @@ class CodexPeer {
         return blockedWrite?.future ?? Future.value();
       },
       largeLinePermit: permit,
+      configReadTimeout: configReadTimeout,
     );
   }
   final input = StreamController<List<int>>();
@@ -38,6 +39,34 @@ class CodexPeer {
     }
     if (!input.isClosed) await input.close();
   }
+}
+
+class _PeerClient extends CodexClient {
+  _PeerClient({
+    required super.input,
+    required super.write,
+    super.largeLinePermit,
+    this.configReadTimeout,
+  });
+  final Duration? configReadTimeout;
+  @override
+  Future<T> request<T>(
+    String method,
+    Json params, {
+    required T Function(Object? result) decodeResult,
+    Duration timeout = const Duration(seconds: 60),
+    bool requireAdmission = false,
+    List<Json> preceding = const [],
+    bool pauseForOutput = true,
+  }) => super.request(
+    method,
+    params,
+    decodeResult: decodeResult,
+    timeout: method == 'config/read' ? configReadTimeout ?? timeout : timeout,
+    requireAdmission: requireAdmission,
+    preceding: preceding,
+    pauseForOutput: pauseForOutput,
+  );
 }
 
 Future<void> pumpCodex() => Future<void>(() {});

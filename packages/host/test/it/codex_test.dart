@@ -184,6 +184,461 @@ void main() {
 }
 
 void nativeCases(Directory Function() profile, Directory Function() work) {
+  Future<(AgentPeer, Json)> restore(
+    NativeFixture f, {
+    Future<void> Function(Json)? beforeContinue,
+    String? runtimeProfileId,
+  }) async {
+    await f.open();
+    final original = await f.start();
+    final row = agentRows(profile()).single;
+    await original.close();
+    await original.call(Method.agentRelease);
+    await beforeContinue?.call(row);
+    final peer = AgentPeer(f.desktop);
+    final result = AgentContinueResult.fromJson(
+      await peer.call(Method.agentContinue, {
+        'sessionId': row['id'],
+        'runtimeProfileId': ?runtimeProfileId,
+      }),
+    );
+    peer.started = AgentStartResult(
+      sessionId: row['id']! as String,
+      eventChannel: result.eventChannel,
+      adapter: result.adapter,
+      capabilities: result.capabilities,
+    );
+    final duplicate = await rpcFailure(
+      peer.call(Method.agentContinue, {'sessionId': row['id']}),
+    );
+    expect(duplicate.reason, ErrorCode.turnRunning);
+    expect(f.requests.where((r) => r['method'] == 'thread/resume'), isEmpty);
+    await peer.attach();
+    return (peer, row);
+  }
+
+  final oldItem = <String, Object?>{
+    'id': 'old-answer',
+    'type': 'agentMessage',
+    'text': 'old answer',
+  };
+  final oldTurn = <String, Object?>{
+    'id': 'old-turn',
+    'status': 'completed',
+    'itemsView': 'full',
+    'items': [oldItem],
+  };
+  final idleThread = <String, Object?>{
+    'id': 'root-thread',
+    'status': {'type': 'idle'},
+    'historyMode': 'legacy',
+    'turns': [oldTurn],
+  };
+  test('Codex: Another runtime profile is the default', () async {
+    final f = NativeFixture(
+      profile(),
+      work(),
+      script: {'resumeThread': idleThread},
+    );
+    final (peer, row) = await restore(
+      f,
+      runtimeProfileId: 'replacement',
+      beforeContinue: (saved) async {
+        await saveAgentFixture(f.desktop, work(), id: 'claude-default');
+        await f.desktop.connection.request(
+          Method.runtimeSetDefault,
+          RuntimeSetDefaultParams('claude-default'),
+        );
+        await f.desktop.connection.request(
+          Method.runtimeRemove,
+          const RuntimeRemoveParams('native'),
+        );
+        final refused = await rpcFailure(
+          f.desktop.connection.request(Method.agentContinue, {
+            'sessionId': saved['id'],
+          }),
+        );
+        expect(refused.reason, ErrorCode.noRuntimeProfile);
+        expect(
+          f.requests.where((r) => r['method'] == 'thread/resume'),
+          isEmpty,
+        );
+        await f.desktop.connection.request(
+          Method.runtimeSave,
+          RuntimeSaveParams(
+            RuntimeProfile(
+              id: 'replacement',
+              name: 'Compatible replacement',
+              runtimeKind: 'codex',
+              executable: testHostExecutable(),
+              args: [
+                '--test-fixture',
+                'codex-agent',
+                '--script',
+                f.scriptFile.path,
+              ],
+              env: const {},
+            ),
+          ),
+        );
+      },
+    );
+    await peer.wait(Method.agentState, where: (p) => p['state'] == 'idle');
+    expect(agentRows(profile()).single, row);
+    expect(
+      f.requests.where((r) => r['method'] == 'thread/resume'),
+      hasLength(1),
+    );
+    expect(f.requests.where((r) => r['method'] == 'turn/start'), isEmpty);
+    await peer.close();
+  });
+  for (final entry in <(String, Json, String)>[
+    (
+      'Missing native history',
+      {
+        'readError': {'code': -32600, 'message': 'native thread missing'},
+      },
+      'native thread missing',
+    ),
+    (
+      'Empty native thread has no resumable history',
+      {
+        'resumeThread': {...idleThread, 'turns': <Object?>[]},
+      },
+      'history is empty',
+    ),
+    (
+      'omitted native history is unavailable',
+      {
+        'resumeThread': {
+          for (final e in idleThread.entries)
+            if (e.key != 'turns') e.key: e.value,
+        },
+      },
+      'history was omitted',
+    ),
+    (
+      'summary is not full native history',
+      {
+        'resumeThread': {
+          ...idleThread,
+          'turns': [
+            {...oldTurn, 'itemsView': 'summary'},
+          ],
+        },
+      },
+      'history is incomplete',
+    ),
+    (
+      'currently active native root is refused',
+      {
+        'readThread': {
+          ...idleThread,
+          'status': {'type': 'active', 'activeFlags': <Object?>[]},
+        },
+      },
+      'active',
+    ),
+    (
+      'native resume cannot substitute identity',
+      {
+        'resumeThread': {...idleThread, 'id': 'replacement-thread'},
+      },
+      'identity changed',
+    ),
+    (
+      'oversized native history is unavailable',
+      {
+        'resumeThread': {
+          ...idleThread,
+          'turns': [
+            {
+              ...oldTurn,
+              'items': [
+                for (var i = 0; i < 6; i++)
+                  {...oldItem, 'id': 'old-$i', 'text': 'x' * 65536},
+              ],
+            },
+          ],
+        },
+      },
+      'display capacity',
+    ),
+  ]) {
+    test('Codex: ${entry.$1}', () async {
+      final f = NativeFixture(profile(), work(), script: entry.$2);
+      final (peer, row) = await restore(f);
+      final ended = await peer.wait(
+        Method.agentExited,
+        within: const Duration(seconds: 4),
+      );
+      expect(ended['error'], ErrorCode.resumeUnavailable);
+      expect(ended['message'], contains(entry.$3));
+      expect(agentRows(profile()).single, row);
+      expect(f.requests.where((r) => r['method'] == 'turn/start'), isEmpty);
+      expect(LedgerView(profile()).units(), isEmpty);
+    });
+  }
+  test('Codex: Qualified native recovery', () async {
+    final f = NativeFixture(
+      profile(),
+      work(),
+      script: {
+        'readThread': {
+          ...idleThread,
+          'historyMode': 'paginated',
+          'status': {'type': 'notLoaded'},
+        },
+        'afterReadThread': {...idleThread, 'historyMode': 'paginated'},
+        'resumeThread': {
+          ...idleThread,
+          'historyMode': 'paginated',
+          'turns': <Object?>[],
+        },
+        'historyPages': [
+          {
+            'data': [
+              {'turnId': 'old-turn', 'item': oldItem},
+            ],
+            'nextCursor': 'actual-native-cursor',
+          },
+          {
+            'data': [
+              {
+                'turnId': 'old-turn',
+                'item': {...oldItem, 'id': 'last', 'text': 'last answer'},
+              },
+            ],
+            'nextCursor': null,
+          },
+        ],
+        'historyBeforePage': [
+          nativeEvent('item/completed', {
+            'threadId': r'$thread',
+            'turnId': 'old-turn',
+            'item': oldItem,
+          }),
+        ],
+      },
+    );
+    final (peer, row) = await restore(f);
+    await peer.wait(Method.agentState, where: (p) => p['state'] == 'idle');
+    await eventually(() => peer.events.any((e) => e['phase'] == 'end'));
+    expect(
+      peer.events.where((e) => e['kind'] == 'agentText').map((e) => e['text']),
+      ['old answer', 'last answer'],
+    );
+    final pages = f.requests
+        .where((r) => r['method'] == 'thread/items/list')
+        .toList();
+    expect(pages, hasLength(2));
+    expect((pages.last['params'] as Json)['cursor'], 'actual-native-cursor');
+    expect(pages.every((p) => (p['params'] as Json)['limit'] == 50), true);
+    expect(agentRows(profile()).single, row);
+    await peer.close();
+  });
+  test(
+    'Codex: paged history exceeds the dedup window with visible loss',
+    () async {
+      final f = NativeFixture(
+        profile(),
+        work(),
+        script: {
+          'readThread': {
+            ...idleThread,
+            'historyMode': 'paginated',
+            'status': {'type': 'notLoaded'},
+          },
+          'afterReadThread': {...idleThread, 'historyMode': 'paginated'},
+          'resumeThread': {...idleThread, 'historyMode': 'paginated'},
+          'historyPages': [
+            for (var page = 0; page < 84; page++)
+              {
+                'data': [
+                  for (var i = page * 50; i < (page + 1) * 50; i++)
+                    {
+                      'turnId': 'old-turn',
+                      'item': {
+                        ...oldItem,
+                        'id': 'item-$i',
+                        'text': 'history-$i',
+                      },
+                    },
+                ],
+                'nextCursor': page == 83 ? null : 'cursor-${page + 1}',
+              },
+          ],
+        },
+      );
+      final (peer, row) = await restore(f);
+      await peer.wait(
+        Method.agentState,
+        where: (p) => p['state'] == 'idle',
+        within: const Duration(seconds: 8),
+      );
+      await eventually(() => peer.events.any((e) => e['phase'] == 'end'));
+      expect(
+        peer.events.where((e) => e['kind'] == 'agentText'),
+        hasLength(4200),
+      );
+      expect(
+        peer.events.any(
+          (e) => e['kind'] == 'notice' && e['text'].toString().contains('4096'),
+        ),
+        true,
+      );
+      expect(agentRows(profile()).single, row);
+      await peer.close();
+    },
+  );
+  test('Codex: Unsupported recovery', () async {
+    final f = NativeFixture(
+      profile(),
+      work(),
+      script: {
+        'readThread': {
+          ...idleThread,
+          'historyMode': 'paginated',
+          'status': {'type': 'notLoaded'},
+        },
+        'resumeThread': {...idleThread, 'historyMode': 'paginated'},
+        'historyPages': [
+          {'notData': <Object?>[]},
+        ],
+      },
+    );
+    final (peer, row) = await restore(f);
+    final ended = await peer.wait(
+      Method.agentExited,
+      within: const Duration(seconds: 4),
+    );
+    expect(ended['error'], ErrorCode.resumeUnavailable);
+    expect(ended['message'], contains('item history was omitted'));
+    expect(agentRows(profile()).single, row);
+    expect(f.requests.where((r) => r['method'] == 'turn/start'), isEmpty);
+  });
+  test('Codex: history mutation during snapshot refuses restoration', () async {
+    final f = NativeFixture(
+      profile(),
+      work(),
+      script: {
+        'resumeActions': [deltaEvent('unowned work')],
+        'resumeThread': {
+          'id': 'root-thread',
+          'historyMode': 'legacy',
+          'status': {'type': 'idle'},
+          'turns': [
+            {
+              'id': 'old-turn',
+              'status': 'completed',
+              'items': [
+                {
+                  'id': 'old-answer',
+                  'type': 'agentMessage',
+                  'text': 'old answer',
+                },
+              ],
+            },
+          ],
+        },
+      },
+    );
+    await f.open();
+    final original = await f.start();
+    final row = agentRows(profile()).single;
+    await original.close();
+    await original.call(Method.agentRelease);
+    final peer = AgentPeer(f.desktop);
+    final r = AgentContinueResult.fromJson(
+      await peer.call(Method.agentContinue, {'sessionId': row['id']}),
+    );
+    peer.started = AgentStartResult(
+      sessionId: row['id']! as String,
+      eventChannel: r.eventChannel,
+      adapter: r.adapter,
+      capabilities: r.capabilities,
+    );
+    await peer.attach();
+    final ended = await peer.wait(
+      Method.agentExited,
+      within: const Duration(seconds: 3),
+    );
+    expect(ended['error'], ErrorCode.resumeUnavailable);
+    expect(ended['message'], contains('changed during history'));
+    expect(agentRows(profile()).single, row);
+    expect(f.requests.where((r) => r['method'] == 'turn/start'), isEmpty);
+  });
+  test('Codex: Continue a saved thread', () async {
+    final f = NativeFixture(
+      profile(),
+      work(),
+      script: {
+        'resumeThread': {
+          'id': 'root-thread',
+          'historyMode': 'legacy',
+          'status': {'type': 'idle'},
+          'turns': [
+            {
+              'id': 'old-turn',
+              'status': 'completed',
+              'itemsView': 'full',
+              'items': [
+                {
+                  'id': 'old-user',
+                  'type': 'userMessage',
+                  'content': [
+                    {'type': 'text', 'text': 'original prompt'},
+                  ],
+                },
+                {
+                  'id': 'old-reply',
+                  'type': 'agentMessage',
+                  'text': 'original answer',
+                },
+              ],
+            },
+          ],
+        },
+      },
+    );
+    await f.open();
+    final original = await f.start();
+    final row = agentRows(profile()).single;
+    await original.close();
+    await original.call(Method.agentRelease);
+    final peer = AgentPeer(f.desktop);
+    final resumed = AgentContinueResult.fromJson(
+      await peer.call(Method.agentContinue, {'sessionId': row['id']}),
+    );
+    peer.started = AgentStartResult(
+      sessionId: row['id']! as String,
+      eventChannel: resumed.eventChannel,
+      adapter: resumed.adapter,
+      capabilities: resumed.capabilities,
+    );
+    expect(f.requests.where((r) => r['method'] == 'thread/resume'), isEmpty);
+    await peer.attach();
+    await peer.wait(Method.agentState, where: (s) => s['state'] == 'idle');
+    await eventually(
+      () =>
+          peer.events.any((e) => e['kind'] == 'replay' && e['phase'] == 'end'),
+    );
+    expect(
+      peer.events.where((e) => e['kind'] == 'user').map((e) => e['text']),
+      ['original prompt'],
+    );
+    expect(
+      peer.events.where((e) => e['kind'] == 'agentText').map((e) => e['text']),
+      ['original answer'],
+    );
+    expect(f.requests.where((r) => r['method'] == 'turn/start'), isEmpty);
+    expect(
+      f.requests.where((r) => r['method'] == 'thread/start'),
+      hasLength(1),
+    );
+    expect(agentRows(profile()).single, row);
+    await peer.close();
+  });
   Future<NativeFixture> fixture([
     Json script = const {},
     Map<String, String> env = const {},
@@ -215,16 +670,20 @@ void nativeCases(Directory Function() profile, Directory Function() work) {
     expect(f.requests.map((r) => r['method']), [
       'initialize',
       'initialized',
+      'config/read',
       'thread/start',
     ]);
     final stats =
         await f.desktop.connection.request('test/agent.stats', {}) as Json;
-    expect(((stats['sessions'] as Json)[a.id] as Json)['hasGrant'], false);
-    expect(a.started.tools!.status, AgentToolsStatus.unavailable);
-    expect(a.started.tools!.reason, contains('safe'));
-    expect(a.started.tools!.reason, isNot(contains('endpoint-unavailable')));
-    expect(f.requests.toString(), isNot(contains('KUMIKO_TOOL_SECRET')));
-    expect(f.requests.toString(), isNot(contains('mcp_servers')));
+    expect(((stats['sessions'] as Json)[a.id] as Json)['hasGrant'], true);
+    expect(a.started.tools!.status, AgentToolsStatus.notYetUsed);
+    final config = (f.requests.last['params'] as Json)['config'] as Json;
+    final servers = config['mcp_servers'] as Json;
+    expect(servers.keys, ['kumiko']);
+    expect(
+      ((servers['kumiko'] as Json)['env'] as Json)['KUMIKO_TOOL_SECRET'],
+      '<redacted>',
+    );
     await a.close();
   });
   test('Codex: Initialization fails', () async {
@@ -2064,22 +2523,33 @@ void nativeCases(Directory Function() profile, Directory Function() work) {
     },
   );
 
-  test('Codex: Continue before native history has no bridge entry and reports safe delivery unavailable', () async {
-    final f = await fixture();
-    final a = await f.start();
-    await a.close();
-    final error = await rpcFailure(
-      f.desktop.connection.request(Method.agentContinue, {'sessionId': a.id}),
+  test('Codex: Continue without safe config has no bridge entry', () async {
+    final f = NativeFixture(
+      profile(),
+      work(),
+      script: {
+        'configReadError': {
+          'code': -32601,
+          'message': 'unsupported config/read',
+        },
+        'resumeThread': idleThread,
+      },
     );
-    expect(error.reason, ErrorCode.resumeUnavailable);
-    expect(error.data['tools'], isA<Json>());
-    expect(
-      ((error.data['tools'] as Json)['reason']! as String).contains('safe'),
-      true,
+    final (a, row) = await restore(f);
+    final state = await a.wait(
+      Method.agentState,
+      where: (p) => p['state'] == 'idle',
     );
+    expect((state['tools'] as Json)['status'], 'unavailable');
+    expect((state['tools'] as Json)['reason'], contains('config/read'));
     expect(f.requests.toString().contains('KUMIKO_TOOL_SECRET'), false);
-    expect(f.requests.toString().contains('mcp_servers'), false);
-    expect(LedgerView(profile()).units(), isEmpty);
+    expect(
+      f.requests.where((r) => r['method'] == 'thread/resume').single['params']
+          as Json,
+      isNot(contains('config')),
+    );
+    expect(agentRows(profile()).single, row);
+    await a.close();
   });
   test(
     'Codex: more than 64 file changes retain visible omission count',

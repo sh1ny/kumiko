@@ -3,6 +3,9 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:host_protocol/host_protocol.dart';
+import 'package:path/path.dart' as p;
+
+import 'fixture_kumiko_tool.dart';
 
 /// Authored test-only native wire peer. No installed executable or provider.
 Future<int> runCodexFixture(List<String> args) async {
@@ -14,6 +17,11 @@ Future<int> runCodexFixture(List<String> args) async {
     mode: FileMode.append,
     flush: true,
   );
+  if (args.contains('--environment-audit')) {
+    stdout.writeln(jsonEncode(Platform.environment));
+    await stdout.flush();
+    return 0;
+  }
   final probe = args.contains('--probe');
   record({
     'launch': probe ? 'probe' : 'root',
@@ -38,6 +46,153 @@ Future<int> runCodexFixture(List<String> args) async {
   }
   var turns = 0;
   var initialized = false;
+  var resumed = false;
+  var historyPage = 0;
+  final toolConfig = script['kumikoTool'];
+  final tool = toolConfig is Json ? KumikoToolDriver(toolConfig, record) : null;
+  final peerTools = <KumikoToolDriver>[
+    if (script['kumikoPeers'] case final List<Object?> peers)
+      for (var i = 0; i < peers.length; i++)
+        KumikoToolDriver(
+          peers[i] as Json,
+          (event) => record({'peerIndex': i, ...event}),
+        ),
+  ];
+  Object? nativeServers;
+  Json? currentNativeEntry;
+  Future<void> runTools(String when) async {
+    if (tool?.when == when) await tool!.run(nativeServers);
+    for (final peer in peerTools) {
+      if (peer.when == when) await peer.run(nativeServers);
+    }
+  }
+
+  Future<void> auditTools(Json? nativeEntry) async {
+    final audit = script['toolsAudit'];
+    if (audit is! Json || nativeEntry == null) return;
+    final env = nativeEntry['env'];
+    final secret = env is Json ? env['KUMIKO_TOOL_SECRET'] : null;
+    if (secret is! String || secret.isEmpty) return;
+    Future<bool> inspectEnvironment(Json extra) async {
+      final child = await Process.run(
+        Platform.resolvedExecutable,
+        [
+          '--test-fixture',
+          'codex-agent',
+          '--script',
+          path,
+          '--environment-audit',
+        ],
+        environment: {
+          for (final name in const ['SystemRoot', 'SYSTEMROOT', 'TEMP', 'TMP'])
+            if (Platform.environment[name] case final String value) name: value,
+          for (final e in extra.entries) e.key: e.value! as String,
+        },
+        includeParentEnvironment: false,
+      );
+      return child.exitCode == 0 &&
+          !(child.stdout as String).contains(secret) &&
+          !(child.stderr as String).contains(secret);
+    }
+
+    final commandIsolated = await inspectEnvironment(const {});
+    final otherMcpIsolated = await inspectEnvironment(
+      audit['otherEnv'] as Json? ?? const {'OTHER_MCP_ENTRY': 'unrelated'},
+    );
+    for (final relative in const [
+      ['sessions', 'session.jsonl'],
+      ['logs', 'native.log'],
+      ['state', 'native.state'],
+    ]) {
+      final artifact = File(
+        p.joinAll([report.parent.path, 'fixture-native-home', ...relative]),
+      );
+      await artifact.parent.create(recursive: true);
+      await artifact.writeAsString(
+        'authored native fixture state; no private configuration\n',
+      );
+    }
+    if (script['persistSecretForScanTest'] == true) {
+      final canary = File(
+        p.join(
+          report.parent.path,
+          'fixture-native-home',
+          'state',
+          'canary.txt',
+        ),
+      );
+      await canary.writeAsString(secret);
+    }
+    var secretFound = false;
+    var scannedFiles = 0;
+    var errorCount = 0;
+    final scanErrors = <Json>[];
+    for (final raw in audit['scanRoots'] as List? ?? [report.parent.path]) {
+      final root = Directory(raw! as String);
+      if (!root.existsSync()) {
+        errorCount++;
+        continue;
+      }
+      await for (final entity in root.list(
+        recursive: true,
+        followLinks: false,
+      )) {
+        if (entity is! File) continue;
+        try {
+          // Windows can exclusively lock an empty regular file. There are no
+          // bytes to inspect when two metadata observations agree it is empty;
+          // account it without opening a read handle. Nonempty read failures
+          // remain incomplete scans.
+          final before = await entity.stat();
+          if (before.type == FileSystemEntityType.file && before.size == 0) {
+            final after = await entity.stat();
+            if (after.type == FileSystemEntityType.file &&
+                after.size == 0 &&
+                after.modified == before.modified &&
+                after.changed == before.changed) {
+              scannedFiles++;
+              continue;
+            }
+          }
+          final bytes = await entity.readAsBytes();
+          scannedFiles++;
+          secretFound |= utf8
+              .decode(bytes, allowMalformed: true)
+              .contains(secret);
+        } on FileSystemException catch (error) {
+          errorCount++;
+          if (scanErrors.length < 8) {
+            int? length;
+            try {
+              length = entity.lengthSync();
+            } on FileSystemException {
+              /* Still incomplete. */
+            }
+            scanErrors.add({
+              'path': entity.path,
+              'osErrorCode': error.osError?.errorCode,
+              'length': length,
+            });
+          }
+        }
+      }
+    }
+    record({
+      'toolsAudit': true,
+      'bridgeEntryHasSecret': true,
+      'parentEnvironmentIsolated': !Platform.environment.values.contains(
+        secret,
+      ),
+      'commandEnvironmentIsolated': commandIsolated,
+      'otherMcpEnvironmentIsolated': otherMcpIsolated,
+      'secretFound': secretFound,
+      'scannedFiles': scannedFiles,
+      'scanComplete': errorCount == 0,
+      'errorCount': errorCount,
+      'scanErrors': scanErrors,
+    });
+  }
+
   final replies = <String, Completer<void>>{};
   final interrupts = <String, Completer<void>>{};
   Future<void> send(Json value) async {
@@ -66,6 +221,11 @@ Future<int> runCodexFixture(List<String> args) async {
       if (action['waitReply'] case final String id) {
         await (replies[id] ??= Completer<void>()).future;
       }
+      if (action['waitFile'] case final String path) {
+        while (!File(path).existsSync()) {
+          await Future<void>.delayed(const Duration(milliseconds: 10));
+        }
+      }
       if (action['send'] case final Json message) await send(message);
       if (action['closeStdout'] == true) await stdout.close();
     }
@@ -74,7 +234,18 @@ Future<int> runCodexFixture(List<String> args) async {
   await for (final line
       in stdin.transform(utf8.decoder).transform(const LineSplitter())) {
     final m = jsonDecode(line) as Json;
-    record({'received': m});
+    // Native stdin configuration is private. Reports retain structure and
+    // presence, never credentials; behavioral bridge calls prove delivery.
+    Object? safe(Object? value, [String? key]) {
+      if (key == 'KUMIKO_TOOL_SECRET') return '<redacted>';
+      if (value is Json) {
+        return {for (final e in value.entries) e.key: safe(e.value, e.key)};
+      }
+      if (value is List) return [for (final v in value) safe(v)];
+      return value;
+    }
+
+    record({'received': safe(m)});
     final method = m['method'];
     final id = m['id'];
     if (method == null) {
@@ -105,13 +276,43 @@ Future<int> runCodexFixture(List<String> args) async {
         initialized = true;
       case 'thread/start' || 'thread/resume':
         if (!initialized) return 72;
+        resumed = method == 'thread/resume';
+        final params = m['params'] as Json;
+        final config = params['config'];
+        final servers = config is Json ? config['mcp_servers'] : null;
+        final entry = servers is Json ? servers['kumiko'] : null;
+        currentNativeEntry = entry is Json ? entry : null;
+        nativeServers = [
+          if (entry is Json)
+            {
+              'name': 'kumiko',
+              'command': entry['command'],
+              'args': entry['args'],
+              'env': [
+                if (entry['env'] case final Json env)
+                  for (final e in env.entries)
+                    {'name': e.key, 'value': e.value},
+              ],
+            },
+        ];
+        unawaited(runTools('session/new'));
+        await actions(script['newActions'] as List? ?? const [], 'old-turn');
+        if (resumed) {
+          await actions(
+            script['resumeActions'] as List? ?? const [],
+            'old-turn',
+          );
+        }
+        await auditTools(entry is Json ? entry : null);
         if (script['startError'] case final Json error) {
           await send({'id': id, 'error': error});
         } else {
           await send({
             'id': id,
             'result': {
-              'thread': {'id': 'root-thread'},
+              'thread': method == 'thread/resume'
+                  ? script['resumeThread'] ?? {'id': 'root-thread'}
+                  : {'id': 'root-thread'},
               'model': 'fixture',
               'modelProvider': 'fixture',
               'cwd': Directory.current.path,
@@ -121,7 +322,50 @@ Future<int> runCodexFixture(List<String> args) async {
             },
           });
         }
+      case 'thread/read':
+        await send({
+          'id': id,
+          if (script['readError'] case final Json error)
+            'error': error
+          else
+            'result': {
+              'thread':
+                  (resumed ? script['afterReadThread'] : null) ??
+                  script['readThread'] ??
+                  {
+                    'id': 'root-thread',
+                    'status': {'type': resumed ? 'idle' : 'notLoaded'},
+                    'historyMode': 'legacy',
+                  },
+            },
+        });
+      case 'thread/items/list':
+        final pages = script['historyPages'] as List? ?? const [];
+        final page = historyPage < pages.length
+            ? pages[historyPage++]
+            : {'data': <Object?>[], 'nextCursor': null};
+        await actions(
+          script['historyBeforePage'] as List? ?? const [],
+          'old-turn',
+        );
+        await send({'id': id, 'result': page});
+      case 'config/read':
+        await send({
+          'id': id,
+          if (script['configReadError'] case final Json error)
+            'error': error
+          else
+            'result':
+                script['configReadResult'] ??
+                script['effectiveConfig'] ??
+                {
+                  'config': {'mcp_servers': <String, Object?>{}},
+                  'origins': <String, Object?>{},
+                  'layers': <Object?>[],
+                },
+        });
       case 'turn/start':
+        await runTools('prompt');
         final turn = 'turn-${++turns}';
         final scripts = script['turns'] as List? ?? const [];
         final row = turns <= scripts.length
@@ -174,7 +418,7 @@ Future<int> runCodexFixture(List<String> args) async {
                   },
                 ],
             turn,
-          ),
+          ).then((_) => auditTools(currentNativeEntry)),
         );
         if (script['noReadAfterTurn'] == true) await Completer<void>().future;
       case 'turn/interrupt':

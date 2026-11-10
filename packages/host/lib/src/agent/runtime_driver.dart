@@ -112,6 +112,10 @@ abstract class RuntimeDriver implements RuntimeTransport {
   bool get largeLineOwned;
   bool get largeLineWaiting;
   Future<RuntimeIdentity> initialize();
+  Future<String?> prepareTools(
+    String cwd, {
+    required List<Json> mcpServers,
+  }) async => null;
   Future<String> newSession(
     String cwd, {
     List<Json> mcpServers = const [],
@@ -256,6 +260,111 @@ class CodexRuntimeDriver extends RuntimeDriver {
   }
   final CodexClient client;
   final String version;
+  Json? _privateToolConfig;
+  @override
+  Future<String?> prepareTools(
+    String cwd, {
+    required List<Json> mcpServers,
+  }) async {
+    _privateToolConfig = null;
+    if (mcpServers.isEmpty) return null;
+    try {
+      final reason = await client.request<String?>(
+        'config/read',
+        {'cwd': cwd, 'includeLayers': true},
+        decodeResult: (result) {
+          if (result is! Json || result['config'] is! Json) {
+            return 'Codex config/read cannot verify effective kumiko MCP absence';
+          }
+          final effective = result['config']! as Json;
+          String? unsupportedProfileMcp(Json config) {
+            final profiles = config['profiles'];
+            if (profiles == null) return null;
+            if (profiles is! Json) {
+              return 'Codex profile configuration is malformed; kumiko MCP absence cannot be verified';
+            }
+            for (final profile in profiles.values) {
+              if (profile is! Json || profile.containsKey('mcp_servers')) {
+                return 'Codex profile MCP configuration is unsupported; kumiko MCP absence cannot be verified';
+              }
+            }
+            return null;
+          }
+
+          final profileReason = unsupportedProfileMcp(effective);
+          if (profileReason != null) return profileReason;
+          final servers = effective['mcp_servers'];
+          if (servers != null && servers is! Json) {
+            return 'Codex config/read returned an invalid effective MCP configuration';
+          }
+          if (servers is Json && servers.containsKey('kumiko')) {
+            return 'Codex effective configuration already defines kumiko MCP';
+          }
+          final layers = result['layers'];
+          if (layers is! List) {
+            return 'Codex config/read omitted raw layers; kumiko MCP absence cannot be verified';
+          }
+          for (final layer in layers) {
+            if (layer is! Json || layer['config'] is! Json) {
+              return 'Codex config/read has incomplete raw layers; kumiko MCP absence cannot be verified';
+            }
+            final profileReason = unsupportedProfileMcp(
+              layer['config']! as Json,
+            );
+            if (profileReason != null) return profileReason;
+            final layerServers = (layer['config']! as Json)['mcp_servers'];
+            if (layerServers != null && layerServers is! Json) {
+              return 'Codex config/read has invalid MCP layers; kumiko MCP absence cannot be verified';
+            }
+            if (layerServers is Json && layerServers.containsKey('kumiko')) {
+              return 'Codex user or workspace configuration already defines kumiko MCP';
+            }
+          }
+          return null;
+        },
+      );
+      if (reason != null) return reason;
+      if (mcpServers.length != 1 || mcpServers.single['name'] != 'kumiko') {
+        return 'Codex private MCP delivery requires exactly one kumiko entry';
+      }
+      final entry = mcpServers.single;
+      final environment = <String, Object?>{};
+      for (final value in entry['env']! as List) {
+        final pair = value as Json;
+        final name = pair['name']! as String;
+        if (!const [
+              'KUMIKO_TOOL_ENDPOINT',
+              'KUMIKO_TOOL_SECRET',
+              'KUMIKO_UNIT',
+            ].contains(name) ||
+            environment.containsKey(name)) {
+          return 'Codex private kumiko entry environment is invalid';
+        }
+        environment[name] = pair['value'];
+      }
+      if (environment.length != 3) {
+        return 'Codex private kumiko entry environment is incomplete';
+      }
+      _privateToolConfig = {
+        'mcp_servers': {
+          'kumiko': {
+            'command': entry['command'],
+            'args': entry['args'],
+            'env': environment,
+          },
+        },
+      };
+      return null;
+    } on CodexRemoteException catch (error) {
+      return 'Codex config/read unavailable (native code ${error.code}); kumiko MCP absence cannot be verified';
+    } on TimeoutException {
+      if (client.isClosed || client.failure != null) rethrow;
+      return 'Codex config/read timed out; private kumiko MCP delivery unavailable';
+    } on CodexOptionalUnsupported {
+      return 'Codex config/read unsupported; private kumiko MCP delivery unavailable';
+    }
+  }
+
   String? root;
   String? _turnId;
   String? _earlyId;
@@ -311,7 +420,8 @@ class CodexRuntimeDriver extends RuntimeDriver {
         'cancel',
         'steer',
         'questions',
-      ], 'native-history-unavailable'),
+        'load',
+      ], null),
     );
   }
 
@@ -322,7 +432,7 @@ class CodexRuntimeDriver extends RuntimeDriver {
     void Function(String)? onCreated,
   }) => client.request(
     'thread/start',
-    {'cwd': cwd},
+    {'cwd': cwd, 'config': ?_privateToolConfig},
     decodeResult: (result) {
       if (result is! Json || result['thread'] is! Json) {
         throw CodexProtocolException('invalid thread/start');
@@ -356,10 +466,268 @@ class CodexRuntimeDriver extends RuntimeDriver {
     String id,
     String cwd, {
     List<Json> mcpServers = const [],
-  }) => throw RpcException(
-    ErrorCode.resumeUnavailable,
-    'native history unavailable',
-  );
+  }) async {
+    root = id;
+    _historyLoading = true;
+    _historyFailure = null;
+    final active = Stopwatch()..start();
+    Future<T> read<T>(
+      String method,
+      Json params, {
+      required T Function(Object?) decodeResult,
+    }) {
+      final remaining = const Duration(seconds: 60) - active.elapsed;
+      if (remaining <= Duration.zero) {
+        _historyUnavailable('native history active deadline exceeded');
+      }
+      return client.request<T>(
+        method,
+        params,
+        decodeResult: decodeResult,
+        timeout: remaining,
+      );
+    }
+
+    Future<void> deliver(RuntimeDelivery delivery) async {
+      active.stop();
+      try {
+        await client.consumeNotification?.call(delivery);
+      } finally {
+        delivery.release();
+        if (identical(_historyPending, delivery)) _historyPending = null;
+        active.start();
+      }
+    }
+
+    try {
+      final mode = await read<String>(
+        'thread/read',
+        {'threadId': id, 'includeTurns': false},
+        decodeResult: (result) =>
+            _historyMetadata(result, id, beforeResume: true),
+      );
+      final history = await read<RuntimeDelivery>(
+        'thread/resume',
+        {
+          'threadId': id,
+          'cwd': cwd,
+          'excludeTurns': mode == 'paginated',
+          'config': ?_privateToolConfig,
+        },
+        decodeResult: (result) {
+          final actualMode = _historyMetadata(result, id);
+          if (actualMode != mode) {
+            _historyUnavailable('native history mode changed');
+          }
+          if (mode == 'paginated') return _reserveHistoryPage(const []);
+          final thread = (result! as Json)['thread']! as Json;
+          final turns = thread['turns'];
+          if (turns is! List) _historyUnavailable('native history was omitted');
+          if (turns.isEmpty) _historyUnavailable('native history is empty');
+          final output = <Uint8List>[];
+          var count = 0;
+          for (final turn in turns) {
+            if (turn is! Json ||
+                turn['items'] is! List ||
+                (turn['itemsView'] != null && turn['itemsView'] != 'full') ||
+                !const [
+                  'completed',
+                  'interrupted',
+                  'failed',
+                ].contains(turn['status'])) {
+              _historyUnavailable('native history is incomplete or active');
+            }
+            final turnId = _identity(turn, 'id');
+            for (final item in turn['items'] as List) {
+              count++;
+              output.addAll(_historyItem(turnId, item));
+              _checkHistoryDisplay(output);
+            }
+          }
+          if (count == 0) _historyUnavailable('native history is empty');
+          return _reserveHistoryPage(output);
+        },
+      );
+      await deliver(history);
+      if (mode == 'paginated') {
+        String? cursor;
+        var count = 0;
+        do {
+          final page = await read<(RuntimeDelivery, String?)>(
+            'thread/items/list',
+            {
+              'threadId': id,
+              'limit': 50,
+              'sortDirection': 'asc',
+              'cursor': ?cursor,
+            },
+            decodeResult: (result) {
+              if (result is! Json || result['data'] is! List) {
+                _historyUnavailable('native item history was omitted');
+              }
+              final data = result['data']! as List;
+              if (data.length > 50) {
+                _historyUnavailable(
+                  'native history exceeded requested page size',
+                );
+              }
+              final output = <Uint8List>[];
+              for (final entry in data) {
+                if (entry is! Json) {
+                  _historyUnavailable('invalid native history entry');
+                }
+                count++;
+                output.addAll(
+                  _historyItem(_identity(entry, 'turnId'), entry['item']),
+                );
+                _checkHistoryDisplay(output);
+              }
+              final next = result['nextCursor'];
+              if (next != null &&
+                  (next is! String ||
+                      next.isEmpty ||
+                      next == cursor ||
+                      clampJsonString(next, 4096) != next)) {
+                _historyUnavailable('native history cursor is invalid');
+              }
+              if (data.isEmpty && next != null) {
+                _historyUnavailable('native history cursor has no progress');
+              }
+              return (_reserveHistoryPage(output), next as String?);
+            },
+          );
+          await deliver(page.$1);
+          cursor = page.$2;
+        } while (cursor != null);
+        if (count == 0) _historyUnavailable('native history is empty');
+      }
+      await read<String>('thread/read', {
+        'threadId': id,
+        'includeTurns': false,
+      }, decodeResult: (result) => _historyMetadata(result, id));
+      for (final key in _historyLiveKeys) {
+        if (!_seenItem(key.$1, 2)) {
+          _historyUnavailable('native history changed during replay');
+        }
+      }
+      if (_historyFailure case final reason?) _historyUnavailable(reason);
+    } on CodexRemoteException catch (error) {
+      _historyUnavailable('native history request failed: ${error.message}');
+    } finally {
+      active.stop();
+      _historyPending?.release();
+      _historyPending = null;
+      _historyLoading = false;
+      _historyLiveKeys.clear();
+      releaseEarly?.call(_historyLiveBytes);
+      _historyLiveBytes = 0;
+    }
+  }
+
+  bool _historyLoading = false;
+  RuntimeDelivery? _historyPending;
+  RuntimeDelivery _reserveHistoryPage(List<Uint8List> lines) {
+    final bytes = lines.fold<int>(0, (total, line) => total + line.length);
+    if (!(reserveEarly?.call(bytes) ?? true)) {
+      _historyUnavailable('native history exceeded shared relay capacity');
+    }
+    return _historyPending = RuntimeDelivery(lines, bytes, releaseEarly, null);
+  }
+
+  String? _historyFailure;
+  final _historyLiveKeys = <(String, int)>[];
+  int _historyLiveBytes = 0;
+  Never _historyUnavailable(String reason) {
+    if (_historyLoading) _historyFailure ??= reason;
+    throw CodexOptionalUnsupported('native history', reason);
+  }
+
+  String _historyMetadata(
+    Object? result,
+    String expected, {
+    bool beforeResume = false,
+  }) {
+    if (result is! Json || result['thread'] is! Json) {
+      _historyUnavailable('native thread metadata was omitted');
+    }
+    final thread = result['thread']! as Json;
+    if (thread['id'] != expected) {
+      _historyUnavailable('native thread identity changed');
+    }
+    final status = thread['status'];
+    if (status is! Json ||
+        !(beforeResume ? const ['notLoaded', 'idle'] : const ['idle']).contains(
+          status['type'],
+        )) {
+      _historyUnavailable(
+        'native thread is active or its idle state is unavailable',
+      );
+    }
+    final mode = thread['historyMode'] ?? 'legacy';
+    if (mode != 'legacy' && mode != 'paginated') {
+      _historyUnavailable('unsupported native history mode');
+    }
+    return mode as String;
+  }
+
+  void _checkHistoryDisplay(List<Uint8List> output) {
+    if (output.fold<int>(0, (n, line) => n + line.length) > 256 * 1024) {
+      _historyUnavailable(
+        'native history page exceeds shared display capacity',
+      );
+    }
+  }
+
+  Iterable<Uint8List> _historyItem(String turn, Object? raw) {
+    if (raw is! Json) _historyUnavailable('invalid native history item');
+    final id = _identity(raw, 'id');
+    final key = '$turn:$id';
+    for (var i = _historyLiveKeys.length - 1; i >= 0; i--) {
+      final pending = _historyLiveKeys[i];
+      if (pending.$1 != key) continue;
+      _historyLiveKeys.removeAt(i);
+      _historyLiveBytes -= pending.$2;
+      releaseEarly?.call(pending.$2);
+    }
+    if (_seenItem(key, 2)) return const [];
+    RuntimeUpdate? update;
+    if (raw['type'] == 'userMessage') {
+      final content = raw['content'];
+      if (content is! List) _historyUnavailable('invalid native user history');
+      final text = StringBuffer();
+      for (final part in content) {
+        if (part is! Json ||
+            part['type'] != 'text' ||
+            part['text'] is! String) {
+          _historyUnavailable('unsupported native user history content');
+        }
+        if (text.length + (part['text']! as String).length >
+            maxAgentTextChunkBytes) {
+          _historyUnavailable('native user history exceeds display capacity');
+        }
+        text.write(part['text']);
+      }
+      update = RuntimeUpdate(AgentEventKind.user, text.toString());
+    } else {
+      update = _item('item/completed', {'turnId': turn, 'item': raw});
+    }
+    _markItem(key, 2);
+    Iterable<Uint8List> prefix = const [];
+    if (_identityOmissionPending) {
+      _identityOmissionPending = false;
+      _identityOmissionShown = true;
+      final notice = normalizeUpdate?.call(
+        RuntimeUpdate(
+          AgentEventKind.notice,
+          'Native item identity history truncated at 4096 keys; older duplicate identities are no longer retained.',
+        ),
+      );
+      if (notice is Iterable<Uint8List>) prefix = notice;
+    }
+    final output = update == null ? null : normalizeUpdate?.call(update);
+    return output is Iterable<Uint8List> ? prefix.followedBy(output) : prefix;
+  }
+
   @override
   Future<void> resumeSession(
     String id,
@@ -435,6 +803,11 @@ class CodexRuntimeDriver extends RuntimeDriver {
     _early.clear();
     _delivery?.release();
     _delivery = null;
+    _historyPending?.release();
+    _historyPending = null;
+    releaseEarly?.call(_historyLiveBytes);
+    _historyLiveBytes = 0;
+    _historyLiveKeys.clear();
     if (c != null && !c.isCompleted) c.completeError(error);
   }
 
@@ -541,6 +914,28 @@ class CodexRuntimeDriver extends RuntimeDriver {
   }
 
   Object? _notification(String method, Object? raw) {
+    if (_historyLoading &&
+        raw is Json &&
+        raw['threadId'] == root &&
+        (method.startsWith('item/') ||
+            method == 'turn/started' ||
+            method == 'turn/completed')) {
+      final item = raw['item'];
+      if (method != 'item/completed' || item is! Json) {
+        _historyUnavailable('native work changed during history replay');
+      }
+      final key = '${_identity(raw, 'turnId')}:${_identity(item, 'id')}';
+      if (_seenItem(key, 2)) return null;
+      final bytes = _boundedJsonBytes(raw, 256 * 1024) + 128;
+      if (_historyLiveKeys.length >= 64 ||
+          _historyLiveBytes + bytes > 256 * 1024 ||
+          !(reserveEarly?.call(bytes) ?? true)) {
+        _historyUnavailable('native history live buffer capacity exceeded');
+      }
+      _historyLiveBytes += bytes;
+      _historyLiveKeys.add((key, bytes));
+      return null;
+    }
     if (method == 'serverRequest/resolved' && raw is Json) {
       _identity(raw, 'threadId');
       if (raw['requestId'] is! String && raw['requestId'] is! int) {

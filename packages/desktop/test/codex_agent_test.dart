@@ -137,6 +137,55 @@ Future<Rig> nativeContinuePicker(WidgetTester tester, FakeHostLink host) async {
 }
 
 void main() {
+  uiTest('Codex: Codex restores through native history', (tester) async {
+    final host = nativeHost();
+    final rig = await nativeChat(tester, host);
+    final pane = chat(rig).id;
+    final id = session(rig);
+    final link = agents(rig).linkOf(pane)!;
+    host.agentExit(id);
+    await flush(tester);
+    link.saved = true;
+    link.prompt.text = 'unsent saved draft';
+    expect(link.statusLabel, 'Saved, not running');
+    expect(host.agentContinues, isEmpty);
+    host.agentContinueAnswers.add(
+      const AgentContinueResult(
+        eventChannel: 120,
+        adapter: AgentAdapter(name: 'codex-app-server', version: '0.166.0'),
+        capabilities: ['load'],
+        mode: AgentContinueMode.load,
+      ),
+    );
+    await tester.tap(key('agent-continue-$pane'));
+    await flush(tester);
+    host.agentEvent(id, AgentEvent.replay(AgentReplayPhase.start));
+    host.agentEvent(
+      id,
+      AgentEvent.text(AgentEventKind.user, 'native old question'),
+    );
+    host.agentEvent(
+      id,
+      AgentEvent.text(AgentEventKind.agentText, 'native old answer'),
+    );
+    host.agentEvent(id, AgentEvent.replay(AgentReplayPhase.end));
+    host.agentStateSource.add(
+      AgentStateParams(
+        sessionId: id,
+        seq: 2,
+        state: AgentState.idle,
+        runId: 'restored-run',
+      ),
+    );
+    await flush(tester);
+    expect(link.transcript.plainText, contains('native old question'));
+    expect(link.transcript.plainText, contains('native old answer'));
+    expect(link.prompt.text, 'unsent saved draft');
+    expect(host.agentContinues.single.sessionId, id);
+    expect(host.agentStarts, hasLength(1));
+    expect(host.agentPrompts, isEmpty);
+    expect(link.canSend, true);
+  });
   uiTest('Codex: Codex without a workspace', (tester) async {
     final host = nativeHost(workspace: false);
     await pumpRig(tester, host);

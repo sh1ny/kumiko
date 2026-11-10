@@ -197,10 +197,25 @@ class TestHostExtension implements HostExtension {
         EmptyParams.fromJson(params);
         return host.agents.draftSnapshot();
       case 'test/agent.stats':
-        EmptyParams.fromJson(params);
+        final scanRoots = params['secretScanRoots'];
+        final scanSession = params['secretScanSessionId'];
+        if (scanRoots != null &&
+            (scanRoots is! List ||
+                scanRoots.any((root) => root is! String) ||
+                scanSession is! String)) {
+          throw RpcException(
+            ErrorCode.invalidParams,
+            'invalid test secret scan',
+          );
+        }
         return {
           'sessions': host.agents.snapshot(),
           'heldResolutions': host.faults.heldResolutions,
+          if (scanRoots != null)
+            'secretAudit': await host.agents.auditToolFilesForTesting(
+              scanSession! as String,
+              [for (final root in scanRoots as List) root as String],
+            ),
         };
       case Method.testChannelOpen:
         final p = TestChannelOpenParams.fromJson(params);
@@ -286,6 +301,7 @@ Object? _tools(ToolService tools, String method, Json params) {
         'reason': tools.unavailableReason,
         'unauthenticated': tools.unauthenticatedCount,
         'authenticated': tools.authenticatedCount,
+        'pendingBindings': tools.pendingBindingCount,
         'authFailures': tools.authFailureCount,
         'grants': {
           for (final e in _testGrants.entries)
