@@ -50,6 +50,8 @@ Future<void> main() async {
             capabilities: {
               Capability.workbench,
               Capability.agent,
+              Capability.codex,
+              Capability.agentExtensionsV1,
               Capability.lifecycle,
               if (surfaceFactory != null) Capability.terminal,
             },

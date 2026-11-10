@@ -11,13 +11,14 @@ class AgentPermission {
   final AgentPermissionRequestedParams request;
   AgentPermissionResolvedParams? resolution;
   bool unavailable = false;
+  String? unavailableReason;
   bool replying = false;
   bool get pending => resolution == null && !unavailable;
   String get label {
     final answer = resolution;
     if (answer == null) {
       return unavailable
-          ? 'Unanswerable: host or session ended'
+          ? (unavailableReason ?? 'Unanswerable: host or session ended')
           : 'Waiting for approval';
     }
     if (answer.outcome == AgentPermissionOutcome.cancelled) return 'Cancelled';

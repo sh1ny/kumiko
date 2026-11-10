@@ -19,6 +19,21 @@ const agentCloseWarning = 'Are you sure you want to stop the running agent?';
 const agentAuthGuidance =
     'Claude Code is not signed in. Run claude in a terminal and sign in natively, then Retry.';
 
+bool _nativePeer(HostLink? host) =>
+    host != null &&
+    const [
+      Capability.agent,
+      Capability.codex,
+      Capability.agentExtensionsV1,
+    ].every(host.hello.capabilities.contains);
+
+class NativeQuestion {
+  NativeQuestion(this.request);
+  final AgentQuestionRequestedParams request;
+  bool replying = false;
+  String? unavailable;
+}
+
 enum AgentLinkPhase { pending, live, closing, ended }
 
 class AgentLink {
@@ -43,6 +58,32 @@ class AgentLink {
   final String paneId;
   final String workspaceId;
   String runtimeName;
+  String runtimeKind = 'claude-code';
+  bool _nativeControlsNegotiated = false;
+  String? runId;
+  String? turnId;
+  int nativeSeq = -1;
+  bool steering = false;
+  String? steeringUnavailable;
+  String? permissionReplyUnavailable;
+  final Map<String, NativeQuestion> questions = {};
+  bool get canSteer =>
+      runtimeKind == 'codex' &&
+      _nativeControlsNegotiated &&
+      capabilities.contains('steer') &&
+      connected &&
+      phase == AgentLinkPhase.live &&
+      state == AgentState.running &&
+      runId != null &&
+      turnId != null &&
+      !steering &&
+      !_promptAdmitting &&
+      steeringUnavailable == null &&
+      !streamFailed;
+
+  String get authGuidance => runtimeKind == 'codex'
+      ? 'Codex is not signed in. Run codex in a terminal and sign in natively, then Retry.'
+      : agentAuthGuidance;
   String? sessionId;
   String? runtimeProfileId;
   AgentAdapter? adapter;
@@ -185,6 +226,7 @@ class AgentLink {
   String? closeFailure;
   bool abandoned = false;
   bool sending = false;
+  bool _promptAdmitting = false;
   bool stopping = false;
   bool streamFailed = false;
   String? error;
@@ -203,6 +245,8 @@ class AgentLink {
       phase == AgentLinkPhase.live &&
       state == AgentState.idle &&
       !sending &&
+      !_promptAdmitting &&
+      !steering &&
       !streamFailed;
   bool get canStop =>
       connected &&
@@ -311,15 +355,18 @@ class AgentController extends ChangeNotifier implements ViewCloser {
     required String workspaceId,
     required String runtimeName,
     String? sessionId,
-  }) => AgentLink(
-    paneId: paneId,
-    workspaceId: workspaceId,
-    runtimeName: runtimeName,
-    sessionId: sessionId,
-    draftQueue: _draftQueue,
-    draftSend: _saveDraft,
-    onDraftChanged: _changed,
-  )..draftStorageDisabled = _draftsDisabled;
+  }) =>
+      AgentLink(
+          paneId: paneId,
+          workspaceId: workspaceId,
+          runtimeName: runtimeName,
+          sessionId: sessionId,
+          draftQueue: _draftQueue,
+          draftSend: _saveDraft,
+          onDraftChanged: _changed,
+        )
+        ..draftStorageDisabled = _draftsDisabled
+        .._nativeControlsNegotiated = _nativePeer(_host);
 
   Future<AgentDraftSaveResult> _saveDraft(AgentDraftSaveParams params) async {
     final host = _host;
@@ -483,6 +530,9 @@ class AgentController extends ChangeNotifier implements ViewCloser {
   void attach(HostLink host) {
     detach();
     _host = host;
+    for (final link in _links.values) {
+      link._nativeControlsNegotiated = _nativePeer(host);
+    }
     final generation = _generation;
     void listen<T>(Stream<T> source, void Function(T) receive) {
       _subscriptions.add(
@@ -500,19 +550,71 @@ class AgentController extends ChangeNotifier implements ViewCloser {
           link._exit != null) {
         return;
       }
+      if (link.runtimeKind == 'codex') {
+        if (event.runId == null ||
+            event.seq <= link.nativeSeq ||
+            (link.runId != null && event.runId != link.runId)) {
+          return;
+        }
+        link.nativeSeq = event.seq;
+        link.runId = event.runId;
+        link.turnId = event.turnId;
+        link.questions.removeWhere((_, q) => q.request.turnId != event.turnId);
+      }
       link.seq = event.seq;
       link.state = event.state;
       // Tools status rides the same sequence; a message without it changes nothing.
       if (event.tools != null) link.tools = event.tools;
       _changed();
     });
+    if (_nativePeer(host)) {
+      listen(host.agentQuestions, (event) {
+        final link = _bySession[event.sessionId];
+        if (link == null ||
+            !link.live ||
+            event.seq <= link.nativeSeq ||
+            event.runId != link.runId ||
+            event.turnId != link.turnId) {
+          return;
+        }
+        link.nativeSeq = event.seq;
+        link.questions.putIfAbsent(
+          event.requestId,
+          () => NativeQuestion(event),
+        );
+        _changed();
+      });
+      listen(host.agentQuestionResolutions, (event) {
+        final link = _bySession[event.sessionId];
+        if (link == null ||
+            event.seq <= link.nativeSeq ||
+            event.runId != link.runId) {
+          return;
+        }
+        link.nativeSeq = event.seq;
+        final q = link.questions[event.requestId];
+        if (q != null && q.request.turnId == event.turnId) {
+          link.questions.remove(event.requestId);
+        }
+        _changed();
+      });
+    }
     listen(host.agentPermissionRequests, (event) {
       final link = _bySession[event.sessionId];
       if (link == null ||
           link._pendingPermissions.containsKey(event.requestId)) {
         return;
       }
+      if (link.runtimeKind == 'codex' &&
+          (link.runId == null ||
+              !event.requestId.startsWith('${link.runId}:'))) {
+        return;
+      }
       final permission = AgentPermission(event);
+      if (link.permissionReplyUnavailable != null) {
+        permission.unavailable = true;
+        permission.unavailableReason = 'Reply unavailable for this run';
+      }
       link._pendingPermissions[event.requestId] = permission;
       link.transcript.addPermission(permission);
       _changed();
@@ -540,6 +642,10 @@ class AgentController extends ChangeNotifier implements ViewCloser {
       // Priority control may overtake the canonical turn/notice data. Keep
       // action metadata here; only the ordered channel appends the outcome.
       if (event.error == ErrorCode.authRequired) link.errorCode = event.error;
+      if (link.runtimeKind == 'codex' && event.nativeMessage != null) {
+        link.error =
+            '${event.nativeCode == null ? '' : '${event.nativeCode}: '}${event.nativeMessage}${event.nativeMessageTruncated ? ' [truncated]' : ''}';
+      }
       _changed();
     });
     listen(host.agentExits, _exited);
@@ -597,6 +703,7 @@ class AgentController extends ChangeNotifier implements ViewCloser {
       link._exit = null;
       link._releasing = null;
       link.connected = false;
+      link._nativeControlsNegotiated = false;
       link.hostLost = true;
       link.saved = false;
       link.phase = AgentLinkPhase.ended;
@@ -625,6 +732,9 @@ class AgentController extends ChangeNotifier implements ViewCloser {
                     ? pane.state['sessionId']! as String
                     : null,
               )
+              ..runtimeKind = pane.state['runtimeKind'] is String
+                  ? pane.state['runtimeKind']! as String
+                  : 'claude-code'
               ..connected =
                   _host?.hello.capabilities.contains(Capability.agent) == true,
       );
@@ -715,11 +825,26 @@ class AgentController extends ChangeNotifier implements ViewCloser {
     _changed();
   }
 
+  bool _refuseNativePeer(AgentLink link, HostLink host, {String? runtimeKind}) {
+    if ((runtimeKind ?? link.runtimeKind) != 'codex' || _nativePeer(host)) {
+      return false;
+    }
+    try {
+      requireCodexCapabilities(host.hello.capabilities);
+    } on RpcException catch (error) {
+      link.errorCode = error.reason;
+      link.error = _describe(error);
+    }
+    _changed();
+    return true;
+  }
+
   Future<void> start(
     String paneId, {
     required String workspaceId,
     required String runtimeName,
     String? runtimeProfileId,
+    String runtimeKind = 'claude-code',
   }) async {
     final host = _host;
     if (host == null ||
@@ -734,6 +859,20 @@ class AgentController extends ChangeNotifier implements ViewCloser {
             previous._draining)) {
       return;
     }
+    if (runtimeKind == 'codex' && !_nativePeer(host)) {
+      final refused =
+          previous ??
+          (_newLink(
+              paneId: paneId,
+              workspaceId: workspaceId,
+              runtimeName: runtimeName,
+            )
+            ..runtimeKind = runtimeKind
+            ..connected = true);
+      _links.putIfAbsent(paneId, () => refused);
+      _refuseNativePeer(refused, host, runtimeKind: runtimeKind);
+      return;
+    }
     final link =
         _newLink(
             paneId: paneId,
@@ -743,7 +882,8 @@ class AgentController extends ChangeNotifier implements ViewCloser {
           ..phase = AgentLinkPhase.pending
           ..state = AgentState.starting
           ..connected = true
-          ..runtimeProfileId = runtimeProfileId;
+          ..runtimeProfileId = runtimeProfileId
+          ..runtimeKind = runtimeKind;
     // A conversation with a saved record owns its draft (it stays with that
     // session); only text that never had a record moves to the new one.
     if (previous != null && !previous.known) {
@@ -752,7 +892,10 @@ class AgentController extends ChangeNotifier implements ViewCloser {
     _links[paneId] = link;
     _pendingStarts.add(link);
     if (previous != null) _disposeLink(previous, store: true);
-    savePaneState(paneId, {'runtimeName': runtimeName});
+    savePaneState(paneId, {
+      'runtimeName': runtimeName,
+      if (runtimeKind != 'claude-code') 'runtimeKind': runtimeKind,
+    });
     _changed();
     final generation = _generation;
     try {
@@ -760,6 +903,7 @@ class AgentController extends ChangeNotifier implements ViewCloser {
         AgentStartParams(
           workspaceId: workspaceId,
           runtimeProfileId: runtimeProfileId,
+          runtimeKind: runtimeKind,
         ),
       );
       if (!_current(host, generation) || !_owns(link)) {
@@ -782,6 +926,7 @@ class AgentController extends ChangeNotifier implements ViewCloser {
       savePaneState(paneId, {
         'sessionId': result.sessionId,
         'runtimeName': runtimeName,
+        if (runtimeKind != 'claude-code') 'runtimeKind': runtimeKind,
       });
     } on RpcException catch (e) {
       if (_current(host, generation) && _owns(link)) _failed(link, e);
@@ -794,7 +939,10 @@ class AgentController extends ChangeNotifier implements ViewCloser {
     _changed();
   }
 
-  Future<void> continueSession(String paneId) async {
+  Future<void> continueSession(
+    String paneId, {
+    Future<String?> Function(RuntimeListResult profiles)? chooseProfile,
+  }) async {
     final link = _links[paneId];
     final host = _host;
     if (link == null ||
@@ -803,12 +951,33 @@ class AgentController extends ChangeNotifier implements ViewCloser {
         _freshSelections.contains(link)) {
       return;
     }
+    if (_refuseNativePeer(link, host)) {
+      return;
+    }
     final id = link.sessionId!;
     final existing = _bySession[id];
     if (existing != null && !identical(existing, link)) {
       focusPane(existing.paneId);
       return;
     }
+    final generation = _generation;
+    final wasSaved = link.saved;
+    final oldState = link.state;
+    final oldError = link.error;
+    final oldErrorCode = link.errorCode;
+    var choosing = false;
+    void restoreSelection() {
+      if (!_current(host, generation) ||
+          !_owns(link) ||
+          link.phase != AgentLinkPhase.pending) {
+        return;
+      }
+      if (identical(_bySession[id], link)) _bySession.remove(id);
+      link.phase = AgentLinkPhase.ended;
+      link.state = oldState;
+      link.saved = wasSaved;
+    }
+
     // Reserve before the await so two Continue clicks cannot race a duplicate.
     _bySession[id] = link;
     link.phase = AgentLinkPhase.pending;
@@ -821,20 +990,76 @@ class AgentController extends ChangeNotifier implements ViewCloser {
     link._resumeReason = null;
     link.streamFailed = false;
     link.seq = -1;
-    link.transcript.clear();
+    link.nativeSeq = -1;
+    link.runId = null;
+    link.turnId = null;
+    link.steeringUnavailable = null;
+    link.permissionReplyUnavailable = null;
     link._pendingPermissions.clear();
     link.stopResult = null;
     link.tools = null;
-    final generation = _generation;
     _changed();
     try {
-      final result = await host.continueAgent(id);
+      AgentContinueResult result;
+      try {
+        result = await host.continueAgent(id);
+      } on RpcException catch (error) {
+        if (error.reason != ErrorCode.noRuntimeProfile ||
+            chooseProfile == null) {
+          rethrow;
+        }
+        choosing = true;
+        if (!_current(host, generation) ||
+            !_owns(link) ||
+            link.phase != AgentLinkPhase.pending) {
+          return;
+        }
+        final profiles = _compatibleRuntimes(
+          await host.runtimeList(),
+          link.runtimeKind,
+        );
+        if (!_current(host, generation) ||
+            !_owns(link) ||
+            link.phase != AgentLinkPhase.pending) {
+          return;
+        }
+        final selected = await chooseProfile(profiles);
+        if (!_current(host, generation) ||
+            !_owns(link) ||
+            link.phase != AgentLinkPhase.pending) {
+          return;
+        }
+        if (selected == null) {
+          restoreSelection();
+          link.error = oldError;
+          link.errorCode = oldErrorCode;
+          _changed();
+          return;
+        }
+        final current = _compatibleRuntimes(
+          await host.runtimeList(),
+          link.runtimeKind,
+        );
+        if (!_current(host, generation) ||
+            !_owns(link) ||
+            link.phase != AgentLinkPhase.pending) {
+          return;
+        }
+        if (!current.profiles.any((profile) => profile.id == selected)) {
+          throw RpcException(
+            ErrorCode.noRuntimeProfile,
+            'The selected compatible runtime profile is unavailable. Choose or add a profile.',
+          );
+        }
+        result = await host.continueAgent(id, runtimeProfileId: selected);
+      }
       if (!_current(host, generation) || !_owns(link)) {
         if (!_disposed && link.phase != AgentLinkPhase.ended) {
           _closeOrphan(host, id);
         }
         return;
       }
+      link.transcript.clear();
       link.adapter = result.adapter;
       link.capabilities = result.capabilities;
       link.tools = result.tools;
@@ -842,7 +1067,13 @@ class AgentController extends ChangeNotifier implements ViewCloser {
     } on RpcException catch (e) {
       if (!_current(host, generation) || !_owns(link)) return;
       if (identical(_bySession[id], link)) _bySession.remove(id);
-      _failed(link, e);
+      if (choosing && e.reason == ErrorCode.noRuntimeProfile) {
+        restoreSelection();
+        link.error = _describe(e);
+        link.errorCode = e.reason;
+      } else {
+        _failed(link, e);
+      }
       if (e.reason == ErrorCode.turnRunning &&
           e.message.contains('already open')) {
         final owner = _links.values
@@ -856,6 +1087,18 @@ class AgentController extends ChangeNotifier implements ViewCloser {
     _changed();
   }
 
+  RuntimeListResult _compatibleRuntimes(RuntimeListResult list, String kind) =>
+      RuntimeListResult(
+        profiles: list.profiles.where((p) => p.runtimeKind == kind).toList(),
+        defaultId: list.defaultId,
+        defaultAvailable:
+            list.defaultAvailable &&
+            list.profiles.any(
+              (p) => p.id == list.defaultId && p.runtimeKind == kind,
+            ),
+        defaultReason: list.defaultReason,
+      );
+
   Future<void> newSession(
     String paneId, {
     Future<String?> Function(RuntimeListResult profiles)? chooseProfile,
@@ -866,6 +1109,7 @@ class AgentController extends ChangeNotifier implements ViewCloser {
     if (link == null ||
         host == null ||
         !link.canNewSession ||
+        _refuseNativePeer(link, host) ||
         !_freshSelections.add(link)) {
       return;
     }
@@ -874,6 +1118,7 @@ class AgentController extends ChangeNotifier implements ViewCloser {
         _current(host, generation) && _owns(link) && link.canNewSession;
     try {
       var list = await host.runtimeList();
+      list = _compatibleRuntimes(list, link.runtimeKind);
       if (!current()) return;
       // A surviving explicit choice remains authoritative. Only a deleted
       // original choice rejoins the normal default/profile-picker flow.
@@ -893,7 +1138,7 @@ class AgentController extends ChangeNotifier implements ViewCloser {
         if (!current() || selected == null) return;
         // The picker can outlive profile edits. Never replace an explicit
         // selection that disappeared while the dialog was open.
-        list = await host.runtimeList();
+        list = _compatibleRuntimes(await host.runtimeList(), link.runtimeKind);
         if (!current()) return;
         profile = list.profiles.where((p) => p.id == selected).firstOrNull;
         if (profile == null) {
@@ -914,6 +1159,7 @@ class AgentController extends ChangeNotifier implements ViewCloser {
         paneId,
         workspaceId: link.workspaceId,
         runtimeName: profile.name,
+        runtimeKind: link.runtimeKind,
         runtimeProfileId: profile.id,
       );
     } on RpcException catch (e) {
@@ -975,7 +1221,7 @@ class AgentController extends ChangeNotifier implements ViewCloser {
     if (link == null || !link.canRetry) return;
     if (link.phase == AgentLinkPhase.ended) {
       if (link.known) {
-        await continueSession(paneId);
+        await continueSession(paneId, chooseProfile: chooseProfile);
       } else {
         await newSession(paneId, chooseProfile: chooseProfile);
       }
@@ -1099,6 +1345,7 @@ class AgentController extends ChangeNotifier implements ViewCloser {
         ? link.draft.beginSubmit()
         : null;
     link.sending = true;
+    link._promptAdmitting = true;
     link.error = null;
     link.errorCode = null;
     link._resumeReason = null;
@@ -1140,6 +1387,7 @@ class AgentController extends ChangeNotifier implements ViewCloser {
     } on ConnectionClosedException {
       if (_current(host, generation)) detach();
     } finally {
+      link._promptAdmitting = false;
       // Only accepted submissions wait for turn-ended to unlock Send. A local
       // failure must release the latch even when an unexpected error propagates.
       if (!submitted && _current(host, generation) && _owns(link)) {
@@ -1150,6 +1398,126 @@ class AgentController extends ChangeNotifier implements ViewCloser {
       }
       _changed();
     }
+  }
+
+  Future<void> steer(String paneId, String text) async {
+    final link = _links[paneId];
+    final host = _host;
+    if (link == null ||
+        host == null ||
+        !_nativePeer(host) ||
+        !link.canSteer ||
+        text.trim().isEmpty) {
+      return;
+    }
+    if (utf8.encode(text).length > maxAgentPromptBytes) {
+      link.error = 'Steering exceeds 256 KiB';
+      _changed();
+      return;
+    }
+    final generation = _generation;
+    final run = link.runId!;
+    final submission = text == link.prompt.text
+        ? link.draft.beginSubmit()
+        : null;
+    link.steering = true;
+    link.error = null;
+    _changed();
+    var accepted = false;
+    var cleared = false;
+    try {
+      await host.steerAgent(
+        AgentSteerParams(
+          sessionId: link.sessionId!,
+          runId: run,
+          expectedTurnId: link.turnId!,
+          text: text,
+          draftRevision: submission?.revision,
+          draftSynced: submission?.synced,
+        ),
+      );
+      accepted = true;
+      if (_current(host, generation) &&
+          _owns(link) &&
+          run == link.runId &&
+          submission != null &&
+          link.draft.unchangedSince(submission) &&
+          link.prompt.text == text) {
+        link._setComposer('');
+        cleared = true;
+      }
+    } on RpcException catch (e) {
+      if (!_current(host, generation) || !_owns(link)) return;
+      link.error = _describe(e);
+      if (e.reason == ErrorCode.methodNotAvailable) {
+        link.steeringUnavailable = link.error;
+      }
+    } on TimeoutException {
+      link.steeringUnavailable = 'Steering outcome unknown; not resent.';
+      link.error = link.steeringUnavailable;
+    } on ConnectionClosedException {
+      if (_current(host, generation)) detach();
+    } finally {
+      if (submission != null) {
+        link.draft.endSubmit(submission, accepted: accepted, cleared: cleared);
+      }
+      link.steering = false;
+      _changed();
+    }
+  }
+
+  Future<void> answerQuestion(
+    String paneId,
+    NativeQuestion question,
+    List<AgentQuestionAnswer> answers,
+  ) async {
+    final link = _links[paneId];
+    final host = _host;
+    final request = question.request;
+    if (link == null ||
+        host == null ||
+        !_nativePeer(host) ||
+        !link.live ||
+        !link.connected ||
+        !identical(link.questions[request.requestId], question) ||
+        request.runId != link.runId ||
+        request.turnId != link.turnId ||
+        question.replying ||
+        question.unavailable != null) {
+      return;
+    }
+    final generation = _generation;
+    question.replying = true;
+    link.error = null;
+    _changed();
+    try {
+      await host.answerAgentQuestion(
+        AgentQuestionAnswerParams(
+          sessionId: request.sessionId,
+          runId: request.runId,
+          requestId: request.requestId,
+          turnId: request.turnId,
+          answers: answers,
+        ),
+      );
+      // Only the sequenced resolution retires a request. An ACK is admission.
+    } on RpcException catch (e) {
+      if (!_current(host, generation) || !_owns(link)) return;
+      question.replying = false;
+      if (e.reason == ErrorCode.unknownRequest) {
+        link.questions.remove(request.requestId);
+      } else if (e.reason == ErrorCode.busy ||
+          e.reason == ErrorCode.invalidParams) {
+        link.error = _describe(e);
+      } else {
+        question.unavailable = _describe(e);
+      }
+    } on TimeoutException {
+      question.unavailable = 'Answer outcome unknown; not resent.';
+    } on ConnectionClosedException {
+      if (_current(host, generation)) detach();
+    }
+    _changed();
   }
 
   Future<void> stop(String paneId) async {
@@ -1183,6 +1551,7 @@ class AgentController extends ChangeNotifier implements ViewCloser {
     final permission = link?._pendingPermissions[requestId];
     if (link == null ||
         host == null ||
+        (link.runtimeKind == 'codex' && !_nativePeer(host)) ||
         !link.connected ||
         permission == null ||
         !permission.pending ||
@@ -1213,7 +1582,20 @@ class AgentController extends ChangeNotifier implements ViewCloser {
         link._pendingPermissions.remove(requestId);
       } else {
         link.error = _describe(e);
+        if (link.runtimeKind == 'codex' &&
+            e.reason == ErrorCode.methodNotAvailable) {
+          link.permissionReplyUnavailable = link.error;
+          for (final pending in link._pendingPermissions.values) {
+            pending.unavailable = true;
+            pending.unavailableReason = 'Reply unavailable for this run';
+          }
+        }
       }
+    } on TimeoutException {
+      if (!_current(host, generation) || !_owns(link)) return;
+      permission.unavailable = true;
+      link.error = 'Approval answer outcome unknown; not resent.';
+      permission.unavailableReason = 'Reply status unavailable';
     } on ConnectionClosedException {
       if (_current(host, generation)) detach();
     }
@@ -1479,6 +1861,9 @@ class AgentController extends ChangeNotifier implements ViewCloser {
   }
 
   void _disablePermissions(AgentLink link) {
+    link.questions.clear();
+    link.runId = null;
+    link.turnId = null;
     for (final permission in link._pendingPermissions.values) {
       permission.unavailable = true;
     }

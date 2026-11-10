@@ -701,6 +701,15 @@ class _TabStrip extends StatelessWidget {
                     launchAgentFlow(context, controller);
                   case _agentProfileValue:
                     launchAgentFlow(context, controller, choose: true);
+                  case '#codex':
+                    launchAgentFlow(context, controller, runtimeKind: 'codex');
+                  case '#codex-profile':
+                    launchAgentFlow(
+                      context,
+                      controller,
+                      runtimeKind: 'codex',
+                      choose: true,
+                    );
                   case _runtimeProfilesValue:
                     showRuntimeProfilesDialog(context, controller);
                   default:
@@ -740,6 +749,30 @@ class _TabStrip extends StatelessWidget {
                       selected != null &&
                       controller.agentsUnavailableReason == null,
                   child: const Text('Claude Code with runtime profile...'),
+                ),
+                PopupMenuItem<String>(
+                  key: const Key('launch-codex'),
+                  value: '#codex',
+                  enabled:
+                      selected != null &&
+                      controller.codexUnavailableReason == null,
+                  child: Text(
+                    controller.agentsUnavailableReason != null
+                        ? 'Codex unavailable'
+                        : controller.codexUnavailableReason != null
+                        ? 'Codex (${controller.codexUnavailableReason})'
+                        : selected == null
+                        ? 'Codex (needs a workspace)'
+                        : 'Codex',
+                  ),
+                ),
+                PopupMenuItem<String>(
+                  key: const Key('launch-codex-profile'),
+                  value: '#codex-profile',
+                  enabled:
+                      selected != null &&
+                      controller.codexUnavailableReason == null,
+                  child: const Text('Codex with runtime profile...'),
                 ),
                 PopupMenuItem<String>(
                   key: const Key('runtime-profiles'),

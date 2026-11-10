@@ -65,6 +65,116 @@ void main() {
       expect(LedgerView(profile).units(), isEmpty);
     });
   }
+  for (final selection in ['replacement', 'claude', 'missing']) {
+    test('Codex: Continue selected profile $selection', () async {
+      final f = NativeFixture(profile, work);
+      await f.open();
+      final a = await f.start();
+      await a.close();
+      await a.call(Method.agentRelease);
+      final saved = agentRows(profile);
+      final native = (await list(f.desktop)).profiles.single;
+      await f.desktop.connection.request(
+        Method.runtimeSave,
+        RuntimeSaveParams(
+          RuntimeProfile(
+            id: 'replacement',
+            name: 'Replacement',
+            runtimeKind: 'codex',
+            executable: native.executable,
+            args: [...native.args, '--chosen-continue-profile'],
+          ),
+        ).toJson(),
+      );
+      await saveAgentFixture(f.desktop, work, id: 'claude');
+      await f.desktop.connection.request(
+        Method.runtimeSetDefault,
+        const RuntimeSetDefaultParams('claude').toJson(),
+      );
+      if (selection == 'replacement') {
+        await f.desktop.connection.request(
+          Method.runtimeRemove,
+          const RuntimeRemoveParams('native').toJson(),
+        );
+      }
+      f.report.writeAsStringSync('');
+      final error = await rpcFailure(
+        f.desktop.connection.request(Method.agentContinue, {
+          'sessionId': a.id,
+          'runtimeProfileId': selection,
+        }),
+      );
+      if (selection == 'replacement') {
+        expect(error.reason, ErrorCode.resumeUnavailable);
+        expect(error.data['resumeReason'], 'native-history-unavailable');
+        expect(
+          f.reports.singleWhere((r) => r['launch'] == 'root')['argv'],
+          contains('--chosen-continue-profile'),
+        );
+      } else {
+        expect(error.reason, ErrorCode.noRuntimeProfile);
+        expect(
+          f.reports,
+          isEmpty,
+          reason: 'invalid explicit selections must fail before version probe',
+        );
+      }
+      expect((await list(f.desktop)).defaultId, 'claude');
+      expect(agentRows(profile), saved);
+      expect(LedgerView(profile).units(), isEmpty);
+    });
+  }
+  for (final originalAvailable in [true, false]) {
+    test(
+      'Codex: Continue legacy profile preference original=$originalAvailable',
+      () async {
+        final f = NativeFixture(profile, work);
+        await f.open();
+        final a = await f.start();
+        await a.close();
+        await a.call(Method.agentRelease);
+        final saved = agentRows(profile);
+        final native = (await list(f.desktop)).profiles.single;
+        await f.desktop.connection.request(
+          Method.runtimeSave,
+          RuntimeSaveParams(
+            RuntimeProfile(
+              id: 'replacement',
+              name: 'Replacement',
+              runtimeKind: 'codex',
+              executable: native.executable,
+              args: [...native.args, '--compatible-default'],
+            ),
+          ).toJson(),
+        );
+        await f.desktop.connection.request(
+          Method.runtimeSetDefault,
+          const RuntimeSetDefaultParams('replacement').toJson(),
+        );
+        if (!originalAvailable) {
+          await f.desktop.connection.request(
+            Method.runtimeRemove,
+            const RuntimeRemoveParams('native').toJson(),
+          );
+        }
+        f.report.writeAsStringSync('');
+        final error = await rpcFailure(
+          f.desktop.connection.request(Method.agentContinue, {
+            'sessionId': a.id,
+          }),
+        );
+        expect(error.reason, ErrorCode.resumeUnavailable);
+        expect(error.data['resumeReason'], 'native-history-unavailable');
+        final root = f.reports.singleWhere((r) => r['launch'] == 'root');
+        expect(
+          (root['argv'] as List).contains('--compatible-default'),
+          !originalAvailable,
+        );
+        expect((await list(f.desktop)).defaultId, 'replacement');
+        expect(agentRows(profile), saved);
+      },
+    );
+  }
   test('Codex: Initialization version mismatch', () async {
     final f = NativeFixture(
       profile,

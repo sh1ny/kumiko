@@ -37,11 +37,14 @@ This request produces planning only. Real provider requests and qualification re
 
 ## Release Notes
 
-Codex compatibility checks and more accurate terminal input qualification.
+Native Codex desktop controls and more accurate terminal input qualification.
 
 ### Added
 
 - Codex startup and continuation refuse missing peer capabilities before launching a process.
+
+- Codex launcher and runtime profile editing preserve the selected runtime kind, including compatible profile selection for Continue without changing the global default.
+- Native approvals show their complete bounded request details and offered choices; structured questions and explicit Steer preserve run identity and drafts.
 
 ### Fixed
 

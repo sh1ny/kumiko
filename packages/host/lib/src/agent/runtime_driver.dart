@@ -981,11 +981,16 @@ class CodexRuntimeDriver extends RuntimeDriver {
 
   Object? _deliverInteraction(Object interaction, String turn, Json raw) {
     if (_turnId == null) {
-      _stage(
-        turn,
-        interaction: interaction,
-        charge: _boundedJsonBytes(raw, 64 * 1024) + 1024,
-      );
+      var charge = _boundedJsonBytes(raw, 64 * 1024) + 1024;
+      if (interaction is RuntimePermission) {
+        if (interaction.preview != null) {
+          charge += _boundedJsonBytes(interaction.preview, 256 * 1024);
+        }
+        for (final choice in interaction.choices) {
+          charge += _boundedJsonBytes(choice.label, 256 * 1024);
+        }
+      }
+      _stage(turn, interaction: interaction, charge: charge);
       return null;
     }
     return interaction is RuntimePermission
@@ -1001,6 +1006,26 @@ class CodexRuntimeDriver extends RuntimeDriver {
       throw CodexProtocolException('invalid $key');
     }
     return value;
+  }
+
+  String? _approvalPreview(
+    Json raw,
+    Map<String, String> fields, {
+    Json? permissions,
+  }) {
+    final lines = <String>[];
+    for (final field in fields.entries) {
+      final value = raw[field.key];
+      if (value == null) continue;
+      if (value is! String) {
+        throw CodexProtocolException('invalid approval ${field.key}');
+      }
+      lines.add('${field.value}: $value');
+    }
+    if (permissions != null) {
+      lines.add('Requested permissions: ${jsonEncode(permissions)}');
+    }
+    return lines.isEmpty ? null : lines.join('\n');
   }
 
   Object? _request(Object id, String method, Object? raw) {
@@ -1078,16 +1103,19 @@ class CodexRuntimeDriver extends RuntimeDriver {
             : decision == 'decline' || decision == 'cancel'
             ? 'reject_once'
             : 'allow_once';
-        choices.add(
-          RuntimeChoice(clampUtf8(label, 4096), {'decision': decision}, kind),
-        );
+        choices.add(RuntimeChoice(label, {'decision': decision}, kind));
       }
       return _deliverInteraction(
         RuntimePermission(
           id,
           turn,
           command ? 'Command approval' : 'File change approval',
-          raw['command'] as String? ?? raw['reason'] as String?,
+          _approvalPreview(raw, {
+            if (command) 'command': 'Command',
+            if (command) 'cwd': 'Working directory',
+            if (!command) 'grantRoot': 'Grant root',
+            'reason': 'Reason',
+          }),
           choices,
           {'decision': 'cancel'},
         ),
@@ -1112,7 +1140,10 @@ class CodexRuntimeDriver extends RuntimeDriver {
           id,
           turn,
           'Additional permissions',
-          raw['reason'] as String?,
+          _approvalPreview(raw, const {
+            'cwd': 'Working directory',
+            'reason': 'Reason',
+          }, permissions: requested),
           [
             RuntimeChoice('Allow requested permissions for this turn', {
               'permissions': requested,

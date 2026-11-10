@@ -472,7 +472,7 @@ class Host {
             .toJson();
       case Method.agentContinue:
         return (await _agents!.continueSession(
-          AgentSessionParams.fromJson(params),
+          AgentContinueParams.fromJson(params),
         )).toJson();
       case Method.agentRecords:
         return (await _agents!.records(AgentRecordsParams.fromJson(params)))

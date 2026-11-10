@@ -631,7 +631,9 @@ class AgentService {
     }
   }
 
-  Future<AgentContinueResult> continueSession(AgentSessionParams params) async {
+  Future<AgentContinueResult> continueSession(
+    AgentContinueParams params,
+  ) async {
     _available();
     final record = _record(params.sessionId);
     if (record == null) {
@@ -659,10 +661,9 @@ class AgentService {
       await _checkContinueTarget(record.target);
       _available();
       if (previous != null) _forget(previous);
-      var profile = record.runtimeProfileId == null
-          ? null
-          : await profiles.find(record.runtimeProfileId!);
-      if (profile == null) {
+      final wanted = params.runtimeProfileId ?? record.runtimeProfileId;
+      var profile = wanted == null ? null : await profiles.find(wanted);
+      if (profile == null && params.runtimeProfileId == null) {
         final listed = await profiles.list();
         profile = listed.defaultId == null
             ? null

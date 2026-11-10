@@ -92,8 +92,13 @@ class _PendingContinueHost extends FakeHostLink {
   bool _firstContinue = true;
 
   @override
-  Future<AgentContinueResult> continueAgent(String id) {
-    if (!_firstContinue) return super.continueAgent(id);
+  Future<AgentContinueResult> continueAgent(
+    String id, {
+    String? runtimeProfileId,
+  }) {
+    if (!_firstContinue) {
+      return super.continueAgent(id, runtimeProfileId: runtimeProfileId);
+    }
     _firstContinue = false;
     calls.add('agent/continue $id');
     return continueResult.future;

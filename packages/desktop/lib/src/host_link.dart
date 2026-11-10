@@ -107,13 +107,20 @@ abstract interface class HostLink {
   Future<void> setDefaultRuntimeProfile(String id);
 
   Future<AgentStartResult> startAgent(AgentStartParams params);
-  Future<AgentContinueResult> continueAgent(String sessionId);
+  Future<AgentContinueResult> continueAgent(
+    String sessionId, {
+    String? runtimeProfileId,
+  });
 
   /// Registers the bounded decoder before attach, then grants channel credit.
   /// A single synchronous consumer owns this stream; cancelling releases the
   /// local channel. The host's session channel is freed with [releaseAgent].
   Stream<AgentEvent> attachAgent(String sessionId, int eventChannel);
   Future<void> promptAgent(AgentPromptParams params);
+  Future<void> steerAgent(AgentSteerParams params);
+  Future<void> answerAgentQuestion(AgentQuestionAnswerParams params);
+  Stream<AgentQuestionRequestedParams> get agentQuestions;
+  Stream<AgentQuestionResolvedParams> get agentQuestionResolutions;
   Future<void> stopAgent(String sessionId);
   Future<void> replyAgentPermission(AgentPermissionReplyParams params);
   Future<void> closeAgent(String sessionId);

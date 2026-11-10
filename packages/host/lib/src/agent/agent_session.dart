@@ -648,6 +648,24 @@ class AgentSession {
         ),
       );
     }
+    final preview = request.preview == null ? null : _redact(request.preview!);
+    final notification = AgentPermissionRequestedParams(
+      sessionId: sessionId,
+      requestId: id,
+      title: _redact(request.title),
+      preview: preview,
+      options: display,
+    );
+    // An approval must not expose an apparently complete grant after losing
+    // part of its preview or native choices to either existing display cap.
+    if (notification.truncated || notification.preview != preview) {
+      _observeWrite(client.reply(request.id, request.cancellation));
+      return encodeAgentEvent(
+        AgentEvent.notice(
+          'Native approval unavailable: full details exceed display capacity; request cancelled.',
+        ),
+      );
+    }
     _permissions[id] = _Permission(
       request.id,
       options,
@@ -656,15 +674,7 @@ class AgentSession {
       cancellation: request.cancellation,
     );
     _set(AgentState.waitingApproval);
-    onPermissionRequested(
-      AgentPermissionRequestedParams(
-        sessionId: sessionId,
-        requestId: id,
-        title: _redact(request.title),
-        preview: request.preview == null ? null : _redact(request.preview!),
-        options: display,
-      ),
-    );
+    onPermissionRequested(notification);
     return null;
   }
 

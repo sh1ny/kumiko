@@ -20,6 +20,25 @@ class _Pipe implements ByteSink {
 }
 
 void main() {
+  test('Continue profile selection preserves the legacy payload', () {
+    expect(const AgentContinueParams('saved').toJson(), {'sessionId': 'saved'});
+    final selected = AgentContinueParams.fromJson({
+      'sessionId': 'saved',
+      'runtimeProfileId': 'native',
+    });
+    expect(selected.runtimeProfileId, 'native');
+    expect(selected.toJson(), {
+      'sessionId': 'saved',
+      'runtimeProfileId': 'native',
+    });
+    expect(
+      () => AgentContinueParams.fromJson({
+        'sessionId': 'saved',
+        'runtimeProfileId': 1,
+      }),
+      throwsA(isA<RpcException>()),
+    );
+  });
   test('Codex: Compatible peers', () {
     expect(() => requireCodexCapabilities(_caps), returnsNormally);
     for (final missing in _caps) {

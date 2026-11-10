@@ -334,6 +334,309 @@ void nativeCases(Directory Function() profile, Directory Function() work) {
     expect(a.events.toString(), contains('root text'));
     await a.close();
   });
+  final requestedPreviewScope = <String, Object?>{
+    'network': {'enabled': true},
+    'fileSystem': {
+      'entries': [
+        {
+          'access': 'write',
+          'path': {'type': 'path', 'path': 'C:/approval-scope'},
+        },
+        {
+          'access': 'deny',
+          'path': {'type': 'glob_pattern', 'pattern': '**/private*'},
+        },
+      ],
+      'globScanMaxDepth': 2,
+    },
+  };
+  final previewCases =
+      <
+        ({
+          String name,
+          String method,
+          Json params,
+          List<String> fragments,
+          Json result,
+        })
+      >[
+        (
+          name: 'command includes cwd and reason',
+          method: 'item/commandExecution/requestApproval',
+          params: {
+            'command': 'echo approval-preview',
+            'cwd': 'C:/native-command-cwd',
+            'reason': 'Needed for the requested build',
+            'availableDecisions': ['decline', 'accept'],
+          },
+          fragments: [
+            'echo approval-preview',
+            'C:/native-command-cwd',
+            'Needed for the requested build',
+          ],
+          result: {'decision': 'accept'},
+        ),
+        (
+          name: 'file includes grant root and reason',
+          method: 'item/fileChange/requestApproval',
+          params: {
+            'grantRoot': 'C:/native-file-grant',
+            'reason': 'Needed for generated files',
+          },
+          fragments: ['C:/native-file-grant', 'Needed for generated files'],
+          result: {'decision': 'accept'},
+        ),
+        (
+          name: 'additional permissions include the requested scope',
+          method: 'item/permissions/requestApproval',
+          params: {
+            'cwd': 'C:/native-permission-cwd',
+            'reason': 'Needed for scoped access',
+            'permissions': requestedPreviewScope,
+          },
+          fragments: [
+            'C:/native-permission-cwd',
+            'Needed for scoped access',
+            'network',
+            'enabled',
+            'true',
+            'C:/approval-scope',
+            'deny',
+            '**/private*',
+            'globScanMaxDepth',
+          ],
+          result: {'permissions': requestedPreviewScope, 'scope': 'turn'},
+        ),
+      ];
+  for (final previewCase in previewCases) {
+    test('Codex: approval preview ${previewCase.name}', () async {
+      final f = await fixture({
+        'turns': [
+          {
+            'actions': [
+              {
+                'send': {
+                  'id': 'preview-approval',
+                  'method': previewCase.method,
+                  'params': {
+                    'threadId': r'$thread',
+                    'turnId': r'$turn',
+                    'itemId': 'preview-item',
+                    'startedAtMs': 1,
+                    ...previewCase.params,
+                  },
+                },
+              },
+              {'waitReply': 'preview-approval'},
+              terminalEvent('completed'),
+            ],
+          },
+        ],
+      });
+      final a = await f.start();
+      await a.prompt();
+      final permission = await a.wait(Method.agentPermissionRequested);
+      for (final fragment in previewCase.fragments) {
+        expect(permission['preview'], contains(fragment));
+      }
+      expect(permission['truncated'] ?? false, false);
+      expect(f.requests.where((m) => m['id'] == 'preview-approval'), isEmpty);
+      final offered = (permission['options'] as List).cast<Json>();
+      final choice = offered.firstWhere((o) => o['kind'] == 'allow_once');
+      await a.call(Method.agentPermissionReply, {
+        'sessionId': a.id,
+        'requestId': permission['requestId'],
+        'optionId': choice['optionId'],
+      });
+      await a.wait(Method.agentTurnEnded);
+      expect(
+        f.requests.where((m) => m['id'] == 'preview-approval').single['result'],
+        previewCase.result,
+      );
+      await a.close();
+    });
+  }
+  for (final mode in ['text', 'encoded', 'choice']) {
+    final encoded = mode == 'encoded';
+    final choice = mode == 'choice';
+    final command = encoded || choice;
+    test(
+      choice
+          ? 'Codex: approval preview refuses partial native decision scope'
+          : 'Codex: approval preview overflow refuses partial scope encoded=$encoded',
+      () async {
+        final scope = <String, Object?>{
+          'fileSystem': {
+            'write': ['C:/${List.filled(17000, 'x').join()}'],
+          },
+        };
+        final details = <String, Object?>{
+          if (command) ...{
+            'command': 'echo preview',
+            'cwd': 'C:/native-cwd',
+            'reason': encoded
+                ? List.filled(10750, '\u0001').join()
+                : 'Apply the requested command policy',
+            'availableDecisions': choice
+                ? [
+                    {
+                      'acceptWithExecpolicyAmendment': {
+                        'execpolicy_amendment': [
+                          'echo',
+                          List.filled(300, 'x').join(),
+                          'future-command-scope',
+                        ],
+                      },
+                    },
+                    'decline',
+                  ]
+                : List.filled(16, 'decline'),
+          } else ...{
+            'cwd': 'C:/native-cwd',
+            'reason': 'Requested write access',
+            'permissions': scope,
+          },
+        };
+        final params = <String, Object?>{
+          'threadId': r'$thread',
+          'turnId': r'$turn',
+          'itemId': 'preview-item',
+          'startedAtMs': 1,
+          ...details,
+        };
+        expect(utf8.encode(jsonEncode(params)).length, lessThan(64 * 1024));
+        final f = await fixture({
+          'turns': [
+            {
+              'actions': [
+                {
+                  'send': {
+                    'id': 'overflow-preview',
+                    'method': command
+                        ? 'item/commandExecution/requestApproval'
+                        : 'item/permissions/requestApproval',
+                    'params': params,
+                  },
+                },
+                {'waitReply': 'overflow-preview'},
+                terminalEvent('completed'),
+              ],
+            },
+          ],
+        });
+        final a = await f.start();
+        await a.prompt();
+        await eventually(
+          () =>
+              a.of(Method.agentPermissionRequested).isNotEmpty ||
+              f.requests.any((m) => m['id'] == 'overflow-preview'),
+        );
+        expect(
+          a.of(Method.agentPermissionRequested).isEmpty,
+          isTrue,
+          reason: 'truncated approval scope must not be offered',
+        );
+        await a.wait(Method.agentTurnEnded);
+        expect(
+          f.requests
+              .where((m) => m['id'] == 'overflow-preview')
+              .single['result'],
+          command
+              ? {'decision': 'cancel'}
+              : {'permissions': <String, Object?>{}, 'scope': 'turn'},
+        );
+        await eventually(
+          () => a.events.any(
+            (e) =>
+                e['kind'] == 'notice' &&
+                e['text'].toString().contains('capacity'),
+          ),
+        );
+        await a.close();
+      },
+    );
+  }
+  test(
+    'Codex: approval preview redacts live and revoked scope secrets',
+    () async {
+      final f = await fixture();
+      final report = await saveAgentFixture(
+        f.desktop,
+        work(),
+        id: 'preview-secret-owner',
+      );
+      final owner = AgentPeer(f.desktop);
+      await owner.start(f.workspace, runtime: 'preview-secret-owner');
+      await owner.attach();
+      final launch = await waitFixture(report, (r) => r['mcpServers'] is List);
+      final server = (launch['mcpServers'] as List).single as Json;
+      final secret =
+          ((server['env'] as List).cast<Json>().firstWhere(
+                (e) => e['name'] == 'KUMIKO_TOOL_SECRET',
+              )['value'])!
+              as String;
+      final script = jsonDecode(f.scriptFile.readAsStringSync()) as Json;
+      script['turns'] = [
+        for (var turn = 0; turn < 2; turn++)
+          {
+            'actions': [
+              {
+                'send': {
+                  'id': 'secret-preview-$turn',
+                  'method': 'item/permissions/requestApproval',
+                  'params': {
+                    'threadId': r'$thread',
+                    'turnId': r'$turn',
+                    'itemId': 'scope-$turn',
+                    'startedAtMs': 1,
+                    'cwd': 'C:/native-cwd',
+                    'permissions': {
+                      'fileSystem': {
+                        'write': ['C:/$secret/scope'],
+                      },
+                    },
+                  },
+                },
+              },
+              {'waitReply': 'secret-preview-$turn'},
+              terminalEvent('completed'),
+            ],
+          },
+      ];
+      f.scriptFile.writeAsStringSync(jsonEncode(script));
+      final a = await f.start();
+      for (var turn = 0; turn < 2; turn++) {
+        if (turn == 1) await owner.close();
+        await a.prompt();
+        final permission = await a.wait(
+          Method.agentPermissionRequested,
+          where: (p) =>
+              p['requestId'] !=
+              (turn == 0
+                  ? null
+                  : a.of(Method.agentPermissionRequested).first['requestId']),
+        );
+        final preview = permission['preview']! as String;
+        // Boolean assertions keep even a failing redaction test from logging
+        // the temporary credential it is intended to protect.
+        expect(preview.contains(secret), isFalse);
+        expect(preview.contains('<redacted>'), isTrue);
+        final decline = (permission['options'] as List).cast<Json>().firstWhere(
+          (o) => o['kind'] == 'reject_once',
+        );
+        await a.call(Method.agentPermissionReply, {
+          'sessionId': a.id,
+          'requestId': permission['requestId'],
+          'optionId': decline['optionId'],
+        });
+        await a.wait(
+          Method.agentTurnEnded,
+          where: (_) => a.of(Method.agentTurnEnded).length == turn + 1,
+        );
+      }
+      await a.close();
+    },
+  );
   test('Codex: Approve a command', () async {
     final f = await fixture({
       'turns': [
@@ -770,6 +1073,7 @@ void nativeCases(Directory Function() profile, Directory Function() work) {
       'text': text,
     });
     RpcException? refusal;
+    var admitted = 0;
     for (var i = 0; i < 20; i++) {
       try {
         await a.call(Method.agentSteer, {
@@ -778,13 +1082,20 @@ void nativeCases(Directory Function() profile, Directory Function() work) {
           'expectedTurnId': state['turnId'],
           'text': text,
         });
+        admitted++;
       } on RpcException catch (e) {
         refusal = e;
         break;
       }
     }
     expect(refusal?.reason, ErrorCode.busy);
-    final before = f.requests.where((r) => r['method'] == 'turn/steer').length;
+    expect(admitted, greaterThan(0));
+    int receivedSteers() =>
+        f.requests.where((r) => r['method'] == 'turn/steer').length;
+    // Host ACK means admitted, not that the native process has already read
+    // its stdin. Settle earlier admissions before observing a refused write.
+    await eventually(() => receivedSteers() >= admitted);
+    expect(receivedSteers(), admitted);
     final refused = await rpcFailure(
       a.call(Method.agentSteer, {
         'sessionId': a.id,
@@ -798,8 +1109,9 @@ void nativeCases(Directory Function() profile, Directory Function() work) {
     expect(refused.reason, ErrorCode.busy);
     final draft = await a.call(Method.agentDraftLoad);
     expect(draft['text'], text);
-    expect(f.requests.where((r) => r['method'] == 'turn/steer').length, before);
+    expect(receivedSteers(), admitted);
     await a.close();
+    expect(receivedSteers(), admitted);
   });
   test('Codex: stale early interaction cannot surface in next turn', () async {
     final f = await fixture({

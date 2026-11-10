@@ -777,12 +777,26 @@ class WorkbenchController extends ChangeNotifier {
     await refreshRuntimes();
   }
 
+  String? get codexUnavailableReason {
+    final reason = agentsUnavailableReason;
+    if (reason != null) return reason;
+    try {
+      requireCodexCapabilities(_link!.hello.capabilities);
+    } on RpcException catch (e) {
+      return e.message;
+    }
+    return null;
+  }
+
   Future<AgentLaunch> launchAgent({
     String? profileId,
     bool choose = false,
     String? workspaceId,
+    String runtimeKind = 'claude-code',
   }) async {
-    final reason = agentsUnavailableReason;
+    final reason = runtimeKind == 'codex'
+        ? codexUnavailableReason
+        : agentsUnavailableReason;
     final link = _link;
     final target = workspaceId ?? _layout?.selectedWorkspace;
     if (reason != null || link == null || _layout == null) {
@@ -797,7 +811,10 @@ class WorkbenchController extends ChangeNotifier {
     if (_stale(generation) || list == null) {
       return const AgentLaunch(AgentLaunchKind.failed);
     }
-    if (list.profiles.isEmpty) {
+    final compatible = list.profiles
+        .where((p) => p.runtimeKind == runtimeKind)
+        .toList();
+    if (compatible.isEmpty) {
       return AgentLaunch(
         AgentLaunchKind.noProfile,
         message: list.defaultReason,
@@ -805,11 +822,11 @@ class WorkbenchController extends ChangeNotifier {
       );
     }
     final wanted = profileId ?? (list.defaultAvailable ? list.defaultId : null);
-    final profile = list.profiles.where((p) => p.id == wanted).firstOrNull;
+    final profile = compatible.where((p) => p.id == wanted).firstOrNull;
     if (choose || profile == null) {
       return AgentLaunch(
         AgentLaunchKind.chooseProfile,
-        profiles: list.profiles,
+        profiles: compatible,
         message: choose ? null : list.defaultReason ?? 'The default runtime profile is unavailable. Choose or add a profile.',
         workspaceId: target,
       );
@@ -823,7 +840,10 @@ class WorkbenchController extends ChangeNotifier {
       kind: agentChatKind,
       workspace: target,
       item: _uuid(),
-      state: {'runtimeName': profile.name},
+      state: {
+        'runtimeName': profile.name,
+        if (runtimeKind != 'claude-code') 'runtimeKind': runtimeKind,
+      },
     );
     if (!_commit(d.openTab(pane, tabId: _fresh('t')))) {
       return AgentLaunch(AgentLaunchKind.failed, message: _message);
@@ -833,6 +853,7 @@ class WorkbenchController extends ChangeNotifier {
         pane.id,
         workspaceId: target,
         runtimeName: profile.name,
+        runtimeKind: runtimeKind,
         runtimeProfileId: profile.id,
       ),
     );

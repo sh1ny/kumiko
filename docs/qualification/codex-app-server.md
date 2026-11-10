@@ -187,8 +187,23 @@ Steering reserves canonical-event capacity before draft removal or native writes
 Control acknowledgement remains separate from native completion; Stop timeout
 leaves Stopping and a late terminal event reports its actual outcome.
 
-This host integration does not yet expose the desktop launcher, restore native
-history, or deliver a Kumiko MCP entry. Until safe entry-only delivery is proven,
+The desktop offers Codex in the New tab launcher and a native runtime-kind
+selector in Runtime profiles. Launcher and fresh-session recovery keep the
+requested runtime kind; a different-kind global default requires a compatible
+profile choice. Continue first retains the saved profile or compatible global default;
+when neither can continue, the user can explicitly choose a compatible replacement
+without changing the default. This profile routing does not establish native
+history restoration. Root approvals show their supplied native choices and bounded
+request preview. Structured answers are ephemeral, with secret inputs obscured;
+Send remains idle-only and Steer explicitly addresses the active native turn.
+Command approvals include the supplied command, working directory and reason;
+file approvals include the grant root and reason. Additional-permission approvals
+include the requested scope and working directory. Requests whose complete
+details or choice labels exceed the existing 16 KiB preview, 256-byte choice label
+or 64 KiB notification bounds are refused with a visible capacity reason.
+
+Native history restoration, MCP delivery and child lifecycle remain later work.
+Until safe entry-only delivery is proven,
 Codex starts without a usable ToolGrant and reports the Codex safe-delivery
 limitation even when the tool endpoint exists. No real runtime or authentication
 observation is established by the authored fixtures or candidate-only signatures.

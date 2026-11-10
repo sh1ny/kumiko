@@ -1916,13 +1916,28 @@ class AgentStartParams {
   };
 }
 
-/// Request shape for continue, attach, stop, close and release.
+/// Request shape for attach, stop, close and release.
 class AgentSessionParams {
   const AgentSessionParams(this.sessionId);
   factory AgentSessionParams.fromJson(Json json) =>
       AgentSessionParams(_req<String>(json, 'sessionId'));
   final String sessionId;
   Json toJson() => {'sessionId': sessionId};
+}
+
+/// Continue may explicitly select a compatible profile without changing the default.
+class AgentContinueParams extends AgentSessionParams {
+  const AgentContinueParams(super.sessionId, {this.runtimeProfileId});
+  factory AgentContinueParams.fromJson(Json json) => AgentContinueParams(
+    _req<String>(json, 'sessionId'),
+    runtimeProfileId: _opt<String>(json, 'runtimeProfileId'),
+  );
+  final String? runtimeProfileId;
+  @override
+  Json toJson() => {
+    'sessionId': sessionId,
+    'runtimeProfileId': ?runtimeProfileId,
+  };
 }
 
 class AgentAdapter {
