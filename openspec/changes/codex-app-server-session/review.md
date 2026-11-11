@@ -2,62 +2,61 @@
 
 ## Metadata
 
-- **Round:** 3. This is a full review of the task-order amendment: the new `## Implementation sequence amendment (2026-11-10)` in `design.md` and the reordered groups 2–8 in `tasks.md`.
-  - **Focused recheck (2026-11-10):** this recheck covers only whether Round 3 Required Changes 1–6 were applied. The design, findings and suggestions were not reopened. The Round 3 findings, verdict and Required Changes below are unchanged. Only the recheck notes and the `CHANGES_APPLIED` line are new.
-- **Prior round:** Round 2 returned APPROVE_WITH_CHANGES. Its focused re-check confirmed Required Changes 1–5 applied (CHANGES_APPLIED: yes). The prior `review.md` was read before writing this replacement. I re-checked that its five applied changes are still present in D3, D5, D6, D7, T2, State & Ownership, Resource Bounds and the delta specs. They are, unchanged.
-- **Reviewer:** Fresh-context reviewer (Claude Code agent, `claude-opus-5-5`), read-only. I had file tools only, with no shell. The focused recheck was done by the same kind of reviewer (Claude Code agent, `claude-opus-5-5`), also read-only with file tools only.
-  - **Commit comparison.** In Round 3 I couldn't run `git diff` or `git show 57e9f55:…/tasks.md`, and I had no copy of the commit-57e9f55 `tasks.md`. So I checked that obligations were preserved against four things: the in-file traceability table, the test map, the scenario set in the six delta specs, and the current task text.
-    - **Recheck:** the user supplied the full commit-57e9f55 `tasks.md` as data, and reported that a mechanical comparison found tasks 1.1 and 1.2 identical.
-    - **Tasks 1.1 and 1.2:** I compared them textually against that baseline. Current `tasks.md:143-144` match it exactly.
-    - **Test-map rows:** I compared these too. Every row not named in Required Change 2 matches the baseline. The changed rows are only those Required Change 2 names: `tasks.md:119-120` and `128-139`.
-  - **Applicable skill:** dart-build-cli-app (`F:/Dev/Orca/Workspace/kumiko/.agents/skills/dart-build-cli-app/SKILL.md`). I didn't need it; no finding depends on it. The recheck used no skills.
+- **Round:** 4. A full design review of the owner-approved ordinary-command approval clarification dated 2026-11-11. It covers:
+  - D4 Interactions and the Approval clarification paragraph (`design.md:119-121`);
+  - the expanded "Approve a command" scenario (`specs/codex-sessions/spec.md:93-103`);
+  - its map row (`tasks.md:99`);
+  - the "Approval clarification amendment" paragraph (`tasks.md:210-229` after the amendment).
+- **Prior round:** Round 3 returned APPROVE_WITH_CHANGES for the task-order amendment. Its focused recheck confirmed Required Changes 1–6 applied (Round 3 marked its changes applied). I read that `review.md` before this replacement. Its verdict is void for the amended design until this round completes.
+- **Reviewer:** Fresh-context reviewer (Claude Code agent, `claude-opus-5-5`), read-only, file tools only (no shell). I could not fetch the cited upstream Codex 0.166 sources. Statements about native behaviour rely on the repository's research record and the coordinator's provenance notes. I don't claim to have read those URLs. Applicable skills (dart-add-unit-test, dart-build-cli-app) were not needed, and no finding depends on them.
 - **Reviewed:**
   - **Project rules:** `AGENTS.md`.
-  - **Change artifacts:** `openspec/changes/codex-app-server-session/{proposal.md, design.md, tasks.md, review.md}` and all six `specs/*/spec.md`.
-  - **Decision and research records:**
-    - `docs/adr/0015-native-codex-app-server-and-child-identity.md`, in full;
-    - `docs/qualification/codex-app-server.md`, in full;
-    - `openspec/architecture.md`, the Codex lines;
-    - `openspec/roadmap.md`, change 1.
-  - **In-force ADRs:**
-    - ADR 0013: the decision list (decision 8 in detail).
-    - ADR 0012: the ownership, test-host and release-fence passages (lines 62, 102, 110, 144).
-    - ADRs 0004, 0005 and 0014: I relied on ADR 0015's limited-supersession text and the architecture index. I didn't reopen them in full.
-  - **Source:**
-    - `packages/host/lib/src/agent/agent_service.dart:99-123, 247-340, 560-1000`
-    - `agent_session.dart:1-200`
-    - `acp/acp_client.dart:148-160`
-    - `runtime_profile_service.dart`, its `runtimeKind` uses
-    - `adapter_detector.dart:166`
-    - `test_hooks/test_hooks.dart`, `fixtures.dart`, `host_main.dart:17-29`, `host.dart:103-121`
-    - `packages/host_protocol/lib/src/connection.dart:440-520`, `messages.dart:84-130`, `pubspec.yaml`
-    - `packages/domain/lib/src/profile/profile.dart:113-167`
-    - desktop capability checks (`main.dart:50`, `workbench_controller.dart:736`, `agent_controller.dart:326-727`)
-    - the existing test inventory under `packages/host/test`, `packages/host_protocol/test` and `packages/desktop/test`.
-  - **Read for the focused recheck:**
-    - current `tasks.md`, in full;
-    - current `review.md`;
-    - `design.md` D7 (`:161-169`);
-    - the commit-57e9f55 `tasks.md` baseline supplied by the user;
-    - `openspec/schemas/specwright/templates/review.md`.
-  - **Searched for the focused recheck:**
-    - the change directory, for the removed phrases "capability refusal before spawn", "Preserve exact-version" and "Test-map rows above are unchanged". None remains in `tasks.md`.
-- **Not done:** no provider calls, schema generation, builds or tests. The focused recheck also made no author edits and didn't reopen the design or suggestions.
+  - **Change artifacts:** `openspec/changes/codex-app-server-session/{proposal.md, design.md, tasks.md, review.md}`; `specs/codex-sessions/spec.md` in full. I searched the other five delta specs (`agent-runtimes`, `agent-sessions`, `agent-tool-access`, `app-exit`, `desktop-host-protocol`) for approval and permission wording.
+  - **Decision and research records:** `docs/adr/0015-native-codex-app-server-and-child-identity.md` (status and Decisions 4–5); `docs/qualification/codex-app-server.md` (core schema table at `:199-221` and the third-attempt record and Windows section at `:600-675`).
+  - **Source:** `packages/host/lib/src/agent/runtime_driver.dart:1960-2208` (approval/question request mapping); `packages/host/test/it/codex_test.dart:1690-1910` (approval preview, explicit-list and overflow cases), plus searches for `availableDecisions` across `packages/host`; desktop `lib` searches for consumers of approval option `kind`.
+  - **Baseline:** the coordinator-supplied pre-amendment excerpts of D4, the scenario and its map row.
+- **Not done:** no SDK commands, builds, tests, real runtime calls, native-home reads, provider or auth experiments, or tracker actions.
 
 <!-- This verdict covers only the contents reviewed. Editing proposal, specs or design afterward (other than applying Required Changes, or an edit confined to the proposal's `## Release Notes` section) voids it. -->
 
 ## Findings
 
-**The amendment's premise matches the code.**
-- `_AgentIO` builds `AcpClient` directly (`agent_service.dart:103`).
-- `AgentSession` hooks ACP normalization, permission and failure callbacks directly (`agent_session.dart:57-60`).
-- Start and Continue share one `_open` path (`agent_service.dart:661-663`). It reserves the channel at :673, registers the grant at :682-699, launches the unit at :700 and releases on failure at :807.
+**Scope and bookkeeping are as stated.**
+- **Map:** 131 rows (`tasks.md:9-139`). Two are red: `:99` (expanded command scenario) and `:119` (real Windows evidence). The other 129 are green.
+- **Checkboxes:** 22, of which 20 are ticked. 8.3 and 8.4 are open.
+- **Real evidence:** the Windows section still records command approval, Stop and the other required observations as unverified (`codex-app-server.md:659-674`).
+- **No new walk authorized:** neither the design (`design.md:121`) nor the tasks amendment (`tasks.md:224`) authorizes a further real walk or auth experiment.
 
-So shared startup admission and channel release can only be shown through `AgentService`, and folding the seam, routing, probe and mapping into group 4 is justified. Moving delegated-summary delivery from former 4.3 to 7.1 puts scope later, not earlier, which is allowed.
+**The current implementation is unchanged, as the brief says.** `runtime_driver.dart:2066-2076` still auto-replies `decline` with a notice when `availableDecisions` is missing. The scenario is correctly red and planned; nothing claims it already passes.
 
-**Triage is still correct:** T1–T6 apply, so the tier is FULL. The amendment changes only sequencing.
+**The core direction is sound:**
+- The fallback offers only native one-shot `accept` and `cancel`.
+- It is limited to ordinary requests.
+- Explicit lists stay authoritative.
+- No persistent grant comes from the fallback.
 
-**No contradiction with D1–D7 or the requirements was found**, apart from the wording in M3(d).
+It also fits the shared contract:
+- It reuses the existing `_deliverInteraction` staging, run/thread/turn/request fencing and retirement (`:2029-2056`).
+- Its lifecycle cancellation value, `{'decision': 'cancel'}` (`:2102`), is one of the two fallback choices, so Stop or close never sends an un-offered value for fallback requests.
+- Two choices fit well within the permission-option bound.
+
+It doesn't conflict with ADR 0015 Decision 5 ("Preserve native offered approval choices"):
+- When the list is absent, the fallback is a strict subset of the native default, so it adds no authority.
+- Leaving out the native default's policy-amendment choice narrows authority rather than widening it.
+
+**Round 3's Required Changes are still present and consistent.**
+
+| Round 3 change | Where it is now |
+|---|---|
+| RC1 (fence and tool-grant rows) | task 4.1 at `tasks.md:159` |
+| RC1 (child-content rows) and RC3 (auth rows) | task 4.3 at `:161` |
+| RC3 (D7 sign-in wording) | task 5.1 at `:166` |
+| RC3 (desktop restore row) | task 6.1 at `:171` |
+| RC3 (child-Stop rows) | task 7.1 at `:177` |
+| RC4 (`test:host`) | task 2.2 at `:149` and the workflow bullet at `:228` (now `:233`) |
+| RC6 (stale group reference) | traceability row at `:207` |
+
+Line numbers moved by two from Round 3; the text is unchanged. Two map cells have drifted since the Round 3 recheck (see S5). They remain coherent.
 
 ### Critical (blocking)
 
@@ -65,73 +64,51 @@ None.
 
 ### Moderate
 
-**M1. Three invariants the amendment states have no failing-first test in group 4, the first native integration.**
+**M1. "Visibly unavailable" has no defined native resolution, and it conflicts with D3 and the requirement text.**
 
-- **(a) The capability gate can end up after the version probe.**
-  - The spec requires refusal "before spawn", and ADR 0012:62 says start validates the runtime before spawning.
-  - The contained version probe is itself a UnitManager spawn. 4.4 adds it after 3.1 has already placed the gate, and no task fixes their order.
-  - Consequence: an older desktop's Codex start could launch `codex --version` before it is refused.
-- **(b) "Without minting or leaking a usable bridge secret" isn't testable as written.**
-  - Today `_open` registers a grant whenever the endpoint exists. It also builds the `kumiko` entry with `KUMIKO_TOOL_SECRET` before initialization (`agent_service.dart:682-723`).
-  - Task 4.4 only says "tools remain visibly unavailable".
-  - Consequence: if the shared `_open` is reused unchanged, the secret-bearing entry is available to the Codex driver. It could reach `thread/start` config, which is exactly the persistence path D5 forbids until 6.2 and 6.3 prove it safe.
-  - `_startTools` would also report the misleading `endpoint-unavailable: not started` reason (:955-959).
-- **(c) Content from child threads has no test before group 7.**
-  - Task 4.3 only covers "unknown child requests refused and attributed visibly".
-  - Native child threads can stream items and deltas from group 4 onwards. Nothing checks that they are withheld through the unknown-child path rather than appended to the root reply.
-  - Consequence: the proposal's "must not flatten child activity" rule can go unenforced through groups 4–6.
+- **What the artifacts say:**
+  - D3 says malformed core contracts fail the run, and it lists approval requests as core (`design.md:101`).
+  - Amended D4 says an explicit empty or malformed list is "visibly unavailable and grants nothing" (`design.md:119`).
+  - The requirement allows only "an explicit user answer, Stop, close, native retirement or a visible capacity refusal" to resolve a request (`spec.md:89`). An "unavailable" refusal is none of these.
+  - The scenario says non-ordinary requests with an absent or null list "do not receive the ordinary fallback" (`spec.md:101`). It doesn't say what they receive instead.
+- **What the source does today:** it resolves the same class of problem three different ways.
+  - **Native `decline`:** a list that is not a list, is empty or exceeds `maxPermissionOptions` gets one `decline` reply and a notice (`runtime_driver.dart:2069-2076`).
+  - **Run failure:** an entry that is neither a string nor an object throws `CodexProtocolException` (`:2079-2080`).
+  - **Native `cancel`:** the capacity path replies `cancel` (`codex_test.dart:1899`).
+- **Why it matters:** native `decline` lets the turn continue, while `cancel` ends it. The planned red row "Empty or malformed command decisions stay unavailable" therefore has no defined pass condition. An implementation could keep the throw, so one bad entry ends the whole run, or switch to `cancel`, and still claim the scenario.
+- **"Valid" is undefined.** The design never says whether an unknown but well-formed decision string in an explicit list is valid and kept as-is, or malformed. The current code keeps it.
 
-**M2. Red/green rules contradict the test map and the test file layout.**
+**M2. File-change approvals still offer a session-scoped choice the native request never carried, and this clarification blurs who owns that.**
 
-- **(a) A row that cannot be red first.** Task 4.1 lists "capability refusal before spawn" as a row that must fail before 4.4. But 3.1 has already implemented and verified that refusal, so the row passes before 4.4 starts and the red-first rule can't be met.
-- **(b) Protocol rows mapped only to a codec file.**
-  - Every `desktop-host-protocol` row is mapped only to `packages/host_protocol/test/codex_messages_test.dart`.
-  - `host_protocol` depends only on `domain` and `process_containment` (`pubspec.yaml:9-14`), so it cannot exercise a host with stalled native stdin or no transcript credit. The existing stalled-output bound lives in `packages/host/test/it/agent_qualification_test.dart:66-67`.
-  - Task 3.1 and the amendment both say a codec test cannot turn these rows green. So rows such as "Stop while Codex output is stalled", "Stalled native input" and "Child starts with no transcript credit" either go green on a codec test, against the rule, or never go green at all.
-- **(c) Qualification rows mapped to the wrong place.**
-  - "Real Windows evidence passes" and "Tests pass but walk is unrun" are mapped to host fixture tests in `codex_test.dart`.
-  - Task 8.1 puts those checks in `tool/test/check_qualification_test.dart`.
-  - A host fixture test cannot establish real evidence: the map's own preamble and 8.3 forbid that.
-
-**M3. Some rows have no owning task, and one task contradicts D7.**
-
-- **(a) Host authentication rows.** No task writes the host rows "Known Codex authentication failure" and "Unknown auth-like diagnostic" (`codex_test.dart`) red first. Task 4.3 omits authentication; 5.1 covers only the desktop. Existing classification recognises only `AcpRemoteException` at `session/new` (`agent_service.dart:845-849`), so Codex start and turn classification is new host work without a test owner.
-- **(b) Desktop restore row.** "Codex restores through native history" (`codex_agent_test.dart`) is unowned: 6.1 names only host files.
-- **(c) Desktop child-Stop rows.** "Codex native interruption completes" and "One child interruption is unsupported" (`codex_agent_test.dart`) are in neither 5.2 nor 7.1.
-- **(d) Version-gated sign-in wording.** Task 5.1 says "Preserve exact-version auth evidence rules". D7 says confirmed auth signatures apply to every admitted Codex version and that version metadata is "not a sign-in-guidance gate". As written, 5.1 invites version-gated guidance.
-
-**M4. The riskiest change to ACP ownership is under-verified.**
-
-- Task 2.2 moves `AgentSession` off `AcpClient` onto the driver seam. It verifies only `acp_client_test.dart`, `agent_session_transport_test.dart` and `agent_event_relay_test.dart`.
-- It leaves out `packages/host/test/agent/agent_session_test.dart`, which holds the retained green Stop, permission, refusal and authentication rows. It also leaves out `mise run test:host`, which `AGENTS.md` requires for any host or protocol change. The pre-commit hook runs only `test:fast`, which excludes the host suite.
-- Groups 3, 6 and 7 also change the host or protocol without naming `test:host`.
-- Consequence: a Claude Stop or permission regression introduced in group 2 surfaces only at 4.4, two groups later.
-
-**M5. Tests could launch the owner's real Codex.**
-
-- ADR 0012:110 requires fixture starts to select their scripted profile or isolate detection, so a real installed runtime never becomes a fixture's default. Existing isolation goes through `KUMIKO_TEST_RUNTIME_PATH`/`DIRS` (`test_hooks.dart:37-48, 78`).
-- The new Codex discovery (D3: PATH plus the npm global root) is new code. No task requires it to honour those overrides.
-- The owner has `codex.exe` 0.166.0 on PATH. With Claude isolated away, the empty-store default rule picks Codex, so a fixture test could start the real App Server. Provider activity needs separate approval (8.3).
-
-**M6. A completed artifact sends a test task to the wrong group.**
-
-- `docs/qualification/codex-app-server.md:111` says "Verify these cases in group 3 fixtures". That refers to the former group 3. Version-grammar and mismatch cases are now 4.2 red and 4.4 green.
-- Under the new order, group 3 is the protocol group, which has no probe. Following the record would pull version-probe testing into group 3, ahead of 4.4's rule of "no bare runtime version probe outside UnitManager".
+- **Code:** for `item/fileChange/requestApproval`, the driver offers a fixed set `['accept', 'acceptForSession', 'decline', 'cancel']`. It classifies `acceptForSession` as `allow_always` (`runtime_driver.dart:2066-2068, 2083-2084`).
+- **Records it conflicts with:**
+  - The research record says file approvals carry no decision list in the minimum schema: "Do not invent permission choices" (`codex-app-server.md:213`).
+  - Amended D4 says "Never invent other allow/always choices".
+- **Why the amendment makes this worse:** it says "other approval kinds ... do not use this fallback". It also adds a planned row "Special approvals do not use ordinary defaults". Together these suggest file-change approvals are covered, when this file-change set is a separate host-supplied fallback that includes a persistent grant.
+- **A green test exercises it:** the preview test passes against this list without checking which choices are offered (`codex_test.dart:1733-1742`).
+- **Consequence:** the clarification could be marked complete while a session-wide file-write choice, not supplied by the native request, stays offered. Changing file-change behaviour is outside the owner's authorization for this round. So the right fix is to state the boundary explicitly, not to change behaviour here.
 
 ### Suggestions
 
-- **S1. Codex profiles still route through ACP in groups 2–3.**
-  - Until 4.4, the host doesn't check the runtime kind. A `codex` profile with compatible peers would still go through the ACP `_open` path (`agent_service.dart:700-726`); `runtimeKind` is only checked for env at :638.
-  - The result is harmless: initialize fails and the grant is revoked. But it contradicts D1's "do not route Codex through synthetic ACP methods" in intermediate commits.
-  - Consider having 3.1 refuse the `codex` kind before spawn as not yet available until 4.4 replaces it.
-- **S2. Close and quit aren't child-aware in groups 5–6.** Group 5 exposes a usable Codex launcher, but close and quit only become child-aware in 7.2. The amendment could state that these commits are development builds with child-unaware close and quit, so nobody daily-drives them.
-- **S3. "Child bridge connection cap" has two owners and three file names.**
-  - The map names `codex_tools_test.dart`.
-  - Task 6.2 covers the 4-connection cap.
-  - Task 7.1 lists "child bridge cap" in `codex_test.dart`.
-  - Name one owner and the map's file.
-- **S4. Where the 2.1 fixture lives.** Task 2.1 adds "a scripted native App Server fixture", but the release fence is only stated in 4.1. The existing structure already refuses `--test-fixture` in release (`host_main.dart:27`, ADR 0012:102/144). Still, 2.1 should say whether its fixture is test-package-only or a test-hook mode, and 4.1 should reuse it rather than add a second fixture.
-- **S5. Make the traceability table reviewable without git.** Paste the former pending task texts, or a link to `git show 57e9f55:openspec/changes/codex-app-server-session/tasks.md`, into it.
+- **S1. `kind` provenance and null handling.**
+  - The contract record's command-approval row (`codex-app-server.md:212`) doesn't list a `kind` field, but D3 says the minimum-version schema defines the contract.
+  - Record where `kind` comes from in that row.
+  - Also, the design says "`kind` absent or `command`" but "absent or null" for the other two fields. As written, `kind: null` falls out of the fallback and becomes unavailable. If that's intended, state it; otherwise align the wording.
+- **S2. Fallback eligibility when the scope can't be seen.**
+  - The approval preview shows only command, cwd and reason (`runtime_driver.dart:2095-2100`).
+  - D3 ignores unknown additive fields.
+  - So a fallback `accept` could be offered for a request with no command text, or with a context field a newer Codex adds, and the user would approve it without seeing its scope.
+  - Consider requiring a nonempty `command` string for fallback eligibility.
+- **S3. `cancel` ends the turn.** In the fallback, the only way to refuse is native `cancel`. The label is the raw decision string (`:2082`). Users may expect a plain decline that lets the turn continue. Label it so it's clear the turn stops.
+- **S4. Persistent explicit decisions are classified as one-shot.**
+  - An explicit object decision such as `acceptWithExecpolicyAmendment` (exercised at `codex_test.dart:1834-1847`) gets kind `allow_once` (`runtime_driver.dart:2083-2087`).
+  - I found no desktop code in `lib` that uses that kind, so the impact is small today. Still, the shared DTO understates how long the grant lasts.
+  - Consider classifying policy-amending or unknown object decisions as `allow_always` or as unclassified.
+- **S5. Two map cells changed after the Round 3 recheck without a traceability note.**
+  - Row `:120` now names `packages/host/test/it/codex_profiles_test.dart` instead of `codex_test.dart`.
+  - Rows `:134-135` no longer list the codec file.
+  - Both are coherent, since the named tests are end-to-end, but note them in the traceability text.
+- **S6. Child requests take a different turn path.** Child approvals get their turn from the child registry (`runtime_driver.dart:2037-2050`), not from the root. Include one child ordinary-command case with an absent list among the planned rows.
 
 ## Verdict
 
@@ -139,100 +116,92 @@ VERDICT: APPROVE_WITH_CHANGES
 
 ## Required Changes
 
-All edits are to `openspec/changes/codex-app-server-session/tasks.md` unless stated otherwise.
+1. **Define the unavailable resolution (M1).**
+   - **`design.md:119` (D4).** Replace "an explicit empty or malformed list is visibly unavailable and grants nothing." with:
+     > "An explicit list that is empty, is not a list, exceeds the shared permission-option bound or contains an entry that is neither a string nor a JSON object, and an absent or null list on a non-ordinary command approval, is visibly unavailable: the host replies native `decline` once, shows a bounded notice, grants nothing and keeps the run (this optional field does not fail the run under D3). Well-formed decision values unknown to Kumiko in an explicit list are preserved verbatim."
+   - **`specs/codex-sessions/spec.md:101`.** Replace the bullet text with:
+     > "explicit empty/malformed lists, and absent/null lists on other approval kinds or permission contexts, are visibly unavailable: native `decline` is sent once with a bounded notice, nothing is granted and the run continues"
+   - **`specs/codex-sessions/spec.md:89`.** Replace "or a visible capacity refusal" with:
+     > "a visible capacity refusal or the visible unavailable refusal defined for command approvals"
+   - **`tasks.md:220` (amendment paragraph).** After "refusal of empty/malformed lists", insert:
+     > " (native `decline` once, bounded notice, run continues, including a non-string/non-object entry and an absent list on a non-ordinary request)"
 
-1. **Group 4 invariant tests (M1).**
-   - **Task 4.1:** after "capability refusal before spawn", insert:
-     > "; the refusal precedes the contained version probe as well as the App Server spawn, with no unit launched and no channel left reserved; and, until task 6.3 passes, a Codex start or Continue with the endpoint available registers no usable ToolGrant (or revokes it before any native write), sends no `kumiko` entry or secret in any native request, argv or environment, and reports tools unavailable with a Codex safe-delivery reason rather than endpoint-unavailable"
-   - **Task 4.3:** append:
-     > "Add red rows proving that items, deltas and tool updates from any non-root native thread are never appended to the root reply before group 7: they produce the bounded unknown-child notice and are withheld within the Resource Bounds unknown-child budget."
+2. **Set the file-change boundary (M2).**
+   - **`design.md:119` (D4).** After "other approval kinds and permission contexts do not use this fallback.", insert:
+     > "File-change approvals carry no decision list in the minimum schema and are outside this clarification; their current fixed set, including session-scoped `acceptForSession`, must be reconciled with the research record's no-invented-choices rule by a separate owner decision before task 8.4 completes."
+   - **`tasks.md` amendment paragraph.** Append:
+     > "The planned Special approvals row covers command approvals only and verifies no file-change choice set; the file-change reconciliation stays open for the owner decision named in D4."
 
-   **Recheck: applied.**
-   - **Refusal ordering, `tasks.md:157`:** it reads "the refusal precedes the contained version probe as well as the App Server spawn, with no unit launched and no channel left reserved". This text is attached to the regression rerun from Required Change 2.
-   - **Tool grant, `tasks.md:157`:** the grant clause appears as "Add red rows proving that, until task 6.3 passes, a Codex start or Continue with the endpoint available registers no usable ToolGrant (or revokes it before any native write), sends no kumiko entry or secret in any native request, argv or environment, and reports tools unavailable with a Codex safe-delivery reason rather than endpoint-unavailable."
-   - **Accepted deviation:** the author split the clause into its own sentence and made it explicit red rows. This is accepted. It keeps every obligation, and it is consistent with Required Change 2: the refusal rows are green regressions, while the grant suppression is new behavior that must fail first.
-   - **Task 4.3, `tasks.md:159`:** the child-thread sentence is present word for word.
+## Focused recheck (Required Changes 1–2)
 
-2. **Red/green consistency (M2).**
-   - **Task 4.1:** replace "capability refusal before spawn" in the list of red rows with:
-     > "and rerun the group 3 capability-refusal rows through shared AgentService start and Continue as regressions that must stay green (not red-first rows here)"
+**Scope.** I rechecked only RC1 and RC2. I did not reopen S1–S6 or carry out any implementation or pre-ship review. Same reviewer constraints apply: read-only, file tools only, no shell, and no fetching of URLs. I read:
+- the current `review.md`, including the author's Rebuttals;
+- `design.md:99-123` (D3 Identity and D4 Interactions/Approval clarification);
+- `specs/codex-sessions/spec.md:87-103`;
+- `tasks.md:99` and `:205-229`;
+- `runtime_driver.dart:2058-2089`;
+- a repository-wide search for `acceptForSession`, `fileChange/requestApproval` and "invent".
 
-     Keep the M1 insertion attached to this regression.
-   - **Test map, `desktop-host-protocol` rows:** extend the Test file cell, using `;` as the existing rows do and keeping the test names:
-     - "Compatible peers", "Older desktop", "Answer the current question", "Prior run sends a late answer", "Two children use the same tool identifier", "Attribution capacity is exceeded": add `packages/host/test/it/codex_test.dart`.
-     - "Stop while Codex output is stalled", "Stalled native input": add `packages/host/test/it/agent_qualification_test.dart`.
-     - "Running turn identity published", "Delayed prior-turn state": add `packages/desktop/test/codex_agent_test.dart`.
-     - "Child starts", "Child starts with no transcript credit": add `packages/host/test/it/codex_test.dart; packages/desktop/test/codex_agent_test.dart`.
-   - **Test map, `codex-sessions` qualification rows:**
-     - "Real Windows evidence passes": change the file to `tool/test/check_qualification_test.dart; docs/qualification/codex-app-server.md` and the test name to "Codex: Real Windows evidence passes (checker); approved Windows section recorded by 8.3".
-     - "Tests pass but walk is unrun": change the file to `tool/test/check_qualification_test.dart; packages/host/test/it/codex_test.dart`.
-   - **Test map preamble:** append:
-     > "A row naming several files is green only when its named test passes in every listed file; a row naming the qualification record is green only after task 8.3 records the approved observation."
-   - **Traceability text:** replace "Test-map rows above are unchanged" with:
-     > "Test-map rows are unchanged except for the Round 3 end-to-end file additions".
+I did not read the Codex rust-v0.166.0 URLs myself. Statements about them below are the coordinator's provenance notes, not my own observations. I also did not re-run strict validation, the whitespace check, the checkbox count or the 279-file snapshot comparison, since I have no shell. Those results are the coordinator's report.
 
-   **Recheck: applied.**
-   - **Task 4.1, `tasks.md:157`:** contains the regression sentence word for word. The phrase "capability refusal before spawn" no longer appears in `tasks.md`.
-   - **Rows `tasks.md:128-133`:** each adds `packages/host/test/it/codex_test.dart`.
-   - **Rows `:134-135`:** each adds `packages/host/test/it/agent_qualification_test.dart`.
-   - **Rows `:136-137`:** each adds `packages/desktop/test/codex_agent_test.dart`.
-   - **Rows `:138-139`:** each adds both host and desktop files.
-   - **All of these rows:** the codec file comes first, the test names are unchanged and the state stays red.
-   - **Row `:119`:** the file and test name match the required text exactly.
-   - **Row `:120`:** the files match exactly.
-   - **Preamble, `tasks.md:5`:** ends with the required sentence.
-   - **Traceability text, `tasks.md:189`:** reads "Test-map rows are unchanged except for the Round 3 end-to-end file additions". I compared this against the baseline. No other row changed.
+**The implementation is unchanged.** `runtime_driver.dart:2059-2089` still:
+- replies `decline` once with a notice for a missing, non-list, empty or over-bound list (`:2069-2076`);
+- throws on a non-string/non-object entry (`:2079-2080`);
+- supplies the fixed file-change set (`:2068`).
 
-3. **Row ownership and authentication wording (M3).**
-   - **Task 4.3:** append:
-     > "Include the host rows Known Codex authentication failure and Unknown auth-like diagnostic for start and turn errors, with any signature supplied only through the test-host candidate override and never through Claude's classifier."
-   - **Task 6.1:** append:
-     > "Add and pass the desktop row Codex restores through native history in packages/desktop/test/codex_agent_test.dart."
-   - **Task 7.1:** after "Idle root with active children", insert:
-     > ", Codex native interruption completes, One child interruption is unsupported"
-   - **Task 5.1:** replace "Preserve exact-version auth evidence rules;" with:
-     > "Show Codex sign-in guidance only for a signature confirmed by recorded real evidence, applying a confirmed signature to every admitted Codex version (D7);"
+That matches the Round 4 baseline. The command scenario stays red at `tasks.md:99`, with no claim that it passes.
 
-   **Recheck: applied.**
-   - **Task 4.3, `tasks.md:159`:** ends with the authentication-row sentence word for word.
-   - **Task 6.1, `tasks.md:169`:** ends with the desktop restore sentence word for word.
-   - **Task 7.1, `tasks.md:175`:** reads "Idle root with active children, Codex native interruption completes, One child interruption is unsupported and stalled transcript credit".
-   - **Task 5.1, `tasks.md:164`:** contains the replacement word for word, followed by "unknown auth-like errors remain native diagnostics". "Preserve exact-version" no longer appears in `tasks.md`.
-   - **Consistency with D7:** it matches D7 (`design.md:167`): "Confirmed auth signatures apply to every admitted Codex version; version metadata identifies the observation, not a sign-in-guidance gate. Never reuse Claude's classifier." Task 4.3's "never through Claude's classifier" also matches that last sentence.
+### RC1: verified as applied
 
-4. **Verification (M4).**
-   - **Task 2.2:** replace "Verify 2.1 plus acp_client_test.dart, agent_session_transport_test.dart and agent_event_relay_test.dart." with:
-     > "Verify 2.1 plus acp_client_test.dart, agent_session_transport_test.dart, agent_event_relay_test.dart and agent_session_test.dart directly, then mise run check and mise run test:host before committing."
-   - **Workflow follow-up:** add the bullet:
-     > "Every group that changes packages/host, packages/host_protocol or process containment runs mise run check and mise run test:host before it is ticked and committed; desktop-only groups run mise run check plus the affected flutter test files."
+- **D4 (`design.md:119`):**
+  - It now enumerates the unavailable cases: empty, not a list, over the shared permission-option bound, an entry that is neither string nor JSON object, and an absent/null list on a non-ordinary command approval.
+  - It defines one resolution for all of them: native `decline` once, a bounded notice, no grant, and the run continues.
+  - It states that this optional field is an explicit exception to D3's malformed-core failure rule, while malformed required approval identity fields still fail the run. That resolves the D3 conflict without weakening identity fencing.
+  - It keeps well-formed unknown decision values verbatim, which settles what "valid" means.
+- **Scenario (`spec.md:101`):** it states the same enumeration and outcome, plus verbatim preservation of unknown values. It says "other command approval kinds or permission contexts" rather than RC1's broader "other approval kinds". That narrowing is correct, because RC2 now puts file-change approvals outside this rule. It is consistent with D4.
+- **Requirement (`spec.md:89`):** the resolution list now includes "the command-approval unavailable refusal below". The shortened wording keeps the other semantics: session identity, native choice semantics, no automatic grant, visible failure for unsupported kinds, and refusal of retired answers. I accept the coordinator's report that strict validation passes at the 500-character limit; I did not run it.
+- **Task amendment (`tasks.md:218-222`):** it states the same outcome and lists every case, including non-list, over-bound, non-string/non-object entries and absent/null lists on non-ordinary command requests, plus preservation of unknown values.
+- **Result:** the planned red row "Empty or malformed command decisions stay unavailable" now has one defined pass condition. Keeping the throw or switching to `cancel` would visibly fail it. M1 is resolved.
 
-   **Recheck: applied.**
-   - **Task 2.2, `tasks.md:149`:** contains the replacement word for word.
-   - **Workflow follow-up, `tasks.md:209`:** contains the bullet word for word.
-   - **Cosmetic, non-blocking:** `tasks.md:210` is a blank line between this bullet and the next. It makes the list render loose. It is not a required edit.
+### RC2: boundary verified as applied; the owner-decision gate rebuttal is accepted
 
-5. **Fixture isolation from the installed Codex (M5).** Task 4.1: append:
-   > "Codex discovery honours the existing test runtime PATH/DIRS overrides, and every fixture start selects its scripted profile explicitly (ADR 0012), so no test can launch an installed real Codex or make a provider call."
+- **Boundary applied:**
+  - D4 (`design.md:119`) says file-change approvals carry no decision list in the minimum schema and are outside this command-only clarification, and that it does not modify their existing native response semantics.
+  - The task amendment (`tasks.md:228-229`) limits the planned Special approvals case to command approvals and says it verifies or modifies no file-change choice set.
+  - This removes the ambiguity M2 named: the clarification can no longer be read as covering, or marked complete over, the file-change choice set.
+- **Gate not applied, and the author disputes it.** I decided on the evidence, not because a rebuttal was supplied. **I accept the rebuttal**, for two reasons. The first is enough by itself.
+  1. **The gate goes beyond what M2 established and what this round owns.**
+     - M2's stated consequence was a false-coverage risk: the clarification could be marked complete while the file-change set stayed unexamined. The applied boundary fully removes that risk.
+     - The fixed file-change set existed before this amendment, in behaviour covered by earlier approved rounds and the group 5–7 commits. This amendment neither adds nor changes it.
+     - M2's "invented choice" premise rested only on my reading of `codex-app-server.md:213`. That row records the request's required fields and the absence of a request-side list. It does not record which values the response accepts, so it cannot show that `acceptForSession` is non-native.
+     - A blocking owner gate on task 8.4 for pre-existing, out-of-scope behaviour therefore does not follow from the evidence in this round.
+  2. **The coordinator's version-specific provenance, which I have not read, directly contradicts the premise.**
+     - According to the coordinator, Codex rust-v0.166.0's `FileChangeApprovalDecision` defines `acceptForSession` as a native response, scoped to the same files. The same tag's own file-change UI includes it in its unconditional baseline (`approval_overlay.rs` near line 981).
+     - If accurate, the response contract defines the valid file-change choices, and the host's set preserves native choices rather than inventing them. That fits ADR 0015 Decision 5 and the research record's rule.
+     - The repository is consistent with this: `tool/test/qualify_codex_app_server_test.dart:416` already exercises an `acceptForSession` file-change choice in the qualification tooling.
+     - My acceptance does not depend on this unverified provenance, and I make no claim about upstream behaviour beyond the coordinator's report.
+- **Residual note (non-blocking, not a Required Change):**
+  - The research record row `codex-app-server.md:213` would read more clearly if it named the response-side decision set and its source. That would stop a future reader from making the same inference M2 made.
+  - The S4-style classification of `acceptForSession` as `allow_always` is coarser than the native same-files scope.
+  - Neither point affects this command-only clarification, and neither is a gate on task 8.4.
 
-   **Recheck: applied.** Task 4.1 (`tasks.md:157`) ends with this sentence word for word.
+### Disposition
 
-6. **Stale group reference (M6).** Add a traceability table row:
-
-   | Former task | Revised task(s) |
-   |---|---|
-   | Research record "group 3 fixtures" (docs/qualification/codex-app-server.md:111) | 4.2 red version/mismatch rows; 4.4 implementation |
-
-   This leaves the completed 1.2 artifact unchanged.
-
-   **Recheck: applied.**
-   - **Traceability row:** `tasks.md:205` contains it word for word.
-   - **Completed tasks:** 1.1 and 1.2 (`tasks.md:143-144`) are unchanged against the commit-57e9f55 baseline. Neither is unticked.
-
-**Focused recheck result:** Required Changes 1–6 are all applied and agree with each other, with D7 and with the commit-57e9f55 baseline for the completed tasks and the unaffected test-map rows. No edits remain.
+RC1 is verified as applied. RC2's boundary is verified as applied. Its additional owner-decision gate is explicitly accepted as rebutted by the reviewer, for the reasons above. No required item remains unresolved for this round. This disposition does not waive any finding for the owner and does not supply real qualification evidence. The expanded command scenario (`tasks.md:99`) and real Windows evidence (`:119`) stay red, and tasks 8.3/8.4 stay open, as the artifacts already state.
 
 <!-- yes (applied, and re-checked by the reviewer - only the reviewer sets it) | no (outstanding) | n/a (any other verdict) -->
 CHANGES_APPLIED: yes
 
 ## Rebuttals
 
-None yet.
+**RC1 applied for independent recheck.** D4 now defines one native `decline`, a bounded notice, no grant and a continuing run for unavailable command decision lists, preserving unknown well-formed values. The scenario and task amendment state the same outcome. The requirement's resolution list now includes this unavailable command refusal; its wording was shortened to stay within strict validation's 500-character limit. Required identity fields remain core failures. No implementation changed.
+
+**RC2 boundary applied; owner-decision gate rebutted, not yet accepted by reviewer.** D4 explicitly leaves file-change approvals outside this command-only clarification, and the task amendment limits the planned Special approvals case to command approvals. The proposed additional owner-decision gate is disputed on new version-specific primary evidence:
+
+- Codex 0.166's native `FileChangeApprovalDecision` response contract explicitly supports `acceptForSession`, with future approval limited to the same files: [native protocol](https://github.com/openai/codex/blob/rust-v0.166.0/codex-rs/app-server-protocol/src/protocol/v2/item.rs).
+- That version's own file-change UI presents this session option in its baseline choices, not a request-supplied decision list: [native file-change options](https://github.com/openai/codex/blob/rust-v0.166.0/codex-rs/tui/src/bottom_pane/approval_overlay.rs#L981).
+- Thus absence of a decision-list field on the file-change request does not establish that the existing native response choice is invented. The research record's no-invented-choices rule is compatible with preserving protocol-defined choices. No new file-change authority or behavior is proposed or implemented here.
+
+The reviewer must independently accept or reject this rebuttal. The findings, Required Changes, verdict and applied-status line above remain unchanged pending that recheck.
+
+**Reviewer disposition (focused recheck):** I accept the RC2 owner-decision-gate rebuttal. The main reason is that the applied boundary fully resolves M2's stated consequence, and the gate addressed pre-existing, out-of-scope file-change behaviour that the repository record never showed to be non-native. The coordinator's version-specific provenance, which I could not fetch and have not personally read, supports this but is not needed for it. RC1 is verified as applied, and the applied-status line is set accordingly by the reviewer.

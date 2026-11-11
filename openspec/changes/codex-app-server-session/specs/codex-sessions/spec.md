@@ -86,15 +86,21 @@ The chat SHALL commit a user prompt only after bounded native admission. A succe
 
 ### Requirement: Codex approvals and questions require explicit answers
 
-Codex command, file-change and permission approvals and structured questions SHALL identify their originating session and retain native choice semantics. Only an explicit user answer, Stop, close, native retirement or a visible capacity refusal SHALL resolve them; none SHALL grant approval automatically. Unsupported request kinds SHALL fail visibly without granting permission. Answers to retired requests SHALL be refused. Source: direction D37 and shared approval contract.
+Codex command, file-change and permission approvals and structured questions SHALL identify their session and retain native choice semantics. Only explicit user answers, Stop, close, native retirement, visible capacity refusal or the command-approval unavailable refusal below SHALL resolve them; none SHALL grant automatically. Unsupported request kinds SHALL fail visibly without granting permission. Answers to retired requests SHALL be refused. Source: direction D37 and shared approval contract.
 
 
 
 #### Scenario: Approve a command
 
-- **WHEN** Codex requests command approval and the user selects an offered choice
+- **WHEN** Codex requests command approval with an explicit nonempty valid decision list, or an ordinary command approval with absent/null `availableDecisions`
 
-- **THEN** exactly that native choice is returned once to that request in that conversation
+- **THEN** the explicit list is preserved exactly, or the ordinary absent/null case offers only native one-shot `accept` and `cancel`; no answer is sent before an explicit user choice or an existing lifecycle cancellation
+
+- **AND** the selected native choice is returned once to the originating run/thread/turn/request, without adding a persistent choice to the absent/null fallback
+
+- **AND** explicit command lists that are empty, non-lists, over the shared permission-option bound or contain a non-string/non-object entry, and absent/null lists on other command approval kinds or permission contexts, are visibly unavailable: native `decline` is sent once with a bounded notice, nothing is granted and the run continues; well-formed unknown decision values in explicit lists stay verbatim
+
+- **AND** ordinary means `kind` absent or `command`, with `networkApprovalContext` and `additionalPermissions` absent or null; optional policy proposals add no persistent choices to that fallback (owner-approved clarification 2026-11-11, design D4)
 
 
 
