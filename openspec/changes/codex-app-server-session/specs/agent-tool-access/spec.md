@@ -84,3 +84,27 @@ When the host creates or continues a session while its tool endpoint is availabl
 #### Scenario: Child bridge connection cap
 - **WHEN** more child bridges than the per-grant bound authenticate
 - **THEN** extra connections are refused busy, the root shows child tools unavailable and no other session's tools change
+
+## ADDED Requirements
+
+### Requirement: Native audit coverage is explicit and bounded
+
+Test-only native canary audits SHALL bind content selection before a run. Legacy manifests/defaults SHALL retain legacy coverage. Only an exact owner-approved manifest naming changed-artifacts-v1 SHALL enable wider metadata/changed-content coverage. All byte, file, metadata, confinement and no-follow limits SHALL remain unchanged. Source: owner-approved attempt-6 planning amendment, design D5.
+
+#### Scenario: Explicit changed-artifact coverage
+
+- **WHEN** preparation binds changed-artifacts-v1 and both bounded inventories are complete
+- **AND** preparation printed the fixed changed-artifacts-v1 disclosure beside the manifest hash and the helper validated the canonical manifest scope before claim
+- **THEN** new/changed regular files, including a model cache and descendants of unclassified directories with unchanged parent metadata, join the existing mutable-artifact selection once, with .sqlite/-wal/-shm files always selected at every depth even when metadata is equal; a fully accounted ordinary directory metadata change alone adds no error
+- **AND** scanned content uses one unchanged bounded audit, emits no contents or arbitrary paths/names/hashes, retains matches despite later errors, records the metadata-equality and ASCII/UTF-8 detector limits, and reports incomplete for every unaccounted or unstable entry
+
+#### Scenario: Legacy and invalid coverage selection
+
+- **WHEN** selection is absent/legacy, unknown, malformed, mismatched, overridden at walk/stats time, late or repeated
+- **THEN** absent/legacy preserves legacy selection; invalid or late/repeated changes are refused, a prepare echo mismatch aborts before startup/content I/O and a result echo mismatch stays incomplete with prior failures preserved
+
+#### Scenario: Protected entries or inventory bounds prevent completeness
+
+- **WHEN** a protected leaf (auth.json/config.toml plus other known credential/configuration names established before implementation) at any depth changes or is removed, or a link/nonregular/missing/unstable entry or the 4096-entry metadata bound prevents accounting
+- **THEN** the audit remains incomplete, protected contents and links are never read, no cap is raised and no legacy fallback or exclusion creates a pass
+- **AND** an incomplete changed-artifacts-v1 baseline aborts before App Server/provider work; the consumed attempt is recorded INCOMPLETE with baseline counters and no-provider/no-content-scan indicators; ordinary directory inventories are checked for concurrent membership changes

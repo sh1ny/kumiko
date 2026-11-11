@@ -102,6 +102,13 @@ Codex command, file-change and permission approvals and structured questions SHA
 
 - **AND** ordinary means `kind` absent or `command`, with `networkApprovalContext` and `additionalPermissions` absent or null; optional policy proposals add no persistent choices to that fallback (owner-approved clarification 2026-11-11, design D4)
 
+- **AND** an explicit list containing objects keeps string option names unchanged, labels each object `Native option N` by original one-based position, and shows the complete JSON-encoded ordered native decision array in the redacted preview; opaque tokens retain exact original values and no new grant or automatic choice is introduced; objects use conservative allow_always classification and all permission display is literal selectable text, including backticks and newlines
+
+#### Scenario: Complete decision details do not fit
+
+- **WHEN** the complete redacted command details and decision array, string option names or other approval display fields cannot fit the unchanged shared field/count/encoded bounds
+- **THEN** the request is cancelled once with a bounded visible notice, no partial-scope approval is offered and nothing is granted; indexing object labels never permits omitted decision details
+
 
 
 #### Scenario: Answer a structured question
