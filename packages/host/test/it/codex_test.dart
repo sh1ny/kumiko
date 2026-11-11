@@ -15,9 +15,652 @@ const _codexCaps = {
 };
 
 void main() {
-  setUpAll(buildTestHost);
   late Directory profile;
   late Directory work;
+  Json child(String id, String parent) => nativeEvent('thread/started', {
+    'thread': {
+      'id': id,
+      'parentThreadId': parent,
+      'status': {'type': 'active'},
+    },
+  });
+  Json childTurn(String id, String status) =>
+      nativeEvent(status == 'inProgress' ? 'turn/started' : 'turn/completed', {
+        'threadId': id,
+        'turn': {
+          'id': '$id-turn',
+          'status': status,
+          'items': <Object?>[],
+          'error': null,
+        },
+      });
+  for (final name in [
+    'Child emits output',
+    'Nested live children',
+    'Two children use the same tool identifier',
+  ]) {
+    test('Codex: $name', () async {
+      final f = NativeFixture(
+        profile,
+        work,
+        script: {
+          'turns': [
+            {
+              'actions': [
+                child('child-a', 'root-thread'),
+                child('child-b', 'child-a'),
+                childTurn('child-a', 'inProgress'),
+                childTurn('child-b', 'inProgress'),
+                for (final id in ['child-a', 'child-b'])
+                  nativeEvent('item/completed', {
+                    'threadId': id,
+                    'turnId': '$id-turn',
+                    'item': {
+                      'id': 'same-item',
+                      'type': 'commandExecution',
+                      'command': 'echo child',
+                      'cwd': '/fixture',
+                      'commandActions': <Object?>[],
+                      'status': 'completed',
+                      'aggregatedOutput': 'child-only-output',
+                    },
+                  }),
+                childTurn('child-a', 'completed'),
+                childTurn('child-b', 'completed'),
+                terminalEvent('completed'),
+              ],
+            },
+          ],
+        },
+      );
+      await f.open();
+      final a = await f.start();
+      await a.prompt();
+      await a.wait(Method.agentTurnEnded);
+      await eventually(() => a.events.any((e) => e['kind'] == 'turn'));
+      final tools = a.events
+          .where((e) => e['toolKind'] == 'commandExecution')
+          .toList();
+      expect(tools, hasLength(2));
+      expect(tools.map((e) => e['toolCallId']).toSet(), hasLength(2));
+      expect(tools.last['parentThreadId'], 'child-a');
+      expect(tools.first['rootThreadId'], 'root-thread');
+      await a.close();
+    });
+  }
+  for (final credit in [true, false]) {
+    test(
+      'Codex: ${credit ? 'Child starts' : 'Child starts with no transcript credit'}',
+      () async {
+        final f = NativeFixture(
+          profile,
+          work,
+          script: {
+            'turns': [
+              {
+                'actions': [
+                  child('child-a', 'root-thread'),
+                  childTurn('child-a', 'inProgress'),
+                  terminalEvent('completed'),
+                ],
+              },
+            ],
+          },
+        );
+        await f.open();
+        final a = AgentPeer(f.desktop);
+        await a.start(f.workspace, runtime: 'native');
+        await a.attach(credit: credit);
+        await a.prompt();
+        await a.wait(Method.agentTurnEnded);
+        final idle = await a.wait(
+          Method.agentState,
+          where: (p) => p['state'] == 'idle' && p['seq'] as int > 3,
+        );
+        expect(idle['delegated'], {
+          'activeChildren': 1,
+          'waitingRequests': 0,
+          'incomplete': false,
+        });
+        await a.close();
+      },
+    );
+  }
+  test('Codex: Attribution capacity is exceeded', () async {
+    final f = NativeFixture(
+      profile,
+      work,
+      script: {
+        'turns': [
+          {
+            'actions': [
+              for (var i = 0; i < 65; i++) child('child-$i', 'root-thread'),
+              terminalEvent('completed'),
+            ],
+          },
+        ],
+      },
+    );
+    await f.open();
+    final a = await f.start();
+    await a.prompt();
+    await a.wait(Method.agentTurnEnded);
+    expect(
+      (a.of(Method.agentState).last['delegated'] as Json?)?['incomplete'],
+      true,
+    );
+    await a.close();
+  });
+  setUpAll(buildTestHost);
+  test(
+    'Codex: out-of-order nested metadata resolves attributed output',
+    () async {
+      final f = NativeFixture(
+        profile,
+        work,
+        script: {
+          'turns': [
+            {
+              'actions': [
+                child('grandchild', 'child-a'),
+                nativeEvent('item/agentMessage/delta', {
+                  'threadId': 'grandchild',
+                  'turnId': 'grandchild-turn',
+                  'itemId': 'text',
+                  'delta': 'attributed-only',
+                }),
+                child('child-a', 'root-thread'),
+                terminalEvent('completed'),
+              ],
+            },
+          ],
+        },
+      );
+      await f.open();
+      final a = await f.start();
+      await a.prompt();
+      await a.wait(Method.agentTurnEnded);
+      await eventually(
+        () => a.events.any((e) => e['text'] == 'attributed-only'),
+      );
+      final event = a.events.singleWhere((e) => e['text'] == 'attributed-only');
+      expect(event['threadId'], 'grandchild');
+      expect(event['parentThreadId'], 'child-a');
+      expect(
+        (a.of(Method.agentState).last['delegated'] as Json)['incomplete'],
+        false,
+      );
+      await a.close();
+    },
+  );
+  test('Codex: Child outcome is unknown', () async {
+    final f = NativeFixture(
+      profile,
+      work,
+      script: {
+        'turns': [
+          {
+            'actions': [
+              child('child-a', 'root-thread'),
+              childTurn('child-a', 'inProgress'),
+              {'closeStdout': true},
+            ],
+          },
+        ],
+      },
+    );
+    await f.open();
+    final a = await f.start();
+    await a.prompt();
+    await a.wait(Method.agentExited);
+    await eventually(
+      () => a.events.any(
+        (e) => e['kind'] == 'child' && e['status'] == 'disconnected',
+      ),
+      within: const Duration(seconds: 2),
+    );
+    expect(
+      a.events.where(
+        (e) => e['threadId'] == 'child-a' && e['status'] == 'completed',
+      ),
+      isEmpty,
+    );
+    expect(
+      (a.of(Method.agentState).last['delegated'] as Json)['incomplete'],
+      true,
+    );
+  });
+  test('Codex: Root closes during child work', () async {
+    final f = NativeFixture(
+      profile,
+      work,
+      script: {
+        'turns': [
+          {
+            'actions': [
+              {'spawnTree': true},
+              for (var i = 0; i < 33; i++) ...[
+                child('child-$i', 'root-thread'),
+                childTurn('child-$i', 'inProgress'),
+              ],
+              terminalEvent('completed'),
+            ],
+          },
+        ],
+      },
+    );
+    await f.open();
+    final a = await f.start();
+    await a.prompt();
+    await a.wait(Method.agentTurnEnded);
+    final error = await rpcFailure(a.call(Method.agentStop));
+    expect(error.reason, ErrorCode.busy);
+    expect(f.requests.where((r) => r['method'] == 'turn/interrupt'), isEmpty);
+    expect(a.of(Method.agentState).last['state'], 'idle');
+    final descendants = await waitReports(work, 4);
+    await a.call(Method.agentClose);
+    await a.wait(Method.agentExited, where: (r) => r['reason'] == 'closed');
+    await expectAllGone(descendants);
+    expect(LedgerView(profile).units(), isEmpty);
+  });
+  for (final unsupported in [false, true]) {
+    test(
+      'Codex: ${unsupported ? 'One child interruption is unsupported' : 'Codex native interruption completes'}',
+      () async {
+        final f = NativeFixture(
+          profile,
+          work,
+          script: {
+            if (unsupported) 'unsupportedInterruptThreads': ['child-a'],
+            'turns': [
+              {
+                'actions': [
+                  child('child-a', 'root-thread'),
+                  childTurn('child-a', 'inProgress'),
+                  terminalEvent('completed'),
+                  {'waitInterrupt': 'child-a-turn'},
+                  childTurn('child-a', 'interrupted'),
+                ],
+              },
+            ],
+          },
+        );
+        await f.open();
+        final a = await f.start();
+        await a.prompt();
+        await a.wait(Method.agentTurnEnded);
+        await a.call(Method.agentStop);
+        final result = await a.wait(
+          Method.agentStopResult,
+          within: const Duration(seconds: 14),
+        );
+        expect(result['outcome'], unsupported ? 'notConfirmed' : 'stopped');
+        expect(
+          a.of(Method.agentState).last['state'],
+          unsupported ? 'stopping' : 'idle',
+        );
+        expect(
+          f.requests
+              .where((r) => r['method'] == 'turn/interrupt')
+              .map((r) => (r['params'] as Json)['threadId']),
+          ['child-a'],
+        );
+        await a.close();
+      },
+    );
+  }
+  for (final aggregate in [
+    ('interrupted', 'stopped'),
+    ('completed', 'finishedFirst'),
+    ('failed', 'endedWithError'),
+  ]) {
+    test('Codex: root and child Stop aggregate ${aggregate.$2}', () async {
+      final f = NativeFixture(
+        profile,
+        work,
+        script: {
+          'turns': [
+            {
+              'actions': [
+                child('child-a', 'root-thread'),
+                childTurn('child-a', 'inProgress'),
+                {
+                  'send': {
+                    'id': 'ready-child',
+                    'method': 'item/commandExecution/requestApproval',
+                    'params': {
+                      'threadId': 'child-a',
+                      'turnId': 'child-a-turn',
+                      'itemId': 'ready',
+                      'startedAtMs': 1,
+                      'command': 'echo ready',
+                      'cwd': '/fixture',
+                      'availableDecisions': ['accept', 'decline'],
+                    },
+                  },
+                },
+                {'waitInterrupt': true},
+                terminalEvent('completed'),
+                {'waitInterrupt': 'child-a-turn'},
+                childTurn('child-a', aggregate.$1),
+              ],
+            },
+          ],
+        },
+      );
+      await f.open();
+      final a = await f.start();
+      await a.prompt();
+      await a.wait(Method.agentPermissionRequested);
+      await a.call(Method.agentStop);
+      final outcome = await a.wait(Method.agentStopResult);
+      expect(outcome['outcome'], aggregate.$2);
+      expect(
+        f.requests
+            .where((r) => r['method'] == 'turn/interrupt')
+            .map((r) => (r['params'] as Json)['threadId'])
+            .toSet(),
+        {'root-thread', 'child-a'},
+      );
+      expect(a.of(Method.agentState).last['state'], 'idle');
+      await a.prompt('still live');
+      await eventually(() => a.of(Method.agentTurnEnded).length == 2);
+      await a.close();
+    });
+  }
+  test('Codex: Child asks permission', () async {
+    final f = NativeFixture(
+      profile,
+      work,
+      script: {
+        'turns': [
+          {
+            'actions': [
+              child('child-a', 'root-thread'),
+              childTurn('child-a', 'inProgress'),
+              terminalEvent('completed'),
+              {
+                'send': {
+                  'id': 'child-approval',
+                  'method': 'item/commandExecution/requestApproval',
+                  'params': {
+                    'threadId': 'child-a',
+                    'turnId': 'child-a-turn',
+                    'itemId': 'child-command',
+                    'startedAtMs': 1,
+                    'command': 'echo child',
+                    'cwd': '/fixture',
+                    'availableDecisions': ['accept', 'decline'],
+                  },
+                },
+              },
+              {'waitReply': 'child-approval'},
+              childTurn('child-a', 'completed'),
+            ],
+          },
+        ],
+      },
+    );
+    await f.open();
+    final a = await f.start();
+    await a.prompt();
+    final request = await a.wait(
+      Method.agentPermissionRequested,
+      within: const Duration(seconds: 3),
+    );
+    expect(request['title'], contains('child-a'));
+    await a.call(Method.agentPermissionReply, {
+      'sessionId': a.id,
+      'requestId': request['requestId'],
+      'optionId': ((request['options'] as List).first as Json)['optionId'],
+    });
+    await waitFixture(
+      f.report,
+      (r) => (r['received'] as Json?)?['id'] == 'child-approval',
+    );
+    expect(
+      f.requests.singleWhere((r) => r['id'] == 'child-approval')['result'],
+      {'decision': 'accept'},
+    );
+    await a.close();
+  });
+  test('Codex: a completed child cannot revive a retired approval', () async {
+    final f = NativeFixture(
+      profile,
+      work,
+      script: {
+        'turns': [
+          {
+            'actions': [
+              child('child-a', 'root-thread'),
+              childTurn('child-a', 'inProgress'),
+              childTurn('child-a', 'completed'),
+              terminalEvent('completed'),
+              {
+                'send': {
+                  'id': 'retired-child',
+                  'method': 'item/commandExecution/requestApproval',
+                  'params': {
+                    'threadId': 'child-a',
+                    'turnId': 'child-a-turn',
+                    'itemId': 'old',
+                    'startedAtMs': 1,
+                    'command': 'echo old',
+                    'cwd': '/fixture',
+                    'availableDecisions': ['accept', 'decline'],
+                  },
+                },
+              },
+              {
+                'send': {
+                  'id': 'child-barrier',
+                  'method': 'future/barrier',
+                  'params': <String, Object?>{},
+                },
+              },
+            ],
+          },
+        ],
+      },
+    );
+    await f.open();
+    final a = await f.start();
+    await a.prompt();
+    await waitFixture(
+      f.report,
+      (r) => (r['received'] as Json?)?['id'] == 'child-barrier',
+    );
+    expect(a.of(Method.agentPermissionRequested), isEmpty);
+    expect(
+      f.requests
+          .singleWhere((r) => r['id'] == 'retired-child')
+          .containsKey('error'),
+      true,
+    );
+    await a.close();
+  });
+  test(
+    'Codex: late child turn completion cannot retire newer work or requests',
+    () async {
+      Json turn(String id, String status) => nativeEvent(
+        status == 'inProgress' ? 'turn/started' : 'turn/completed',
+        {
+          'threadId': 'child-a',
+          'turn': {
+            'id': id,
+            'status': status,
+            'items': <Object?>[],
+            'error': null,
+          },
+        },
+      );
+      final f = NativeFixture(
+        profile,
+        work,
+        script: {
+          'turns': [
+            {
+              'actions': [
+                child('child-a', 'root-thread'),
+                turn('t1', 'inProgress'),
+                turn('t2', 'inProgress'),
+                {
+                  'send': {
+                    'id': 't2-request',
+                    'method': 'item/commandExecution/requestApproval',
+                    'params': {
+                      'threadId': 'child-a',
+                      'turnId': 't2',
+                      'itemId': 't2-tool',
+                      'startedAtMs': 1,
+                      'command': 'echo newer',
+                      'cwd': '/fixture',
+                      'availableDecisions': ['accept', 'decline'],
+                    },
+                  },
+                },
+                turn('t1', 'completed'),
+                terminalEvent('completed'),
+                {'waitInterrupt': 't2'},
+                turn('t2', 'interrupted'),
+              ],
+            },
+          ],
+        },
+      );
+      await f.open();
+      final a = await f.start();
+      await a.prompt();
+      await a.wait(Method.agentPermissionRequested);
+      await a.wait(Method.agentTurnEnded);
+      expect(a.of(Method.agentState).last['delegated'], {
+        'activeChildren': 1,
+        'waitingRequests': 1,
+        'incomplete': false,
+      });
+      expect(a.of(Method.agentPermissionResolved), isEmpty);
+      await a.call(Method.agentStop);
+      expect((await a.wait(Method.agentStopResult))['outcome'], 'stopped');
+      final interrupt =
+          f.requests.singleWhere(
+                (r) => r['method'] == 'turn/interrupt',
+              )['params']
+              as Json;
+      expect(interrupt, {'threadId': 'child-a', 'turnId': 't2'});
+      expect(a.of(Method.agentPermissionResolved), hasLength(1));
+      await a.close();
+    },
+  );
+  test(
+    'Codex: idle-root child async question answers its native thread once',
+    () async {
+      final release = File(joinPath(work.path, 'child-question-release'));
+      final f = NativeFixture(
+        profile,
+        work,
+        script: {
+          'turns': [
+            {
+              'actions': [
+                child('child-a', 'root-thread'),
+                childTurn('child-a', 'inProgress'),
+                terminalEvent('completed'),
+                nativeEvent('item/completed', {
+                  'threadId': 'child-a',
+                  'turnId': 'child-a-turn',
+                  'item': {
+                    'id': 'child-question',
+                    'type': 'agentMessage',
+                    'text': 'child-only question',
+                    'questions': [
+                      {
+                        'title': 'Choose child scope',
+                        'options': ['One', 'Two'],
+                      },
+                    ],
+                  },
+                }),
+                {'waitFile': release.path},
+                childTurn('child-a', 'completed'),
+              ],
+            },
+          ],
+        },
+      );
+      await f.open();
+      final a = await f.start();
+      await a.prompt();
+      await a.wait(Method.agentTurnEnded);
+      final request = await a.wait(Method.agentQuestionRequested);
+      expect(request['threadId'], 'child-a');
+      expect(request['parentThreadId'], 'root-thread');
+      final q = (request['questions'] as List).single as Json;
+      final answer = {
+        'sessionId': a.id,
+        'runId': request['runId'],
+        'requestId': request['requestId'],
+        'turnId': request['turnId'],
+        'answers': [
+          {
+            'questionId': q['id'],
+            'values': [((q['options'] as List).first as Json)['id']],
+          },
+        ],
+      };
+      await a.call(Method.agentQuestionAnswer, answer);
+      await waitFixture(
+        f.report,
+        (r) => (r['received'] as Json?)?['method'] == 'turn/steer',
+      );
+      final steer =
+          f.requests.singleWhere((r) => r['method'] == 'turn/steer')['params']
+              as Json;
+      expect(steer['threadId'], 'child-a');
+      expect(steer['expectedTurnId'], 'child-a-turn');
+      release.writeAsStringSync('complete child');
+      await a.wait(Method.agentQuestionResolved);
+      expect(
+        (await rpcFailure(a.call(Method.agentQuestionAnswer, answer))).reason,
+        ErrorCode.unknownRequest,
+      );
+      expect(
+        f.requests.where((r) => r['method'] == 'turn/steer'),
+        hasLength(1),
+      );
+      await a.close();
+    },
+  );
+  test('Codex: missing child turn identity remains not confirmed with child reason', () async {
+    final f = NativeFixture(
+      profile,
+      work,
+      script: {
+        'turns': [
+          {
+            'actions': [
+              child('child-a', 'root-thread'),
+              terminalEvent('completed'),
+            ],
+          },
+        ],
+      },
+    );
+    await f.open();
+    final a = await f.start();
+    await a.prompt();
+    await a.wait(Method.agentTurnEnded);
+    await a.call(Method.agentStop);
+    final outcome = await a.wait(
+      Method.agentStopResult,
+      within: const Duration(seconds: 13),
+    );
+    expect(outcome['outcome'], 'notConfirmed');
+    expect(outcome['message'], contains('child-a'));
+    expect(outcome['message'], contains('turn identity unavailable'));
+    expect(a.of(Method.agentState).last['state'], 'stopping');
+    expect(f.requests.where((r) => r['method'] == 'turn/interrupt'), isEmpty);
+    await a.close();
+  });
   setUp(() {
     profile = tempDir('codex_protocol_profile_');
     work = tempDir('codex_protocol_work_');
@@ -234,6 +877,66 @@ void nativeCases(Directory Function() profile, Directory Function() work) {
     'historyMode': 'legacy',
     'turns': [oldTurn],
   };
+  test('Codex: Nested and restored children', () async {
+    Json relation(String id, String parent, String child) => {
+      'id': id,
+      'type': 'collabAgentToolCall',
+      'tool': 'spawnAgent',
+      'status': 'completed',
+      'senderThreadId': parent,
+      'receiverThreadIds': [child],
+      'prompt': 'review delegated task',
+      'agentsStates': {
+        child: {'status': 'completed', 'message': null},
+      },
+    };
+    final f = NativeFixture(
+      profile(),
+      work(),
+      script: {
+        'resumeThread': {
+          ...idleThread,
+          'turns': [
+            {
+              ...oldTurn,
+              'items': [
+                relation('spawn-a', 'root-thread', 'child-a'),
+                relation('spawn-b', 'child-a', 'child-b'),
+                relation('spawn-a', 'root-thread', 'child-a'),
+              ],
+            },
+          ],
+        },
+      },
+    );
+    final (a, _) = await restore(f);
+    await a.wait(Method.agentState, where: (p) => p['state'] == 'idle');
+    await eventually(
+      () => a.events.any((e) => e['kind'] == 'replay' && e['phase'] == 'end'),
+    );
+    final children = a.events.where((e) => e['kind'] == 'child').toList();
+    expect(
+      children.any(
+        (e) => e['threadId'] == 'child-b' && e['parentThreadId'] == 'child-a',
+      ),
+      true,
+    );
+    expect(
+      children.lastWhere((e) => e['threadId'] == 'child-a')['status'],
+      'completed',
+    );
+    expect((a.of(Method.agentState).last['delegated'] as Json), {
+      'activeChildren': 0,
+      'waitingRequests': 0,
+      'incomplete': false,
+    });
+    expect(f.requests.where((r) => r['method'] == 'turn/start'), isEmpty);
+    expect(
+      f.requests.where((r) => r['method'] == 'thread/start'),
+      hasLength(1),
+    );
+    await a.close();
+  });
   test('Codex: Another runtime profile is the default', () async {
     final f = NativeFixture(
       profile(),

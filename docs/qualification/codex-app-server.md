@@ -282,7 +282,31 @@ or 64 KiB notification bounds are refused with a visible capacity reason.
 Native history and root-scoped MCP now use the group 6 contract path above.
 Unsupported history retains the saved identity; unsupported or conflicting MCP
 configuration keeps chat available with tools unavailable and no usable grant.
-The child registry and full delegated-work browser remain later work. No real
+Delegated activity uses a per-root registry of at most 64 native child identities.
+Validated thread parent/source metadata and collaboration spawn records retain
+immediate parents, including nested/restored relationships. Native thread/item
+keys use unambiguous length prefixes; identical item IDs in different children
+remain separate. Attributed content stays in the bounded live event model; the
+root view shows task/status summaries and attributed interactions, with no child
+browser or transcript persistence.
+
+Sequenced agent state carries active-child count, waiting child requests and an
+incomplete flag. Stop availability and close/quit warnings use this state even
+when transcript credit is stalled and the root turn is Idle. Unknown attribution
+shares relay reservations (32 messages/256 KiB and one five-second deadline);
+capacity/deadline loss stays visibly incomplete. Native loss marks active children
+disconnected rather than completed. Pending unknown relationships may resolve;
+observed loss remains conservative until the root contained unit is settled.
+
+Root Stop admits all addressed interrupts and cancellation replies atomically
+within the existing 32 pending native requests and 1 MiB input budget. Saturation
+refuses busy before writes or Stopping. Native outcomes, rather than interrupt
+acknowledgements, settle the aggregate: unknown remains not confirmed, then error,
+interrupted, or finished first. Unsupported child interruption keeps Stopping and
+Close available. Explicit root close retains contained-tree cleanup and unresolved
+cleanup gates. Draft and terminal exit rules are unchanged.
+
+The full delegated-work browser remains later work. No real
 runtime, persistence or authentication observation is established by authored
 fixtures, source research or candidate-only signatures.
 

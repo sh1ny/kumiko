@@ -199,6 +199,72 @@ class CodexClient implements RuntimeTransport {
 
   Future<void> notify(String method, Json params) =>
       _send({'method': method, 'params': params});
+
+  /// All addressed interrupts and cancellation replies share one admission.
+  /// Correlation is installed for every request before the first byte is written.
+  Future<void> interruptBatch(
+    Map<String, String> turns,
+    List<Json> replies,
+    void Function(String, Object) onRejected,
+  ) {
+    if (_closed) throw _closedError();
+    if (_pending.length + turns.length > 32) {
+      throw RpcException(
+        ErrorCode.busy,
+        '32 native requests pending; interruption batch refused',
+      );
+    }
+    final pending = <int, _Pending<void>>{};
+    final bytes = <int>[for (final reply in replies) ..._encode(reply)];
+    final completions = <Future<void>>[];
+    var next = _nextId;
+    for (final turn in turns.entries) {
+      final id = next++;
+      final request = _Pending<void>(
+        (result) {
+          if (result is! Json) {
+            throw CodexProtocolException('invalid interrupt acknowledgement');
+          }
+        },
+        const Duration(seconds: 10),
+        () {
+          _pending
+              .remove(id)
+              ?.completeError(
+                TimeoutException('Codex turn/interrupt timed out'),
+              );
+        },
+        pauseForOutput: false,
+      );
+      pending[id] = request;
+      completions.add(
+        request.result.future.catchError((Object error) {
+          onRejected(turn.key, error);
+        }),
+      );
+      bytes.addAll(
+        _encode({
+          'id': id,
+          'method': 'turn/interrupt',
+          'params': {'threadId': turn.key, 'turnId': turn.value},
+        }),
+      );
+    }
+    _writer
+        .admit(
+          bytes,
+          beforeWrite: () {
+            _nextId = next;
+            _pending.addAll(pending);
+            for (final request in pending.values) {
+              request.resume();
+            }
+          },
+        )
+        .ignore();
+    return Future.wait(completions).then((_) {});
+  }
+
   Future<void> replyAdmitted(Object id, Json result) {
     if (_closed) throw _closedError();
     return _writer.admit(_encode({'id': id, 'result': result}));

@@ -137,6 +137,227 @@ Future<Rig> nativeContinuePicker(WidgetTester tester, FakeHostLink host) async {
 }
 
 void main() {
+  uiTest(
+    'Codex: child structured answer retains originating thread and retires once',
+    (tester) async {
+      final host = nativeHost();
+      final rig = await nativeChat(tester, host);
+      final pane = chat(rig).id;
+      final id = session(rig);
+      host.agentStateSource.add(
+        AgentStateParams.fromJson({
+          'sessionId': id,
+          'seq': 8,
+          'state': 'idle',
+          'runId': 'run',
+          'delegated': {
+            'activeChildren': 1,
+            'waitingRequests': 1,
+            'incomplete': false,
+          },
+        }),
+      );
+      final request = AgentQuestionRequestedParams.fromJson({
+        ...question(id, seq: 9).toJson(),
+        'turnId': 'child-turn',
+        'rootThreadId': 'root',
+        'threadId': 'child-a',
+        'parentThreadId': 'root',
+      });
+      host.questionSource.add(request);
+      await flush(tester);
+      final form = agents(rig).linkOf(pane)!.questions.values.single;
+      expect(find.text('Child child-a'), findsOneWidget);
+      await tester.tap(key('question-choice-question-q-one'));
+      await tester.pump();
+      await tester.tap(key('question-submit-question'));
+      await flush(tester);
+      expect(host.questionAnswers, hasLength(1));
+      expect(host.questionAnswers.single.turnId, 'child-turn');
+      host.questionResolvedSource.add(
+        AgentQuestionResolvedParams(
+          sessionId: id,
+          seq: 10,
+          runId: 'run',
+          requestId: 'question',
+          turnId: 'child-turn',
+          rootThreadId: 'root',
+          threadId: 'child-a',
+          parentThreadId: 'root',
+          outcome: AgentQuestionOutcome.cancelled,
+        ),
+      );
+      await flush(tester);
+      expect(agents(rig).linkOf(pane)!.questions, isEmpty);
+      await agents(rig).answerQuestion(pane, form, const [
+        AgentQuestionAnswer(questionId: 'q', values: ['one']),
+      ]);
+      expect(host.questionAnswers, hasLength(1));
+    },
+  );
+  for (final unsupported in [false, true]) {
+    uiTest(
+      'Codex: ${unsupported ? 'One child interruption is unsupported' : 'Codex native interruption completes'}',
+      (tester) async {
+        final host = nativeHost();
+        final rig = await nativeChat(tester, host);
+        final pane = chat(rig).id;
+        final id = session(rig);
+        host.agentStateSource.add(
+          AgentStateParams.fromJson({
+            'sessionId': id,
+            'seq': 8,
+            'state': 'idle',
+            'runId': 'run',
+            'delegated': {
+              'activeChildren': 1,
+              'waitingRequests': 0,
+              'incomplete': false,
+            },
+          }),
+        );
+        await flush(tester);
+        await tester.tap(key('agent-stop-$pane'));
+        await flush(tester);
+        host.agentStateSource.add(
+          AgentStateParams.fromJson({
+            'sessionId': id,
+            'seq': 9,
+            'state': unsupported ? 'stopping' : 'idle',
+            'runId': 'run',
+            'delegated': {
+              'activeChildren': unsupported ? 1 : 0,
+              'waitingRequests': 0,
+              'incomplete': false,
+            },
+          }),
+        );
+        host.agentStopSource.add(
+          AgentStopResultParams(
+            sessionId: id,
+            outcome: unsupported
+                ? AgentStopOutcome.notConfirmed
+                : AgentStopOutcome.stopped,
+            message: unsupported ? 'child-a interruption unsupported' : null,
+          ),
+        );
+        await flush(tester);
+        expect(
+          find.textContaining(unsupported ? 'Stop not confirmed' : 'Stopped'),
+          findsWidgets,
+        );
+        expect(
+          agents(rig).linkOf(pane)!.state,
+          unsupported ? AgentState.stopping : AgentState.idle,
+        );
+        expect(host.agentCloses, isEmpty);
+      },
+    );
+  }
+  uiTest('Codex: Close an idle session', (tester) async {
+    final host = nativeHost();
+    final rig = await nativeChat(tester, host);
+    final pane = chat(rig).id;
+    expect(await agents(rig).warningsFor([pane]), isEmpty);
+    await agents(rig).closeConfirmed(pane);
+    expect(host.agentCloses, [session(rig)]);
+  });
+  uiTest(
+    'Codex: child content remains attributed without rendering a child reply',
+    (tester) async {
+      final host = nativeHost();
+      final rig = await nativeChat(tester, host);
+      final id = session(rig);
+      host.agentEvent(
+        id,
+        AgentEvent.fromJson({
+          'kind': 'agentText',
+          'text': 'private delegated body',
+          'rootThreadId': 'root',
+          'threadId': 'child',
+          'parentThreadId': 'root',
+        }),
+      );
+      await flush(tester);
+      expect(find.textContaining('private delegated body'), findsNothing);
+      expect(
+        agents(rig)
+            .linkOf(chat(rig).id)!
+            .transcript
+            .entries
+            .single
+            .fields['threadId'],
+        'child',
+      );
+    },
+  );
+  for (final name in [
+    'Root idle with active child',
+    'Child starts',
+    'Child starts with no transcript credit',
+  ]) {
+    uiTest('Codex: $name', (tester) async {
+      final host = nativeHost();
+      final rig = await nativeChat(tester, host);
+      final pane = chat(rig).id;
+      host.agentStateSource.add(
+        AgentStateParams.fromJson({
+          'sessionId': session(rig),
+          'seq': 8,
+          'state': 'idle',
+          'runId': 'run',
+          'delegated': {
+            'activeChildren': 1,
+            'waitingRequests': 0,
+            'incomplete': false,
+          },
+        }),
+      );
+      await flush(tester);
+      final link = agents(rig).linkOf(pane)!;
+      expect(link.canStop, true);
+      expect(agents(rig).exitWork(pane), contains('Delegated'));
+      expect(find.textContaining('1 active child'), findsOneWidget);
+      await tester.tap(key('agent-stop-$pane'));
+      await flush(tester);
+      expect(host.agentStops, hasLength(1));
+    });
+  }
+  for (final incomplete in [false, true]) {
+    uiTest(
+      'Codex: ${incomplete ? 'incomplete delegated state keeps close warning' : 'Close idle root with running child'}',
+      (tester) async {
+        final host = nativeHost();
+        final rig = await nativeChat(tester, host);
+        final pane = chat(rig).id;
+        host.agentStateSource.add(
+          AgentStateParams.fromJson({
+            'sessionId': session(rig),
+            'seq': 8,
+            'state': 'idle',
+            'runId': 'run',
+            'delegated': {
+              'activeChildren': incomplete ? 0 : 1,
+              'waitingRequests': 0,
+              'incomplete': incomplete,
+            },
+          }),
+        );
+        await flush(tester);
+        expect(
+          (await agents(rig).warningsFor([pane]))[pane],
+          contains('Delegated'),
+        );
+        expect(
+          agents(rig).exitWork(pane),
+          contains(incomplete ? 'incomplete' : '1 active child'),
+        );
+        expect(host.agentCloses, isEmpty);
+        await agents(rig).closeConfirmed(pane);
+        expect(host.agentCloses, hasLength(1));
+      },
+    );
+  }
   uiTest('Codex: Codex restores through native history', (tester) async {
     final host = nativeHost();
     final rig = await nativeChat(tester, host);

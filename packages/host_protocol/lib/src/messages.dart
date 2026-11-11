@@ -2254,6 +2254,41 @@ enum AgentState {
   failed,
 }
 
+class AgentDelegated {
+  const AgentDelegated({
+    this.activeChildren = 0,
+    this.waitingRequests = 0,
+    this.incomplete = false,
+  });
+  factory AgentDelegated.fromJson(Json json) {
+    final active = _req<int>(json, 'activeChildren');
+    final waiting = _req<int>(json, 'waitingRequests');
+    if (active < 0 || active > 64 || waiting < 0 || waiting > 16) {
+      throw RpcException(
+        ErrorCode.invalidParams,
+        'delegated summary exceeds capacity',
+      );
+    }
+    return AgentDelegated(
+      activeChildren: active,
+      waitingRequests: waiting,
+      incomplete: _req<bool>(json, 'incomplete'),
+    );
+  }
+  final int activeChildren, waitingRequests;
+  final bool incomplete;
+  bool get hasWork => activeChildren > 0 || waitingRequests > 0 || incomplete;
+  Json toJson() {
+    final json = <String, Object?>{
+      'activeChildren': activeChildren,
+      'waitingRequests': waitingRequests,
+      'incomplete': incomplete,
+    };
+    AgentDelegated.fromJson(json);
+    return json;
+  }
+}
+
 class AgentStateParams {
   const AgentStateParams({
     required this.sessionId,
@@ -2262,6 +2297,7 @@ class AgentStateParams {
     this.tools,
     this.runId,
     this.turnId,
+    this.delegated,
   });
   factory AgentStateParams.fromJson(Json json) {
     final runId = _codexOptionalId(json, 'runId');
@@ -2276,6 +2312,9 @@ class AgentStateParams {
       tools: AgentTools.fromJsonField(json),
       runId: runId,
       turnId: turnId,
+      delegated: json['delegated'] == null
+          ? null
+          : AgentDelegated.fromJson(_req<Json>(json, 'delegated')),
     );
   }
   final String sessionId;
@@ -2284,6 +2323,7 @@ class AgentStateParams {
   final AgentTools? tools;
   final String? runId;
   final String? turnId;
+  final AgentDelegated? delegated;
   Json toJson() {
     final json = <String, Object?>{
       'sessionId': sessionId,
@@ -2292,6 +2332,7 @@ class AgentStateParams {
       'tools': ?tools?.toJson(),
       'runId': ?runId,
       'turnId': ?turnId,
+      'delegated': ?delegated?.toJson(),
     };
     _codexOptionalId(json, 'runId');
     _codexOptionalId(json, 'turnId');

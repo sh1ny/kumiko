@@ -195,10 +195,13 @@ Future<int> runCodexFixture(List<String> args) async {
 
   final replies = <String, Completer<void>>{};
   final interrupts = <String, Completer<void>>{};
-  Future<void> send(Json value) async {
+  // A batch may unblock scripted turn output while the input loop acknowledges
+  // another addressed interrupt. Give each fixture line exclusive sink access.
+  var outputReady = Future<void>.value();
+  Future<void> send(Json value) => outputReady = outputReady.then((_) async {
     stdout.writeln(jsonEncode(value));
     await stdout.flush();
-  }
+  });
 
   Object? expand(Object? value, String turn) => switch (value) {
     r'$thread' => 'root-thread',
@@ -218,6 +221,9 @@ Future<int> runCodexFixture(List<String> args) async {
       if (action['waitInterrupt'] == true) {
         await (interrupts[turn] ??= Completer<void>()).future;
       }
+      if (action['waitInterrupt'] case final String addressedTurn) {
+        await (interrupts[addressedTurn] ??= Completer<void>()).future;
+      }
       if (action['waitReply'] case final String id) {
         await (replies[id] ??= Completer<void>()).future;
       }
@@ -225,6 +231,15 @@ Future<int> runCodexFixture(List<String> args) async {
         while (!File(path).existsSync()) {
           await Future<void>.delayed(const Duration(milliseconds: 10));
         }
+      }
+      if (action['spawnTree'] == true) {
+        final child = await Process.start(Platform.resolvedExecutable, [
+          '--test-fixture',
+          'tree',
+        ]);
+        child.stdout.drain<void>().ignore();
+        child.stderr.drain<void>().ignore();
+        child.exitCode.ignore();
       }
       if (action['send'] case final Json message) await send(message);
       if (action['closeStdout'] == true) await stdout.close();
@@ -422,6 +437,18 @@ Future<int> runCodexFixture(List<String> args) async {
         );
         if (script['noReadAfterTurn'] == true) await Completer<void>().future;
       case 'turn/interrupt':
+        final addressedThread = (m['params'] as Json)['threadId'];
+        if (script['unsupportedInterruptThreads'] case final List<Object?> ids
+            when ids.contains(addressedThread)) {
+          await send({
+            'id': id,
+            'error': {
+              'code': -32601,
+              'message': 'child interruption unsupported',
+            },
+          });
+          break;
+        }
         if (script['interruptNoAck'] == true) break;
         if (script['interruptError'] case final Json error) {
           await send({'id': id, 'error': error});

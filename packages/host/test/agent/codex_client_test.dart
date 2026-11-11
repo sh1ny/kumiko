@@ -337,6 +337,149 @@ void main() {
   });
 
   test(
+    'interrupt batch refuses all replies and turns at the pending bound',
+    () async {
+      final calls = [for (var i = 0; i < 31; i++) request()];
+      await expectLater(
+        () => p.client.interruptBatch(
+          {'root': 'r', 'child': 'c'},
+          [
+            {
+              'id': 'approval',
+              'result': {'decision': 'cancel'},
+            },
+          ],
+          (_, _) => fail('refused batch must not install callbacks'),
+        ),
+        throwsA(isA<RpcException>()),
+      );
+      expect(p.writes, hasLength(31));
+      for (var i = 0; i < 31; i++) {
+        p.result(p.writes[i]['id']!, {'value': i});
+      }
+      expect(await Future.wait(calls), List.generate(31, (i) => i));
+      final admitted = p.client.interruptBatch(
+        {'root': 'r', 'child': 'c'},
+        [],
+        (_, _) => fail('unexpected rejection'),
+      );
+      expect(p.writes.skip(31).map((m) => m['id']), [32, 33]);
+      for (final write in p.writes.skip(31)) {
+        p.result(write['id']!, {});
+      }
+      await admitted;
+    },
+  );
+
+  test(
+    'interrupt batch refuses before any reply when native stdin is full',
+    () async {
+      p.blockedWrite = Completer<void>();
+      final fill = p.client.notify('fill', {
+        'text': 'x' * (unitPipeQueueLimit - 100),
+      });
+      await expectLater(
+        () => p.client.interruptBatch(
+          {'root': 'r', 'child': 'c'},
+          [
+            {
+              'id': 'approval',
+              'result': {'decision': 'cancel'},
+            },
+          ],
+          (_, _) => fail('refused batch must not install callbacks'),
+        ),
+        throwsA(isA<RpcException>()),
+      );
+      expect(p.writes, hasLength(1));
+      p.blockedWrite!.complete();
+      await fill;
+      p.blockedWrite = null;
+      final call = request();
+      expect(p.writes.last['id'], 1);
+      p.result(p.writes.last['id']!, {'value': 7});
+      expect(await call, 7);
+    },
+  );
+
+  test(
+    'interrupt batch registers every turn before early native acknowledgements',
+    () async {
+      p.blockedWrite = Completer<void>();
+      p.onWrite = (write) {
+        if (write['method'] == 'turn/interrupt') p.result(write['id']!, {});
+      };
+      await p.client.interruptBatch(
+        {'root': 'r', 'child': 'c'},
+        [
+          {
+            'id': 'approval',
+            'result': {'decision': 'cancel'},
+          },
+        ],
+        (_, _) => fail('early acknowledgements must correlate'),
+      );
+      expect(p.writes.map((m) => m['id']), ['approval', 1, 2]);
+      expect(p.writes.skip(1).map((m) => m['params']), [
+        {'threadId': 'root', 'turnId': 'r'},
+        {'threadId': 'child', 'turnId': 'c'},
+      ]);
+      expect(p.client.isClosed, isFalse);
+      p.blockedWrite!.complete();
+      await pumpCodex();
+    },
+  );
+
+  test(
+    'acknowledged interrupt batch cannot hide a later native write failure',
+    () async {
+      p.blockedWrite = Completer<void>();
+      p.onWrite = (write) => p.result(write['id']!, {});
+      await p.client.interruptBatch(
+        {'root': 'r', 'child': 'c'},
+        [],
+        (_, _) => fail('unexpected rejection'),
+      );
+      p.blockedWrite!.completeError(StateError('batch native write failed'));
+      await p.client.done;
+      expect(p.client.isClosed, isTrue);
+      expect(
+        p.client.failure.toString(),
+        contains('batch native write failed'),
+      );
+    },
+  );
+
+  test(
+    'interrupt batch reports an unsupported child without claiming completion',
+    () async {
+      final rejected = <String, Object>{};
+      p.onWrite = (write) {
+        if ((write['params']! as Json)['threadId'] == 'child') {
+          p.send({
+            'id': write['id'],
+            'error': {'code': -32601, 'message': 'unsupported child interrupt'},
+          });
+        } else {
+          p.result(write['id']!, {});
+        }
+      };
+      await p.client.interruptBatch(
+        {'root': 'r', 'child': 'c'},
+        [],
+        (thread, error) => rejected[thread] = error,
+      );
+      expect(rejected.keys, ['child']);
+      expect(rejected['child'], isA<CodexRemoteException>());
+      expect(p.client.isClosed, isFalse);
+      p.onWrite = null;
+      final call = request();
+      p.result(p.writes.last['id']!, {'value': 3});
+      expect(await call, 3);
+    },
+  );
+
+  test(
     'bounded stdin refuses oversize without consuming request capacity',
     () async {
       await expectLater(

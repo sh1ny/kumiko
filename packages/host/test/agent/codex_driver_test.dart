@@ -36,8 +36,12 @@ void main() {
         });
       }
     };
-    driver.normalizeUpdate = (u) =>
-        encodeAgentEvent(AgentEvent.text(u.kind, u.text));
+    driver.normalizeUpdate = (u) => encodeAgentEvent(
+      u.event ??
+          (u.kind == AgentEventKind.notice
+              ? AgentEvent.notice(u.text)
+              : AgentEvent.text(u.kind, u.text)),
+    );
     driver.consumeNotification = (value) async {
       if (value is RuntimeDelivery) {
         value.release();
@@ -51,6 +55,235 @@ void main() {
     await driver.close();
     await peer.dispose();
   });
+  test('history relationship transfers pending attribution reservation exactly once', () async {
+    await driver.newSession('/fixture');
+    var reserved = 0, reads = 0;
+    driver.reserveEarly = (bytes) {
+      reserved += bytes;
+      return true;
+    };
+    driver.releaseEarly = (bytes) => reserved -= bytes;
+    driver.normalizeUpdate = (u) =>
+        encodeAgentEvent(u.event ?? AgentEvent.notice(u.text));
+    final entered = Completer<RuntimeDelivery>(), release = Completer<void>();
+    driver.consumeNotification = (value) async {
+      if (value is RuntimeDelivery) {
+        entered.complete(value);
+        await release.future;
+        value.release();
+      }
+    };
+    peer.onWrite = (request) {
+      if (request['method'] == 'thread/read') {
+        peer.result(request['id']!, {
+          'thread': {
+            'id': 'root',
+            'historyMode': 'legacy',
+            'status': {'type': reads++ == 0 ? 'notLoaded' : 'idle'},
+          },
+        });
+      } else if (request['method'] == 'thread/resume') {
+        peer.event('item/agentMessage/delta', {
+          'threadId': 'child',
+          'turnId': 'ct',
+          'itemId': 'ci',
+          'delta': 'held historical child',
+        });
+        peer.result(request['id']!, {
+          'thread': {
+            'id': 'root',
+            'historyMode': 'legacy',
+            'status': {'type': 'idle'},
+            'turns': [
+              {
+                'id': 'old',
+                'status': 'completed',
+                'items': [
+                  {
+                    'id': 'spawn',
+                    'type': 'collabAgentToolCall',
+                    'tool': 'spawnAgent',
+                    'senderThreadId': 'root',
+                    'receiverThreadIds': ['child'],
+                    'agentsStates': {
+                      'child': {'status': 'completed', 'message': null},
+                    },
+                  },
+                ],
+              },
+            ],
+          },
+        });
+      }
+    };
+    final loading = driver.loadSession('root', '/fixture');
+    final delivery = await entered.future;
+    try {
+      expect(
+        reserved,
+        delivery.bytes,
+        reason: 'existing held attribution charge transfers into this delivery',
+      );
+    } finally {
+      release.complete();
+      await loading;
+    }
+    expect(
+      reserved,
+      0,
+      reason:
+          'replay must release without waiting for another native notification',
+    );
+  });
+  test(
+    'child-only dedup eviction emits a visible root omission notice',
+    () async {
+      await driver.newSession('/fixture');
+      final events = <Json>[];
+      driver.normalizeUpdate = (u) => [
+        if (u.optionalNotice != null)
+          ...encodeAgentEvent(AgentEvent.notice(u.optionalNotice!)),
+        ...encodeAgentEvent(u.event ?? AgentEvent.notice(u.text)),
+      ];
+      driver.consumeNotification = (value) {
+        if (value is Iterable<Uint8List>) {
+          for (final line in value) {
+            events.add(jsonDecode(utf8.decode(line)) as Json);
+          }
+        }
+      };
+      peer.event('thread/started', {
+        'thread': {'id': 'child', 'parentThreadId': 'root'},
+      });
+      for (var i = 0; i < 4097; i++) {
+        peer.event('item/completed', {
+          'threadId': 'child',
+          'turnId': 'ct',
+          'item': {
+            'id': 'i-$i',
+            'type': 'agentMessage',
+            'text': 'bounded child item',
+          },
+        });
+      }
+      // A correlated response is a stream-order barrier after all child items.
+      final barrier = peer.client.request<void>(
+        'barrier',
+        {},
+        decodeResult: (_) {},
+      );
+      peer.result(peer.writes.last['id']!, {});
+      await barrier;
+      expect(
+        events.any(
+          (e) => e['kind'] == 'notice' && '${e['text']}'.contains('4096'),
+        ),
+        true,
+      );
+    },
+  );
+  for (final closeWhileBlocked in [false, true]) {
+    test(
+      'unknown attribution retains shared reservation until delivery or close $closeWhileBlocked',
+      () async {
+        await driver.newSession('/fixture');
+        var reserved = 0;
+        driver.reserveEarly = (bytes) {
+          reserved += bytes;
+          return reserved <= 256 * 1024;
+        };
+        driver.releaseEarly = (bytes) => reserved -= bytes;
+        driver.normalizeUpdate = (u) =>
+            encodeAgentEvent(u.event ?? AgentEvent.notice(u.text));
+        final blocked = Completer<void>();
+        RuntimeDelivery? owned;
+        driver.consumeNotification = (value) async {
+          if (value is RuntimeDelivery) {
+            owned = value;
+            await blocked.future;
+            value.release();
+            value.after?.call();
+          }
+        };
+        peer.event('item/agentMessage/delta', {
+          'threadId': 'child',
+          'turnId': 'ct',
+          'itemId': 'i',
+          'delta': 'held child output',
+        });
+        await pumpCodex();
+        expect(reserved, greaterThan(0));
+        peer.event('thread/started', {
+          'thread': {'id': 'child', 'parentThreadId': 'root'},
+        });
+        await pumpCodex();
+        expect(owned, isNotNull);
+        expect(
+          reserved,
+          greaterThan(0),
+          reason: 'reader-to-relay transfer still owns the pending bytes',
+        );
+        if (closeWhileBlocked) await driver.close();
+        blocked.complete();
+        await pumpCodex();
+        expect(reserved, 0);
+      },
+    );
+  }
+  test(
+    'opaque native separators cannot merge child tools or dedup identities',
+    () async {
+      await driver.newSession('/fixture');
+      final events = <Json>[];
+      driver.normalizeUpdate = (u) =>
+          encodeAgentEvent(u.event ?? AgentEvent.notice(u.text));
+      driver.consumeNotification = (value) {
+        if (value is Iterable<Uint8List>) {
+          for (final line in value) {
+            events.add(jsonDecode(utf8.decode(line)) as Json);
+          }
+        }
+      };
+      for (final pair in [('a:', 'x'), ('a', ':x')]) {
+        peer.event('thread/started', {
+          'thread': {'id': pair.$1, 'parentThreadId': 'root'},
+        });
+        peer.event('item/completed', {
+          'threadId': pair.$1,
+          'turnId': 't',
+          'item': {
+            'id': pair.$2,
+            'type': 'commandExecution',
+            'command': 'echo fixture',
+            'cwd': '/fixture',
+            'status': 'completed',
+            'commandActions': <Object?>[],
+          },
+        });
+      }
+      for (final pair in [('t:', 'x'), ('t', ':x')]) {
+        peer.event('item/completed', {
+          'threadId': 'a',
+          'turnId': pair.$1,
+          'item': {
+            'id': pair.$2,
+            'type': 'agentMessage',
+            'text': 'distinct message',
+          },
+        });
+      }
+      await pumpCodex();
+      await pumpCodex();
+      expect(
+        events
+            .where((e) => e['kind'] == 'toolUpdate')
+            .map((e) => e['toolCallId'])
+            .toSet(),
+        hasLength(2),
+      );
+      expect(events.where((e) => e['kind'] == 'agentText'), hasLength(2));
+    },
+  );
   test(
     'healthy optional config read timeout keeps native chat usable',
     () async {

@@ -48,6 +48,7 @@ Native Codex sessions and more accurate terminal input qualification.
 
 - Saved Codex conversations restore bounded native history without replaying prompts; unsafe or unavailable recovery retains the saved identity with its reason.
 - Root-scoped Kumiko tools use private MCP entry configuration, fresh grants and native-thread binding; configuration conflicts keep tools unavailable.
+- Delegated Codex work retains child identity, participates in Stop and close/quit warnings, and reports uncertain outcomes without claiming completion.
 
 ### Fixed
 

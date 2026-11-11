@@ -130,6 +130,11 @@ class _AgentPaneViewState extends State<AgentPaneView> {
               ],
             ),
           ),
+          if (link.delegatedLabel case final label?)
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 8),
+              child: Text(label, key: Key('agent-delegated-$id')),
+            ),
           if (link.toolsLabel case final label?)
             Padding(
               padding: const EdgeInsets.symmetric(horizontal: 8),
@@ -406,6 +411,12 @@ class _AgentPaneViewState extends State<AgentPaneView> {
     final permission = entry.permission;
     if (permission != null) return _permission(link, permission);
     final fields = entry.fields;
+    if (fields['parentThreadId'] != null) {
+      if (entry.kind != AgentEventKind.child) return const SizedBox.shrink();
+      return Text(
+        'Child ${fields['threadId']}: ${fields['status']}${entry.text.isEmpty ? '' : ': ${entry.text}'}',
+      );
+    }
     if (entry.kind == AgentEventKind.tool ||
         entry.kind == AgentEventKind.toolUpdate) {
       return Card(

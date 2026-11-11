@@ -85,6 +85,8 @@ class AgentTranscript {
       if (tail != null &&
           tail.permission == null &&
           tail.kind == event.kind &&
+          tail.fields['threadId'] == fields['threadId'] &&
+          tail.fields['parentThreadId'] == fields['parentThreadId'] &&
           tail.textBytes + size <= maxAgentTextEventBytes &&
           tail.fields['truncated'] != true) {
         tail.append(text, size);

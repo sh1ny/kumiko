@@ -29,13 +29,16 @@ class RuntimePermission {
     this.title,
     this.preview,
     this.choices,
-    this.cancellation,
-  );
+    this.cancellation, {
+    this.threadId,
+    this.parentThreadId,
+  });
   final Object id;
   final String turnId, title;
   final String? preview;
   final List<RuntimeChoice> choices;
   final Json cancellation;
+  final String? threadId, parentThreadId;
 }
 
 class RuntimeQuestion {
@@ -44,11 +47,34 @@ class RuntimeQuestion {
     this.turnId,
     this.questions, {
     this.asyncItem = false,
+    this.threadId,
+    this.parentThreadId,
   });
   final bool asyncItem;
   final Object id;
   final String turnId;
   final List<AgentQuestion> questions;
+  final String? threadId, parentThreadId;
+}
+
+class RuntimeRetired {
+  RuntimeRetired(this.threadId, this.turnId);
+  final String? threadId, turnId;
+}
+
+class NativeChild {
+  NativeChild(this.id, this.parent, {this.task = ''});
+  final String id, parent;
+  String task, status = 'unknown';
+  String? turn;
+  bool get active => turn != null || status == 'running' || status == 'unknown';
+}
+
+class _UnknownNative {
+  _UnknownNative(this.method, this.raw, this.bytes);
+  final String method;
+  final Json raw;
+  final int bytes;
 }
 
 class RuntimeReply {
@@ -100,6 +126,11 @@ abstract class RuntimeDriver implements RuntimeTransport {
   Object? Function(RuntimePermission)? onPermission;
   Object? Function(RuntimeQuestion)? onQuestion;
   void Function(Object?)? onRetired;
+  void Function()? onDelegatedChanged;
+  void Function(String, String, RuntimeTurnResult)? onNativeTurnEnded;
+  AgentDelegated? get delegated => null;
+  Map<String, String> get activeNativeTurns => const {};
+  String? get interruptionReason => null;
   void checkCanSteer(String expectedTurn) => throw RpcException(
     ErrorCode.methodNotAvailable,
     'native steering unavailable',
@@ -247,7 +278,7 @@ class _EarlyNative {
 
 class CodexRuntimeDriver extends RuntimeDriver {
   CodexRuntimeDriver(this.client, this.version) {
-    client.normalizeNotification = _notification;
+    client.normalizeNotification = _dispatchNotification;
     client.onRequest = _request;
     client.takeBuffered = _takeBuffered;
     client.onUnsupported = (feature, reason) => normalizeUpdate?.call(
@@ -369,6 +400,318 @@ class CodexRuntimeDriver extends RuntimeDriver {
   String? _turnId;
   String? _earlyId;
   bool _unknownChildNoticed = false;
+  final _children = <String, NativeChild>{};
+  bool _childrenIncomplete = false;
+  final _unknownNative = <_UnknownNative>[];
+  int _unknownBytes = 0;
+  Timer? _unknownDeadline;
+  bool _drainingUnknown = false;
+  int _resolvedUnknownBytes = 0;
+  RuntimeDelivery? _unknownDelivery, _expiredUnknownDelivery;
+  bool _childrenDisconnected = false;
+  Object? _dispatchNotification(String method, Object? raw) {
+    try {
+      final result = _notification(method, raw);
+      if (_resolvedUnknownBytes == 0) return result;
+      final bytes = _resolvedUnknownBytes;
+      _resolvedUnknownBytes = 0;
+      final lines = result is Iterable<Uint8List>
+          ? result.toList()
+          : <Uint8List>[];
+      if (lines.fold<int>(0, (n, line) => n + line.length) > bytes) {
+        releaseEarly?.call(bytes);
+        throw CodexProtocolException(
+          'attributed output exceeds shared reservation',
+        );
+      }
+      late final RuntimeDelivery delivery;
+      delivery = RuntimeDelivery(lines, bytes, releaseEarly, () {
+        if (identical(_unknownDelivery, delivery)) _unknownDelivery = null;
+      });
+      return _unknownDelivery = delivery;
+    } on Object {
+      releaseEarly?.call(_resolvedUnknownBytes);
+      _resolvedUnknownBytes = 0;
+      rethrow;
+    }
+  }
+
+  String? _interruptionReason;
+  @override
+  String? get interruptionReason {
+    if (_interruptionReason != null) return _interruptionReason;
+    final unknown = _children.values
+        .where((c) => c.active && c.turn == null)
+        .firstOrNull;
+    return unknown == null
+        ? null
+        : 'Child ${unknown.id} turn identity unavailable; interruption cannot be confirmed.';
+  }
+
+  @override
+  AgentDelegated get delegated => AgentDelegated(
+    activeChildren: _children.values.where((c) => c.active).length,
+    incomplete: _childrenIncomplete || _unknownNative.isNotEmpty,
+  );
+  @override
+  Map<String, String> get activeNativeTurns => {
+    if (root != null && _turnId != null) root!: _turnId!,
+    for (final c in _children.values)
+      if (c.turn != null) c.id: c.turn!,
+  };
+
+  Iterable<Uint8List> _childNotice(String text) {
+    final result = normalizeUpdate?.call(
+      RuntimeUpdate(AgentEventKind.notice, text),
+    );
+    return result is Iterable<Uint8List> ? result : const [];
+  }
+
+  Iterable<Uint8List> _incomplete(String reason) {
+    _childrenIncomplete = true;
+    onDelegatedChanged?.call();
+    if (_unknownChildNoticed) return const [];
+    _unknownChildNoticed = true;
+    return _childNotice(reason);
+  }
+
+  Iterable<Uint8List> _holdUnknown(String method, Json raw) {
+    final bytes = _boundedJsonBytes(raw, 256 * 1024) + 16 * 1024;
+    if (_unknownNative.length >= 32 ||
+        _unknownBytes + bytes > 256 * 1024 ||
+        !(reserveEarly?.call(bytes) ?? true)) {
+      return _incomplete(
+        'Codex unknown child activity withheld; attribution capacity exceeded.',
+      );
+    }
+    _unknownNative.add(_UnknownNative(method, raw, bytes));
+    _unknownBytes += bytes;
+    onDelegatedChanged?.call();
+    _unknownDeadline ??= Timer(const Duration(seconds: 5), () {
+      _unknownDeadline = null;
+      final charge = _unknownBytes;
+      _unknownBytes = 0;
+      _unknownNative.clear();
+      final lines = _incomplete(
+        'Codex unknown child activity withheld; relationship unavailable after attribution deadline.',
+      );
+      late final RuntimeDelivery delivery;
+      delivery = RuntimeDelivery(lines, charge, releaseEarly, () {
+        if (identical(_expiredUnknownDelivery, delivery)) {
+          _expiredUnknownDelivery = null;
+        }
+      });
+      _expiredUnknownDelivery = delivery;
+      Future<void>.sync(() => client.consumeNotification?.call(delivery))
+          .catchError((Object error) {
+            delivery.release();
+            _onFailure?.call(error);
+          });
+    });
+    if (!_unknownChildNoticed) {
+      _unknownChildNoticed = true;
+      return _childNotice(
+        'Codex unknown child activity pending attribution; content withheld until relationship is available.',
+      );
+    }
+    return const [];
+  }
+
+  Iterable<Uint8List> _drainUnknown() {
+    if (_drainingUnknown) return const [];
+    _drainingUnknown = true;
+    final lines = <Uint8List>[];
+    try {
+      var progress = true;
+      while (progress) {
+        progress = false;
+        for (final pending in _unknownNative.toList()) {
+          final thread = pending.raw['thread'];
+          final ready = pending.method == 'thread/started' && thread is Json
+              ? thread['parentThreadId'] == root ||
+                    _children.containsKey(thread['parentThreadId'])
+              : _children.containsKey(pending.raw['threadId']);
+          if (!ready) continue;
+          _unknownNative.remove(pending);
+          _unknownBytes -= pending.bytes;
+          _resolvedUnknownBytes += pending.bytes;
+          final value = _notification(pending.method, pending.raw);
+          if (value is Iterable<Uint8List>) lines.addAll(value);
+          progress = true;
+        }
+      }
+      if (_unknownNative.isEmpty) {
+        _unknownDeadline?.cancel();
+        _unknownDeadline = null;
+      }
+      onDelegatedChanged?.call();
+    } finally {
+      _drainingUnknown = false;
+    }
+    return lines;
+  }
+
+  Iterable<Uint8List> _registerChild(
+    String id,
+    String parent, {
+    String task = '',
+    String? status,
+  }) {
+    if (id == root ||
+        parent == id ||
+        (parent != root && !_children.containsKey(parent))) {
+      return _incomplete(
+        'Codex unknown child $id activity withheld; relationship unavailable.',
+      );
+    }
+    final existing = _children[id];
+    if (existing != null && existing.parent != parent) {
+      return _incomplete(
+        'Codex child $id relationship changed; delegated activity incomplete.',
+      );
+    }
+    if (existing == null && _children.length >= 64) {
+      return _incomplete(
+        'Codex delegated activity incomplete: 64 child identities tracked; extra content withheld.',
+      );
+    }
+    final child = _children.putIfAbsent(
+      id,
+      () => NativeChild(id, parent, task: clampUtf8(task, 4096)),
+    );
+    if (status != null) child.status = status;
+    onDelegatedChanged?.call();
+    final result = normalizeUpdate?.call(
+      RuntimeUpdate(
+        AgentEventKind.child,
+        '',
+        event: AgentEvent.fromJson({
+          'kind': 'child',
+          'rootThreadId': root,
+          'threadId': id,
+          'parentThreadId': parent,
+          'status': child.status,
+          'text': child.task,
+        }),
+      ),
+    );
+    return (result is Iterable<Uint8List> ? result : const <Uint8List>[])
+        .followedBy(_drainUnknown());
+  }
+
+  Iterable<Uint8List> _relationshipItem(Json item, String sender) {
+    if (sender.isEmpty || clampJsonString(sender, 4096) != sender) {
+      return _incomplete(
+        'Codex collaboration relationship unavailable; delegated activity incomplete.',
+      );
+    }
+    if (sender != root && !_children.containsKey(sender)) {
+      return _holdUnknown('item/completed', {
+        'threadId': sender,
+        'turnId': 'relationship',
+        'item': item,
+      });
+    }
+    final receivers = item['receiverThreadIds'];
+    final states = item['agentsStates'];
+    if (item['senderThreadId'] != sender ||
+        receivers is! List ||
+        receivers.length > 64 ||
+        (states != null && states is! Json)) {
+      return _incomplete(
+        'Codex collaboration relationship unavailable; delegated activity incomplete.',
+      );
+    }
+    final ids = <String>[];
+    // Validate optional shapes before any callbacks or registry mutation.
+    for (final id in receivers) {
+      if (id is! String || id.isEmpty || clampJsonString(id, 4096) != id) {
+        return _incomplete(
+          'Codex child metadata unavailable; delegated activity incomplete.',
+        );
+      }
+      ids.add(id);
+    }
+    final lines = <Uint8List>[];
+    for (final id in ids) {
+      if (item['tool'] == 'spawnAgent') {
+        lines.addAll(
+          _registerChild(
+            id,
+            sender,
+            task: item['prompt'] is String ? item['prompt']! as String : '',
+          ),
+        );
+      }
+      final child = _children[id];
+      final state = states is Json ? states[id] : null;
+      final status = state is Json ? state['status'] : null;
+      if (child == null) {
+        lines.addAll(
+          _incomplete(
+            'Codex child relationship unavailable; delegated activity incomplete.',
+          ),
+        );
+        continue;
+      }
+      if (status == 'completed' ||
+          status == 'interrupted' ||
+          status == 'errored' ||
+          status == 'shutdown') {
+        final turn = child.turn;
+        child.turn = null;
+        child.status = status == 'completed'
+            ? 'completed'
+            : status == 'interrupted'
+            ? 'interrupted'
+            : status == 'errored'
+            ? 'error'
+            : 'disconnected';
+        if (status == 'shutdown') _childrenIncomplete = true;
+        if (turn != null && status != 'shutdown') {
+          onRetired?.call(RuntimeRetired(child.id, turn));
+          onNativeTurnEnded?.call(
+            child.id,
+            turn,
+            RuntimeTurnResult(
+              status == 'completed'
+                  ? 'end_turn'
+                  : status == 'interrupted'
+                  ? 'cancelled'
+                  : 'error',
+              isCancelled: status == 'interrupted',
+              error: status == 'errored'
+                  ? CodexProtocolException('child ended with an error')
+                  : null,
+            ),
+          );
+        }
+      } else if (status == 'running' || status == 'pendingInit') {
+        child.status = 'running';
+      } else if (status != null || _historyLoading) {
+        child.status = 'unknown';
+        _childrenIncomplete = true;
+      }
+      onDelegatedChanged?.call();
+      final event = normalizeUpdate?.call(
+        RuntimeUpdate(
+          AgentEventKind.child,
+          '',
+          event: AgentEvent.fromJson({
+            'kind': 'child',
+            'rootThreadId': root,
+            'threadId': child.id,
+            'parentThreadId': child.parent,
+            'status': child.status,
+            'text': child.task,
+          }),
+        ),
+      );
+      if (event is Iterable<Uint8List>) lines.addAll(event);
+    }
+    return lines;
+  }
+
   bool _nativeExited = false;
   @override
   void observeExit() {
@@ -628,10 +971,18 @@ class CodexRuntimeDriver extends RuntimeDriver {
   RuntimeDelivery? _historyPending;
   RuntimeDelivery _reserveHistoryPage(List<Uint8List> lines) {
     final bytes = lines.fold<int>(0, (total, line) => total + line.length);
-    if (!(reserveEarly?.call(bytes) ?? true)) {
+    final transferred = _resolvedUnknownBytes;
+    final additional = bytes > transferred ? bytes - transferred : 0;
+    if (!(reserveEarly?.call(additional) ?? true)) {
       _historyUnavailable('native history exceeded shared relay capacity');
     }
-    return _historyPending = RuntimeDelivery(lines, bytes, releaseEarly, null);
+    _resolvedUnknownBytes = 0;
+    return _historyPending = RuntimeDelivery(
+      lines,
+      bytes > transferred ? bytes : transferred,
+      releaseEarly,
+      null,
+    );
   }
 
   String? _historyFailure;
@@ -681,7 +1032,13 @@ class CodexRuntimeDriver extends RuntimeDriver {
   Iterable<Uint8List> _historyItem(String turn, Object? raw) {
     if (raw is! Json) _historyUnavailable('invalid native history item');
     final id = _identity(raw, 'id');
-    final key = '$turn:$id';
+    if (raw['type'] == 'collabAgentToolCall') {
+      return _relationshipItem(
+        raw,
+        raw['senderThreadId'] is String ? raw['senderThreadId']! as String : '',
+      );
+    }
+    final key = _nativeKey([root, turn, id]);
     for (var i = _historyLiveKeys.length - 1; i >= 0; i--) {
       final pending = _historyLiveKeys[i];
       if (pending.$1 != key) continue;
@@ -808,6 +1165,50 @@ class CodexRuntimeDriver extends RuntimeDriver {
     releaseEarly?.call(_historyLiveBytes);
     _historyLiveBytes = 0;
     _historyLiveKeys.clear();
+    _unknownDeadline?.cancel();
+    _unknownDeadline = null;
+    releaseEarly?.call(_unknownBytes);
+    _unknownBytes = 0;
+    _unknownNative.clear();
+    releaseEarly?.call(_resolvedUnknownBytes);
+    _resolvedUnknownBytes = 0;
+    _unknownDelivery?.release();
+    _unknownDelivery = null;
+    _expiredUnknownDelivery?.release();
+    _expiredUnknownDelivery = null;
+    if (_children.isNotEmpty && !_childrenDisconnected) {
+      _childrenDisconnected = true;
+      _childrenIncomplete = true;
+      final lines = <Uint8List>[];
+      for (final child in _children.values) {
+        if (!child.active) continue;
+        child.status = 'disconnected';
+        final output = normalizeUpdate?.call(
+          RuntimeUpdate(
+            AgentEventKind.child,
+            '',
+            event: AgentEvent.fromJson({
+              'kind': 'child',
+              'rootThreadId': root,
+              'threadId': child.id,
+              'parentThreadId': child.parent,
+              'status': 'disconnected',
+              'text': child.task,
+            }),
+          ),
+        );
+        if (output is Iterable<Uint8List>) lines.addAll(output);
+      }
+      onDelegatedChanged?.call();
+      final bytes = lines.fold<int>(0, (n, line) => n + line.length);
+      if (lines.isNotEmpty && (reserveEarly?.call(bytes) ?? true)) {
+        final delivery = RuntimeDelivery(lines, bytes, releaseEarly, null);
+        Future<void>.sync(() => client.consumeNotification?.call(delivery))
+            .catchError((Object error) {
+              delivery.release();
+            });
+      }
+    }
     if (c != null && !c.isCompleted) c.completeError(error);
   }
 
@@ -818,11 +1219,12 @@ class CodexRuntimeDriver extends RuntimeDriver {
   }
 
   void _complete(RuntimeTurnResult result) {
+    final completedTurn = _turnId;
     final c = _turn;
     _turn = null;
     _turnId = null;
     _earlyId = null;
-    onRetired?.call(null);
+    onRetired?.call(RuntimeRetired(root, completedTurn));
     if (c != null && !c.isCompleted) c.complete(result);
   }
 
@@ -924,7 +1326,11 @@ class CodexRuntimeDriver extends RuntimeDriver {
       if (method != 'item/completed' || item is! Json) {
         _historyUnavailable('native work changed during history replay');
       }
-      final key = '${_identity(raw, 'turnId')}:${_identity(item, 'id')}';
+      final key = _nativeKey([
+        root,
+        _identity(raw, 'turnId'),
+        _identity(item, 'id'),
+      ]);
       if (_seenItem(key, 2)) return null;
       final bytes = _boundedJsonBytes(raw, 256 * 1024) + 128;
       if (_historyLiveKeys.length >= 64 ||
@@ -941,39 +1347,55 @@ class CodexRuntimeDriver extends RuntimeDriver {
       if (raw['requestId'] is! String && raw['requestId'] is! int) {
         throw CodexProtocolException('invalid resolved request identity');
       }
-      if (raw['threadId'] == root) onRetired?.call(raw['requestId']);
+      if (raw['threadId'] == root || _children.containsKey(raw['threadId'])) {
+        onRetired?.call(raw['requestId']);
+      }
       return null;
-    }
-    if (raw is Json && raw['threadId'] is String && raw['threadId'] != root) {
-      if (_unknownChildNoticed) return null;
-      _unknownChildNoticed = true;
-      return normalizeUpdate?.call(
-        RuntimeUpdate(
-          AgentEventKind.notice,
-          'Codex unknown child ${clampJsonString(raw['threadId'].toString(), 4096)} activity withheld; relationship unavailable.',
-        ),
-      );
     }
     if (method == 'thread/started') {
       if (raw is! Json || raw['thread'] is! Json) {
-        return normalizeUpdate?.call(
-          RuntimeUpdate(
-            AgentEventKind.notice,
-            'Child metadata unavailable: unsupported optional shape.',
-          ),
+        return _incomplete(
+          'Codex unknown child activity withheld; relationship metadata unavailable.',
         );
       }
       final thread = raw['thread']! as Json;
-      if (thread['id'] != root && !_unknownChildNoticed) {
-        _unknownChildNoticed = true;
-        return normalizeUpdate?.call(
-          RuntimeUpdate(
-            AgentEventKind.notice,
-            'Codex unknown child activity withheld; relationship unavailable.',
-          ),
+      final id = thread['id'];
+      if (id == root) return null;
+      final source = thread['source'];
+      final subagent = source is Json ? source['subAgent'] : null;
+      final spawn = subagent is Json ? subagent['thread_spawn'] : null;
+      final parent =
+          thread['parentThreadId'] ??
+          (spawn is Json ? spawn['parent_thread_id'] : null);
+      if (id is! String ||
+          id.isEmpty ||
+          clampJsonString(id, 4096) != id ||
+          parent is! String ||
+          parent.isEmpty ||
+          clampJsonString(parent, 4096) != parent) {
+        return _incomplete(
+          'Codex unknown child activity withheld; relationship metadata unavailable.',
         );
       }
-      return null;
+      if (parent != root && !_children.containsKey(parent)) {
+        return _holdUnknown(method, {
+          'thread': {...thread, 'parentThreadId': parent},
+        });
+      }
+      final status = thread['status'];
+      return _registerChild(
+        id,
+        parent,
+        status: status is Json && status['type'] == 'active'
+            ? 'running'
+            : 'unknown',
+      );
+    }
+    if (raw is Json &&
+        raw['threadId'] is String &&
+        raw['threadId'] != root &&
+        !_children.containsKey(raw['threadId'])) {
+      return _holdUnknown(method, raw);
     }
     const core = {
       'turn/started',
@@ -995,6 +1417,15 @@ class CodexRuntimeDriver extends RuntimeDriver {
         : _identity(raw, 'turnId');
     RuntimeTurnResult? terminal;
     RuntimeUpdate? update;
+    if (raw['item'] case final Json item
+        when item['type'] == 'collabAgentToolCall') {
+      return _relationshipItem(
+        item,
+        item['senderThreadId'] is String
+            ? item['senderThreadId']! as String
+            : '',
+      );
+    }
     if (method == 'turn/completed') {
       final data = turnData! as Json;
       final status = data['status'];
@@ -1024,7 +1455,7 @@ class CodexRuntimeDriver extends RuntimeDriver {
       );
     } else if (method == 'item/agentMessage/delta') {
       final itemId = _identity(raw, 'itemId');
-      _markItem('$turn:$itemId', 1);
+      _markItem(_nativeKey([raw['threadId'] as String, turn, itemId]), 1);
       final text = raw['delta'];
       if (text is! String) {
         throw CodexProtocolException('invalid message delta');
@@ -1043,6 +1474,80 @@ class CodexRuntimeDriver extends RuntimeDriver {
       // Item mapping is reduced to bounded typed updates before leaving the
       // host-wide native line permit, including when the run has become idle.
       update = _item(method, raw);
+    }
+    final child = _children[raw['threadId']];
+    if (child != null) {
+      if (method == 'turn/started') {
+        if (child.turn != null && child.turn != turn) {
+          onRetired?.call(RuntimeRetired(child.id, child.turn));
+        }
+        child.turn = turn;
+        child.status = 'running';
+        onDelegatedChanged?.call();
+      }
+      if (terminal != null) {
+        if (child.turn != turn) return null;
+        child.turn = null;
+        child.status = terminal.error != null
+            ? 'error'
+            : terminal.isCancelled
+            ? 'interrupted'
+            : 'completed';
+        onRetired?.call(RuntimeRetired(child.id, turn));
+        onNativeTurnEnded?.call(child.id, turn, terminal);
+        onDelegatedChanged?.call();
+      }
+      final identity = {
+        'rootThreadId': root,
+        'threadId': child.id,
+        'parentThreadId': child.parent,
+      };
+      if (update != null) {
+        var notice = update.optionalNotice;
+        if (_identityOmissionPending) {
+          _identityOmissionPending = false;
+          _identityOmissionShown = true;
+          notice =
+              'Native item identity history truncated at 4096 keys; older duplicate identities are no longer retained. ${notice ?? ''}';
+        }
+        final event =
+            update.event ??
+            AgentEvent.fromJson({
+              'kind': update.kind.name,
+              'text': update.text,
+              if (update.truncated) 'truncated': true,
+            });
+        return normalizeUpdate?.call(
+          RuntimeUpdate(
+            update.kind,
+            '',
+            optionalNotice: notice,
+            event: AgentEvent.fromJson({...event.toJson(), ...identity}),
+            question: update.question == null
+                ? null
+                : RuntimeQuestion(
+                    update.question!.id,
+                    update.question!.turnId,
+                    update.question!.questions,
+                    asyncItem: update.question!.asyncItem,
+                    threadId: child.id,
+                    parentThreadId: child.parent,
+                  ),
+          ),
+        );
+      }
+      return normalizeUpdate?.call(
+        RuntimeUpdate(
+          AgentEventKind.child,
+          '',
+          event: AgentEvent.fromJson({
+            'kind': 'child',
+            ...identity,
+            'status': child.status,
+            'text': child.task,
+          }),
+        ),
+      );
     }
     if (raw['threadId'] != root || _turn == null) return null;
     if (update != null &&
@@ -1069,6 +1574,7 @@ class CodexRuntimeDriver extends RuntimeDriver {
     }
     if (turn != _turnId) return null;
     if (terminal != null) {
+      onNativeTurnEnded?.call(root!, turn, terminal);
       _complete(terminal);
       return null;
     }
@@ -1086,7 +1592,7 @@ class CodexRuntimeDriver extends RuntimeDriver {
         '',
         event: _toolWithLoss(
           AgentEvent.tool(
-            toolCallId: '$root:$id',
+            toolCallId: _nativeKey([raw['threadId'] as String? ?? root, id]),
             update: true,
             content: [
               {
@@ -1111,7 +1617,11 @@ class CodexRuntimeDriver extends RuntimeDriver {
         throw CodexProtocolException('invalid agent message item');
       }
       if (!completed) return null;
-      final key = '${raw['turnId']}:$id';
+      final key = _nativeKey([
+        raw['threadId'] as String? ?? root,
+        raw['turnId'] as String,
+        id,
+      ]);
       if (_seenItem(key, 2)) return null;
       _markItem(key, 2);
       RuntimeQuestion? question;
@@ -1175,6 +1685,32 @@ class CodexRuntimeDriver extends RuntimeDriver {
         truncated: content.length != bounded.length,
         question: question,
         optionalNotice: optionalNotice,
+      );
+    }
+    if (type == 'collabAgentToolCall') {
+      final lines = _relationshipItem(
+        item,
+        raw['threadId'] as String? ?? root!,
+      );
+      if (lines.isNotEmpty) {
+        return RuntimeUpdate(
+          AgentEventKind.notice,
+          'Delegated relationships updated.',
+        );
+      }
+      return null;
+    }
+    if (type == 'plan' && item['text'] is String) {
+      final text = item['text']! as String;
+      return RuntimeUpdate(
+        AgentEventKind.plan,
+        '',
+        event: AgentEvent.plan([
+          {
+            'content': clampUtf8(text, 1024),
+            'status': completed ? 'completed' : 'in_progress',
+          },
+        ]),
       );
     }
     if (type != 'commandExecution' && type != 'fileChange') return null;
@@ -1260,7 +1796,7 @@ class CodexRuntimeDriver extends RuntimeDriver {
       '',
       event: _toolWithLoss(
         AgentEvent.tool(
-          toolCallId: '$root:$id',
+          toolCallId: _nativeKey([raw['threadId'] as String? ?? root, id]),
           update: completed,
           title: title,
           status: status,
@@ -1286,7 +1822,7 @@ class CodexRuntimeDriver extends RuntimeDriver {
 
   @override
   Future<void> cancel(String id) {
-    if (_turnId == null) return Future.value();
+    if (activeNativeTurns.isEmpty) return Future.value();
     try {
       return cancelWithPermissions(id, const []);
     } on Object catch (error, stack) {
@@ -1296,28 +1832,34 @@ class CodexRuntimeDriver extends RuntimeDriver {
 
   @override
   Future<void> cancelWithPermissions(String id, Iterable<Object> requests) {
-    if (_turnId == null) {
+    final turns = activeNativeTurns;
+    if (turns.isEmpty && _turn != null) {
       throw RpcException(
         ErrorCode.busy,
         'native turn identity is not yet available',
       );
     }
-    return client.request<void>(
-      'turn/interrupt',
-      {'threadId': id, 'turnId': _turnId},
-      requireAdmission: true,
-      pauseForOutput: false,
-      timeout: const Duration(seconds: 10),
-      preceding: [
-        for (final r in requests)
-          if (r is RuntimeReply) {'id': r.id, 'result': r.result},
-      ],
-      decodeResult: (result) {
-        if (result is! Json) {
-          throw CodexProtocolException('invalid interrupt acknowledgement');
-        }
-      },
-    );
+    _interruptionReason = null;
+    return client
+        .interruptBatch(
+          turns,
+          [
+            for (final r in requests)
+              if (r is RuntimeReply) {'id': r.id, 'result': r.result},
+          ],
+          (thread, error) {
+            _interruptionReason =
+                'Child/thread $thread interruption unavailable: $error';
+          },
+        )
+        .then((_) {
+          if (_interruptionReason != null) {
+            throw CodexOptionalUnsupported(
+              'Interruption',
+              _interruptionReason!,
+            );
+          }
+        });
   }
 
   @override
@@ -1341,7 +1883,15 @@ class CodexRuntimeDriver extends RuntimeDriver {
 
   @override
   Future<void> steer(String thread, String expectedTurn, String text) {
-    checkCanSteer(expectedTurn);
+    if (thread == root) {
+      checkCanSteer(expectedTurn);
+    } else if (_steeringUnavailable ||
+        _children[thread]?.turn != expectedTurn) {
+      throw RpcException(
+        ErrorCode.turnRunning,
+        'child question turn is no longer current',
+      );
+    }
     return client
         .request<void>(
           'turn/steer',
@@ -1375,6 +1925,33 @@ class CodexRuntimeDriver extends RuntimeDriver {
   }
 
   Object? _deliverInteraction(Object interaction, String turn, Json raw) {
+    final child = _children[raw['threadId']];
+    if (child != null) {
+      if (interaction is RuntimePermission) {
+        interaction = RuntimePermission(
+          interaction.id,
+          interaction.turnId,
+          interaction.title,
+          interaction.preview,
+          interaction.choices,
+          interaction.cancellation,
+          threadId: child.id,
+          parentThreadId: child.parent,
+        );
+      } else if (interaction is RuntimeQuestion) {
+        interaction = RuntimeQuestion(
+          interaction.id,
+          interaction.turnId,
+          interaction.questions,
+          asyncItem: interaction.asyncItem,
+          threadId: child.id,
+          parentThreadId: child.parent,
+        );
+      }
+      return interaction is RuntimePermission
+          ? onPermission?.call(interaction)
+          : onQuestion?.call(interaction as RuntimeQuestion);
+    }
     if (_turnId == null) {
       var charge = _boundedJsonBytes(raw, 64 * 1024) + 1024;
       if (interaction is RuntimePermission) {
@@ -1449,15 +2026,25 @@ class CodexRuntimeDriver extends RuntimeDriver {
       client.deny(id, -32602, 'interaction exceeds control capacity');
       return notice('Native interaction refused: control capacity exceeded.');
     }
-    if (raw['threadId'] != root) {
+    if (raw['threadId'] != root && !_children.containsKey(raw['threadId'])) {
+      _childrenIncomplete = true;
+      onDelegatedChanged?.call();
       client.deny(id, -32601, 'untracked child interaction');
       return notice(
         'Codex unknown child ${clampJsonString(raw['threadId'].toString(), 4096)} request refused; relationship unavailable.',
       );
     }
-    final active = _turnId ?? _earlyId;
+    final child = _children[raw['threadId']];
+    if (child != null && child.turn == null) {
+      client.deny(id, -32602, 'retired child turn');
+      return notice(
+        'Child ${child.id} request refused; native turn identity unavailable or retired.',
+      );
+    }
+    final active = child == null ? _turnId ?? _earlyId : child.turn;
     final turn = raw['turnId'];
-    if (_turn == null || (active != null && turn != active)) {
+    if ((child == null && _turn == null) ||
+        (active != null && turn != active)) {
       client.deny(id, -32602, 'retired native turn');
       return null;
     }
@@ -1652,3 +2239,7 @@ int _boundedJsonBytes(Object? value, int limit, [int depth = 0]) {
   }
   return value == null ? 4 : value.toString().length;
 }
+
+// Native identifiers are opaque; length prefixes avoid separator collisions.
+String _nativeKey(List<String?> values) =>
+    values.map((v) => '${v?.length ?? 0}:${v ?? ''}').join();

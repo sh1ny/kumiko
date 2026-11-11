@@ -117,6 +117,11 @@ class AgentLink {
 
   AgentLinkPhase phase = AgentLinkPhase.ended;
   AgentState state = AgentState.ended;
+  AgentDelegated? delegated;
+  bool get delegatedWork => delegated?.hasWork ?? false;
+  String? get delegatedLabel => delegated == null
+      ? null
+      : 'Delegated activity: ${delegated!.activeChildren} active child${delegated!.activeChildren == 1 ? "" : "ren"}, ${delegated!.waitingRequests} waiting requests${delegated!.incomplete ? "; incomplete" : ""}';
 
   /// Stores this session's composer text on the host (design D3).
   late final DraftSaver draft;
@@ -252,7 +257,9 @@ class AgentLink {
       connected &&
       phase == AgentLinkPhase.live &&
       !stopping &&
-      (state == AgentState.running || state == AgentState.waitingApproval);
+      (state == AgentState.running ||
+          state == AgentState.waitingApproval ||
+          delegatedWork);
   bool get canContinue =>
       connected && known && phase == AgentLinkPhase.ended && !_draining;
   // Native restoration retains resume-unavailable as the outer diagnostic.
@@ -559,10 +566,15 @@ class AgentController extends ChangeNotifier implements ViewCloser {
         link.nativeSeq = event.seq;
         link.runId = event.runId;
         link.turnId = event.turnId;
-        link.questions.removeWhere((_, q) => q.request.turnId != event.turnId);
+        link.questions.removeWhere(
+          (_, q) =>
+              q.request.parentThreadId == null &&
+              q.request.turnId != event.turnId,
+        );
       }
       link.seq = event.seq;
       link.state = event.state;
+      if (event.delegated != null) link.delegated = event.delegated;
       // Tools status rides the same sequence; a message without it changes nothing.
       if (event.tools != null) link.tools = event.tools;
       _changed();
@@ -574,7 +586,7 @@ class AgentController extends ChangeNotifier implements ViewCloser {
             !link.live ||
             event.seq <= link.nativeSeq ||
             event.runId != link.runId ||
-            event.turnId != link.turnId) {
+            (event.parentThreadId == null && event.turnId != link.turnId)) {
           return;
         }
         link.nativeSeq = event.seq;
@@ -992,6 +1004,7 @@ class AgentController extends ChangeNotifier implements ViewCloser {
     link.seq = -1;
     link.nativeSeq = -1;
     link.runId = null;
+    link.delegated = null;
     link.turnId = null;
     link.steeringUnavailable = null;
     link.permissionReplyUnavailable = null;
@@ -1481,7 +1494,7 @@ class AgentController extends ChangeNotifier implements ViewCloser {
         !link.connected ||
         !identical(link.questions[request.requestId], question) ||
         request.runId != link.runId ||
-        request.turnId != link.turnId ||
+        (request.parentThreadId == null && request.turnId != link.turnId) ||
         question.replying ||
         question.unavailable != null) {
       return;
@@ -1617,6 +1630,7 @@ class AgentController extends ChangeNotifier implements ViewCloser {
       if (!running && unsaved == null) continue;
       warnings[id] = [
         if (running) agentCloseWarning,
+        if (link?.delegatedWork == true) link!.delegatedLabel!,
         if (unsaved != null && link!.prompt.text.isEmpty)
           'Draft not saved: $unsaved. The cleared draft stays stored and '
               'returns when the session reopens.'
@@ -1640,7 +1654,7 @@ class AgentController extends ChangeNotifier implements ViewCloser {
     if (link == null || !link.connected || !link.live) return false;
     // Submission can already be accepted while its ACK/state is in flight.
     // Preserve confirmation without deriving a speculative Running status.
-    if (link.sending) return true;
+    if (link.sending || link.delegatedWork) return true;
     return switch (link.state) {
       AgentState.running ||
       AgentState.waitingApproval ||
@@ -1704,6 +1718,7 @@ class AgentController extends ChangeNotifier implements ViewCloser {
   String? exitWork(String paneId) {
     final link = _links[paneId];
     if (link == null || !_warnsOnClose(paneId)) return null;
+    if (link.delegatedWork) return link.delegatedLabel;
     if (link.state == AgentState.waitingApproval) {
       return 'waiting for a permission reply';
     }
@@ -1861,6 +1876,7 @@ class AgentController extends ChangeNotifier implements ViewCloser {
   }
 
   void _disablePermissions(AgentLink link) {
+    link.delegated = null;
     link.questions.clear();
     link.runId = null;
     link.turnId = null;

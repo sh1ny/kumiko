@@ -20,6 +20,98 @@ class _Pipe implements ByteSink {
 }
 
 void main() {
+  for (final name in [
+    'Child starts',
+    'Child starts with no transcript credit',
+  ]) {
+    test('Codex: $name', () {
+      final json = <String, Object?>{
+        'sessionId': 's',
+        'seq': 8,
+        'state': 'idle',
+        'runId': 'run',
+        'delegated': {
+          'activeChildren': 2,
+          'waitingRequests': 1,
+          'incomplete': false,
+        },
+      };
+      expect(AgentStateParams.fromJson(json).toJson(), json);
+    });
+  }
+  test('Codex: Attribution capacity is exceeded', () {
+    expect(
+      () => AgentStateParams.fromJson({
+        'sessionId': 's',
+        'seq': 1,
+        'state': 'idle',
+        'delegated': {
+          'activeChildren': 65,
+          'waitingRequests': 0,
+          'incomplete': true,
+        },
+      }),
+      throwsA(isA<RpcException>()),
+    );
+  });
+  test('Codex: Two children use the same tool identifier', () {
+    for (final child in ['a', 'b']) {
+      final json = <String, Object?>{
+        'kind': 'agentText',
+        'text': 'child output',
+        'rootThreadId': 'root',
+        'threadId': child,
+        'parentThreadId': 'root',
+      };
+      final encoded = encodeAgentEvent(AgentEvent.fromJson(json));
+      expect(jsonDecode(utf8.decode(encoded.single)), json);
+    }
+    expect(
+      () => AgentEvent.fromJson({
+        'kind': 'tool',
+        'toolCallId': 'x',
+        'threadId': 'child',
+      }),
+      throwsFormatException,
+    );
+    for (final child in ['a:', ':b']) {
+      final value = <String, Object?>{
+        'kind': 'tool',
+        'toolCallId': '${child.length}:$child\u0031:x',
+        'rootThreadId': 'root',
+        'threadId': child,
+        'parentThreadId': 'root',
+      };
+      expect(
+        jsonDecode(
+          utf8.decode(encodeAgentEvent(AgentEvent.fromJson(value)).single),
+        ),
+        value,
+      );
+      final text = AgentEvent.fromJson(
+        {...value, 'kind': 'agentText', 'text': 'x' * 150000}
+          ..remove('toolCallId'),
+      );
+      final chunks = encodeAgentEvent(text)
+          .map((e) => jsonDecode(utf8.decode(e)) as Json)
+          .toList();
+      expect(chunks.length, greaterThan(1));
+      expect(
+        chunks.every(
+          (e) => e['threadId'] == child && e['parentThreadId'] == 'root',
+        ),
+        true,
+      );
+    }
+    expect(
+      () => AgentEvent.fromJson({
+        'kind': 'child',
+        'status': 'running',
+        'text': '',
+      }),
+      throwsFormatException,
+    );
+  });
   test('Continue profile selection preserves the legacy payload', () {
     expect(const AgentContinueParams('saved').toJson(), {'sessionId': 'saved'});
     final selected = AgentContinueParams.fromJson({
