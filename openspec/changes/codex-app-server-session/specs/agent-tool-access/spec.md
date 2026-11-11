@@ -89,7 +89,7 @@ When the host creates or continues a session while its tool endpoint is availabl
 
 ### Requirement: Native audit coverage is explicit and bounded
 
-Test-only native canary audits SHALL bind content selection before a run. Legacy manifests/defaults SHALL retain legacy coverage. Only an exact owner-approved manifest naming changed-artifacts-v1 SHALL enable wider metadata/changed-content coverage. All byte, file, metadata, confinement and no-follow limits SHALL remain unchanged. Source: owner-approved attempt-6 planning amendment, design D5.
+Test-only native canary audits SHALL bind content selection before a run, and legacy manifests and defaults SHALL keep legacy coverage. Only an exact owner-approved manifest naming changed-artifacts-v1 or changed-artifacts-v2 SHALL enable wider coverage, with the selection-specific metadata bounds and link handling in the scenarios below. Byte, file, confinement and no-follow limits SHALL remain unchanged. Source: design D5.
 
 #### Scenario: Explicit changed-artifact coverage
 
@@ -105,6 +105,12 @@ Test-only native canary audits SHALL bind content selection before a run. Legacy
 
 #### Scenario: Protected entries or inventory bounds prevent completeness
 
-- **WHEN** a protected leaf (auth.json/config.toml plus other known credential/configuration names established before implementation) at any depth changes or is removed, or a link/nonregular/missing/unstable entry or the 4096-entry metadata bound prevents accounting
+- **WHEN** a protected leaf (auth.json/config.toml plus other known credential/configuration names established before implementation) at any depth changes or is removed, or a link/nonregular/missing/unstable entry or the selection's metadata bound (4096 entries for changed-artifacts-v1, 65,536 for changed-artifacts-v2) prevents accounting
 - **THEN** the audit remains incomplete, protected contents and links are never read, no cap is raised and no legacy fallback or exclusion creates a pass
-- **AND** an incomplete changed-artifacts-v1 baseline aborts before App Server/provider work; the consumed attempt is recorded INCOMPLETE with baseline counters and no-provider/no-content-scan indicators; ordinary directory inventories are checked for concurrent membership changes
+- **AND** an incomplete changed-artifacts-v1 or changed-artifacts-v2 baseline aborts before App Server/provider work; the consumed attempt is recorded INCOMPLETE with baseline counters and no-provider/no-content-scan indicators; ordinary directory inventories are checked for concurrent membership changes
+
+#### Scenario: Normal native home coverage
+
+- **WHEN** an exact owner-approved manifest binds changed-artifacts-v2 for a native home with more than 4096 and at most 65,536 entries, including symlinks or junctions in the native-home root
+- **THEN** both inventories admit up to 65,536 entries within the retained-string budget, and exhausting that budget or an over-long path or target keeps the audit incomplete; a supported link (a symlink or junction observed without following it) whose kind, own metadata and target text are identical in both inventories is accounted for without being followed or read; an unavailable, failed, unsupported or unstable link observation, and an added, removed, retargeted or otherwise changed link, any other non-regular entry, or a link in the workspace or profile root keeps the audit incomplete
+- **AND** link target text is never printed, persisted or emitted; the canonical v2 disclosure states the 65,536-entry bound, the unchanged-link and concurrent-writer detector limits and the pause of other Codex sessions; changed-artifacts-v1 and legacy keep their recorded behaviour, and the scanner's file and byte limits are unchanged
