@@ -43,6 +43,8 @@ The owner-approved attempt-6 follow-up plans complete object-valued native decis
 
 After attempts 7 and 8 showed that the owner's normal native home exceeds the inherited 4096-entry inventory bound and contains links, the owner chose to keep qualifying against that home (2026-11-12). A separate changed-artifacts-v2 selection admits up to 65,536 entries and accounts for unchanged native-home links as no-follow metadata. It discloses the unchanged-link and concurrent-writer limits, and v1 keeps its recorded meaning.
 
+Attempt 9 then stopped only on two Unix-domain sockets in that home. A changed-artifacts-v3 selection records Windows AF_UNIX sockets as metadata without opening them; v2 keeps its recorded meaning.
+
 ## Release Notes
 
 Native Codex sessions and more accurate terminal input qualification.
@@ -69,3 +71,4 @@ Native Codex sessions and more accurate terminal input qualification.
 - Object-valued native command decisions use bounded indexed labels and complete preview details, preserving exact responses and refusing any loss of displayed scope.
 - Qualification manifests can explicitly select bounded changed-artifact coverage; legacy selection remains the default and protected or unaccounted changes remain incomplete.
 - A changed-artifacts-v2 qualification selection covers larger native homes with unchanged links, with explicit detector limits.
+- A changed-artifacts-v3 qualification selection also accounts for Unix-domain sockets in the native home without opening them.
