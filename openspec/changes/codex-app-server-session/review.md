@@ -2,11 +2,11 @@
 
 ## Metadata
 
-- **Round:** 9.
-- **Prior round:** Round 8 returned APPROVE_WITH_CHANGES; its focused recheck recorded the required corrections as applied.
+- **Round:** 12.
+- **Prior round:** Round 11, REVISE; second consecutive REVISE, followed by the owner’s administrator-trust decision.
 - **Reviewer:** Codex, fresh-context, read-only adversarial design reviewer.
-- **Files reviewed:** `AGENTS.md`; change `design.md`, `specs/agent-tool-access/spec.md`, `tasks.md`, `proposal.md`, and `review.md`; qualification document’s tenth-attempt section and attempt-10 JSON receipt; `native_home_audit.dart`; qualification helper’s approved-request matcher and refusal diagnostic. Supporting inventory I/O and socket tests were inspected.
-- **Method:** Repository reads only. No files modified, builds, tests, native Codex execution, provider calls, or native Codex-home access.
+- **Reviewed:** `AGENTS.md`; revised qualification-wrapper rule and D5 removed-entry/approval-diagnostic bullets in `design.md`; native-wrapper amendment in `tasks.md`; Attempt 12 paragraph in `proposal.md`; Round 11 `review.md`; twelfth-attempt qualification section and JSON receipt; `evaluateCanaryApproval`, `allowedCanaryApproval` and qualification-loop caller; Specwright review template.
+- **Method:** Repository reads only. No modifications, builds, tests, native Codex execution, provider calls or native Codex-home access.
 
 ## Findings
 
@@ -14,67 +14,84 @@
 
 None.
 
-The proposed removal exception is sound within the expressly bounded, observation-time detector. Inventory failures remain independently incomplete; removal accounting must not subtract or replace those errors (`design.md:181`; `native_home_audit.dart:723`). A removed directory containing protected descendants still produces protected-removal errors for those baseline descendants. Renaming a protected file likewise leaves its original protected entry absent and therefore incomplete.
-
-A destination that is new or metadata-changed remains selected. Persistence through metadata-preserving writes or outside the audited roots remains subject to the existing disclosed limits; removal accounting does not establish coverage beyond them.
-
 ### Moderate
 
-**M1. The compatibility test instruction contradicts v3’s existing removed-socket semantics.**
+**M1. The diagnostic definition accidentally makes optional `-NoProfile` mandatory.**
 
-- **Evidence:** `openspec/changes/codex-app-server-session/tasks.md:505` says “v3, v2, v1 and legacy keep `removedEntry` errors,” without limiting entry kinds. However, `design.md:173` and `specs/agent-tool-access/spec.md:121` explicitly account for removed non-protected sockets without error under v3.
-- **Grounding:** `packages/host/lib/src/agent/codex/native_home_audit.dart:745` counts such removals in `socketsChanged`. The existing regression test explicitly expects zero `removedEntry` errors (`packages/host/test/agent/native_home_audit_test.dart:1525`).
-- **Consequence:** Following the new test instruction literally would change v3’s recorded meaning or create contradictory acceptance tests.
-- **Required correction:** State compatibility expectations by selection and entry kind. Preserve v3’s removed-socket exception and counter, while retaining its ordinary file/directory/link removal errors. Under v2/v1/legacy, preserve their existing unsupported-socket behavior rather than requiring a socket-specific `removedEntry` result.
+Design item 6 defines `wrapperNoProfile` as whether the second word is `-NoProfile`, then defines `wrapperMatches` as “all four hold” with the appropriate word count. Read literally, the four flags include `wrapperNoProfile`.
+
+For the explicitly permitted argv:
+
+```text
+[trustedShell, -Command, approvedCommand]
+```
+
+the shell, command-flag and script checks pass, but `wrapperNoProfile` is false. Item 6 therefore reports `wrapperMatches: false`, contradicting item 2 and the tasks’ positive fixture.
+
+This is a localized specification defect, not an identified approval bypass. It nevertheless undermines the next receipt’s purpose and creates conflicting requirements for test-first implementation. Specify the conjunction explicitly and assert the diagnostic for both permitted shapes.
 
 ### Suggestions
 
-**S1. Include v4 in the resource-bound summary.**
-
-`openspec/changes/codex-app-server-session/design.md:462` assigns the larger metadata and retained-string bounds only to v2 and v3. D5 and the governing spec already assign those inherited bounds to v4 (`design.md:181`; `specs/agent-tool-access/spec.md:108`). Update the summary to match.
-
-**S2. Make the diagnostic’s guard coverage explicit.**
-
-The enumerated diagnostic checks at `design.md:182` omit some existing matcher guards: valid operation, configured command type and absence of CR/LF (`tool/qualify_codex_app_server.dart:294`, `:326`). Title and truncation already have diagnostic fields (`:384`).
-
-Retain those fields and add content-free results for the remaining guards, or explicitly distinguish them from preview checks. Extend `tasks.md:509` accordingly. This makes “one boolean per match check” testable without leaving another unexplained refusal.
-
-The proposed booleans and bounded counts disclose predicates and shape, but no command, path, option name, decision value, or secret bytes. Contains/starts-with flags compare against the fixed approved command; they are suitable for this content-free diagnostic. They must remain observational and never participate in approval selection. The explicit unchanged-rule requirement and isolated failing-check tests provide an appropriate implementation constraint (`design.md:182`; `tasks.md:512`).
-
-Attempt 10 remains correctly recorded as INCOMPLETE. Its zero matches do not establish a clean audit, and v4 must not reinterpret its consumed v3 manifest (`docs/qualification/codex-app-server.md:1125`; `design.md:181`).
+None beyond the required correction.
 
 ## Verdict
 
-VERDICT: APPROVE_WITH_CHANGES
+The wrapper admission rule is sufficiently narrow under the owner-approved trust assumption. Exact decoded argv length, literal case-sensitive flags and exact final-script equality reject additional arguments, alternative flags and command suffixes. ASCII-only case comparison avoids Unicode case-folding surprises; trusted-set membership and lexical restrictions exclude arbitrary PowerShell basenames and alternative path spellings. Registered PowerShell 7 is acceptable for this qualification fixture.
+
+The decoder specifies single quotes, double-quoted escapes, adjacent fragments, empty words and outside-quote escapes precisely enough to implement independently. Its control-character and active-syntax refusals are deliberate restrictions. No concrete legitimate POSIX join of the described single-line canary wrapper was identified that those restrictions would reject. The synthetic complete-wrapper fixture now exercises the important quoting interactions.
+
+The administrator trust assumption is explicit in design item 4 and repeated in tasks. ACL inspection is intentionally excluded by the owner’s decision and is not reopened here. Ancestor reparse traversal is separately prohibited and covered by planned tests.
+
+Round 11 disposition:
+
+| Item | Round 12 assessment |
+|---|---|
+| Required Change 1: ancestor traversal, executable replaceability and trust assumption | Ancestor traversal addressed; replaceability resolved by the explicit owner-approved trust assumption |
+| Required Change 2: resolution-failure semantics | Addressed: candidates fail independently; mixed success retains valid entries; an empty set refuses before consuming approval |
+| S1: malformed-argv diagnostic positions | Addressed positionally, subject to M1’s aggregate-flag correction |
+| S2: representative complete source-shaped join | Addressed by the synthetic full-wrapper fixture |
+
+The amendment preserves every other approval check and the caller’s one-answer guard. It introduces no persistent grant, new prompt, native policy override or automatic retry. Its scope as qualification-helper behavior is consistent with no product spec scenario changes.
+
+The proposed diagnostic fields remain content-free booleans and bounded counts. The task list adequately covers parser behavior, shell admission, malformed shapes and failures across the unchanged fence, subject to M1.
+
+Proposal, design and tasks consistently distinguish the Codex 0.165 source-supported explanation from the unobserved command shape in the Codex 0.166.0 attempt-12 receipt. The historical qualification records correctly remain INCOMPLETE. The current matcher still implements the original exact rule; the amendment is explicitly pending implementation.
 
 ## Required Changes
 
-1. Correct `tasks.md:505` to preserve each earlier selection’s actual removal behavior, explicitly retaining v3’s non-protected removed-socket exception and `socketsChanged` accounting.
+1. In design item 6, replace “all four hold” with an explicit definition:
 
-## Focused Recheck (Round 9 Required Changes)
+   ```text
+   wrapperMatches =
+       observedArgvParsed
+       && wrapperShellTrusted
+       && wrapperCommandFlag
+       && wrapperScriptMatches
+       && decodedWordCount == (wrapperNoProfile ? 4 : 3)
+   ```
+
+   Use the actual decoded count for shape validation, independently of the clamped diagnostic count.
+
+2. In the tasks’ diagnostic coverage, explicitly require `wrapperMatches: true` for both valid three-word and four-word wrappers, with `wrapperNoProfile: false` and `true` respectively.
+
+## Rebuttals
+
+Round 11’s ancestor-traversal, resolution-failure and complete-wrapper-fixture responses are accepted. The ACL portion is resolved by the recorded owner decision. Malformed-shape diagnostic positions are accepted; the aggregate predicate needs the correction above.
+
+VERDICT: APPROVE_WITH_CHANGES
+
+## Focused Recheck (Round 12 Required Changes)
 
 ### Required Change 1 — Applied
 
-`openspec/changes/codex-app-server-session/tasks.md:505–509` now distinguishes earlier selections and entry kinds: v3 retains `removedEntry` errors for removed files, directories and links, while removed non-protected sockets remain counted in `socketsChanged`. v2, v1 and legacy retain removal errors for inventoried entries and their existing unsupported-socket behavior.
+Evidence: `openspec/changes/codex-app-server-session/design.md:133` explicitly defines `wrapperMatches` as `observedArgvParsed && wrapperShellTrusted && wrapperCommandFlag && wrapperScriptMatches`, together with an actual decoded word count of exactly four when `wrapperNoProfile` holds, otherwise exactly three. It explicitly distinguishes the actual count from the clamped diagnostic count and states that `-NoProfile` remains optional.
 
-This agrees with v3’s socket exception at `openspec/changes/codex-app-server-session/design.md:173–174` and `openspec/changes/codex-app-server-session/specs/agent-tool-access/spec.md:121–122`. The v4 amendment preserves earlier meanings at `design.md:181` and `specs/agent-tool-access/spec.md:128`. The required planning correction is fully applied.
+No new inconsistency found with design items 1–5 and 7 (`design.md:127–134`). The definition admits both shapes in item 2, retains the decoder and trusted-shell requirements, and preserves the exact-match route, other approval checks and authorization limits.
 
-### S1 — Applied
+### Required Change 2 — Applied
 
-`openspec/changes/codex-app-server-session/design.md:462` now explicitly includes changed-artifacts-v4 alongside v2 and v3 for the 65,536-entry ceiling, 16 MiB per-inventory retained-string budget and 32 MiB combined budget. This matches the inherited bounds at `design.md:181` and the explicit selection list at `openspec/changes/codex-app-server-session/specs/agent-tool-access/spec.md:108`.
+Evidence: `openspec/changes/codex-app-server-session/tasks.md:567–568` explicitly requires valid wrappers to report `wrapperMatches: true`, with `wrapperNoProfile: false` for the three-word shape and `true` for the four-word shape.
 
-### S2 — Applied
-
-`openspec/changes/codex-app-server-session/design.md:182` now explicitly includes valid operation, configured-command string type and absence of CR/LF, while retaining the existing title and truncation fields. It preserves the content-free, observational diagnostic and unchanged approval rule.
-
-`openspec/changes/codex-app-server-session/tasks.md:513–519` requires those guards, existing fields and isolated failing-check coverage. These correspond to the matcher guards at `tool/qualify_codex_app_server.dart:294–297` and `tool/qualify_codex_app_server.dart:326–328`. The suggestion is fully applied to the planning artifacts; implementation was not requested or verified.
-
-### New inconsistency — Scenario-map status
-
-The amended protected-entry/bounds scenario explicitly includes v4’s metadata bounds and baseline-abort behavior at `openspec/changes/codex-app-server-session/specs/agent-tool-access/spec.md:108–110`, but its map row remains green at `openspec/changes/codex-app-server-session/tasks.md:87`. The v4 removal row is red at `tasks.md:90`, and v4 baseline-preflight implementation/testing is still instructed at `tasks.md:495–496` and `tasks.md:511–512`.
-
-The protected-entry/bounds row should remain red until its amended v4 coverage is verified, or explicitly distinguish verified earlier-selection coverage from pending v4 coverage. This status inconsistency does not undo Required Change 1.
+No new inconsistency found with the rest of the amendment section (`tasks.md:527–584`). This requirement agrees with the positive fixtures at lines 541–544 and the revised design predicate. Malformed-shape positional diagnostics, parse-failure behavior, exact-match field omission, unchanged-fence refusals and the observational role of diagnostics remain consistent.
 
 CHANGES_APPLIED: yes
-
-## Rebuttals

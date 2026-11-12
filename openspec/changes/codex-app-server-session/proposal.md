@@ -47,6 +47,8 @@ Attempt 9 then stopped only on two Unix-domain sockets in that home. A changed-a
 
 Attempt 10 then passed launch, streaming and tool activity, but stayed incomplete on 5 removed entries and an unmatched command approval. A changed-artifacts-v4 selection counts removed non-protected entries instead of failing on them, and the helper's approval refusal names which match check failed, without content.
 
+Attempt 12 (Codex 0.166.0) completed the normal-home audit with 0 canary matches; its approval failed only the command check. A study of Codex 0.165 source suggests the approval command is a shell-quoted join of Codex's PowerShell wrapper argv. The helper also accepts exactly that wrapper around the approved command, with the shell taken from a registry-trusted PowerShell install, and nothing looser; attempt 13's diagnostic records whether that explanation holds.
+
 ## Release Notes
 
 Native Codex sessions and more accurate terminal input qualification.
