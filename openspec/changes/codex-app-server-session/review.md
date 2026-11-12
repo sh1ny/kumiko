@@ -2,11 +2,10 @@
 
 ## Metadata
 
-- **Round:** 12.
-- **Prior round:** Round 11, REVISE; second consecutive REVISE, followed by the owner’s administrator-trust decision.
+- **Round:** 13.
+- **Prior round:** Round 12, APPROVE_WITH_CHANGES with CHANGES_APPLIED yes (native command wrapper amendment).
 - **Reviewer:** Codex, fresh-context, read-only adversarial design reviewer.
-- **Reviewed:** `AGENTS.md`; revised qualification-wrapper rule and D5 removed-entry/approval-diagnostic bullets in `design.md`; native-wrapper amendment in `tasks.md`; Attempt 12 paragraph in `proposal.md`; Round 11 `review.md`; twelfth-attempt qualification section and JSON receipt; `evaluateCanaryApproval`, `allowedCanaryApproval` and qualification-loop caller; Specwright review template.
-- **Method:** Repository reads only. No modifications, builds, tests, native Codex execution, provider calls or native Codex-home access.
+- **Reviewed:** `AGENTS.md`; D7 amendment items 1–6, surrounding D7, Failure & Visibility, Resource Bounds and lifecycle rules in `design.md`; amendment section in `tasks.md`; `proposal.md`; Round 12 `review.md`; requested authentication and qualification requirements in both delta specs; fifteenth-attempt and isolated-authentication evidence in `docs/qualification/codex-app-server.md`; relevant sections of `codex_auth_signatures.dart`, `host_options.dart`, `test_hooks.dart`, `codex_client.dart`, `runtime_driver.dart`, `agent_service.dart`, `agent_session.dart`, `check_qualification.dart` and `qualify_codex_app_server.dart`. Repository reads only; no execution, credential access or disk writes.
 
 ## Findings
 
@@ -16,82 +15,54 @@ None.
 
 ### Moderate
 
-**M1. The diagnostic definition accidentally makes optional `-NoProfile` mandatory.**
+**M1. The preflight lacks a configuration-equivalence condition for Continue.**
 
-Design item 6 defines `wrapperNoProfile` as whether the second word is `-NoProfile`, then defines `wrapperMatches` as “all four hold” with the appropriate word count. Read literally, the four flags include `wrapperNoProfile`.
+D7 item 1 makes the process-level `account/read` result sufficient to refuse `thread/resume`. The isolated observation establishes that result for an empty default configuration; it does not establish that it describes every saved thread’s authentication needs.
 
-For the explicitly permitted argv:
+The current driver distinguishes these stages: `initialize()` establishes the process, while `loadSession()` reads saved-thread metadata and subsequently calls `thread/resume`. New-thread responses also explicitly carry `modelProvider`. The amendment places the refusal before resume without requiring evidence that the account result applies to the saved thread’s effective provider and credential configuration.
 
-```text
-[trustedShell, -Command, approvedCommand]
-```
+A saved conversation using a provider that does not require OpenAI sign-in can therefore be refused on the basis of the process’s default OpenAI account state. The user cannot reach the native resume operation that would determine whether those credentials are needed. Repeated Retry does not resolve that mismatch.
 
-the shell, command-flag and script checks pass, but `wrapperNoProfile` is false. Item 6 therefore reports `wrapperMatches: false`, contradicting item 2 and the tasks’ positive fixture.
+The planned tests cover account-result shapes, but no configuration mismatch between the preflight and the resumed thread. Either establish and test the equivalence needed for this refusal, or let Continue proceed when equivalence cannot be established.
 
-This is a localized specification defect, not an identified approval bypass. It nevertheless undermines the next receipt’s purpose and creates conflicting requirements for test-first implementation. Specify the conjunction explicitly and assert the diagnostic for both permitted shapes.
+**M2. “The root returns to Idle” conflicts with pending Stop aggregation.**
+
+D7 item 2 unconditionally associates a confirmed failed root turn with Idle. Existing D4 requires Stop to aggregate the root and known active descendants, retaining Stopping when addressed work remains unresolved.
+
+The implementation already distinguishes these cases. `AgentSession` avoids setting Idle directly when a native turn ends after Stop and instead calls `_settleNativeStop()`. Consequently, a root HTTP 401 completion while an addressed child still runs must retain the outstanding Stop state.
+
+Implementing the amendment’s unconditional Idle rule would enable normal interaction while cancellation remains unresolved and could obscure *Stop not confirmed*. Keeping the existing implementation would instead contradict the amendment’s stated outcome.
+
+The amendment’s tests require Idle but omit both a 401 completion after Stop and an outstanding descendant. Explicitly preserve the existing aggregation rule and test those orderings.
 
 ### Suggestions
 
-None beyond the required correction.
+None.
 
 ## Verdict
 
-The wrapper admission rule is sufficiently narrow under the owner-approved trust assumption. Exact decoded argv length, literal case-sensitive flags and exact final-script equality reject additional arguments, alternative flags and command suffixes. ASCII-only case comparison avoids Unicode case-folding surprises; trusted-set membership and lexical restrictions exclude arbitrary PowerShell basenames and alternative path spellings. Registered PowerShell 7 is acceptable for this qualification fixture.
-
-The decoder specifies single quotes, double-quoted escapes, adjacent fragments, empty words and outside-quote escapes precisely enough to implement independently. Its control-character and active-syntax refusals are deliberate restrictions. No concrete legitimate POSIX join of the described single-line canary wrapper was identified that those restrictions would reject. The synthetic complete-wrapper fixture now exercises the important quoting interactions.
-
-The administrator trust assumption is explicit in design item 4 and repeated in tasks. ACL inspection is intentionally excluded by the owner’s decision and is not reopened here. Ancestor reparse traversal is separately prohibited and covered by planned tests.
-
-Round 11 disposition:
-
-| Item | Round 12 assessment |
-|---|---|
-| Required Change 1: ancestor traversal, executable replaceability and trust assumption | Ancestor traversal addressed; replaceability resolved by the explicit owner-approved trust assumption |
-| Required Change 2: resolution-failure semantics | Addressed: candidates fail independently; mixed success retains valid entries; an empty set refuses before consuming approval |
-| S1: malformed-argv diagnostic positions | Addressed positionally, subject to M1’s aggregate-flag correction |
-| S2: representative complete source-shaped join | Addressed by the synthetic full-wrapper fixture |
-
-The amendment preserves every other approval check and the caller’s one-answer guard. It introduces no persistent grant, new prompt, native policy override or automatic retry. Its scope as qualification-helper behavior is consistent with no product spec scenario changes.
-
-The proposed diagnostic fields remain content-free booleans and bounded counts. The task list adequately covers parser behavior, shell admission, malformed shapes and failures across the unchanged fence, subject to M1.
-
-Proposal, design and tasks consistently distinguish the Codex 0.165 source-supported explanation from the unobserved command shape in the Codex 0.166.0 attempt-12 receipt. The historical qualification records correctly remain INCOMPLETE. The current matcher still implements the original exact rule; the amendment is explicitly pending implementation.
+VERDICT: APPROVE_WITH_CHANGES
 
 ## Required Changes
 
-1. In design item 6, replace “all four hold” with an explicit definition:
+CHANGES_APPLIED: yes
 
-   ```text
-   wrapperMatches =
-       observedArgvParsed
-       && wrapperShellTrusted
-       && wrapperCommandFlag
-       && wrapperScriptMatches
-       && decodedWordCount == (wrapperNoProfile ? 4 : 3)
-   ```
+1. Constrain preflight refusal to cases where its authentication result is established to apply to the effective configuration of the requested operation. Explicitly address saved-thread provider/configuration differences on Continue; fail open where equivalence is unknown. Add a regression case demonstrating that a saved conversation requiring no OpenAI sign-in is not blocked by an unrelated unauthenticated default account.
 
-   Use the actual decoded count for shape validation, independently of the clamped diagnostic count.
-
-2. In the tasks’ diagnostic coverage, explicitly require `wrapperMatches: true` for both valid three-word and four-word wrappers, with `wrapperNoProfile: false` and `true` respectively.
+2. Qualify item 2’s Idle outcome and the corresponding task: authentication classification must preserve existing Stop and descendant aggregation. Add tests for a confirmed 401 completion after Stop, including an outstanding child and a late completion after the Stop deadline. Verify the auth guidance alongside the correct Stop outcome and state.
 
 ## Rebuttals
 
-Round 11’s ancestor-traversal, resolution-failure and complete-wrapper-fixture responses are accepted. The ACL portion is resolved by the recorded owner decision. Malformed-shape diagnostic positions are accepted; the aggregate predicate needs the correction above.
+Round 12’s wrapper corrections are accepted and are not reopened.
 
-VERDICT: APPROVE_WITH_CHANGES
+Structured signals address the observed failure of exact error-message matching. The empty production registry, separate test-host candidates, explicit experiment approval and bidirectional provenance checks appropriately distinguish fixtures, research and real Kumiko observations.
 
-## Focused Recheck (Round 12 Required Changes)
+The preflight’s fail-open handling of unsupported or inconclusive responses is appropriate. M1 concerns the applicability of a positive result, which the empty-home observation does not establish for every resumed configuration.
 
-### Required Change 1 — Applied
+The experiment’s separate homes, ephemeral credential storage, environment filtering and bounded turn are useful safeguards. No concrete credential-access or billing bypass was established from the reviewed material.
 
-Evidence: `openspec/changes/codex-app-server-session/design.md:133` explicitly defines `wrapperMatches` as `observedArgvParsed && wrapperShellTrusted && wrapperCommandFlag && wrapperScriptMatches`, together with an actual decoded word count of exactly four when `wrapperNoProfile` holds, otherwise exactly three. It explicitly distinguishes the actual count from the clamped diagnostic count and states that `-NoProfile` remains optional.
+## Focused Recheck
 
-No new inconsistency found with design items 1–5 and 7 (`design.md:127–134`). The definition admits both shapes in item 2, retains the decoder and trusted-shell requirements, and preserves the exact-match route, other approval checks and authorization limits.
+1. **Satisfied.** D7 item 1 restricts the preflight to Start, checks the effective configuration for the start `cwd`, and fails open for a different provider or inconclusive configuration/account result. Continue explicitly bypasses the preflight because saved-thread configuration may differ. This matches the relevant code boundaries: `prepareTools` reads effective configuration using `cwd`; `newSession` supplies only `cwd` and private MCP configuration to `thread/start`; `loadSession` reads saved-thread metadata before `thread/resume`. The tasks now require the saved-conversation/unauthenticated-default regression, and operation A consistently expects refusal at Start. No residual design concern within this recheck; implementation and regression execution remain future work.
 
-### Required Change 2 — Applied
-
-Evidence: `openspec/changes/codex-app-server-session/tasks.md:567–568` explicitly requires valid wrappers to report `wrapperMatches: true`, with `wrapperNoProfile: false` for the three-word shape and `true` for the four-word shape.
-
-No new inconsistency found with the rest of the amendment section (`tasks.md:527–584`). This requirement agrees with the positive fixtures at lines 541–544 and the revised design predicate. Malformed-shape positional diagnostics, parse-failure behavior, exact-match field omission, unchanged-fence refusals and the observational role of diagnostics remain consistent.
-
-CHANGES_APPLIED: yes
+2. **Satisfied.** D7 item 2 and the corresponding task now limit direct Idle settlement to turns without pending Stop, preserve descendant aggregation, and retain *Stop not confirmed* after the deadline. The tasks explicitly require both an outstanding-child case and a late-completion case, each with authentication guidance. This agrees with `AgentSession`: `_finish` publishes authentication classification without directly setting Idle during native Stop; `_settleNativeStop` waits for all addressed turns and delegated work, then reports the aggregate outcome with `late: _notConfirmed`. No residual design concern within this recheck; the planned tests must verify those outcomes during implementation.

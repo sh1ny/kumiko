@@ -10,6 +10,7 @@ M2, Daily-driver workbench (Windows), needs Codex sessions with streaming, tools
 - Expose Codex in the workspace launcher and runtime profile editor. Preserve Claude ACP behavior and existing saved records.
 
 - Support native thread creation, prompt turns, approvals/questions, Stop, explicit steering, history restoration and per-run Kumiko MCP delivery.
+- Recognize Codex sign-in failures from structured native signals (an unauthenticated `account/read` before the thread starts, and an HTTP 401 turn failure), each confirmed by an isolated real observation, rather than from error text.
 - Preserve subagent identity, parentage and attributed activity in the host/desktop contract. The full child-conversation browser and direct child controls remain future work; this change must not flatten child activity into the parent's reply or approve it invisibly.
 
 - Replace the planned `codex-acp-session` roadmap entry with `codex-app-server-session`. This explicitly departs from parked direction D6 and the Codex ACP wording in D7 and ADR 0004; Claude stays ACP, OMP stays native RPC.
