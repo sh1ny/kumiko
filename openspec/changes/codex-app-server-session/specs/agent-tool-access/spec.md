@@ -89,7 +89,7 @@ When the host creates or continues a session while its tool endpoint is availabl
 
 ### Requirement: Native audit coverage is explicit and bounded
 
-Test-only native canary audits SHALL bind content selection before a run, and legacy manifests and defaults SHALL keep legacy coverage. Only an exact owner-approved manifest naming changed-artifacts-v1, v2 or v3 SHALL enable wider coverage, with the selection-specific metadata bounds, link handling and (v3 only) socket handling in the scenarios below; each earlier selection keeps its recorded meaning. Byte, file, confinement and no-follow limits SHALL remain unchanged. Source: design D5.
+Test-only native canary audits SHALL bind content selection before a run, and legacy manifests and defaults SHALL keep legacy coverage. Only an exact owner-approved manifest naming changed-artifacts-v1, v2, v3 or v4 SHALL enable wider coverage, with the selection-specific handling in the scenarios below; each earlier selection keeps its recorded meaning. Byte, file, confinement and no-follow limits SHALL remain unchanged. Source: design D5.
 
 #### Scenario: Explicit changed-artifact coverage
 
@@ -105,9 +105,9 @@ Test-only native canary audits SHALL bind content selection before a run, and le
 
 #### Scenario: Protected entries or inventory bounds prevent completeness
 
-- **WHEN** a protected leaf (auth.json/config.toml plus other known credential/configuration names established before implementation) at any depth changes or is removed, or a link/nonregular/missing/unstable entry or the selection's metadata bound (4096 entries for changed-artifacts-v1, 65,536 with the retained-string budget for changed-artifacts-v2 and v3) prevents accounting
+- **WHEN** a protected leaf (auth.json/config.toml plus other known credential/configuration names established before implementation) at any depth changes or is removed, or a link/nonregular/missing/unstable entry (except where the scenarios below account for it) or the selection's metadata bound (4096 entries for changed-artifacts-v1, 65,536 with the retained-string budget for changed-artifacts-v2, v3 and v4) prevents accounting
 - **THEN** the audit remains incomplete, protected contents and links are never read, no cap is raised and no legacy fallback or exclusion creates a pass
-- **AND** an incomplete changed-artifacts-v1, v2 or v3 baseline aborts before App Server/provider work; the consumed attempt is recorded INCOMPLETE with baseline counters and no-provider/no-content-scan indicators; ordinary directory inventories are checked for concurrent membership changes
+- **AND** an incomplete changed-artifacts-v1, v2, v3 or v4 baseline aborts before App Server/provider work; the consumed attempt is recorded INCOMPLETE with baseline counters and no-provider/no-content-scan indicators; ordinary directory inventories are checked for concurrent membership changes
 
 #### Scenario: Normal native home coverage
 
@@ -120,3 +120,9 @@ Test-only native canary audits SHALL bind content selection before a run, and le
 - **WHEN** an exact owner-approved manifest binds changed-artifacts-v3 on Windows for a native home that contains Unix-domain sockets
 - **THEN** v3 behaves as v2, and a socket observed without opening it, with the reparse-point attribute and the AF_UNIX reparse tag, is accounted for when its own metadata is identical in both inventories; an added, removed or metadata-changed socket is counted as a changed socket and does not make the audit incomplete, and it is never selected for the content scan
 - **AND** an unavailable, failed or non-AF_UNIX socket observation, a socket at a protected leaf name that is added, removed or changed, a transition between a socket and another entry kind, a socket on another operating system, and every pipe, device or unknown type keep the audit incomplete; no socket name, path or extension is emitted, and changed-artifacts-v2, v1 and legacy keep their recorded behaviour
+
+#### Scenario: Removed native entries
+
+- **WHEN** an exact owner-approved manifest binds changed-artifacts-v4 and an entry present in the baseline is absent after the run
+- **THEN** v4 behaves as v3, and a removed file, directory, link or socket that is not at a protected leaf name is counted in a content-free removed-entries counter without making the audit incomplete
+- **AND** a removed protected entry, and every traversal, metadata, storage or admission error that leaves entries out of the after-run inventory, keep the audit incomplete; a new or changed file elsewhere is still selected and scanned; no removed name or path is emitted, and changed-artifacts-v3, v2, v1 and legacy keep their recorded behaviour

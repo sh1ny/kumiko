@@ -45,6 +45,8 @@ After attempts 7 and 8 showed that the owner's normal native home exceeds the in
 
 Attempt 9 then stopped only on two Unix-domain sockets in that home. A changed-artifacts-v3 selection records Windows AF_UNIX sockets as metadata without opening them; v2 keeps its recorded meaning.
 
+Attempt 10 then passed launch, streaming and tool activity, but stayed incomplete on 5 removed entries and an unmatched command approval. A changed-artifacts-v4 selection counts removed non-protected entries instead of failing on them, and the helper's approval refusal names which match check failed, without content.
+
 ## Release Notes
 
 Native Codex sessions and more accurate terminal input qualification.
@@ -72,3 +74,4 @@ Native Codex sessions and more accurate terminal input qualification.
 - Qualification manifests can explicitly select bounded changed-artifact coverage; legacy selection remains the default and protected or unaccounted changes remain incomplete.
 - A changed-artifacts-v2 qualification selection covers larger native homes with unchanged links, with explicit detector limits.
 - A changed-artifacts-v3 qualification selection also accounts for Unix-domain sockets in the native home without opening them.
+- A changed-artifacts-v4 qualification selection counts removed non-protected native-home entries instead of failing on them.
