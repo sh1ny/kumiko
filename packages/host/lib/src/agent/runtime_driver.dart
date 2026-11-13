@@ -1431,6 +1431,19 @@ class CodexRuntimeDriver extends RuntimeDriver {
         throw CodexProtocolException('invalid resolved request identity');
       }
       if (raw['threadId'] == root || _children.containsKey(raw['threadId'])) {
+        // A request still staged before turn/start answered is retired here
+        // too, so it is never published and never answered natively.
+        _early.removeWhere((record) {
+          final staged = switch (record.interaction) {
+            final RuntimePermission p => p.id,
+            final RuntimeQuestion q => q.id,
+            _ => null,
+          };
+          if (staged == null || staged != raw['requestId']) return false;
+          _earlyBytes -= record.bytes;
+          releaseEarly?.call(record.bytes);
+          return true;
+        });
         onRetired?.call(raw['requestId']);
       }
       return null;

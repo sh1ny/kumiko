@@ -878,17 +878,34 @@ class AgentSession {
         ),
       );
     }
-    final checked = AgentQuestionRequestedParams(
-      sessionId: sessionId,
-      seq: 0,
-      runId: runId!,
-      requestId: id,
-      turnId: request.turnId,
-      rootThreadId: _nativeSessionId,
-      threadId: request.threadId ?? _nativeSessionId,
-      parentThreadId: request.parentThreadId,
-      questions: display,
-    );
+    // Normalization adds identities and envelope fields, so a question that
+    // fit its native bound can exceed the control bound. Check the final
+    // envelope before any state changes and refuse only this question.
+    final AgentQuestionRequestedParams checked;
+    try {
+      checked = AgentQuestionRequestedParams.fromJson(
+        AgentQuestionRequestedParams(
+          sessionId: sessionId,
+          seq: _seq + 1,
+          runId: runId!,
+          requestId: id,
+          turnId: request.turnId,
+          rootThreadId: _nativeSessionId,
+          threadId: request.threadId ?? _nativeSessionId,
+          parentThreadId: request.parentThreadId,
+          questions: display,
+        ).toJson(),
+      );
+    } on RpcException {
+      if (!request.asyncItem) {
+        _observeWrite(client.reply(request.id, {'answers': {}}));
+      }
+      return encodeAgentEvent(
+        AgentEvent.notice(
+          'Native question exceeds control capacity${request.threadId == null ? '' : ' for child ${request.threadId}'}; request cancelled.',
+        ),
+      );
+    }
     if (_hasTurn) _set(AgentState.waitingApproval);
     _questions[id] = _Question(request, display);
     _publish();

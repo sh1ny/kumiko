@@ -3775,6 +3775,95 @@ void nativeCases(Directory Function() profile, Directory Function() work) {
     },
   );
 
+  for (final blocking in [false, true]) {
+    test(
+      'Codex: a question too large once expanded is refused, not fatal blocking=$blocking',
+      () async {
+        final options = [for (var i = 0; i < 2000; i++) 'o$i'];
+        final f = await fixture({
+          'turns': [
+            {
+              'actions': [
+                if (blocking) ...[
+                  {
+                    'send': {
+                      'id': 'wide-question',
+                      'method': 'item/tool/requestUserInput',
+                      'params': {
+                        'threadId': r'$thread',
+                        'turnId': r'$turn',
+                        'itemId': 'q',
+                        'isBlocking': true,
+                        'questions': [
+                          {
+                            'id': 'choice',
+                            'header': 'Choice',
+                            'question': 'Which?',
+                            'options': [
+                              for (final o in options) {'label': o},
+                            ],
+                          },
+                        ],
+                      },
+                    },
+                  },
+                  {'waitReply': 'wide-question'},
+                ] else
+                  nativeEvent('item/completed', {
+                    'threadId': r'$thread',
+                    'turnId': r'$turn',
+                    'item': {
+                      'id': 'wide-question',
+                      'type': 'agentMessage',
+                      'text': 'Choose',
+                      'questions': [
+                        {'title': 'Which?', 'options': options},
+                      ],
+                    },
+                  }),
+                terminalEvent('completed'),
+              ],
+            },
+            {
+              'actions': [
+                deltaEvent('still alive'),
+                terminalEvent('completed'),
+              ],
+            },
+          ],
+        });
+        final a = await f.start();
+        await a.prompt();
+        await a.wait(Method.agentTurnEnded);
+        expect(a.of(Method.agentQuestionRequested), isEmpty);
+        if (blocking) {
+          expect(
+            f.requests
+                .where((m) => m['id'] == 'wide-question')
+                .single['result'],
+            {'answers': <String, Object?>{}},
+          );
+        }
+        await eventually(
+          () => a.events.any(
+            (e) =>
+                e['kind'] == 'notice' &&
+                (e['text'] as String).contains('exceeds control capacity'),
+          ),
+        );
+        await a.prompt();
+        await a.wait(
+          Method.agentTurnEnded,
+          where: (_) => a.of(Method.agentTurnEnded).length == 2,
+        );
+        expect(
+          a.of(Method.agentState).any((s) => s['state'] == 'failed'),
+          false,
+        );
+        await a.close();
+      },
+    );
+  }
   test('Codex: async question answer cannot steer a later turn', () async {
     final f = await fixture({
       'turns': [

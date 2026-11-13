@@ -187,6 +187,65 @@ void main() {
     },
   );
   test(
+    'a staged early request retired before the response is never published',
+    () async {
+      await driver.newSession('/fixture');
+      var reserved = 0;
+      driver.reserveEarly = (bytes) {
+        reserved += bytes;
+        return true;
+      };
+      driver.releaseEarly = (bytes) => reserved -= bytes;
+      final published = <RuntimePermission>[];
+      driver.onPermission = (p) {
+        published.add(p);
+        return null;
+      };
+      final writes = <Json>[];
+      peer.onWrite = (m) {
+        writes.add(m);
+        if (m['method'] == 'turn/start') {
+          peer.send({
+            'id': 'early-approval',
+            'method': 'item/commandExecution/requestApproval',
+            'params': {
+              'threadId': 'root',
+              'turnId': 'turn',
+              'itemId': 'cmd',
+              'startedAtMs': 1,
+              'command': 'echo early',
+              'availableDecisions': ['accept', 'cancel'],
+            },
+          });
+          peer.event('serverRequest/resolved', {
+            'threadId': 'root',
+            'requestId': 'early-approval',
+          });
+          peer.event('turn/completed', {
+            'threadId': 'root',
+            'turn': {
+              'id': 'turn',
+              'status': 'completed',
+              'items': <Object?>[],
+              'error': null,
+            },
+          });
+          peer.result(m['id']!, {
+            'turn': {
+              'id': 'turn',
+              'status': 'inProgress',
+              'items': <Object?>[],
+            },
+          });
+        }
+      };
+      await driver.prompt('root', 'hello');
+      expect(published, isEmpty);
+      expect(writes.where((m) => m['id'] == 'early-approval'), isEmpty);
+      expect(reserved, 0);
+    },
+  );
+  test(
     'child-only dedup eviction emits a visible root omission notice',
     () async {
       await driver.newSession('/fixture');
