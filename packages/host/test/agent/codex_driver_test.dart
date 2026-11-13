@@ -754,6 +754,45 @@ void main() {
       session.dispose();
     },
   );
+  test(
+    'Stop is refused while the root turn identity is pending beside a child',
+    () async {
+      await driver.newSession('/fixture');
+      peer.event('thread/started', {
+        'thread': {
+          'id': 'child',
+          'parentThreadId': 'root',
+          'status': {'type': 'active'},
+        },
+      });
+      peer.event('turn/started', {
+        'threadId': 'child',
+        'turn': {
+          'id': 'child-turn',
+          'status': 'inProgress',
+          'items': <Object?>[],
+          'error': null,
+        },
+      });
+      for (var i = 0; i < 5; i++) {
+        await pumpCodex();
+      }
+      expect(driver.activeNativeTurns, {'child': 'child-turn'});
+      final writes = <Json>[];
+      // The root turn/start is never answered: its identity stays pending.
+      peer.onWrite = writes.add;
+      unawaited(driver.prompt('root', 'hello').then((_) {}, onError: (_) {}));
+      await pumpCodex();
+      expect(writes.where((m) => m['method'] == 'turn/start'), hasLength(1));
+      expect(
+        () => driver.cancelWithPermissions('root', const []),
+        throwsA(
+          isA<RpcException>().having((e) => e.reason, 'reason', ErrorCode.busy),
+        ),
+      );
+      expect(writes.where((m) => m['method'] == 'turn/interrupt'), isEmpty);
+    },
+  );
   test('a prompt waits until the stopped turn has reported its end', () async {
     await driver.newSession('/fixture');
     var gate = Completer<void>();

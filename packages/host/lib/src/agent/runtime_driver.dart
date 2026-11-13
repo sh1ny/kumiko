@@ -1997,7 +1997,9 @@ class CodexRuntimeDriver extends RuntimeDriver {
   @override
   Future<void> cancelWithPermissions(String id, Iterable<Object> requests) {
     final turns = activeNativeTurns;
-    if (turns.isEmpty && _turn != null) {
+    // A root turn still awaiting its identity cannot be addressed; Stop must
+    // not interrupt only the known child turns and report the root stopped.
+    if (_turn != null && _turnId == null) {
       throw RpcException(
         ErrorCode.busy,
         'native turn identity is not yet available',
