@@ -1357,6 +1357,7 @@ class CodexRuntimeDriver extends RuntimeDriver {
       }
       terminal ??= record.terminal;
     }
+    final turn = _turnId!;
     final bytes = _earlyBytes;
     _early.clear();
     _earlyBytes = 0;
@@ -1368,7 +1369,12 @@ class CodexRuntimeDriver extends RuntimeDriver {
     late final RuntimeDelivery delivery;
     delivery = RuntimeDelivery(lines, bytes, releaseEarly, () {
       if (identical(_delivery, delivery)) _delivery = null;
-      if (terminal != null) _complete(terminal);
+      // A buffered terminal settles Stop exactly like a live one: Stop may
+      // have been admitted after the turn identity was published.
+      if (terminal case final terminal?) {
+        onNativeTurnEnded?.call(root!, turn, terminal);
+        _complete(terminal);
+      }
     });
     _delivery = delivery;
     return delivery;
@@ -2192,6 +2198,19 @@ class CodexRuntimeDriver extends RuntimeDriver {
         if (!command) 'grantRoot': 'Grant root',
         'reason': 'Reason',
       });
+      // A network or additional-permission approval grants different access
+      // per request: show the complete context so two cards never look alike
+      // while authorizing different grants. The shared display bound cancels
+      // the request when the full context does not fit.
+      for (final (key, label) in const [
+        ('networkApprovalContext', 'Network approval context'),
+        ('additionalPermissions', 'Additional permissions'),
+      ]) {
+        final context = raw[key];
+        if (!command || context == null) continue;
+        final line = '$label: ${jsonEncode(context)}';
+        preview = preview == null ? line : '$preview\n$line';
+      }
       if (decisions.any((decision) => decision is! String)) {
         final line = 'Native decisions: ${jsonEncode(decisions)}';
         preview = preview == null ? line : '$preview\n$line';

@@ -136,6 +136,57 @@ void main() {
     );
   });
   test(
+    'a buffered terminal reports its turn end to Stop aggregation',
+    () async {
+      await driver.newSession('/fixture');
+      driver.reserveEarly = (_) => true;
+      driver.releaseEarly = (_) {};
+      final ended = <(String, String, RuntimeTurnResult)>[];
+      driver.onNativeTurnEnded = (thread, turn, result) =>
+          ended.add((thread, turn, result));
+      final entered = Completer<RuntimeDelivery>(), release = Completer<void>();
+      driver.consumeNotification = (value) async {
+        if (value is RuntimeDelivery) {
+          entered.complete(value);
+          await release.future;
+          value.release();
+          value.after?.call();
+        }
+      };
+      peer.onWrite = (m) {
+        if (m['method'] == 'turn/start') {
+          peer.event('turn/completed', {
+            'threadId': 'root',
+            'turn': {
+              'id': 'turn',
+              'status': 'completed',
+              'items': <Object?>[],
+              'error': null,
+            },
+          });
+          peer.result(m['id']!, {
+            'turn': {
+              'id': 'turn',
+              'status': 'inProgress',
+              'items': <Object?>[],
+            },
+          });
+        }
+      };
+      final turn = driver.prompt('root', 'hello');
+      await entered.future;
+      // Stop may be admitted here, after the turn identity is published and
+      // before buffered delivery drains.
+      expect(ended, isEmpty);
+      release.complete();
+      final result = await turn;
+      expect(ended, hasLength(1));
+      expect(ended.single.$1, 'root');
+      expect(ended.single.$2, 'turn');
+      expect(identical(ended.single.$3, result), isTrue);
+    },
+  );
+  test(
     'child-only dedup eviction emits a visible root omission notice',
     () async {
       await driver.newSession('/fixture');

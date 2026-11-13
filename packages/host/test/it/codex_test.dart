@@ -2529,6 +2529,85 @@ void nativeCases(Directory Function() profile, Directory Function() work) {
     await a.wait(Method.agentTurnEnded);
     await a.close();
   });
+  for (final context in <String, (String, Json)>{
+    'network context': (
+      'Network approval context',
+      {'host': 'a.example', 'protocol': 'https', 'port': 443},
+    ),
+    'additional permissions': (
+      'Additional permissions',
+      {
+        'network': {'enabled': true},
+        'fileSystem': {
+          'write': ['C:/grant-a'],
+        },
+      },
+    ),
+  }.entries) {
+    test(
+      'Codex decision display: command approval shows its ${context.key}',
+      () async {
+        final (label, value) = context.value;
+        final key = context.key == 'network context'
+            ? 'networkApprovalContext'
+            : 'additionalPermissions';
+        final (f, a) = await decisionRequest({
+          'availableDecisions': ['accept', 'cancel'],
+          key: value,
+        });
+        final p = await a.wait(
+          Method.agentPermissionRequested,
+          within: const Duration(seconds: 2),
+        );
+        expect(
+          p['preview'],
+          'Command: echo fixture\nWorking directory: C:/native-cwd\n'
+          'Reason: why\n$label: ${jsonEncode(value)}',
+        );
+        expect(
+          f.requests.where((m) => m['id'] == 'command-decisions'),
+          isEmpty,
+        );
+        await a.call(Method.agentPermissionReply, {
+          'sessionId': a.id,
+          'requestId': p['requestId'],
+          'optionId': ((p['options'] as List).last as Json)['optionId'],
+        });
+        await a.wait(Method.agentTurnEnded);
+        await a.close();
+      },
+    );
+  }
+  test(
+    'Codex decision overflow: a network context too large to show cancels',
+    () async {
+      final (f, a) = await decisionRequest({
+        'availableDecisions': ['accept', 'cancel'],
+        'networkApprovalContext': {
+          'host': 'future-scope-${List.filled(17000, 'x').join()}',
+        },
+      });
+      await a.wait(Method.agentTurnEnded);
+      expect(a.of(Method.agentPermissionRequested), isEmpty);
+      expect(
+        f.requests
+            .where((m) => m['id'] == 'command-decisions')
+            .single['result'],
+        {'decision': 'cancel'},
+      );
+      expect(
+        a.events.where(
+          (e) =>
+              e['kind'] == 'notice' &&
+              (e['text'] as String).startsWith(
+                'Native approval unavailable: full details exceed display capacity',
+              ),
+        ),
+        hasLength(1),
+      );
+      await a.close();
+    },
+  );
   test('Codex decision display: known child objects keep identity', () async {
     await commandDecisionCase(
       {
