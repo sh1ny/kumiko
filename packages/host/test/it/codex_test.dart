@@ -553,6 +553,62 @@ void main() {
       await a.close();
     },
   );
+  for (final replaced in [false, true]) {
+    test(
+      'Codex: a late child question item cannot outlive its turn replaced=$replaced',
+      () async {
+        final f = NativeFixture(
+          profile,
+          work,
+          script: {
+            'turns': [
+              {
+                'actions': [
+                  child('child-a', 'root-thread'),
+                  childTurn('child-a', 'inProgress'),
+                  if (replaced)
+                    nativeEvent('turn/started', {
+                      'threadId': 'child-a',
+                      'turn': {
+                        'id': 'child-a-next',
+                        'status': 'inProgress',
+                        'items': <Object?>[],
+                        'error': null,
+                      },
+                    })
+                  else
+                    childTurn('child-a', 'completed'),
+                  nativeEvent('item/completed', {
+                    'threadId': 'child-a',
+                    'turnId': 'child-a-turn',
+                    'item': {
+                      'id': 'late-question',
+                      'type': 'agentMessage',
+                      'text': 'Choose',
+                      'questions': [
+                        {
+                          'title': 'Which?',
+                          'options': ['One', 'Two'],
+                        },
+                      ],
+                    },
+                  }),
+                  terminalEvent('completed'),
+                ],
+              },
+            ],
+          },
+        );
+        await f.open();
+        final a = await f.start();
+        await a.prompt();
+        await a.wait(Method.agentTurnEnded);
+        expect(a.of(Method.agentQuestionRequested), isEmpty);
+        expect(a.events.where((e) => e['text'] == 'Choose'), isEmpty);
+        await a.close();
+      },
+    );
+  }
   test('Codex: a completed child cannot revive a retired approval', () async {
     final f = NativeFixture(
       profile,

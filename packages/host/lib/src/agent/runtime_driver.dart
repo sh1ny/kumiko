@@ -72,6 +72,15 @@ class NativeChild {
   final String id, parent;
   String task, status = 'unknown';
   String? turn;
+
+  /// Recently ended or replaced turns, newest last; bounded to 32.
+  final ended = <String>[];
+  void end(String id) {
+    ended.remove(id);
+    ended.add(id);
+    if (ended.length > 32) ended.removeAt(0);
+  }
+
   bool get active => turn != null || status == 'running' || status == 'unknown';
 }
 
@@ -417,6 +426,9 @@ class CodexRuntimeDriver extends RuntimeDriver {
   bool _unknownChildNoticed = false;
   final _children = <String, NativeChild>{};
   bool _childrenIncomplete = false;
+  // Parentless threads announced before the thread/start response; they are
+  // classified once that response names the root.
+  final _startupThreads = <String>{};
   final _unknownNative = <_UnknownNative>[];
   int _unknownBytes = 0;
   Timer? _unknownDeadline;
@@ -864,6 +876,11 @@ class CodexRuntimeDriver extends RuntimeDriver {
             throw CodexProtocolException('invalid thread/start sandbox');
           }
           root = id;
+          if (_startupThreads.any((thread) => thread != id)) {
+            _childrenIncomplete = true;
+            onDelegatedChanged?.call();
+          }
+          _startupThreads.clear();
           onCreated?.call(id);
           return id;
         },
@@ -1453,6 +1470,16 @@ class CodexRuntimeDriver extends RuntimeDriver {
       final parent =
           thread['parentThreadId'] ??
           (spawn is Json ? spawn['parent_thread_id'] : null);
+      if (root == null &&
+          parent == null &&
+          id is String &&
+          id.isNotEmpty &&
+          clampJsonString(id, 4096) == id &&
+          _startupThreads.length < 8) {
+        // The root may announce itself before thread/start answers.
+        _startupThreads.add(id);
+        return null;
+      }
       if (id is! String ||
           id.isEmpty ||
           clampJsonString(id, 4096) != id ||
@@ -1503,6 +1530,16 @@ class CodexRuntimeDriver extends RuntimeDriver {
         : _identity(raw, 'turnId');
     RuntimeTurnResult? terminal;
     RuntimeUpdate? update;
+    final owner = _children[raw['threadId']];
+    if (owner != null &&
+        method != 'turn/started' &&
+        method != 'turn/completed' &&
+        owner.turn != turn &&
+        owner.ended.contains(turn)) {
+      // A child item from a turn that already ended or was replaced must not
+      // publish output or recreate controls.
+      return null;
+    }
     if (raw['item'] case final Json item
         when item['type'] == 'collabAgentToolCall') {
       return _relationshipItem(
@@ -1568,6 +1605,7 @@ class CodexRuntimeDriver extends RuntimeDriver {
     if (child != null) {
       if (method == 'turn/started') {
         if (child.turn != null && child.turn != turn) {
+          child.end(child.turn!);
           onRetired?.call(RuntimeRetired(child.id, child.turn));
         }
         child.turn = turn;
@@ -1576,6 +1614,7 @@ class CodexRuntimeDriver extends RuntimeDriver {
       }
       if (terminal != null) {
         if (child.turn != turn) return null;
+        child.end(turn);
         child.turn = null;
         child.status = terminal.error != null
             ? 'error'

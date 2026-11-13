@@ -55,6 +55,35 @@ void main() {
     await driver.close();
     await peer.dispose();
   });
+  for (final other in [false, true]) {
+    test('a parentless thread/started before the thread/start response is '
+        'classified once the root is known other=$other', () async {
+      peer.onWrite = (m) {
+        if (m['method'] == 'thread/start') {
+          peer.event('thread/started', {
+            'thread': {
+              'id': other ? 'stranger' : 'root',
+              'status': {'type': 'idle'},
+            },
+          });
+          peer.result(m['id']!, {
+            'thread': {'id': 'root'},
+            'model': 'fixture',
+            'modelProvider': 'fixture',
+            'cwd': '/fixture',
+            'approvalPolicy': 'untrusted',
+            'approvalsReviewer': 'user',
+            'sandbox': <String, Object?>{},
+          });
+        }
+      };
+      expect(await driver.newSession('/fixture'), 'root');
+      for (var i = 0; i < 5; i++) {
+        await pumpCodex();
+      }
+      expect(driver.delegated.incomplete, other);
+    });
+  }
   test('history relationship transfers pending attribution reservation exactly once', () async {
     await driver.newSession('/fixture');
     var reserved = 0, reads = 0;
