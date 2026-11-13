@@ -1553,11 +1553,12 @@ class AgentService {
       );
     }
     final delivery = a.session.prepareSteer(params.expectedTurnId, params.text);
+    int? removed;
     try {
       if (params.draftRevision != null) {
         a.sending = true;
         try {
-          await drafts.commitSend(
+          removed = await drafts.commitSend(
             params.sessionId,
             params.draftRevision!,
             synced: params.draftSynced ?? false,
@@ -1570,6 +1571,15 @@ class AgentService {
       current.session.acceptSteer(params.expectedTurnId, params.text, delivery);
     } on Object {
       delivery.release();
+      if (removed != null) {
+        // Refused after its draft was removed (design D4): put the text back
+        // unless a newer revision was saved meanwhile.
+        try {
+          await drafts.restoreSend(params.sessionId, params.text, removed);
+        } on Object {
+          // The desktop keeps the text and saves it again.
+        }
+      }
       rethrow;
     }
   }

@@ -3971,6 +3971,59 @@ void nativeCases(Directory Function() profile, Directory Function() work) {
     await a.close();
     expect(receivedSteers(), admitted);
   });
+  test(
+    'Codex: steering refused after its draft commit restores the draft',
+    () async {
+      final f = await fixture({
+        'turns': [
+          {
+            'actions': [
+              {'waitInterrupt': true},
+              terminalEvent('interrupted'),
+            ],
+          },
+        ],
+      });
+      final a = await f.start();
+      await a.prompt();
+      final state = await a.wait(
+        Method.agentState,
+        where: (p) => p['turnId'] != null,
+      );
+      await a.call(Method.agentDraftSave, {
+        'sessionId': a.id,
+        'revision': 1,
+        'text': 'keep me',
+      });
+      await f.desktop.setFault(TestFault.draftCommitHangs);
+      final steering = rpcFailure(
+        a.call(Method.agentSteer, {
+          'sessionId': a.id,
+          'runId': state['runId'],
+          'expectedTurnId': state['turnId'],
+          'text': 'keep me',
+          'draftRevision': 1,
+          'draftSynced': true,
+        }),
+      );
+      // The turn ends while the draft removal is being committed.
+      await a.call(Method.agentStop);
+      await a.wait(Method.agentTurnEnded);
+      await f.desktop.setFault(TestFault.draftCommitHangs, enabled: false);
+      final refused = await steering;
+      expect(refused.reason, ErrorCode.turnRunning);
+      expect((await a.call(Method.agentDraftLoad))['text'], 'keep me');
+      expect(f.requests.where((r) => r['method'] == 'turn/steer'), isEmpty);
+      // A newer revision saved after the refusal still wins.
+      await a.call(Method.agentDraftSave, {
+        'sessionId': a.id,
+        'revision': 3,
+        'text': 'newer',
+      });
+      expect((await a.call(Method.agentDraftLoad))['text'], 'newer');
+      await a.close();
+    },
+  );
   test('Codex: stale early interaction cannot surface in next turn', () async {
     final f = await fixture({
       'turns': [

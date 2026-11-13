@@ -121,6 +121,17 @@ class DraftStore {
     'synced': synced,
   }, commits: true) as int;
 
+  /// Puts [text] back after a send that removed it at [revision] (the
+  /// revision [commitSend] returned) was then refused. Only an emptied draft
+  /// still at that revision is restored, so a newer save always wins.
+  /// Returns whether the text was restored.
+  Future<bool> restoreSend(String sessionId, String text, int revision) async =>
+      await _run('restore', {
+        'id': sessionId,
+        'text': text,
+        'revision': revision,
+      }, commits: true) as bool;
+
   /// Replaces a disabled store's files with a new one. The reservation is
   /// taken before the first await; a second reset, or a reset of a working
   /// store, is refused.
@@ -622,14 +633,16 @@ class _DraftWorker {
         return _commit(db, m, () => _save(db, id, m));
       case 'send':
         return _commit(db, m, () => _send(db, id, m));
+      case 'restore':
+        return _commit(db, m, () => _restore(db, id, m));
     }
     throw StateError('unknown draft operation ${m['kind']}');
   }
 
-  Future<int> _commit(
+  Future<T> _commit<T>(
     sql.Database db,
     Map<Object?, Object?> m,
-    int Function() change,
+    T Function() change,
   ) async {
     db.execute('BEGIN IMMEDIATE');
     try {
@@ -678,6 +691,22 @@ class _DraftWorker {
     final floor = stored > revision ? stored : revision;
     _write(db, id, null, 0, floor);
     return floor;
+  }
+
+  bool _restore(sql.Database db, String id, Map<Object?, Object?> m) {
+    final text = m['text']! as String;
+    final revision = m['revision']! as int;
+    final row = _row(db, id);
+    if (row == null || row.revision != revision || row.bytes != 0) {
+      return false;
+    }
+    final bytes = utf8.encode(text).length;
+    final total =
+        db.select('SELECT COALESCE(SUM(bytes), 0) AS n FROM draft').single['n']
+            as int;
+    if (total + bytes > maxStoredDraftBytes) return false;
+    _write(db, id, text.isEmpty ? null : text, bytes, revision);
+    return true;
   }
 
   ({int revision, int bytes})? _row(sql.Database db, String id) {
