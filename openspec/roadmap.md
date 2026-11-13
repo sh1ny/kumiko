@@ -38,6 +38,7 @@ Add solo projects, configurable tasks with arbitrary-depth subtasks, views, mile
 ## Tracked follow-up
 
 - [M1-F1: Windows terminal close latency](../docs/qualification/m1-close.md#m1-f1-windows-terminal-close-latency) - User-approved deferral at M1 close; investigate the recorded 359.3 ms acknowledgement against the unchanged 250 ms bound. This remains open and is not reported as passing.
+- M2-F1: Agent chat composer keys (owner request, 2026-11-13) - In every agent chat (Codex, Claude, OMP): Enter sends, Shift+Enter inserts a new line, and Up recalls the previous prompt when the composer is empty, otherwise moves the caret one line up. Not part of `codex-app-server-session`; take it at the start of change 2 (`omp-rpc-session`) or as a small change before it.
 
 ## Done
 
