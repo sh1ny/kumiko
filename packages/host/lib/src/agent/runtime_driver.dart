@@ -1563,6 +1563,7 @@ class CodexRuntimeDriver extends RuntimeDriver {
       'turn/started',
       'turn/completed',
       'item/agentMessage/delta',
+      'item/reasoning/summaryTextDelta',
       'item/started',
       'item/completed',
       'item/commandExecution/outputDelta',
@@ -1638,6 +1639,19 @@ class CodexRuntimeDriver extends RuntimeDriver {
       final bounded = clampUtf8(text, maxAgentTextChunkBytes);
       update = RuntimeUpdate(
         AgentEventKind.agentText,
+        bounded,
+        truncated: bounded.length != text.length,
+      );
+    } else if (method == 'item/reasoning/summaryTextDelta') {
+      // Thinking streams as reasoning summary deltas; the completed reasoning
+      // item adds nothing once a delta was shown.
+      final itemId = _identity(raw, 'itemId');
+      final text = raw['delta'];
+      if (text is! String) return null;
+      _markItem(_nativeKey([raw['threadId'] as String, turn, itemId]), 1);
+      final bounded = clampUtf8(text, maxAgentTextChunkBytes);
+      update = RuntimeUpdate(
+        AgentEventKind.thought,
         bounded,
         truncated: bounded.length != text.length,
       );
@@ -1900,6 +1914,8 @@ class CodexRuntimeDriver extends RuntimeDriver {
       }
       return null;
     }
+    if (type == 'reasoning') return _reasoning(raw, item, id, completed);
+    if (type == 'mcpToolCall') return _mcpToolCall(raw, item, id, completed);
     if (type == 'plan' && item['text'] is String) {
       final text = item['text']! as String;
       return RuntimeUpdate(
@@ -2010,6 +2026,79 @@ class CodexRuntimeDriver extends RuntimeDriver {
         ),
         truncated: truncated,
         omitted: omitted,
+      ),
+    );
+  }
+
+  /// A completed reasoning item shows its summary (or, without one, its
+  /// content) as thinking, unless its summary already streamed. A shape this
+  /// version does not match is ignored like an unknown item.
+  RuntimeUpdate? _reasoning(Json raw, Json item, String id, bool completed) {
+    if (!completed) return null;
+    final key = _nativeKey([
+      raw['threadId'] as String? ?? root,
+      raw['turnId'] as String,
+      id,
+    ]);
+    if (_seenItem(key, 2)) return null;
+    _markItem(key, 2);
+    if (_seenItem(key, 1)) return null;
+    String joined(Object? parts) =>
+        parts is List ? parts.whereType<String>().join('\n\n') : '';
+    var text = joined(item['summary']);
+    if (text.isEmpty) text = joined(item['content']);
+    if (text.isEmpty) return null;
+    final bounded = clampUtf8(text, maxAgentTextChunkBytes);
+    return RuntimeUpdate(
+      AgentEventKind.thought,
+      bounded,
+      truncated: bounded.length != text.length,
+    );
+  }
+
+  /// An MCP tool call, Kumiko's own tools included, is a tool card titled
+  /// `server.tool` with its native status and its text result or error. A
+  /// shape this version does not match is ignored like an unknown item.
+  RuntimeUpdate? _mcpToolCall(Json raw, Json item, String id, bool completed) {
+    final server = item['server'], tool = item['tool'];
+    final status = item['status'];
+    if (server is! String || tool is! String || status is! String) {
+      return null;
+    }
+    final parts = <String>[];
+    if (item['result'] case {'content': final List<Object?> blocks}) {
+      for (final block in blocks) {
+        if (block case {'type': 'text', 'text': final String text}) {
+          parts.add(text);
+        }
+      }
+    }
+    if (item['error'] case {'message': final String message}) {
+      parts.add(message);
+    }
+    final text = parts.join('\n');
+    final bounded = clampUtf8(text, maxAgentToolItemBytes);
+    final key = _nativeKey([raw['threadId'] as String? ?? root, id]);
+    return RuntimeUpdate(
+      completed ? AgentEventKind.toolUpdate : AgentEventKind.tool,
+      '',
+      event: _toolWithLoss(
+        AgentEvent.tool(
+          toolCallId: key,
+          update: completed,
+          title: clampUtf8('$server.$tool', 4096),
+          status: status,
+          toolKind: 'mcpToolCall',
+          content: text.isEmpty
+              ? null
+              : [
+                  {
+                    'type': 'content',
+                    'content': {'type': 'text', 'text': bounded},
+                  },
+                ],
+        ),
+        truncated: bounded != text,
       ),
     );
   }

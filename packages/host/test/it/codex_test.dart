@@ -1189,6 +1189,129 @@ void nativeCases(Directory Function() profile, Directory Function() work) {
     );
     await a.close();
   });
+  final reasoningItem = <String, Object?>{
+    'id': 'think',
+    'type': 'reasoning',
+    'summary': ['Weighing the options'],
+    'content': <Object?>[],
+  };
+  Json mcpItem(String status) => {
+    'id': 'mcp-call',
+    'type': 'mcpToolCall',
+    'server': 'kumiko',
+    'tool': 'kumiko_session_info',
+    'status': status,
+    'arguments': <String, Object?>{},
+    'result': status == 'completed'
+        ? {
+            'content': [
+              {'type': 'text', 'text': 'session details'},
+            ],
+          }
+        : null,
+    'error': status == 'failed' ? {'message': 'tool refused'} : null,
+  };
+  test('Codex: thinking and MCP tool calls are shown live', () async {
+    final f = NativeFixture(
+      profile(),
+      work(),
+      script: {
+        'turns': [
+          {
+            'actions': [
+              nativeEvent('item/reasoning/summaryTextDelta', {
+                'threadId': r'$thread',
+                'turnId': r'$turn',
+                'itemId': 'think',
+                'delta': 'Weighing ',
+                'summaryIndex': 0,
+              }),
+              nativeEvent('item/reasoning/summaryTextDelta', {
+                'threadId': r'$thread',
+                'turnId': r'$turn',
+                'itemId': 'think',
+                'delta': 'the options',
+                'summaryIndex': 0,
+              }),
+              nativeEvent('item/completed', {
+                'threadId': r'$thread',
+                'turnId': r'$turn',
+                'item': reasoningItem,
+              }),
+              nativeEvent('item/started', {
+                'threadId': r'$thread',
+                'turnId': r'$turn',
+                'item': mcpItem('inProgress'),
+              }),
+              nativeEvent('item/completed', {
+                'threadId': r'$thread',
+                'turnId': r'$turn',
+                'item': mcpItem('completed'),
+              }),
+              terminalEvent('completed'),
+            ],
+          },
+        ],
+      },
+    );
+    await f.open();
+    final a = await f.start();
+    await a.prompt();
+    await a.wait(Method.agentTurnEnded);
+    await eventually(() => a.events.any((e) => e['toolKind'] == 'mcpToolCall'));
+    final thinking = a.events
+        .where((e) => e['kind'] == 'thought')
+        .map((e) => e['text'])
+        .join();
+    expect(thinking, 'Weighing the options');
+    final cards = a.events
+        .where(
+          (e) =>
+              e['toolCallId'] ==
+              a.events.firstWhere(
+                (e) => e['toolKind'] == 'mcpToolCall',
+              )['toolCallId'],
+        )
+        .toList();
+    expect(cards.first['kind'], 'tool');
+    expect(cards.first['title'], 'kumiko.kumiko_session_info');
+    expect(cards.first['status'], 'inProgress');
+    expect(cards.last['kind'], 'toolUpdate');
+    expect(cards.last['status'], 'completed');
+    expect(cards.last.toString(), contains('session details'));
+    await a.close();
+  });
+  test('Codex: restored history shows thinking and MCP tool calls', () async {
+    final f = NativeFixture(
+      profile(),
+      work(),
+      script: {
+        'resumeThread': {
+          ...idleThread,
+          'turns': [
+            {
+              ...oldTurn,
+              'items': [reasoningItem, mcpItem('failed'), oldItem],
+            },
+          ],
+        },
+      },
+    );
+    final (a, _) = await restore(f);
+    await a.wait(Method.agentState, where: (p) => p['state'] == 'idle');
+    await eventually(
+      () => a.events.any((e) => e['kind'] == 'replay' && e['phase'] == 'end'),
+    );
+    expect(
+      a.events.where((e) => e['kind'] == 'thought').map((e) => e['text']),
+      ['Weighing the options'],
+    );
+    final card = a.events.singleWhere((e) => e['toolKind'] == 'mcpToolCall');
+    expect(card['title'], 'kumiko.kumiko_session_info');
+    expect(card['status'], 'failed');
+    expect(card.toString(), contains('tool refused'));
+    await a.close();
+  });
   test('Codex: Another runtime profile is the default', () async {
     final f = NativeFixture(
       profile(),
