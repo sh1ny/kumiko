@@ -1,5 +1,6 @@
 import 'dart:io';
 import 'dart:convert';
+import 'dart:math' show min;
 
 import 'package:host_protocol/host_protocol.dart';
 import 'package:sqlite3/sqlite3.dart';
@@ -1140,6 +1141,73 @@ void nativeCases(Directory Function() profile, Directory Function() work) {
     expect(agentRows(profile()).single, row);
     await peer.close();
   });
+  test(
+    'Codex: a collaboration item seen live during restore deduplicates',
+    () async {
+      final collab = <String, Object?>{
+        'id': 'spawn',
+        'type': 'collabAgentToolCall',
+        'tool': 'spawnAgent',
+        'senderThreadId': 'root-thread',
+        'receiverThreadIds': ['restored-child'],
+        'agentsStates': {
+          'restored-child': {'status': 'completed', 'message': null},
+        },
+      };
+      final f = NativeFixture(
+        profile(),
+        work(),
+        script: {
+          'readThread': {
+            ...idleThread,
+            'historyMode': 'paginated',
+            'status': {'type': 'notLoaded'},
+          },
+          'afterReadThread': {...idleThread, 'historyMode': 'paginated'},
+          'resumeThread': {
+            ...idleThread,
+            'historyMode': 'paginated',
+            'turns': <Object?>[],
+          },
+          'historyPages': [
+            {
+              'data': [
+                {'turnId': 'old-turn', 'item': oldItem},
+                {'turnId': 'old-turn', 'item': collab},
+              ],
+              'nextCursor': null,
+            },
+          ],
+          'historyBeforePage': [
+            nativeEvent('item/completed', {
+              'threadId': r'$thread',
+              'turnId': 'old-turn',
+              'item': collab,
+            }),
+          ],
+        },
+      );
+      final (peer, row) = await restore(f);
+      await peer.wait(Method.agentState, where: (p) => p['state'] == 'idle');
+      await eventually(() => peer.events.any((e) => e['phase'] == 'end'));
+      expect(
+        peer.events.where(
+          (e) =>
+              e['kind'] == 'notice' &&
+              (e['text'] as String).contains('history changed'),
+        ),
+        isEmpty,
+      );
+      expect(
+        peer.events
+            .where((e) => e['kind'] == 'agentText')
+            .map((e) => e['text']),
+        ['old answer'],
+      );
+      expect(agentRows(profile()).single, row);
+      await peer.close();
+    },
+  );
   test(
     'Codex: paged history exceeds the dedup window with visible loss',
     () async {
@@ -4027,6 +4095,85 @@ void nativeCases(Directory Function() profile, Directory Function() work) {
       expect(LedgerView(profile()).units(), isEmpty);
     },
   );
+
+  Json outputDelta(String item, String delta) =>
+      nativeEvent('item/commandExecution/outputDelta', {
+        'threadId': r'$thread',
+        'turnId': r'$turn',
+        'itemId': item,
+        'delta': delta,
+      });
+  List<String> toolTexts(AgentPeer a, String item) => [
+    for (final e in a.events)
+      if ((e['toolCallId'] as String? ?? '').contains(item))
+        for (final c in (e['content'] as List? ?? const []).cast<Json>())
+          if (c['content'] case {'text': final String text}) text,
+  ];
+  test('Codex: streamed command output accumulates per tool', () async {
+    final f = await fixture({
+      'turns': [
+        {
+          'actions': [
+            outputDelta('stream-cmd', 'first '),
+            outputDelta('stream-cmd', 'second'),
+            terminalEvent('completed'),
+          ],
+        },
+      ],
+    });
+    final a = await f.start();
+    await a.prompt();
+    await a.wait(Method.agentTurnEnded);
+    await eventually(() => toolTexts(a, 'stream-cmd').length == 2);
+    expect(toolTexts(a, 'stream-cmd'), ['first ', 'first second']);
+    await a.close();
+  });
+  test('Codex: a secret fragmented across tool output deltas never leaves the host', () async {
+    final f = await fixture();
+    final report = await saveAgentFixture(
+      f.desktop,
+      work(),
+      id: 'stream-secret-owner',
+    );
+    final owner = AgentPeer(f.desktop);
+    await owner.start(f.workspace, runtime: 'stream-secret-owner');
+    await owner.attach();
+    final launch = await waitFixture(report, (r) => r['mcpServers'] is List);
+    final server = (launch['mcpServers'] as List).single as Json;
+    final secret =
+        ((server['env'] as List).cast<Json>().firstWhere(
+              (e) => e['name'] == 'KUMIKO_TOOL_SECRET',
+            )['value'])!
+            as String;
+    final pieces = [
+      for (var i = 0; i < secret.length; i += 3)
+        secret.substring(i, min(i + 3, secret.length)),
+    ];
+    final script = jsonDecode(f.scriptFile.readAsStringSync()) as Json;
+    script['turns'] = [
+      {
+        'actions': [
+          outputDelta('secret-cmd', 'token: '),
+          for (final piece in pieces) outputDelta('secret-cmd', piece),
+          outputDelta('secret-cmd', ' done'),
+          terminalEvent('completed'),
+        ],
+      },
+    ];
+    f.scriptFile.writeAsStringSync(jsonEncode(script));
+    final a = await f.start();
+    await a.prompt();
+    await a.wait(Method.agentTurnEnded);
+    await eventually(
+      () => toolTexts(a, 'secret-cmd').any((t) => t.endsWith(' done')),
+    );
+    // Boolean assertions keep a failure from logging the credential.
+    expect(jsonEncode(a.events).contains(secret), isFalse);
+    expect(toolTexts(a, 'secret-cmd').join().contains(secret), isFalse);
+    expect(toolTexts(a, 'secret-cmd').last.contains('<redacted>'), isTrue);
+    await a.close();
+    await owner.close();
+  });
 
   test(
     'Codex: minimum contract accepts granular native approval policy',

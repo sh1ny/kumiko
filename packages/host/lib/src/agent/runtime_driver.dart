@@ -266,6 +266,13 @@ class RuntimeDelivery {
   }
 }
 
+class _ToolOutput {
+  String text = '';
+  int emitted = 0;
+  bool lossy = false;
+  bool capped = false;
+}
+
 class _EarlyNative {
   _EarlyNative(
     this.turn,
@@ -417,6 +424,14 @@ class CodexRuntimeDriver extends RuntimeDriver {
   int _resolvedUnknownBytes = 0;
   RuntimeDelivery? _unknownDelivery, _expiredUnknownDelivery;
   bool _childrenDisconnected = false;
+
+  /// Streamed command output per tool, oldest first. The desktop replaces a
+  /// tool's content on each update, so every delta carries the bounded output
+  /// so far. That also lets stateless redaction see a secret split across
+  /// deltas. Emission per tool is bounded so tiny deltas cannot amplify.
+  final _toolOutput = <String, _ToolOutput>{};
+  static const _maxStreamedTools = 32;
+  static const _maxToolOutputEmitted = 1024 * 1024;
   Object? _dispatchNotification(String method, Object? raw) {
     try {
       final result = _notification(method, raw);
@@ -1091,12 +1106,6 @@ class CodexRuntimeDriver extends RuntimeDriver {
   Iterable<Uint8List> _historyItem(String turn, Object? raw) {
     if (raw is! Json) _historyUnavailable('invalid native history item');
     final id = _identity(raw, 'id');
-    if (raw['type'] == 'collabAgentToolCall') {
-      return _relationshipItem(
-        raw,
-        raw['senderThreadId'] is String ? raw['senderThreadId']! as String : '',
-      );
-    }
     final key = _nativeKey([root, turn, id]);
     for (var i = _historyLiveKeys.length - 1; i >= 0; i--) {
       final pending = _historyLiveKeys[i];
@@ -1104,6 +1113,15 @@ class CodexRuntimeDriver extends RuntimeDriver {
       _historyLiveKeys.removeAt(i);
       _historyLiveBytes -= pending.$2;
       releaseEarly?.call(pending.$2);
+    }
+    if (raw['type'] == 'collabAgentToolCall') {
+      // Same snapshot/live identity accounting as other items; relationships
+      // are still rebuilt from every snapshot record.
+      _markItem(key, 2);
+      return _relationshipItem(
+        raw,
+        raw['senderThreadId'] is String ? raw['senderThreadId']! as String : '',
+      );
     }
     if (_seenItem(key, 2)) return const [];
     RuntimeUpdate? update;
@@ -1654,22 +1672,40 @@ class CodexRuntimeDriver extends RuntimeDriver {
       final id = _identity(raw, 'itemId');
       final delta = raw['delta'];
       if (delta is! String) throw CodexProtocolException('invalid tool delta');
-      final bounded = clampUtf8(delta, maxAgentToolItemBytes);
+      final key = _nativeKey([raw['threadId'] as String? ?? root, id]);
+      var output = _toolOutput.remove(key);
+      if (output == null) {
+        output = _ToolOutput();
+        if (_toolOutput.length >= _maxStreamedTools) {
+          _toolOutput.remove(_toolOutput.keys.first);
+        }
+      }
+      _toolOutput[key] = output;
+      if (output.emitted >= _maxToolOutputEmitted) {
+        if (output.capped) return null;
+        output.capped = true;
+        output.lossy = true;
+      } else {
+        final joined = '${output.text}$delta';
+        output.text = clampUtf8(joined, maxAgentToolItemBytes);
+        output.lossy |= output.text != joined;
+      }
+      output.emitted += output.text.length;
       return RuntimeUpdate(
         AgentEventKind.toolUpdate,
         '',
         event: _toolWithLoss(
           AgentEvent.tool(
-            toolCallId: _nativeKey([raw['threadId'] as String? ?? root, id]),
+            toolCallId: key,
             update: true,
             content: [
               {
                 'type': 'content',
-                'content': {'type': 'text', 'text': bounded},
+                'content': {'type': 'text', 'text': output.text},
               },
             ],
           ),
-          truncated: bounded != delta,
+          truncated: output.lossy,
         ),
       );
     }
@@ -1858,6 +1894,9 @@ class CodexRuntimeDriver extends RuntimeDriver {
         content.add(bounded);
         truncated |= path != change['path'] || diff != change['diff'];
       }
+    }
+    if (completed) {
+      _toolOutput.remove(_nativeKey([raw['threadId'] as String? ?? root, id]));
     }
     return RuntimeUpdate(
       completed ? AgentEventKind.toolUpdate : AgentEventKind.tool,
