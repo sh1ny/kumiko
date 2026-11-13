@@ -1017,6 +1017,19 @@ class AgentService {
         version: initialization.version,
       );
       grant?.setAdapter(adapter.name, adapter.version);
+      // A Codex version with a recorded delivery failure (such as a canary
+      // found in runtime-written files) never receives a secret again (ADR
+      // 0015 decision 8): revoke the unused grant; chat continues without
+      // tools. Claude ACP keeps its record advisory: an observed call wins.
+      final refused = grant == null || profile.runtimeKind != 'codex'
+          ? null
+          : _deliveryFailure(adapter);
+      if (refused != null) {
+        toolsUnavailableReason = refused;
+        _revoke(grant);
+        grant = null;
+        mcpServers.clear();
+      }
       if (grant != null) {
         stage = 'tools/config';
         final unavailable = await io.client.prepareTools(
@@ -1321,16 +1334,21 @@ class AgentService {
       );
     }
     if (grant.everCalled) return const AgentTools(AgentToolsStatus.connected);
+    if (_deliveryFailure(adapter) case final reason?) {
+      return AgentTools(AgentToolsStatus.unavailable, reason: reason);
+    }
+    return const AgentTools(AgentToolsStatus.notYetUsed);
+  }
+
+  /// The recorded tool delivery failure for exactly this adapter version.
+  String? _deliveryFailure(AgentAdapter adapter) {
     for (final (name, version, text)
         in toolDeliveryFailuresOverride ?? toolDeliveryFailures) {
       if (name == adapter.name && version == adapter.version) {
-        return AgentTools(
-          AgentToolsStatus.unavailable,
-          reason: 'for $name $version: $text',
-        );
+        return 'for $name $version: $text';
       }
     }
-    return const AgentTools(AgentToolsStatus.notYetUsed);
+    return null;
   }
 
   void _insert(AgentSessionRecord r) {

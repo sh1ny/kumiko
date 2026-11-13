@@ -1273,11 +1273,14 @@ class AgentSession {
         AgentStopResultParams(
           sessionId: sessionId,
           outcome: AgentStopOutcome.notConfirmed,
-          message:
-              client.interruptionReason ??
-              (_delegated?.incomplete == true
+          // The native interruption error may echo a run secret.
+          message: switch (client.interruptionReason) {
+            final String reason => clampUtf8(_redact(reason), 4096),
+            null =>
+              _delegated?.incomplete == true
                   ? 'Delegated activity incomplete; child interruption cannot be confirmed.'
-                  : null),
+                  : null,
+          },
         ),
       );
     });

@@ -1795,6 +1795,30 @@ void nativeCases(Directory Function() profile, Directory Function() work) {
     expect((entry['env'] as Json)['KUMIKO_TOOL_SECRET'], '<redacted>');
     await a.close();
   });
+  test(
+    'Codex: a version with a recorded tool delivery failure gets no secret',
+    () async {
+      final f = await fixture(const {}, {
+        'KUMIKO_TEST_TOOL_DELIVERY_FAILURES': jsonEncode([
+          ['codex-app-server', '0.166.0', 'canary found in native config'],
+        ]),
+      });
+      final a = await f.start();
+      expect(a.started.tools!.status, AgentToolsStatus.unavailable);
+      expect(a.started.tools!.reason, contains('canary found'));
+      expect(f.requests.map((r) => r['method']), [
+        'initialize',
+        'initialized',
+        'thread/start',
+      ]);
+      expect(f.requests.toString().contains('KUMIKO_TOOL_SECRET'), false);
+      expect((f.requests.last['params'] as Json), isNot(contains('config')));
+      final stats =
+          await f.desktop.connection.request('test/agent.stats', {}) as Json;
+      expect(((stats['sessions'] as Json)[a.id] as Json)['hasGrant'], false);
+      await a.close();
+    },
+  );
   test('Codex: Initialization fails', () async {
     final f = await fixture({
       'initialize': {'userAgent': 4},
@@ -5292,6 +5316,52 @@ void nativeCases(Directory Function() profile, Directory Function() work) {
       await a.close();
     },
   );
+  test('Codex: a rejected interrupt echoing a run secret is redacted in the Stop result', () async {
+    final f = await fixture();
+    final report = await saveAgentFixture(
+      f.desktop,
+      work(),
+      id: 'secret-owner',
+    );
+    final owner = AgentPeer(f.desktop);
+    await owner.start(f.workspace, runtime: 'secret-owner');
+    await owner.attach();
+    final launch = await waitFixture(report, (r) => r['mcpServers'] is List);
+    final env = ((launch['mcpServers'] as List).single as Json)['env'] as List;
+    final secret =
+        (env.cast<Json>().firstWhere(
+              (v) => v['name'] == 'KUMIKO_TOOL_SECRET',
+            )['value'])!
+            as String;
+    final script = jsonDecode(f.scriptFile.readAsStringSync()) as Json;
+    script['interruptError'] = {
+      'code': -32603,
+      'message': 'interrupt refused for $secret',
+    };
+    script['turns'] = [
+      {
+        'actions': [
+          {'delayMs': 12000},
+          terminalEvent('completed'),
+        ],
+      },
+    ];
+    f.scriptFile.writeAsStringSync(jsonEncode(script));
+    final a = await f.start();
+    await a.prompt();
+    await a.wait(Method.agentState, where: (p) => p['turnId'] != null);
+    await a.call(Method.agentStop);
+    final result = await a.wait(
+      Method.agentStopResult,
+      where: (p) => p['outcome'] == 'notConfirmed',
+    );
+    expect(result['message'], contains('<redacted>'));
+    expect(a.notifications.toString().contains(secret), false);
+    expect(a.events.toString().contains(secret), false);
+    await a.wait(Method.agentTurnEnded);
+    await a.close();
+    await owner.close();
+  });
 
   test('Codex: Continue without safe config has no bridge entry', () async {
     final f = NativeFixture(
