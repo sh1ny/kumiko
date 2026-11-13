@@ -192,6 +192,23 @@ AdapterDetectionResult detectAdapter(AdapterDetectionConfig config) {
   }
 }
 
+/// Whether [path] is npm's `codex` launcher script rather than a native
+/// executable. It is recognised from where its link resolves (a `.js` file in
+/// the `@openai/codex` package) and is never run or read.
+bool isNpmCodexLauncher(String path) {
+  try {
+    final target = p.split(File(path).resolveSymbolicLinksSync());
+    final package = target.lastIndexOf('node_modules');
+    return target.last.endsWith('.js') ||
+        (package >= 0 &&
+            package + 2 < target.length &&
+            target[package + 1] == '@openai' &&
+            target[package + 2] == 'codex');
+  } on FileSystemException {
+    return false;
+  }
+}
+
 /// File-only native lookup. Overrides replace all automatic roots, including npm.
 RuntimeProfile? detectCodex(AdapterDetectionConfig config) {
   final windows = config.os == 'windows';
@@ -223,7 +240,11 @@ RuntimeProfile? detectCodex(AdapterDetectionConfig config) {
 
   for (final dir in [...paths, ...known]) {
     if (!p.isAbsolute(dir)) continue;
-    final direct = profile(p.join(dir, windows ? 'codex.exe' : 'codex'));
+    final candidate = p.join(dir, windows ? 'codex.exe' : 'codex');
+    // npm's POSIX launcher runs through Node; its platform package is
+    // resolved below instead.
+    if (!windows && isNpmCodexLauncher(candidate)) continue;
+    final direct = profile(candidate);
     if (direct != null) return direct;
   }
   // Resolve only package roots adjacent to known global npm shim/bin roots.

@@ -3148,6 +3148,74 @@ void nativeCases(Directory Function() profile, Directory Function() work) {
     });
     await a.close();
   });
+  test(
+    'Codex: free text that looks like an option identity stays text',
+    () async {
+      final f = await fixture({
+        'turns': [
+          {
+            'actions': [
+              {
+                'send': {
+                  'id': 'question',
+                  'method': 'item/tool/requestUserInput',
+                  'params': {
+                    'threadId': r'$thread',
+                    'turnId': r'$turn',
+                    'itemId': 'q',
+                    'isBlocking': true,
+                    'questions': [
+                      {
+                        'id': 'choice',
+                        'header': 'Choice',
+                        'question': 'Which?',
+                        'isOther': true,
+                        'options': [
+                          {'label': 'One', 'description': 'First'},
+                        ],
+                      },
+                    ],
+                  },
+                },
+              },
+              {'waitReply': 'question'},
+              terminalEvent('completed'),
+            ],
+          },
+        ],
+      });
+      final a = await f.start();
+      await a.prompt();
+      final q = await a.wait(
+        Method.agentQuestionRequested,
+        within: const Duration(seconds: 2),
+      );
+      final question = (q['questions'] as List).single as Json;
+      final option = (question['options'] as List).single as Json;
+      await a.call(Method.agentQuestionAnswer, {
+        'sessionId': a.id,
+        'runId': q['runId'],
+        'turnId': q['turnId'],
+        'requestId': q['requestId'],
+        'answers': [
+          {
+            'questionId': question['id'],
+            'values': <Object?>[],
+            'other': option['id'],
+          },
+        ],
+      });
+      await a.wait(Method.agentTurnEnded);
+      expect(f.requests.where((m) => m['id'] == 'question').single['result'], {
+        'answers': {
+          'choice': {
+            'answers': [option['id']],
+          },
+        },
+      });
+      await a.close();
+    },
+  );
   for (final method in ['future/ordinary', 'future/requestApproval']) {
     for (final payload in <Object?>[
       null,

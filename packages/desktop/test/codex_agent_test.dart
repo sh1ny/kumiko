@@ -1282,9 +1282,11 @@ void main() {
         await tester.tap(submit);
         await flush(tester);
         expect(host.questionAnswers, hasLength(2));
-        expect(host.questionAnswers.last.answers.single.values, [
+        expect(host.questionAnswers.last.answers.single.values, isEmpty);
+        expect(
+          host.questionAnswers.last.answers.single.other,
           'corrected private answer',
-        ]);
+        );
         expect(tester.widget<FilledButton>(submit).onPressed, isNull);
         expect(
           agents(rig).linkOf(chat(rig).id)!.transcript.plainText,

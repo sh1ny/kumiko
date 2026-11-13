@@ -237,14 +237,29 @@ class AgentQuestionRequestedParams {
 }
 
 class AgentQuestionAnswer {
-  const AgentQuestionAnswer({required this.questionId, required this.values});
+  const AgentQuestionAnswer({
+    required this.questionId,
+    this.values = const [],
+    this.other,
+  });
   factory AgentQuestionAnswer.fromJson(Json json) => AgentQuestionAnswer(
     questionId: _codexId(json, 'questionId'),
     values: _list<String>(json, 'values'),
+    other: _opt<String>(json, 'other'),
   );
   final String questionId;
+
+  /// Selected option identities only; never free text.
   final List<String> values;
-  Json toJson() => {'questionId': questionId, 'values': values};
+
+  /// Literal free text for a question that allows another answer, kept apart
+  /// from [values] so text that looks like an option identity stays text.
+  final String? other;
+  Json toJson() => {
+    'questionId': questionId,
+    'values': values,
+    'other': ?other,
+  };
 }
 
 class AgentQuestionAnswerParams {

@@ -948,13 +948,19 @@ class AgentSession {
       final values = <String>[];
       for (final value in matching.single.values) {
         final option = q.options.indexWhere((o) => o.id == value);
-        if (option >= 0) {
-          values.add(original.options[option].label);
-        } else if (q.allowOther) {
-          values.add(value);
-        } else {
+        if (option < 0) {
           throw RpcException(ErrorCode.invalidParams, 'answer was not offered');
         }
+        values.add(original.options[option].label);
+      }
+      // Free text travels apart from option identities, so it reaches Codex
+      // unchanged even when it looks like one.
+      final other = matching.single.other;
+      if (other != null) {
+        if (!q.allowOther) {
+          throw RpcException(ErrorCode.invalidParams, 'answer was not offered');
+        }
+        values.add(other);
       }
       native[original.id] = {'answers': values};
     }

@@ -204,9 +204,13 @@ void main() {
           'questionId': 'choice',
           'values': ['yes'],
         },
+        {'questionId': 'free', 'values': <Object?>[], 'other': 'option-0'},
       ],
     };
     expect(AgentQuestionAnswerParams.fromJson(answer).toJson(), answer);
+    final free = AgentQuestionAnswerParams.fromJson(answer).answers.last;
+    expect(free.values, isEmpty);
+    expect(free.other, 'option-0');
     const resolved = <String, Object?>{
       'sessionId': 's',
       'seq': 6,

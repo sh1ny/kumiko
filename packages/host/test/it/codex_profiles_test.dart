@@ -457,6 +457,64 @@ void main() {
     },
     skip: !Platform.isWindows,
   );
+  test('Codex: the npm launcher script is recognised without running it', () {
+    final script = File(
+      joinPath(work.path, 'lib/node_modules/@openai/codex/bin/codex.js'),
+    )..createSync(recursive: true);
+    final native = File(
+      joinPath(
+        work.path,
+        'lib/node_modules/@openai/codex-linux-x64/vendor/'
+        'x86_64-unknown-linux-musl/codex/codex',
+      ),
+    )..createSync(recursive: true);
+    expect(isNpmCodexLauncher(script.path), true);
+    expect(isNpmCodexLauncher(native.path), false);
+    expect(isNpmCodexLauncher(joinPath(work.path, 'missing')), false);
+  });
+  test('Codex: a POSIX npm launcher on PATH resolves to its native platform binary', () {
+    final prefix = Directory(joinPath(work.path, 'prefix'))..createSync();
+    final modules = joinPath(prefix.path, 'lib/node_modules');
+    final main = Directory(joinPath(modules, '@openai/codex'))
+      ..createSync(recursive: true);
+    final launcher = File(joinPath(main.path, 'bin/codex.js'))
+      ..createSync(recursive: true)
+      ..writeAsStringSync('#!/usr/bin/env node\n');
+    chmodPath(launcher.path, 0x1c0);
+    final bin = Directory(joinPath(prefix.path, 'bin'))..createSync();
+    Link(joinPath(bin.path, 'codex')).createSync(launcher.path);
+    final arch = Platform.version.contains('arm64') ? 'arm64' : 'x64';
+    final os = Platform.isMacOS ? 'darwin' : 'linux';
+    final key = '@openai/codex-$os-$arch';
+    File(joinPath(main.path, 'package.json')).writeAsStringSync(
+      '{"name":"@openai/codex","optionalDependencies":{"$key":"npm:@openai/codex@0.166.0-$os-$arch"}}',
+    );
+    final platform = Directory(joinPath(modules, key))..createSync();
+    File(joinPath(platform.path, 'package.json')).writeAsStringSync(
+      '{"name":"@openai/codex","version":"0.166.0-$os-$arch","os":["$os"],"cpu":["$arch"]}',
+    );
+    final machine = arch == 'arm64' ? 'aarch64' : 'x86_64';
+    final target = Platform.isMacOS
+        ? '$machine-apple-darwin'
+        : '$machine-unknown-linux-musl';
+    final binary = File(joinPath(platform.path, 'vendor/$target/codex/codex'))
+      ..createSync(recursive: true);
+    chmodPath(binary.path, 0x1c0);
+    final found = detectCodex(
+      AdapterDetectionConfig(
+        os: Platform.operatingSystem,
+        pathDirs: [bin.path],
+        wellKnownDirs: const [],
+        environment: const {},
+      ),
+    );
+    expect(found, isNotNull);
+    expect(
+      File(found!.executable).resolveSymbolicLinksSync(),
+      binary.resolveSymbolicLinksSync(),
+    );
+    expect(found.env['CODEX_MANAGED_BY_NPM'], '1');
+  }, skip: Platform.isWindows);
   test('Codex: Codex added beside existing Claude default', () async {
     final f = NativeFixture(profile, work);
     await f.open();

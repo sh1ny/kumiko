@@ -95,10 +95,16 @@ class _NativeQuestionFormState extends State<NativeQuestionForm> {
               onPressed: enabled && _complete
                   ? () => widget.submit([
                       for (final q in request.questions)
-                        AgentQuestionAnswer(
-                          questionId: q.id,
-                          values: [_selected[q.id] ?? _text[q.id]!.text],
-                        ),
+                        if (_selected[q.id] case final String option)
+                          AgentQuestionAnswer(
+                            questionId: q.id,
+                            values: [option],
+                          )
+                        else
+                          AgentQuestionAnswer(
+                            questionId: q.id,
+                            other: _text[q.id]!.text,
+                          ),
                     ])
                   : null,
               child: Text(
