@@ -602,6 +602,11 @@ class CodexRuntimeDriver extends RuntimeDriver {
       id,
       () => NativeChild(id, parent, task: clampUtf8(task, 4096)),
     );
+    // thread/started registers a child without its task; a later spawn item
+    // for the same, already validated parent supplies it.
+    if (child.task.isEmpty && task.isNotEmpty) {
+      child.task = clampUtf8(task, 4096);
+    }
     if (status != null) child.status = status;
     onDelegatedChanged?.call();
     final result = normalizeUpdate?.call(
@@ -677,12 +682,15 @@ class CodexRuntimeDriver extends RuntimeDriver {
         );
         continue;
       }
-      if (status == 'completed' ||
+      if (child.turn != null) {
+        // A snapshot carries no child turn identity, so it may be older than
+        // the live child turn. Only that turn's own native events settle it;
+        // a shutdown report only marks delegated activity incomplete.
+        if (status == 'shutdown') _childrenIncomplete = true;
+      } else if (status == 'completed' ||
           status == 'interrupted' ||
           status == 'errored' ||
           status == 'shutdown') {
-        final turn = child.turn;
-        child.turn = null;
         child.status = status == 'completed'
             ? 'completed'
             : status == 'interrupted'
@@ -691,24 +699,6 @@ class CodexRuntimeDriver extends RuntimeDriver {
             ? 'error'
             : 'disconnected';
         if (status == 'shutdown') _childrenIncomplete = true;
-        if (turn != null && status != 'shutdown') {
-          onRetired?.call(RuntimeRetired(child.id, turn));
-          onNativeTurnEnded?.call(
-            child.id,
-            turn,
-            RuntimeTurnResult(
-              status == 'completed'
-                  ? 'end_turn'
-                  : status == 'interrupted'
-                  ? 'cancelled'
-                  : 'error',
-              isCancelled: status == 'interrupted',
-              error: status == 'errored'
-                  ? CodexProtocolException('child ended with an error')
-                  : null,
-            ),
-          );
-        }
       } else if (status == 'running' || status == 'pendingInit') {
         child.status = 'running';
       } else if (status != null || _historyLoading) {

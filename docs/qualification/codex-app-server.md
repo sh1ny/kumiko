@@ -2,9 +2,12 @@
 
 ## Offline checker and bounded Windows walk procedure
 
-Two approved real-runtime attempts failed before prompts. The second identified
-the helper's unsupported approval-policy override; no provider-backed capability
-has been observed. The authored checker, auth
+Historical note, superseded by
+[Final status for this change](#final-status-for-this-change-task-84-2026-11-13):
+when this procedure was first written, two approved real-runtime attempts had
+failed before prompts, the second identifying the helper's unsupported
+approval-policy override, and no provider-backed capability had been observed.
+Later attempts are recorded below; Windows 0.166.0 now passes. The authored checker, auth
 projection and test-host audit controls below are regression evidence only.
 They do not establish a safe native persistence path, successful provider
 authentication, Linux/macOS behavior, main-branch three-OS CI, or owner daily use.

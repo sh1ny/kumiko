@@ -425,6 +425,134 @@ void main() {
     );
     await a.close();
   });
+  test(
+    'Codex: a stale collaboration snapshot cannot settle a live child turn',
+    () async {
+      final f = NativeFixture(
+        profile,
+        work,
+        script: {
+          'turns': [
+            {
+              'actions': [
+                child('child-a', 'root-thread'),
+                childTurn('child-a', 'inProgress'),
+                terminalEvent('completed'),
+                // A delayed snapshot says child-a completed, but carries no
+                // child turn identity; the live child turn is still running.
+                nativeEvent('item/completed', {
+                  'threadId': 'root-thread',
+                  'turnId': r'$turn',
+                  'item': {
+                    'id': 'stale-spawn',
+                    'type': 'collabAgentToolCall',
+                    'tool': 'spawnAgent',
+                    'status': 'completed',
+                    'senderThreadId': 'root-thread',
+                    'receiverThreadIds': ['child-a'],
+                    'prompt': 'delegated task',
+                    'agentsStates': {
+                      'child-a': {'status': 'completed', 'message': null},
+                    },
+                  },
+                }),
+                {
+                  'send': {
+                    'id': 'live-child-approval',
+                    'method': 'item/commandExecution/requestApproval',
+                    'params': {
+                      'threadId': 'child-a',
+                      'turnId': 'child-a-turn',
+                      'itemId': 'child-command',
+                      'startedAtMs': 1,
+                      'command': 'echo child',
+                      'cwd': '/fixture',
+                      'availableDecisions': ['accept', 'decline'],
+                    },
+                  },
+                },
+                {'waitReply': 'live-child-approval'},
+                childTurn('child-a', 'completed'),
+              ],
+            },
+          ],
+        },
+      );
+      await f.open();
+      final a = await f.start();
+      await a.prompt();
+      final request = await a.wait(
+        Method.agentPermissionRequested,
+        within: const Duration(seconds: 3),
+      );
+      expect(request['title'], contains('child-a'));
+      expect(
+        (a.of(Method.agentState).last['delegated'] as Json)['activeChildren'],
+        1,
+      );
+      await a.call(Method.agentPermissionReply, {
+        'sessionId': a.id,
+        'requestId': request['requestId'],
+        'optionId': ((request['options'] as List).first as Json)['optionId'],
+      });
+      await waitFixture(
+        f.report,
+        (r) => (r['received'] as Json?)?['id'] == 'live-child-approval',
+      );
+      expect(
+        f.requests.singleWhere(
+          (r) => r['id'] == 'live-child-approval',
+        )['result'],
+        {'decision': 'accept'},
+      );
+      await a.close();
+    },
+  );
+  test(
+    'Codex: a spawn item after child registration supplies its task',
+    () async {
+      final f = NativeFixture(
+        profile,
+        work,
+        script: {
+          'turns': [
+            {
+              'actions': [
+                child('child-a', 'root-thread'),
+                nativeEvent('item/completed', {
+                  'threadId': 'root-thread',
+                  'turnId': r'$turn',
+                  'item': {
+                    'id': 'late-spawn',
+                    'type': 'collabAgentToolCall',
+                    'tool': 'spawnAgent',
+                    'status': 'completed',
+                    'senderThreadId': 'root-thread',
+                    'receiverThreadIds': ['child-a'],
+                    'prompt': 'review the parser',
+                    'agentsStates': {
+                      'child-a': {'status': 'running', 'message': null},
+                    },
+                  },
+                }),
+                terminalEvent('completed'),
+              ],
+            },
+          ],
+        },
+      );
+      await f.open();
+      final a = await f.start();
+      await a.prompt();
+      await a.wait(Method.agentTurnEnded);
+      await eventually(
+        () => a.events.any(
+          (e) => e['kind'] == 'child' && e['text'] == 'review the parser',
+        ),
+      );
+      await a.close();
+    },
+  );
   test('Codex: a completed child cannot revive a retired approval', () async {
     final f = NativeFixture(
       profile,
