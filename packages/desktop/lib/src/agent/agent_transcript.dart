@@ -134,6 +134,11 @@ class AgentTranscript {
       entry.append(text, utf8.encode(text).length);
       // Text lives in the accumulator, not a second retained JSON copy.
       entry.fields['text'] = '';
+      // Other retained fields (thread identities, status) are charged once.
+      final metadata = Map.of(entry.fields)..remove('text');
+      if (metadata.isNotEmpty) {
+        entry.bytes += utf8.encode(jsonEncode(metadata)).length;
+      }
     } else {
       entry.bytes = utf8.encode(jsonEncode(fields)).length;
     }

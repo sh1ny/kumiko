@@ -92,11 +92,17 @@ Future<void> _configureMissingRuntime(
 Future<String?> chooseRecoveryRuntime(
   BuildContext context,
   WorkbenchController controller,
-  RuntimeListResult list,
-) async {
+  RuntimeListResult list, {
+  String runtimeKind = 'claude-code',
+}) async {
   if (!context.mounted) return null;
   if (list.profiles.isEmpty) {
-    await _configureMissingRuntime(context, controller, list.defaultReason);
+    await _configureMissingRuntime(
+      context,
+      controller,
+      list.defaultReason,
+      runtimeKind: runtimeKind,
+    );
     return null;
   }
   final id = await showRuntimePicker(

@@ -30,8 +30,10 @@ const _currentRuntime = RuntimeProfile(
 /// Enforces the host's profile-selection contract instead of accepting a
 /// deleted explicit id, and retains the immutable launch behind each saved id.
 class _RecoveryProfileHost extends FakeHostLink {
-  _RecoveryProfileHost()
-    : super(hello: helloResult(capabilities: agentCapabilities)) {
+  _RecoveryProfileHost({Set<String> extra = const {}})
+    : super(
+        hello: helloResult(capabilities: {...agentCapabilities, ...extra}),
+      ) {
     records.addAll([workspaceRecord('A'), workspaceRecord('B')]);
     storedLayout = jsonOf(docOf([], selected: 'A'));
     runtimes = const RuntimeListResult(
@@ -268,6 +270,31 @@ void main() {
       expect(key('runtime-profile-executable'), findsOneWidget);
       expect(host.agentStarts, hasLength(1));
       expect(host.savedLaunches[old], same(saved));
+    },
+  );
+
+  uiTest(
+    'recovery without any runtime keeps the saved Codex kind in its guidance',
+    (tester) async {
+      final host = _RecoveryProfileHost(
+        extra: {Capability.codex, Capability.agentExtensionsV1},
+      );
+      final rig = await _endedProfileChat(tester, host);
+      final pane = chat(rig).id;
+      await rig.controller.removeRuntimeProfile('P');
+      await rig.controller.removeRuntimeProfile('Q');
+      await _continueUnavailable(tester, rig);
+      // The saved conversation is a Codex one.
+      agents(rig).linkOf(pane)!.runtimeKind = 'codex';
+
+      await tester.tap(key('agent-new-$pane'));
+      await flush(tester);
+
+      expect(key('no-runtime-profile-prompt'), findsOneWidget);
+      expect(find.textContaining('Install Codex CLI'), findsOneWidget);
+      expect(find.textContaining('claude-agent-acp'), findsNothing);
+      await tester.tap(find.widgetWithText(TextButton, 'Cancel'));
+      await flush(tester);
     },
   );
 

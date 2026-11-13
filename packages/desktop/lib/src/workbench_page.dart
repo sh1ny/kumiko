@@ -1346,8 +1346,14 @@ class _PaneBody extends StatelessWidget {
         controller: controller.agents,
         paneId: pane.id,
         focused: controller.layout!.focusedPane == pane.id,
-        chooseRuntimeProfile: (profiles) =>
-            chooseRecoveryRuntime(context, controller, profiles),
+        chooseRuntimeProfile: (profiles) => chooseRecoveryRuntime(
+          context,
+          controller,
+          profiles,
+          // Recovery guidance names the saved conversation's runtime.
+          runtimeKind:
+              controller.agents.linkOf(pane.id)?.runtimeKind ?? 'claude-code',
+        ),
       );
     }
     if (pane.kind == terminalKind) {
