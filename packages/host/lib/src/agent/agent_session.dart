@@ -296,7 +296,9 @@ class AgentSession {
   /// The checks of [acceptPrompt], without its effect: a prompt that would
   /// be refused must not first remove a stored draft.
   void checkCanPrompt(String text) {
-    if (_state != AgentState.idle || _disposed) {
+    // A native Stop can settle Idle before the previous host turn has
+    // reported its end; that turn must finish before another is admitted.
+    if (_state != AgentState.idle || _hasTurn || _disposed) {
       throw RpcException(
         ErrorCode.turnRunning,
         'a turn is already running or the session is unavailable',

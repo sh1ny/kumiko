@@ -1360,8 +1360,11 @@ class CodexRuntimeDriver extends RuntimeDriver {
     if (_turnId == null || _early.isEmpty) return null;
     final lines = <Uint8List>[];
     RuntimeTurnResult? terminal;
+    // A turn whose completion is already buffered never offers its requests:
+    // they are retired now, not after the transcript delivery drains.
+    final ended = _early.any((r) => r.turn == _turnId && r.terminal != null);
     for (final record in _early) {
-      if (record.turn != _turnId) {
+      if (record.turn != _turnId || (ended && record.interaction != null)) {
         if (record.interaction case final RuntimePermission p) {
           client.replyAdmitted(p.id, p.cancellation).ignore();
         }
@@ -2212,6 +2215,14 @@ class CodexRuntimeDriver extends RuntimeDriver {
         'Codex unknown child ${clampJsonString(raw['threadId'].toString(), 4096)} request refused; relationship unavailable.',
       );
     }
+    if (method == 'mcpServer/elicitation/request') {
+      // Its turnId is optional natively, and every elicitation is cancelled,
+      // so no turn identity is required to answer it.
+      client.replyAdmitted(id, {'action': 'cancel'}).ignore();
+      return notice(
+        'MCP elicitation unavailable: unsupported form or URL request.',
+      );
+    }
     final child = _children[raw['threadId']];
     if (child != null && child.turn == null) {
       client.deny(id, -32602, 'retired child turn');
@@ -2410,12 +2421,6 @@ class CodexRuntimeDriver extends RuntimeDriver {
           'unsupported optional shape: $e',
         );
       }
-    }
-    if (method == 'mcpServer/elicitation/request') {
-      client.replyAdmitted(id, {'action': 'cancel'}).ignore();
-      return notice(
-        'MCP elicitation unavailable: unsupported form or URL request.',
-      );
     }
     client.deny(id, -32601, 'unsupported native request');
     return notice('Codex unsupported native request refused.');

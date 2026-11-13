@@ -275,6 +275,61 @@ void main() {
     },
   );
   test(
+    'a staged early request whose turn already completed is never offered',
+    () async {
+      await driver.newSession('/fixture');
+      driver.reserveEarly = (_) => true;
+      final published = <RuntimePermission>[];
+      driver.onPermission = (p) {
+        published.add(p);
+        return null;
+      };
+      final writes = <Json>[];
+      peer.onWrite = (m) {
+        writes.add(m);
+        if (m['method'] == 'turn/start') {
+          peer.send({
+            'id': 'early-approval',
+            'method': 'item/commandExecution/requestApproval',
+            'params': {
+              'threadId': 'root',
+              'turnId': 'turn',
+              'itemId': 'cmd',
+              'startedAtMs': 1,
+              'command': 'echo early',
+              'availableDecisions': ['accept', 'cancel'],
+            },
+          });
+          peer.event('turn/completed', {
+            'threadId': 'root',
+            'turn': {
+              'id': 'turn',
+              'status': 'completed',
+              'items': <Object?>[],
+              'error': null,
+            },
+          });
+          peer.result(m['id']!, {
+            'turn': {
+              'id': 'turn',
+              'status': 'inProgress',
+              'items': <Object?>[],
+            },
+          });
+        }
+      };
+      await driver.prompt('root', 'hello');
+      expect(published, isEmpty);
+      for (var i = 0; i < 5; i++) {
+        await pumpCodex();
+      }
+      expect(
+        writes.where((m) => m['id'] == 'early-approval').single['result'],
+        {'decision': 'cancel'},
+      );
+    },
+  );
+  test(
     'child-only dedup eviction emits a visible root omission notice',
     () async {
       await driver.newSession('/fixture');
@@ -699,6 +754,62 @@ void main() {
       session.dispose();
     },
   );
+  test('a prompt waits until the stopped turn has reported its end', () async {
+    await driver.newSession('/fixture');
+    var gate = Completer<void>();
+    final ended = <AgentTurnEndedParams>[];
+    final stops = <AgentStopResultParams>[];
+    final session = AgentSession(
+      sessionId: 'session',
+      driver: driver,
+      runId: 'run',
+      nativeSessionId: 'root',
+      onState: (_) {},
+      onPermissionRequested: (_) {},
+      onPermissionResolved: (_) {},
+      onStopResult: stops.add,
+      onTurnEnded: ended.add,
+      // The transcript is blocked: the turn's end cannot be enqueued yet.
+      enqueueEvents: (_) => gate.future,
+    );
+    addTearDown(session.dispose);
+    session.ready(nativeSessionId: 'root');
+    session.acceptPrompt('first');
+    await pumpCodex();
+    session.stop();
+    peer.event('turn/completed', {
+      'threadId': 'root',
+      'turn': {
+        'id': 'turn',
+        'status': 'interrupted',
+        'items': <Object?>[],
+        'error': null,
+      },
+    });
+    for (var i = 0; i < 10; i++) {
+      await pumpCodex();
+    }
+    expect(stops.single.outcome, AgentStopOutcome.stopped);
+    expect(session.state, AgentState.idle);
+    expect(ended, isEmpty);
+    expect(
+      () => session.checkCanPrompt('second'),
+      throwsA(
+        isA<RpcException>().having(
+          (e) => e.reason,
+          'reason',
+          ErrorCode.turnRunning,
+        ),
+      ),
+    );
+    gate.complete();
+    gate = Completer<void>()..complete();
+    for (var i = 0; i < 10; i++) {
+      await pumpCodex();
+    }
+    expect(ended, hasLength(1));
+    session.checkCanPrompt('second');
+  });
   test(
     'explicit close remains available when native interrupt cannot fit',
     () async {

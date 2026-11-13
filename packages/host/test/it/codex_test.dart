@@ -4024,6 +4024,54 @@ void nativeCases(Directory Function() profile, Directory Function() work) {
       await a.close();
     },
   );
+  for (final turnId in [null, r'$turn']) {
+    test(
+      'Codex: an MCP elicitation is cancelled visibly turnId=$turnId',
+      () async {
+        final f = await fixture({
+          'turns': [
+            {
+              'actions': [
+                {
+                  'send': {
+                    'id': 'elicit',
+                    'method': 'mcpServer/elicitation/request',
+                    'params': {
+                      'threadId': r'$thread',
+                      'turnId': ?turnId,
+                      'serverName': 'fixture',
+                      'mode': 'form',
+                      'message': 'Fill this in',
+                      'requestedSchema': {
+                        'type': 'object',
+                        'properties': <String, Object?>{},
+                      },
+                    },
+                  },
+                },
+                {'waitReply': 'elicit'},
+                terminalEvent('completed'),
+              ],
+            },
+          ],
+        });
+        final a = await f.start();
+        await a.prompt();
+        await a.wait(Method.agentTurnEnded);
+        expect(f.requests.singleWhere((r) => r['id'] == 'elicit')['result'], {
+          'action': 'cancel',
+        });
+        await eventually(
+          () => a.events.any(
+            (e) =>
+                e['kind'] == 'notice' &&
+                (e['text'] as String).contains('MCP elicitation unavailable'),
+          ),
+        );
+        await a.close();
+      },
+    );
+  }
   test('Codex: stale early interaction cannot surface in next turn', () async {
     final f = await fixture({
       'turns': [
