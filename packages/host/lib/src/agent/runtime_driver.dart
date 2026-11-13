@@ -590,6 +590,41 @@ class CodexRuntimeDriver extends RuntimeDriver {
     return lines;
   }
 
+  /// Reclassifies activity held while the root was still unknown. Root
+  /// notifications held then carry no delegated activity and are dropped;
+  /// held child announcements under the now known root are attributed.
+  void _reclassifyHeld() {
+    for (final pending in _unknownNative.toList()) {
+      if (pending.method == 'thread/started' ||
+          pending.raw['threadId'] != root) {
+        continue;
+      }
+      _unknownNative.remove(pending);
+      _unknownBytes -= pending.bytes;
+      releaseEarly?.call(pending.bytes);
+    }
+    final lines = _drainUnknown().toList();
+    final bytes = _resolvedUnknownBytes;
+    _resolvedUnknownBytes = 0;
+    if (bytes == 0) return;
+    if (lines.fold<int>(0, (n, line) => n + line.length) > bytes) {
+      releaseEarly?.call(bytes);
+      throw CodexProtocolException(
+        'attributed output exceeds shared reservation',
+      );
+    }
+    late final RuntimeDelivery delivery;
+    delivery = RuntimeDelivery(lines, bytes, releaseEarly, () {
+      if (identical(_unknownDelivery, delivery)) _unknownDelivery = null;
+    });
+    _unknownDelivery = delivery;
+    Future<void>.sync(() => client.consumeNotification?.call(delivery))
+        .catchError((Object error) {
+          delivery.release();
+          _onFailure?.call(error);
+        });
+  }
+
   Iterable<Uint8List> _registerChild(
     String id,
     String parent, {
@@ -765,6 +800,9 @@ class CodexRuntimeDriver extends RuntimeDriver {
   final _early = <_EarlyNative>[];
   int _earlyBytes = 0;
   RuntimeDelivery? _delivery;
+  // The root turn's end, parsed from the buffer while its transcript delivery
+  // still waits for credit; Stop settles from it without waiting.
+  (String, RuntimeTurnResult)? _bufferedEnd;
   void Function(Object)? _onFailure;
   @override
   set onFailure(void Function(Object)? handler) => _onFailure = handler;
@@ -886,6 +924,7 @@ class CodexRuntimeDriver extends RuntimeDriver {
             onDelegatedChanged?.call();
           }
           _startupThreads.clear();
+          _reclassifyHeld();
           onCreated?.call(id);
           return id;
         },
@@ -1310,6 +1349,7 @@ class CodexRuntimeDriver extends RuntimeDriver {
   void _complete(RuntimeTurnResult result) {
     final completedTurn = _turnId;
     final c = _turn;
+    _bufferedEnd = null;
     _turn = null;
     _turnId = null;
     _earlyId = null;
@@ -1410,6 +1450,7 @@ class CodexRuntimeDriver extends RuntimeDriver {
       }
     });
     _delivery = delivery;
+    if (terminal != null) _bufferedEnd = (turn, terminal);
     return delivery;
   }
 
@@ -1997,6 +2038,18 @@ class CodexRuntimeDriver extends RuntimeDriver {
   @override
   Future<void> cancelWithPermissions(String id, Iterable<Object> requests) {
     final turns = activeNativeTurns;
+    final ended = _bufferedEnd;
+    if (ended != null && ended.$1 == _turnId && root != null) {
+      // The root turn already ended; only its transcript delivery is pending.
+      // It is not interrupted natively, and Stop learns its end now.
+      final thread = root!;
+      turns.remove(thread);
+      scheduleMicrotask(() {
+        if (identical(_bufferedEnd, ended)) {
+          onNativeTurnEnded?.call(thread, ended.$1, ended.$2);
+        }
+      });
+    }
     // A root turn still awaiting its identity cannot be addressed; Stop must
     // not interrupt only the known child turns and report the root stopped.
     if (_turn != null && _turnId == null) {

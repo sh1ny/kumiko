@@ -84,6 +84,38 @@ void main() {
       expect(driver.delegated.incomplete, other);
     });
   }
+  test('a root notification held before the thread/start response is '
+      'reclassified once the root is known', () async {
+    var reserved = 0;
+    driver.reserveEarly = (bytes) {
+      reserved += bytes;
+      return true;
+    };
+    driver.releaseEarly = (bytes) => reserved -= bytes;
+    peer.onWrite = (m) {
+      if (m['method'] == 'thread/start') {
+        peer.event('thread/status/changed', {
+          'threadId': 'root',
+          'status': {'type': 'idle'},
+        });
+        peer.result(m['id']!, {
+          'thread': {'id': 'root'},
+          'model': 'fixture',
+          'modelProvider': 'fixture',
+          'cwd': '/fixture',
+          'approvalPolicy': 'untrusted',
+          'approvalsReviewer': 'user',
+          'sandbox': <String, Object?>{},
+        });
+      }
+    };
+    expect(await driver.newSession('/fixture'), 'root');
+    for (var i = 0; i < 5; i++) {
+      await pumpCodex();
+    }
+    expect(driver.delegated.incomplete, isFalse);
+    expect(reserved, 0);
+  });
   test('history relationship transfers pending attribution reservation exactly once', () async {
     await driver.newSession('/fixture');
     var reserved = 0, reads = 0;
@@ -213,6 +245,66 @@ void main() {
       expect(ended.single.$1, 'root');
       expect(ended.single.$2, 'turn');
       expect(identical(ended.single.$3, result), isTrue);
+    },
+  );
+  test(
+    'Stop during a held buffered delivery settles from the known terminal',
+    () async {
+      await driver.newSession('/fixture');
+      driver.reserveEarly = (_) => true;
+      driver.releaseEarly = (_) {};
+      final ended = <(String, String, RuntimeTurnResult)>[];
+      driver.onNativeTurnEnded = (thread, turn, result) =>
+          ended.add((thread, turn, result));
+      final entered = Completer<RuntimeDelivery>(), release = Completer<void>();
+      driver.consumeNotification = (value) async {
+        if (value is RuntimeDelivery) {
+          entered.complete(value);
+          await release.future;
+          value.release();
+          value.after?.call();
+        }
+      };
+      final writes = <Json>[];
+      peer.onWrite = (m) {
+        writes.add(m);
+        if (m['method'] == 'turn/start') {
+          peer.event('turn/completed', {
+            'threadId': 'root',
+            'turn': {
+              'id': 'turn',
+              'status': 'completed',
+              'items': <Object?>[],
+              'error': null,
+            },
+          });
+          peer.result(m['id']!, {
+            'turn': {
+              'id': 'turn',
+              'status': 'inProgress',
+              'items': <Object?>[],
+            },
+          });
+        }
+      };
+      final turn = driver.prompt('root', 'hello');
+      await entered.future;
+      // The transcript delivery is held (no desktop credit); Stop still
+      // addresses the root turn and learns its known end without waiting.
+      expect(driver.activeNativeTurns, {'root': 'turn'});
+      await driver.cancelWithPermissions('root', const []);
+      await pumpCodex();
+      expect(ended, hasLength(1));
+      expect(ended.single.$1, 'root');
+      expect(ended.single.$2, 'turn');
+      expect(
+        writes.where((m) => m['method'] == 'turn/interrupt'),
+        isEmpty,
+        reason: 'an ended turn is not interrupted natively',
+      );
+      release.complete();
+      final result = await turn;
+      expect(identical(ended.first.$3, result), isTrue);
     },
   );
   test(
