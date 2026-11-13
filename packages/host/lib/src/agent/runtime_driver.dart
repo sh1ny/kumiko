@@ -698,10 +698,11 @@ class CodexRuntimeDriver extends RuntimeDriver {
         );
         continue;
       }
-      if (child.turn != null) {
+      if (child.turn != null || child.ended.isNotEmpty) {
         // A snapshot carries no child turn identity, so it may be older than
-        // the live child turn. Only that turn's own native events settle it;
-        // a shutdown report only marks delegated activity incomplete.
+        // the live child turn or than an observed turn end. Native turn
+        // events settle the child; only a new turn/started revives it. A
+        // shutdown report only marks delegated activity incomplete.
         if (status == 'shutdown') _childrenIncomplete = true;
       } else if (status == 'completed' ||
           status == 'interrupted' ||

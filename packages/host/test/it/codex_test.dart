@@ -508,6 +508,73 @@ void main() {
       await a.close();
     },
   );
+  for (final (ended, snapshot, expected) in [
+    ('completed', 'running', 'completed'),
+    ('completed', 'pendingInit', 'completed'),
+    ('failed', 'completed', 'error'),
+  ]) {
+    test(
+      'Codex: a late snapshot cannot overwrite an observed child outcome $ended/$snapshot',
+      () async {
+        final f = NativeFixture(
+          profile,
+          work,
+          script: {
+            'turns': [
+              {
+                'actions': [
+                  child('child-a', 'root-thread'),
+                  childTurn('child-a', 'inProgress'),
+                  nativeEvent('turn/completed', {
+                    'threadId': 'child-a',
+                    'turn': {
+                      'id': 'child-a-turn',
+                      'status': ended,
+                      'items': <Object?>[],
+                      'error': ended == 'failed'
+                          ? {'message': 'child failed'}
+                          : null,
+                    },
+                  }),
+                  nativeEvent('item/completed', {
+                    'threadId': 'root-thread',
+                    'turnId': r'$turn',
+                    'item': {
+                      'id': 'late-snapshot',
+                      'type': 'collabAgentToolCall',
+                      'tool': 'wait',
+                      'status': 'completed',
+                      'senderThreadId': 'root-thread',
+                      'receiverThreadIds': ['child-a'],
+                      'prompt': null,
+                      'agentsStates': {
+                        'child-a': {'status': snapshot, 'message': null},
+                      },
+                    },
+                  }),
+                  terminalEvent('completed'),
+                ],
+              },
+            ],
+          },
+        );
+        await f.open();
+        final a = await f.start();
+        await a.prompt();
+        await a.wait(Method.agentTurnEnded);
+        await eventually(
+          () => a.events.where((e) => e['kind'] == 'child').length >= 3,
+        );
+        final last = a.events.lastWhere((e) => e['kind'] == 'child');
+        expect(last['status'], expected);
+        expect(
+          (a.of(Method.agentState).last['delegated'] as Json)['activeChildren'],
+          0,
+        );
+        await a.close();
+      },
+    );
+  }
   test(
     'Codex: a spawn item after child registration supplies its task',
     () async {
