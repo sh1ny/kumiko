@@ -4401,6 +4401,33 @@ void nativeCases(Directory Function() profile, Directory Function() work) {
     expect(toolTexts(a, 'stream-cmd'), ['first ', 'first second']);
     await a.close();
   });
+  test(
+    'Codex: an evicted streamed tool marks its later output lossy',
+    () async {
+      String name(int i) => 'evict-${i.toString().padLeft(2, '0')}';
+      final f = await fixture({
+        'turns': [
+          {
+            'actions': [
+              for (var i = 0; i < 33; i++) outputDelta(name(i), 'start '),
+              outputDelta(name(0), 'more'),
+              terminalEvent('completed'),
+            ],
+          },
+        ],
+      });
+      final a = await f.start();
+      await a.prompt();
+      await a.wait(Method.agentTurnEnded);
+      await eventually(() => toolTexts(a, name(0)).length == 2);
+      final last = a.events.lastWhere(
+        (e) => (e['toolCallId'] as String? ?? '').contains(name(0)),
+      );
+      expect(toolTexts(a, name(0)).last, 'more');
+      expect(last['truncated'], true, reason: '$last');
+      await a.close();
+    },
+  );
   test('Codex: a secret fragmented across tool output deltas never leaves the host', () async {
     final f = await fixture();
     final report = await saveAgentFixture(

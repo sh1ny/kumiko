@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:host/src/agent/codex/native_home_audit.dart';
@@ -13,8 +14,8 @@ const fileType = FileSystemEntityType.file;
 /// Deterministic in-memory native home behind the injected inventory seam. It
 /// also observes the traversal's pending list and upstream consumption.
 class VirtualHome extends NativeInventoryIo {
-  VirtualHome()
-    : root = p.join(Directory.systemTemp.path, 'kumiko_virtual_native_home') {
+  VirtualHome({String name = 'kumiko_virtual_native_home'})
+    : root = p.join(Directory.systemTemp.path, name) {
     entries[root] = (dirType, 0, _time(), _time());
   }
   final String root;
@@ -1125,9 +1126,11 @@ void main() {
         yield key;
       }
     };
+    // A file retains its absolute key twice: deduplication and record.
+    final file = utf8.encode(h.path(longName(0, 1000))).length * 2;
     final audit = await prepareV2(
       h,
-      budget: const NativeStorageBudget(perInventory: 10000, combined: 100000),
+      budget: NativeStorageBudget(perInventory: file * 5, combined: 100000),
     );
     expect(audit.complete, false);
     expect(audit.baselineErrorCategories['metadataStorage'], 1);
@@ -1139,13 +1142,39 @@ void main() {
       ..link('l0', target: 't' * 1000)
       ..link('l1', target: 't' * 1000)
       ..link('l2', target: 't' * 1000);
+    final link = utf8.encode(links.path('l0')).length * 2 + 1000;
     final linked = await prepareV2(
       links,
-      budget: const NativeStorageBudget(perInventory: 3000, combined: 100000),
+      budget: NativeStorageBudget(
+        perInventory: link * 2 + 500,
+        combined: 100000,
+      ),
     );
     expect(linked.complete, false);
     expect(linked.baselineErrorCategories['metadataStorage'], 1);
     expect(linked.before.length, 2);
+  });
+  test('Codex normal home: the budget charges the absolute keys it retains, home prefix included', () async {
+    // Same relative entries; only the home path length differs.
+    VirtualHome make(String name) {
+      final h = VirtualHome(name: name);
+      for (var i = 0; i < 10; i++) {
+        h.file(longName(i, 10));
+      }
+      return h;
+    }
+
+    final short = make('h');
+    final shortCost = utf8.encode(short.path(longName(0, 10))).length * 2 * 10;
+    final budget = NativeStorageBudget(
+      perInventory: shortCost,
+      combined: shortCost * 2,
+    );
+    final fits = await prepareV2(short, budget: budget);
+    expect(fits.complete, true, reason: '${fits.baselineErrorCategories}');
+    final long = await prepareV2(make('h' * 200), budget: budget);
+    expect(long.complete, false);
+    expect(long.baselineErrorCategories['metadataStorage'], 1);
   });
   test('Codex normal home: the default per-inventory budget is 16 MiB and the combined budget 32 MiB', () async {
     const defaults = NativeStorageBudget();
@@ -1161,19 +1190,27 @@ void main() {
       }
     };
     final audit = await prepareV2(h);
+    final fits =
+        defaults.perInventory ~/
+        (utf8.encode(h.path(longName(0, 4000))).length * 2);
     expect(audit.complete, false);
     expect(audit.baselineErrorCategories['metadataStorage'], 1);
-    expect(audit.before.length, 2097);
-    expect(h.pulled, 2098);
+    expect(audit.before.length, fits);
+    expect(h.pulled, fits + 1);
   });
   test('Codex normal home: the combined budget is exhausted while the baseline stays live', () async {
     final h = VirtualHome();
     for (var i = 0; i < 4; i++) {
       h.file(longName(i, 1000));
     }
+    final file = utf8.encode(h.path(longName(0, 1000))).length;
     final audit = await prepareV2(
       h,
-      budget: const NativeStorageBudget(perInventory: 10000, combined: 11999),
+      // The baseline keeps 4 keys live, the after-run walk charges each twice.
+      budget: NativeStorageBudget(
+        perInventory: file * 8 + 100,
+        combined: file * 12 - 1,
+      ),
     );
     expect(audit.complete, true, reason: '${audit.baselineErrorCategories}');
     final (_, errors) = await audit.changedFiles();
@@ -1739,10 +1776,13 @@ void main() {
     expect(disclosure, contains('the owner pauses other Codex sessions'));
     expect(disclosure, isNot(contains('changed-artifacts-v2')));
   });
-  test('Codex native sockets: a socket is charged only its relative path bytes like a file and no name reaches an output', () async {
+  test('Codex native sockets: a socket is charged only its own key bytes like a file and no name reaches an output', () async {
     const name = 'sock/PRIVATE_NAME_SOCKET.sock';
-    // A directory leaf costs 3x its path, a file or socket 2x its path.
-    final limit = 'sock'.length * 3 + name.length * 2;
+    // A directory leaf costs 3x its key, a file or socket 2x its key.
+    final keys = VirtualHome();
+    final limit =
+        utf8.encode(keys.path('sock')).length * 3 +
+        utf8.encode(keys.path(name)).length * 2;
     for (final socket in [true, false]) {
       VirtualHome make() =>
           socket ? (VirtualHome()..socket(name)) : (VirtualHome()..file(name));

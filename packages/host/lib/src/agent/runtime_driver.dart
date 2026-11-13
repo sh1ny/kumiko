@@ -443,6 +443,10 @@ class CodexRuntimeDriver extends RuntimeDriver {
   /// deltas. Emission per tool is bounded so tiny deltas cannot amplify.
   final _toolOutput = <String, _ToolOutput>{};
   static const _maxStreamedTools = 32;
+  // Tools whose accumulated output was evicted while still streaming; their
+  // later output is marked lossy. Bounded, oldest first.
+  final _evictedTools = <String>{};
+  static const _maxEvictedTools = 256;
   static const _maxToolOutputEmitted = 1024 * 1024;
   Object? _dispatchNotification(String method, Object? raw) {
     try {
@@ -1717,9 +1721,14 @@ class CodexRuntimeDriver extends RuntimeDriver {
       final key = _nativeKey([raw['threadId'] as String? ?? root, id]);
       var output = _toolOutput.remove(key);
       if (output == null) {
-        output = _ToolOutput();
+        output = _ToolOutput()..lossy = _evictedTools.remove(key);
         if (_toolOutput.length >= _maxStreamedTools) {
-          _toolOutput.remove(_toolOutput.keys.first);
+          final evicted = _toolOutput.keys.first;
+          _toolOutput.remove(evicted);
+          _evictedTools.add(evicted);
+          if (_evictedTools.length > _maxEvictedTools) {
+            _evictedTools.remove(_evictedTools.first);
+          }
         }
       }
       _toolOutput[key] = output;
@@ -1938,7 +1947,9 @@ class CodexRuntimeDriver extends RuntimeDriver {
       }
     }
     if (completed) {
-      _toolOutput.remove(_nativeKey([raw['threadId'] as String? ?? root, id]));
+      final toolKey = _nativeKey([raw['threadId'] as String? ?? root, id]);
+      _toolOutput.remove(toolKey);
+      _evictedTools.remove(toolKey);
     }
     return RuntimeUpdate(
       completed ? AgentEventKind.toolUpdate : AgentEventKind.tool,

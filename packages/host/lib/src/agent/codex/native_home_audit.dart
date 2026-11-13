@@ -481,8 +481,9 @@ class NativeHomeAudit {
   /// completeness.
   ///
   /// v2 also charges every retained string at its UTF-8 length against a
-  /// counted budget (relative path as deduplication key, as record key and, for
-  /// a directory, as pending path, plus link target text). Charges are
+  /// counted budget (the absolute key, home prefix included, as deduplication
+  /// key, as record key and, for a directory, as pending path, plus link target
+  /// text). The 4096-byte admission bound applies to the relative path. Charges are
   /// cumulative, so the count is an upper bound of what is live at once. A path
   /// or target over 4096 bytes is unadmitted; exhausting the budget stops
   /// enumeration upstream. [priorRetained] is the live baseline's retained
@@ -560,11 +561,14 @@ class NativeHomeAudit {
           final key = p.normalize(child);
           var pathBytes = 0;
           if (v2) {
-            pathBytes = _utf8Length(p.relative(key, from: home));
-            if (pathBytes > _maxNativePathBytes) {
+            if (_utf8Length(p.relative(key, from: home)) >
+                _maxNativePathBytes) {
               fail('metadataStorage');
               continue;
             }
+            // The retained strings are absolute keys, so the home prefix is
+            // charged with every entry.
+            pathBytes = _utf8Length(key);
           }
           if (!seen.add(key)) continue;
           if (v2 && !charge(pathBytes)) {
