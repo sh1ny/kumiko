@@ -5,6 +5,7 @@ import 'dart:typed_data';
 import 'package:host_protocol/host_protocol.dart';
 
 import 'acp/acp_client.dart';
+import 'codex/codex_auth_signal.dart';
 import 'codex/codex_client.dart';
 import 'qualification.dart';
 import 'qualified_adapters.dart';
@@ -17,8 +18,12 @@ class RuntimeIdentity {
 }
 
 class RuntimeChoice {
-  RuntimeChoice(this.label, this.result, this.kind);
+  RuntimeChoice(this.label, this.result, this.kind, {this.generated = false});
   final String label, kind;
+
+  /// The label is Kumiko's indexed placeholder for a native JSON object,
+  /// not a native string; a display name equal to it would be ambiguous.
+  final bool generated;
   final Json result;
 }
 
@@ -277,7 +282,7 @@ class _EarlyNative {
 }
 
 class CodexRuntimeDriver extends RuntimeDriver {
-  CodexRuntimeDriver(this.client, this.version) {
+  CodexRuntimeDriver(this.client, this.version, {this.authSignals = const {}}) {
     client.normalizeNotification = _dispatchNotification;
     client.onRequest = _request;
     client.takeBuffered = _takeBuffered;
@@ -291,6 +296,9 @@ class CodexRuntimeDriver extends RuntimeDriver {
   }
   final CodexClient client;
   final String version;
+
+  /// Confirmed Codex sign-in signals; an unconfirmed signal never classifies.
+  final Set<CodexAuthSignal> authSignals;
   Json? _privateToolConfig;
   @override
   Future<String?> prepareTools(
@@ -377,12 +385,12 @@ class CodexRuntimeDriver extends RuntimeDriver {
         return 'Codex private kumiko entry environment is incomplete';
       }
       _privateToolConfig = {
-        'mcp_servers': {
-          'kumiko': {
-            'command': entry['command'],
-            'args': entry['args'],
-            'env': environment,
-          },
+        // Thread config uses ordered dotted-key replacements. Replacing the
+        // root table would discard unrelated servers supplied by native CLI.
+        'mcp_servers.kumiko': {
+          'command': entry['command'],
+          'args': entry['args'],
+          'env': environment,
         },
       };
       return null;
@@ -768,42 +776,93 @@ class CodexRuntimeDriver extends RuntimeDriver {
     );
   }
 
+  /// Start-only `account-unauthenticated` preflight. It holds only when the
+  /// effective provider for [cwd] is absent or OpenAI, no account is signed in
+  /// and OpenAI authentication is required. Every other answer, error or
+  /// timeout fails open: the start continues and nothing is recorded.
+  Future<bool> _signedOutOfOpenAi(String cwd) async {
+    if (!authSignals.contains(CodexAuthSignal.accountUnauthenticated)) {
+      return false;
+    }
+    const timeout = Duration(seconds: 10);
+    try {
+      final openAi = await client.request<bool>(
+        'config/read',
+        {'cwd': cwd},
+        timeout: timeout,
+        decodeResult: (result) {
+          if (result is! Json || result['config'] is! Json) return false;
+          final config = result['config']! as Json;
+          return !config.containsKey('model_provider') ||
+              config['model_provider'] == 'openai';
+        },
+      );
+      if (!openAi) return false;
+      return await client.request<bool>(
+        'account/read',
+        {'refreshToken': false},
+        timeout: timeout,
+        decodeResult: (result) =>
+            result is Json &&
+            result.containsKey('account') &&
+            result['account'] == null &&
+            result['requiresOpenaiAuth'] == true,
+      );
+    } on CodexRemoteException {
+      return false;
+    } on TimeoutException {
+      return false;
+    }
+  }
+
   @override
   Future<String> newSession(
     String cwd, {
     List<Json> mcpServers = const [],
     void Function(String)? onCreated,
-  }) => client.request(
-    'thread/start',
-    {'cwd': cwd, 'config': ?_privateToolConfig},
-    decodeResult: (result) {
-      if (result is! Json || result['thread'] is! Json) {
-        throw CodexProtocolException('invalid thread/start');
-      }
-      final id = _identity(result['thread']! as Json, 'id');
-      for (final key in [
-        'model',
-        'modelProvider',
-        'cwd',
-        'approvalsReviewer',
-      ]) {
-        if (result[key] is! String) {
-          throw CodexProtocolException('invalid thread/start $key');
-        }
-      }
-      final policy = result['approvalPolicy'];
-      if (policy is! String &&
-          !(policy is Json && policy['granular'] is Json)) {
-        throw CodexProtocolException('invalid thread/start approvalPolicy');
-      }
-      if (result['sandbox'] is! Json) {
-        throw CodexProtocolException('invalid thread/start sandbox');
-      }
-      root = id;
-      onCreated?.call(id);
-      return id;
-    },
-  );
+  }) async {
+    if (await _signedOutOfOpenAi(cwd)) {
+      throw CodexRemoteException(
+        null,
+        'Codex is not signed in',
+        isAuthenticationRequired: true,
+      );
+    }
+    return _startThread(cwd, onCreated);
+  }
+
+  Future<String> _startThread(String cwd, void Function(String)? onCreated) =>
+      client.request(
+        'thread/start',
+        {'cwd': cwd, 'config': ?_privateToolConfig},
+        decodeResult: (result) {
+          if (result is! Json || result['thread'] is! Json) {
+            throw CodexProtocolException('invalid thread/start');
+          }
+          final id = _identity(result['thread']! as Json, 'id');
+          for (final key in [
+            'model',
+            'modelProvider',
+            'cwd',
+            'approvalsReviewer',
+          ]) {
+            if (result[key] is! String) {
+              throw CodexProtocolException('invalid thread/start $key');
+            }
+          }
+          final policy = result['approvalPolicy'];
+          if (policy is! String &&
+              !(policy is Json && policy['granular'] is Json)) {
+            throw CodexProtocolException('invalid thread/start approvalPolicy');
+          }
+          if (result['sandbox'] is! Json) {
+            throw CodexProtocolException('invalid thread/start sandbox');
+          }
+          root = id;
+          onCreated?.call(id);
+          return id;
+        },
+      );
   @override
   Future<void> loadSession(
     String id,
@@ -1450,6 +1509,9 @@ class CodexRuntimeDriver extends RuntimeDriver {
                 nativeError is Json
                     ? nativeError['message']! as String
                     : 'Native turn failed',
+                isAuthenticationRequired:
+                    authSignals.contains(CodexAuthSignal.turnHttp401) &&
+                    _isHttp401(nativeError),
               )
             : null,
       );
@@ -1970,6 +2032,24 @@ class CodexRuntimeDriver extends RuntimeDriver {
         : onQuestion?.call(interaction as RuntimeQuestion);
   }
 
+  /// The `turn-http-401` shape: `codexErrorInfo` holds exactly one known
+  /// HTTP failure key whose value carries `httpStatusCode` exactly 401.
+  static bool _isHttp401(Object? error) {
+    if (error is! Json) return false;
+    final info = error['codexErrorInfo'];
+    if (info is! Json || info.length != 1) return false;
+    final MapEntry(:key, :value) = info.entries.single;
+    return const [
+          'httpConnectionFailed',
+          'responseStreamConnectionFailed',
+          'responseStreamDisconnected',
+          'responseTooManyFailedAttempts',
+        ].contains(key) &&
+        value is Json &&
+        value['httpStatusCode'] is int &&
+        value['httpStatusCode'] == 401;
+  }
+
   String _identity(Json data, String key) {
     final value = data[key];
     if (value is! String ||
@@ -2063,41 +2143,65 @@ class CodexRuntimeDriver extends RuntimeDriver {
         throw CodexProtocolException('invalid approval timestamp');
       }
       final command = method == 'item/commandExecution/requestApproval';
-      final decisions = command
+      var decisions = command
           ? raw['availableDecisions']
           : const ['accept', 'acceptForSession', 'decline', 'cancel'];
+      if (command &&
+          decisions == null &&
+          (!raw.containsKey('kind') || raw['kind'] == 'command') &&
+          raw['networkApprovalContext'] == null &&
+          raw['additionalPermissions'] == null) {
+        decisions = const ['accept', 'cancel'];
+      }
       if (decisions is! List ||
           decisions.isEmpty ||
-          decisions.length > maxPermissionOptions) {
+          decisions.length > maxPermissionOptions ||
+          decisions.any(
+            (decision) => decision is! String && decision is! Json,
+          )) {
         client.replyAdmitted(id, {'decision': 'decline'}).ignore();
         return notice(
           'Native approval unavailable: offered decisions missing or unsupported.',
         );
       }
       final choices = <RuntimeChoice>[];
-      for (final decision in decisions) {
-        if (decision is! String && decision is! Json) {
-          throw CodexProtocolException('invalid approval decision');
-        }
-        final label = decision is String ? decision : jsonEncode(decision);
-        final kind = decision == 'acceptForSession'
+      for (var i = 0; i < decisions.length; i++) {
+        final decision = decisions[i];
+        // A native object is data, never a label: it is shown by position and
+        // its complete value is previewed. Objects are conservatively
+        // classified as persistent scope; the response value is unchanged.
+        final kind = decision is! String
+            ? 'allow_always'
+            : decision == 'acceptForSession'
             ? 'allow_always'
             : decision == 'decline' || decision == 'cancel'
             ? 'reject_once'
             : 'allow_once';
-        choices.add(RuntimeChoice(label, {'decision': decision}, kind));
+        choices.add(
+          RuntimeChoice(
+            decision is String ? decision : 'Native option ${i + 1}',
+            {'decision': decision},
+            kind,
+            generated: decision is! String,
+          ),
+        );
+      }
+      var preview = _approvalPreview(raw, {
+        if (command) 'command': 'Command',
+        if (command) 'cwd': 'Working directory',
+        if (!command) 'grantRoot': 'Grant root',
+        'reason': 'Reason',
+      });
+      if (decisions.any((decision) => decision is! String)) {
+        final line = 'Native decisions: ${jsonEncode(decisions)}';
+        preview = preview == null ? line : '$preview\n$line';
       }
       return _deliverInteraction(
         RuntimePermission(
           id,
           turn,
           command ? 'Command approval' : 'File change approval',
-          _approvalPreview(raw, {
-            if (command) 'command': 'Command',
-            if (command) 'cwd': 'Working directory',
-            if (!command) 'grantRoot': 'Grant root',
-            'reason': 'Reason',
-          }),
+          preview,
           choices,
           {'decision': 'cancel'},
         ),

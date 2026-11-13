@@ -1,6 +1,19 @@
+import 'agent/codex/codex_auth_signal.dart';
+import 'agent/codex/codex_auth_signatures.dart';
+
 /// Host settings. The release host uses the defaults; a test build can change
 /// them to make timing deterministic.
 class HostOptions {
+  /// Version/OS are provenance, never a runtime-version classifier gate.
+  /// An unknown signal name is a registry defect and is refused.
+  static Set<CodexAuthSignal> projectCodexAuthSignatures(
+    List<(String, String, String)> observations,
+  ) => {
+    for (final row in observations)
+      CodexAuthSignal.named(row.$3) ??
+          (throw ArgumentError.value(row.$3, 'signal', 'unknown Codex signal')),
+  };
+
   const HostOptions({
     this.unitCap = defaultUnitCap,
     this.shutdownDeadline = defaultShutdownDeadline,
@@ -22,8 +35,10 @@ class HostOptions {
     this.draftOpenHold = Duration.zero,
     this.advertiseLifecycle = true,
     this.codexProbeArgs,
-    this.codexAuthSignatures = const [],
-  });
+    // Keep the existing public named override while storing its nullable sentinel.
+    Set<CodexAuthSignal>? codexAuthSignatures,
+    // ignore: prefer_initializing_formals
+  }) : _codexAuthSignatures = codexAuthSignatures;
 
   /// Secrets of revoked tool grants still redacted from adapter text.
   static const int defaultRevokedSecretsKept = 32;
@@ -102,8 +117,13 @@ class HostOptions {
   /// Release does not read candidate environment variables.
   final List<String>? codexProbeArgs;
 
-  /// Exact test-only candidates. Production has no observed native auth signature.
-  final List<(int, String)> codexAuthSignatures;
+  final Set<CodexAuthSignal>? _codexAuthSignatures;
+
+  /// Confirmed Codex sign-in signals across every admitted runtime version.
+  /// Only the test entrypoint may supply candidate overrides.
+  Set<CodexAuthSignal> get codexAuthSignatures =>
+      _codexAuthSignatures ??
+      projectCodexAuthSignatures(confirmedCodexAuthSignatures);
 
   /// Extra wait at the start of reconciliation (tests only).
   final Duration reconcileDelay;

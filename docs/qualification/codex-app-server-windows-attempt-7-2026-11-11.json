@@ -1,0 +1,66 @@
+{
+ "schema": 1,
+ "protocol": "codex-app-server",
+ "nativeVersion": "0.166.0",
+ "os": "windows",
+ "manifestSha256": "8e12e7743fe8b272d217f56ff4e05d28974b35071e607d067de9df53e2f3f54c",
+ "nativeExecutableSha256": "9d563ee4e0441ff9d59d612013e0460ddf8e5709735c2d9f6b98b7ef8ca4eb42",
+ "hostExecutableSha256": "d7952c52b1dc77ce01669cd1c5f1d4061b6bd06cb683988257c52c60372544e5",
+ "ownerApproved": true,
+ "claimedAt": "2026-11-11T21:53:42.331443Z",
+ "finishedAt": "2026-11-11T21:53:43.801657Z",
+ "commandExitCode": 1,
+ "manifestConsumed": true,
+ "automaticRetries": 0,
+ "approvalPolicyOverride": false,
+ "auditProfile": "large-native-home",
+ "nativeSelection": "changed-artifacts-v1",
+ "rawHelperObservations": {
+  "launch": "fail",
+  "streaming": "unverified",
+  "tool activity": "unverified",
+  "command approval": "unverified",
+  "Stop": "unverified",
+  "close/descendant containment": "unverified",
+  "kumiko tool call": "unverified",
+  "auth-required": "unverified",
+  "recovery": "unverified",
+  "steering": "unverified",
+  "structured question": "unverified",
+  "child attribution": "unverified",
+  "baselinePreflight": {
+   "stage": "baseline-preflight",
+   "status": "INCOMPLETE",
+   "baselineComplete": false,
+   "baselineErrorCount": 8,
+   "providerWork": false,
+   "contentScan": false
+  },
+  "walkDiagnostics": {
+   "turnEnds": [],
+   "turnEndsTruncated": false,
+   "noticeFlags": {}
+  },
+  "textEvents": 0,
+  "firstTurnIncrementalEvents": 0,
+  "toolEvents": 0,
+  "canaryAudit": {
+   "complete": false,
+   "scanned": false,
+   "reason": "native baseline incomplete before provider work; no content scan"
+  }
+ },
+ "diagnosis": {
+  "baseline": "The changed-artifacts-v1 baseline inventory of the native home reported baselineComplete false with 8 errors. The helper aborted before App Server startup, prompts or provider work, as designed.",
+  "categoriesAvailable": false,
+  "categoriesNote": "The preparation echo carried only the error count, not its content-free category breakdown, so the cause (admission bound, links/nonregular entries, instability or I/O) is unknown. No further native-home metadata was read to find out.",
+  "launchLabel": "The raw helper set launch to fail through the missing-session path although App Server was never started; launch was not attempted and is recorded as unverified in the qualification record.",
+  "submittedRootPrompts": 0,
+  "cleanup": "Host disposed; no attempt-owned test-host or Codex processes remained.",
+  "additionalNativeContentReads": 0
+ },
+ "sectionResult": "INCOMPLETE",
+ "authenticationSignatureAdded": false,
+ "toolDeliveryFailureEntryAdded": false,
+ "interpretation": "Designed baseline-preflight abort; no provider cost and no content scan. The claim is consumed. Another attempt needs offline reporting of baseline categories and a fresh exact-manifest approval; a home that exceeds the unchanged 4096-entry inventory bound cannot complete under this mode."
+}

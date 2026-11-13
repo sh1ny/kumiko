@@ -1,0 +1,69 @@
+{
+  "schema": 1,
+  "protocol": "codex-app-server",
+  "nativeVersion": "0.166.0",
+  "os": "windows",
+  "manifestSha256": "ed9761314fe3a9b3ad049525a240571822d728d3909025f9051f6df7b6c91f78",
+  "nativeExecutableSha256": "9d563ee4e0441ff9d59d612013e0460ddf8e5709735c2d9f6b98b7ef8ca4eb42",
+  "ownerApproved": true,
+  "claimedAt": "2026-11-11T09:49:18.870740Z",
+  "failedAt": "2026-11-11T09:51:27.063721Z",
+  "commandExitCode": 1,
+  "errorKind": "TimeoutException",
+  "submittedRootPrompts": 3,
+  "automaticRetries": 0,
+  "manifestConsumed": true,
+  "approvalPolicyOverride": false,
+  "effectiveNativeApprovalPolicy": "on-request",
+  "rawHelperObservations": {
+    "launch": "pass",
+    "streaming": "unverified",
+    "tool activity": "unverified",
+    "command approval": "unverified",
+    "Stop": "unverified",
+    "close/descendant containment": "unverified",
+    "kumiko tool call": "unverified",
+    "auth-required": "unverified"
+  },
+  "observedCounters": {
+    "textEvents": 92,
+    "firstTurnIncrementalEvents": 62,
+    "toolEvents": 2
+  },
+  "reconciliation": {
+    "streaming": "pass: 62 incremental text events during the first turn",
+    "tool activity": "pass: two host tool-activity events",
+    "rawHelperLimitation": "Positive counters were assigned to observations only after all three operations; the later timeout bypassed those assignments. Original artifacts remain unchanged.",
+    "privateSessionInfo": "Current-run bounded metadata confirms an actual SessionInfo result containing this run's session identity; complete tool-delivery safety remains unverified.",
+    "approvalAndStop": "No native approval answer or Stop result was recorded; do not infer either from the three submitted prompts."
+  },
+  "cleanup": {
+    "launchedUnits": 3,
+    "cleanedUnits": 3,
+    "hostExitCode": 0,
+    "probeReportPresent": false,
+    "activeDescendantContainmentVerified": false
+  },
+  "canaryAudit": {
+    "performed": true,
+    "complete": false,
+    "errorCount": 11,
+    "scannedFiles": 29,
+    "matchedFiles": 0,
+    "scannedBytes": 18938452,
+    "interpretation": "No match in the scanned subset; errors prevent a clean or persistence-safe result."
+  },
+  "currentRunMetadata": {
+    "scope": "Only the exact current session identified by the owned profile database; no transcript text, commands, file contents or secrets printed.",
+    "fileBytes": 275339,
+    "fileSha256": "429b49d57bfe56d6739fe68d319d4f784456c16b101d2bcb8cfb3323ea0c1981",
+    "reads": 5,
+    "totalBytesIncludingCanaryScan": 20315147,
+    "outcomes": {"taskComplete": 1, "turnAborted": 2},
+    "privacyConclusion": "Metadata diagnosis does not complete or supersede the canary audit."
+  },
+  "sectionResult": "INCOMPLETE",
+  "authenticationSignatureAdded": false,
+  "toolDeliveryFailureEntryAdded": false,
+  "otherRequiredAndOptionalObservations": "unverified"
+}

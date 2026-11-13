@@ -120,6 +120,7 @@ class HostLauncher {
     required this.profileDir,
     this.executableArguments = const [],
     this.environment,
+    this.includeParentEnvironment = true,
     this.versions = const VersionRange(1, 1),
     this.capabilities = const {},
     this.helloTimeout = defaultHelloTimeout,
@@ -136,6 +137,10 @@ class HostLauncher {
 
   /// Extra environment for the host process, on top of the desktop's own.
   final Map<String, String>? environment;
+
+  /// False starts the host with [environment] alone, so a caller can remove
+  /// inherited variables (the isolated Codex authentication experiment).
+  final bool includeParentEnvironment;
   final VersionRange versions;
   final Set<String> capabilities;
   final Duration helloTimeout;
@@ -170,11 +175,12 @@ class HostLauncher {
 
     final Process process;
     try {
-      process = await Process.start(executable, [
-        ...executableArguments,
-        '--profile',
-        profileDir,
-      ], environment: environment);
+      process = await Process.start(
+        executable,
+        [...executableArguments, '--profile', profileDir],
+        environment: environment,
+        includeParentEnvironment: includeParentEnvironment,
+      );
     } on ProcessException catch (e) {
       if (job != null) closeHandle(job);
       _prior = prior;

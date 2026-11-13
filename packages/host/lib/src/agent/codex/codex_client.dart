@@ -39,7 +39,8 @@ class CodexRemoteException implements Exception {
 }
 
 class CodexInitialization {
-  CodexInitialization(this.userAgent, {this.version});
+  CodexInitialization(this.userAgent, {this.version, this.codexHome});
+  final String? codexHome;
   final String? version;
   final String userAgent;
 }
@@ -55,7 +56,6 @@ class CodexClient implements RuntimeTransport {
     required Stream<List<int>> input,
     required Future<void> Function(List<int>) write,
     LargeLinePermit? largeLinePermit,
-    this.authSignatures = const [],
   }) {
     _writer = NativeWriteAdmission(write, _fail, _closedError);
     _reader = NativeLineReader(
@@ -77,14 +77,11 @@ class CodexClient implements RuntimeTransport {
   factory CodexClient.pipes(
     UnitPipes pipes, {
     LargeLinePermit? largeLinePermit,
-    List<(int, String)> authSignatures = const [],
   }) => CodexClient(
     input: pipes.stdout,
     write: pipes.stdin.write,
     largeLinePermit: largeLinePermit,
-    authSignatures: authSignatures,
   );
-  final List<(int, String)> authSignatures;
   late final NativeLineReader _reader;
   late final NativeWriteAdmission _writer;
   final _pending = <Object, _Pending<Object?>>{};
@@ -145,7 +142,11 @@ class CodexClient implements RuntimeTransport {
         final first = RegExp(
           r'^[^/\s]+/((?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?)(?:\s|$)',
         ).firstMatch(userAgent);
-        return CodexInitialization(userAgent, version: first?.group(1));
+        return CodexInitialization(
+          userAgent,
+          version: first?.group(1),
+          codexHome: result['codexHome']! as String,
+        );
       },
     );
     await notify('initialized', {});
@@ -347,11 +348,6 @@ class CodexClient implements RuntimeTransport {
         CodexRemoteException(
           error['code']! as int,
           error['message']! as String,
-          isAuthenticationRequired: authSignatures.any(
-            (signature) =>
-                signature.$1 == error['code'] &&
-                signature.$2 == error['message'],
-          ),
         ),
       );
     } else {

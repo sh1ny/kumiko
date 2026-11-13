@@ -40,6 +40,221 @@ void main() {
     await deleteTree(cwd);
   });
 
+  test('Codex audit budget: release refuses preset environment and budget-bearing diagnostics', () async {
+    final session = await HostLauncher(
+      executable: releaseHostExecutable(),
+      profileDir: profile.path,
+      capabilities: testCapabilities,
+      environment: {
+        'KUMIKO_TEST_CODEX_AUDIT_PROFILE': 'large-native-home',
+        'KUMIKO_TEST_CODEX_AUDIT_HOME': cwd.path,
+        'KUMIKO_TEST_CODEX_AUDIT_MAX_TOTAL_BYTES': '536870912',
+      },
+    ).start();
+    try {
+      expect(
+        session.hello.capabilities.where((c) => c.startsWith('test.')),
+        isEmpty,
+      );
+      for (final preset in ['default', 'large-native-home']) {
+        for (final method in ['test/codex.audit.prepare', 'test/agent.stats']) {
+          expect(
+            await failureReason(
+              () => session.connection.request(method, {
+                'auditProfile': preset,
+                'maxFiles': 4096,
+                'maxFileBytes': 256 * 1024 * 1024,
+                'maxTotalBytes': 512 * 1024 * 1024,
+                'secretScanSessionId': 'absent',
+                'secretScanRoots': [cwd.path],
+              }),
+            ),
+            ErrorCode.methodNotAvailable,
+          );
+        }
+      }
+      expect(LedgerView(profile).units(), isEmpty);
+    } finally {
+      await session.quit();
+    }
+  });
+
+  test('Codex changed artifacts: binding release refuses selection environment and selection-bearing diagnostics', () async {
+    final session = await HostLauncher(
+      executable: releaseHostExecutable(),
+      profileDir: profile.path,
+      capabilities: testCapabilities,
+      environment: {
+        'KUMIKO_TEST_CODEX_AUDIT_NATIVE_SELECTION': 'changed-artifacts-v1',
+        'KUMIKO_TEST_CODEX_NATIVE_SELECTION': 'changed-artifacts-v1',
+        'KUMIKO_TEST_CODEX_AUDIT_HOME': cwd.path,
+      },
+    ).start();
+    try {
+      expect(
+        session.hello.capabilities.where((c) => c.startsWith('test.')),
+        isEmpty,
+      );
+      expect(
+        session.hello.capabilities.where(
+          (c) => c.toLowerCase().contains('audit'),
+        ),
+        isEmpty,
+      );
+      for (final selection in ['legacy', 'changed-artifacts-v1']) {
+        for (final method in ['test/codex.audit.prepare', 'test/agent.stats']) {
+          expect(
+            await failureReason(
+              () => session.connection.request(method, {
+                'nativeSelection': selection,
+                'auditProfile': 'default',
+                'secretScanSessionId': 'absent',
+                'secretScanRoots': [cwd.path],
+              }),
+            ),
+            ErrorCode.methodNotAvailable,
+          );
+        }
+      }
+      expect(LedgerView(profile).units(), isEmpty);
+      expect(snapshot(cwd), isEmpty, reason: 'no native-home metadata read');
+    } finally {
+      await session.quit();
+    }
+  });
+
+  test('Codex normal home: binding release refuses the v2 selection environment and selection-bearing diagnostics', () async {
+    final session = await HostLauncher(
+      executable: releaseHostExecutable(),
+      profileDir: profile.path,
+      capabilities: testCapabilities,
+      environment: {
+        'KUMIKO_TEST_CODEX_AUDIT_NATIVE_SELECTION': 'changed-artifacts-v2',
+        'KUMIKO_TEST_CODEX_NATIVE_SELECTION': 'changed-artifacts-v2',
+        'KUMIKO_TEST_CODEX_AUDIT_HOME': cwd.path,
+      },
+    ).start();
+    try {
+      expect(
+        session.hello.capabilities.where((c) => c.startsWith('test.')),
+        isEmpty,
+      );
+      expect(
+        session.hello.capabilities.where(
+          (c) => c.toLowerCase().contains('audit'),
+        ),
+        isEmpty,
+      );
+      for (final selection in ['legacy', 'changed-artifacts-v2']) {
+        for (final method in ['test/codex.audit.prepare', 'test/agent.stats']) {
+          expect(
+            await failureReason(
+              () => session.connection.request(method, {
+                'nativeSelection': selection,
+                'auditProfile': 'default',
+                'secretScanSessionId': 'absent',
+                'secretScanRoots': [cwd.path],
+              }),
+            ),
+            ErrorCode.methodNotAvailable,
+          );
+        }
+      }
+      expect(LedgerView(profile).units(), isEmpty);
+      expect(snapshot(cwd), isEmpty, reason: 'no native-home metadata read');
+    } finally {
+      await session.quit();
+    }
+  });
+
+  test('Codex native sockets: binding release refuses the v3 selection environment and selection-bearing diagnostics', () async {
+    final session = await HostLauncher(
+      executable: releaseHostExecutable(),
+      profileDir: profile.path,
+      capabilities: testCapabilities,
+      environment: {
+        'KUMIKO_TEST_CODEX_AUDIT_NATIVE_SELECTION': 'changed-artifacts-v3',
+        'KUMIKO_TEST_CODEX_NATIVE_SELECTION': 'changed-artifacts-v3',
+        'KUMIKO_TEST_CODEX_AUDIT_HOME': cwd.path,
+      },
+    ).start();
+    try {
+      expect(
+        session.hello.capabilities.where((c) => c.startsWith('test.')),
+        isEmpty,
+      );
+      expect(
+        session.hello.capabilities.where(
+          (c) => c.toLowerCase().contains('audit'),
+        ),
+        isEmpty,
+      );
+      for (final selection in ['legacy', 'changed-artifacts-v3']) {
+        for (final method in ['test/codex.audit.prepare', 'test/agent.stats']) {
+          expect(
+            await failureReason(
+              () => session.connection.request(method, {
+                'nativeSelection': selection,
+                'auditProfile': 'default',
+                'secretScanSessionId': 'absent',
+                'secretScanRoots': [cwd.path],
+              }),
+            ),
+            ErrorCode.methodNotAvailable,
+          );
+        }
+      }
+      expect(LedgerView(profile).units(), isEmpty);
+      expect(snapshot(cwd), isEmpty, reason: 'no native-home metadata read');
+    } finally {
+      await session.quit();
+    }
+  });
+
+  test('Codex removed entries: binding release refuses the v4 selection environment and selection-bearing diagnostics', () async {
+    final session = await HostLauncher(
+      executable: releaseHostExecutable(),
+      profileDir: profile.path,
+      capabilities: testCapabilities,
+      environment: {
+        'KUMIKO_TEST_CODEX_AUDIT_NATIVE_SELECTION': 'changed-artifacts-v4',
+        'KUMIKO_TEST_CODEX_NATIVE_SELECTION': 'changed-artifacts-v4',
+        'KUMIKO_TEST_CODEX_AUDIT_HOME': cwd.path,
+      },
+    ).start();
+    try {
+      expect(
+        session.hello.capabilities.where((c) => c.startsWith('test.')),
+        isEmpty,
+      );
+      expect(
+        session.hello.capabilities.where(
+          (c) => c.toLowerCase().contains('audit'),
+        ),
+        isEmpty,
+      );
+      for (final selection in ['legacy', 'changed-artifacts-v4']) {
+        for (final method in ['test/codex.audit.prepare', 'test/agent.stats']) {
+          expect(
+            await failureReason(
+              () => session.connection.request(method, {
+                'nativeSelection': selection,
+                'auditProfile': 'default',
+                'secretScanSessionId': 'absent',
+                'secretScanRoots': [cwd.path],
+              }),
+            ),
+            ErrorCode.methodNotAvailable,
+          );
+        }
+      }
+      expect(LedgerView(profile).units(), isEmpty);
+      expect(snapshot(cwd), isEmpty, reason: 'no native-home metadata read');
+    } finally {
+      await session.quit();
+    }
+  });
+
   test('release host advertises no test caps; every test method and fixture '
       'refused', () async {
     // The desktop asks for every test capability.
@@ -62,6 +277,12 @@ void main() {
       );
 
       final calls = <String, Object>{
+        'test/codex.probe': <String, Object?>{},
+        'test/codex.audit.prepare': <String, Object?>{},
+        'test/agent.stats': {
+          'secretScanSessionId': 'unavailable',
+          'secretScanRoots': [cwd.path],
+        },
         Method.testUnitLaunch: TestUnitLaunchParams(
           target: cwd.path,
           fixture: TestFixture.sleeper,
@@ -107,6 +328,7 @@ void main() {
       ['stubborn'],
       ['acp-agent'],
       ['codex-agent'],
+      ['qualification-mcp-env', '--report', '${cwd.path}/forbidden.json'],
       ['lock-holder', profile.path],
     ]) {
       final result = await Process.run(releaseHostExecutable(), [
@@ -214,7 +436,7 @@ void main() {
           '--probe',
         ]),
         'KUMIKO_TEST_CODEX_AUTH_SIGNATURES':
-            '[[-32123,"fixture-confirmed-native-auth"]]',
+            '["account-unauthenticated","turn-http-401"]',
       },
     ).start();
     try {

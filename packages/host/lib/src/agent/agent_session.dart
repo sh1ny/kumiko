@@ -47,6 +47,7 @@ class AgentSession {
     AgentTools? tools,
     bool toolsAuthenticated = false,
     String Function(String)? redact,
+    String Function(String)? redactStreaming,
     Iterable<String> Function()? secrets,
     this.claims,
     this.runId,
@@ -59,6 +60,7 @@ class AgentSession {
   }) : client = driver ?? AcpRuntimeDriver(client!),
        _deadlineFactory = deadlineFactory ?? _TimerDeadline.new,
        _redact = redact ?? _unredacted,
+       _redactStreaming = redactStreaming ?? redact ?? _unredacted,
        _secrets = secrets ?? _noSecrets,
        // ignore: prefer_initializing_formals
        _tools = tools,
@@ -92,6 +94,10 @@ class AgentSession {
   /// Removes Kumiko tool secrets from adapter text before it leaves the host
   /// (transcript notices, turn-end and stop messages).
   final String Function(String) _redact;
+
+  /// Streaming carry owns unfinished-token boundaries; diagnostics may already
+  /// be clipped and use the separate public boundary-aware callback.
+  final String Function(String) _redactStreaming;
   static String _unredacted(String text) => text;
 
   /// The secrets [_redact] removes, so a text chunk ending in the start of
@@ -366,6 +372,29 @@ class AgentSession {
       _sentKind = kind;
       _sent = '';
     }
+    if (update.truncated) {
+      // Lost bytes break continuity. Mask a clipped boundary now rather than
+      // carrying it into unrelated output that can release an exposed prefix.
+      final clipped = _redact(
+        _redactAfterSent('${continues ? _held : ''}${update.text}'),
+      );
+      _held = '';
+      _heldKind = null;
+      _sent = '';
+      _sentKind = null;
+      return prefix
+          .followedBy(flushed)
+          .followedBy(
+            encodeAgentEvent(
+              AgentEvent.fromJson({
+                'kind': update.kind.name,
+                ...identity,
+                'text': clipped,
+                'truncated': true,
+              }),
+            ),
+          );
+    }
     final carry = _redactAfterSent('${continues ? _held : ''}${update.text}');
     final hold = _heldLength(carry);
     _held = carry.substring(carry.length - hold);
@@ -444,7 +473,7 @@ class AgentSession {
   /// [text] redacted, including the rest of a secret whose first
   /// characters already went out in [_sent].
   String _redactAfterSent(String text) {
-    var out = _redact(text);
+    var out = _redactStreaming(text);
     for (final secret in _secrets()) {
       for (var k = min(secret.length - 1, _sent.length); k >= 1; k--) {
         if (_sent.endsWith(secret.substring(0, k)) &&
@@ -740,15 +769,32 @@ class AgentSession {
         ),
       );
     }
+    // Two options that read alike after redaction (a native string equal to an
+    // indexed object label) would be ambiguous buttons for different grants.
+    for (var i = 0; i < display.length; i++) {
+      if (request.choices[i].generated &&
+          [
+            for (var j = 0; j < display.length; j++)
+              if (j != i) display[j].name,
+          ].contains(display[i].name)) {
+        _observeWrite(client.reply(request.id, request.cancellation));
+        return encodeAgentEvent(
+          AgentEvent.notice(
+            'Native approval unavailable: option names are ambiguous; request cancelled.',
+          ),
+        );
+      }
+    }
     final preview = request.preview == null ? null : _redact(request.preview!);
+    final title = _redact(
+      request.threadId == null
+          ? request.title
+          : 'Child ${request.threadId}: ${request.title}',
+    );
     final notification = AgentPermissionRequestedParams(
       sessionId: sessionId,
       requestId: id,
-      title: _redact(
-        request.threadId == null
-            ? request.title
-            : 'Child ${request.threadId}: ${request.title}',
-      ),
+      title: title,
       preview: preview,
       options: display,
     );
@@ -758,7 +804,25 @@ class AgentSession {
       _observeWrite(client.reply(request.id, request.cancellation));
       return encodeAgentEvent(
         AgentEvent.notice(
-          'Native approval unavailable: full details exceed display capacity; request cancelled.',
+          'Native approval unavailable: full details exceed display capacity; request cancelled. '
+          '[display-v1 ${jsonEncode({
+            'category': switch (request.title) {
+              'Command approval' => 'command',
+              'File change approval' => 'file-change',
+              'Additional permissions' => 'additional-permissions',
+              _ => 'other',
+            },
+            'isChild': request.threadId != null,
+            'titleBytes': utf8.encode(title).length.clamp(0, 1048576),
+            'previewBytes': utf8.encode(preview ?? '').length.clamp(0, 1048576),
+            'maxNameBytes': display.fold<int>(0, (maximum, option) => max(maximum, utf8.encode(option.name).length)).clamp(0, 1048576),
+            'optionCount': display.length.clamp(0, 1024),
+            'titleLoss': notification.title != title,
+            'previewLoss': notification.preview != preview,
+            'namesLoss': [for (var i = 0; i < notification.options.length; i++) notification.options[i].name != display[i].name].any((lost) => lost),
+            'countLoss': notification.options.length != display.length,
+            'encodedLoss': notification.title != clampUtf8(title, maxPermissionTitleBytes) || notification.preview != (preview == null ? null : clampUtf8(preview, maxPermissionPreviewBytes)) || [for (var i = 0; i < notification.options.length; i++) notification.options[i].name != clampUtf8(display[i].name, maxPermissionNameBytes)].any((lost) => lost),
+          })}]',
         ),
       );
     }

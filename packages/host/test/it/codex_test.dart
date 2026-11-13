@@ -1342,6 +1342,42 @@ void nativeCases(Directory Function() profile, Directory Function() work) {
     expect(agentRows(profile()).single, row);
     await peer.close();
   });
+
+  test('Codex: content-free audit cause maps attach without changing failure semantics', () async {
+    final home = tempDir('audit_diag_home_');
+    addTearDown(() => deleteTree(home));
+    final f = NativeFixture(
+      profile(),
+      work(),
+      script: {
+        'initialize': {
+          'userAgent': 'codex/0.166.0',
+          'platformFamily': 'windows',
+          'platformOs': 'windows',
+          'codexHome': home.path,
+        },
+      },
+    );
+    await f.open(env: {'KUMIKO_TEST_CODEX_AUDIT_HOME': home.path});
+    await f.desktop.connection.request('test/codex.audit.prepare', {});
+    File(joinPath(home.path, 'models_cache.json'))
+        .writeAsStringSync('PRIVATE_CONTENT');
+    final a = await f.start();
+    await a.close();
+    final result = await f.desktop.connection.request('test/agent.stats', {
+      'secretScanSessionId': a.id,
+      'secretScanRoots': [home.path, joinPath(work().path, 'PRIVATE_MISSING')],
+    }) as Json;
+    final audit = result['secretAudit'] as Json;
+    expect(audit['errorCount'], 2);
+    expect(audit['complete'], false);
+    expect(audit['matchedFiles'], 0);
+    expect((audit['nativeErrorCategories'] as Json)['changedUnknownFile'], 1);
+    expect((audit['nativeUnknownArtifactCategories'] as Json)['modelCache'], 1);
+    expect((audit['rootErrorCategories'] as Json)['nonDirectory'], 1);
+    expect(jsonEncode(audit), isNot(contains('PRIVATE_')));
+    expect(jsonEncode(audit), isNot(contains(home.path)));
+  });
   Future<NativeFixture> fixture([
     Json script = const {},
     Map<String, String> env = const {},
@@ -1357,6 +1393,60 @@ void nativeCases(Directory Function() profile, Directory Function() work) {
       'runtimeProfileId': 'native',
     }),
   );
+  for (final resume in [false, true]) {
+    test(
+      'Codex: private MCP entry preserves unrelated CLI probe on ${resume ? 'resume' : 'start'}',
+      () async {
+        final probe = <String, Object?>{
+          'command': 'inert-fixture-probe',
+          'args': ['literal argument'],
+          'env': {'PROBE_ONLY': 'unrelated'},
+        };
+        final f = NativeFixture(
+          profile(),
+          work(),
+          script: {
+            'cliOverrides': [
+              {
+                'key': 'mcp_servers.unrelated_probe.command',
+                'value': probe['command'],
+              },
+              {
+                'key': 'mcp_servers.unrelated_probe.args',
+                'value': probe['args'],
+              },
+              {'key': 'mcp_servers.unrelated_probe.env', 'value': probe['env']},
+            ],
+            if (resume) 'resumeThread': idleThread,
+          },
+        );
+        final AgentPeer a;
+        if (resume) {
+          (a, _) = await restore(f);
+          await a.wait(
+            Method.agentState,
+            where: (state) => state['state'] == 'idle',
+          );
+        } else {
+          await f.open();
+          a = await f.start();
+        }
+        final facts = f.reports
+            .where((r) => r.containsKey('mcpConfiguration'))
+            .map((r) => r['mcpConfiguration'] as Json)
+            .toList();
+        expect(facts, hasLength(resume ? 2 : 1));
+        for (final fact in facts.reversed) {
+          expect(fact['entries'], containsAll(['kumiko', 'unrelated_probe']));
+          expect(fact['probe'], probe);
+          expect(fact['privateEnvironmentOnlyInKumiko'], true);
+          expect(fact['kumikoHasPrivateEnvironment'], true);
+        }
+        expect(facts.last['method'], resume ? 'thread/resume' : 'thread/start');
+        await a.close();
+      },
+    );
+  }
   test('Codex: Start native Codex', () async {
     final f = await fixture();
     final a = await f.start();
@@ -1381,12 +1471,9 @@ void nativeCases(Directory Function() profile, Directory Function() work) {
     expect(((stats['sessions'] as Json)[a.id] as Json)['hasGrant'], true);
     expect(a.started.tools!.status, AgentToolsStatus.notYetUsed);
     final config = (f.requests.last['params'] as Json)['config'] as Json;
-    final servers = config['mcp_servers'] as Json;
-    expect(servers.keys, ['kumiko']);
-    expect(
-      ((servers['kumiko'] as Json)['env'] as Json)['KUMIKO_TOOL_SECRET'],
-      '<redacted>',
-    );
+    expect(config.keys, ['mcp_servers.kumiko']);
+    final entry = config['mcp_servers.kumiko'] as Json;
+    expect((entry['env'] as Json)['KUMIKO_TOOL_SECRET'], '<redacted>');
     await a.close();
   });
   test('Codex: Initialization fails', () async {
@@ -1495,6 +1582,147 @@ void nativeCases(Directory Function() profile, Directory Function() work) {
     expect(a.events.toString(), contains('unknown child'));
     expect(a.events.toString(), contains('root text'));
     await a.close();
+  });
+  test('Codex: startup protocol EOF preserves bounded stderr and status after cleanup', () async {
+    final f = await fixture({
+      'newActions': [
+        {'stderr': 'fixture early native stderr'},
+        {'closeStdout': true},
+      ],
+    });
+    final error = await refusedStart(f);
+    expect(error.reason, ErrorCode.adapterProtocol);
+    expect(error.data['stage'], 'session/new');
+    expect(
+      error.data['detail'].toString().contains('fixture early native stderr'),
+      true,
+    );
+    expect(error.data['status'], isA<int>());
+    expect(error.message.contains('fixture early native stderr'), true);
+    expect(utf8.encode(error.message).length, lessThanOrEqualTo(4096));
+    expect(LedgerView(profile()).units(), isEmpty);
+  });
+  test('Codex: Experimental metadata changes in a newer version', () async {
+    final f = await fixture({
+      'version': 'codex-cli 0.167.0',
+      'turns': [
+        {
+          'actions': [
+            nativeEvent('thread/started', {
+              'thread': {
+                'id': 'future-child',
+                'parentThreadId': {'futureShape': 'root-thread'},
+                'status': {'type': 'active'},
+              },
+            }),
+            deltaEvent('newer root first reply'),
+            terminalEvent('completed'),
+          ],
+        },
+        {
+          'actions': [
+            {
+              'send': {
+                'id': 'future-root-approval',
+                'method': 'item/commandExecution/requestApproval',
+                'params': {
+                  'threadId': r'$thread',
+                  'turnId': r'$turn',
+                  'itemId': 'root-command',
+                  'startedAtMs': 1,
+                  'command': 'echo root still works',
+                  'cwd': '/fixture',
+                  'availableDecisions': ['accept', 'decline'],
+                },
+              },
+            },
+            {'waitReply': 'future-root-approval'},
+            deltaEvent('newer root second reply'),
+            {'waitInterrupt': true},
+            terminalEvent('interrupted'),
+          ],
+        },
+      ],
+    });
+    final agent = await f.start();
+    expect(agent.started.adapter.version, '0.167.0');
+    await agent.prompt('first root prompt');
+    await agent.wait(Method.agentTurnEnded);
+    await eventually(
+      () => agent.events.any(
+        (event) =>
+            event['kind'] == 'notice' &&
+            event['text'].toString().contains(
+              'relationship metadata unavailable',
+            ),
+      ),
+    );
+    expect(
+      (agent.of(Method.agentState).last['delegated'] as Json)['incomplete'],
+      true,
+    );
+    expect(
+      agent.events.any(
+        (event) =>
+            event['kind'] == 'agentText' &&
+            event['text'] == 'newer root first reply',
+      ),
+      true,
+    );
+    await agent.prompt('second root prompt');
+    final approval = await agent.wait(Method.agentPermissionRequested);
+    final accept = (approval['options'] as List).cast<Json>().firstWhere(
+      (option) => option['name'] == 'accept',
+    );
+    await agent.call(Method.agentPermissionReply, {
+      'sessionId': agent.id,
+      'requestId': approval['requestId'],
+      'optionId': accept['optionId'],
+    });
+    await waitFixture(
+      f.report,
+      (row) => (row['received'] as Json?)?['id'] == 'future-root-approval',
+    );
+    expect(
+      f.requests.singleWhere(
+        (message) => message['id'] == 'future-root-approval',
+      )['result'],
+      {'decision': 'accept'},
+    );
+    await eventually(
+      () => agent.events.any(
+        (event) =>
+            event['kind'] == 'agentText' &&
+            event['text'] == 'newer root second reply',
+      ),
+    );
+    await agent.call(Method.agentStop);
+    await agent.wait(
+      Method.agentTurnEnded,
+      where: (_) => agent.of(Method.agentTurnEnded).length == 2,
+    );
+    final stopped = await agent.wait(
+      Method.agentStopResult,
+      within: const Duration(seconds: 14),
+    );
+    expect(
+      stopped['outcome'],
+      'notConfirmed',
+      reason: 'unknown delegated work must not become confirmed stopped',
+    );
+    final interrupt = f.requests.singleWhere(
+      (message) => message['method'] == 'turn/interrupt',
+    );
+    expect(interrupt['params'], {
+      'threadId': 'root-thread',
+      'turnId': 'turn-2',
+    });
+    expect(
+      f.requests.where((message) => message['method'] == 'turn/start'),
+      hasLength(2),
+    );
+    expect(LedgerView(profile()).units(), hasLength(1));
+    await agent.close();
   });
   final requestedPreviewScope = <String, Object?>{
     'network': {'enabled': true},
@@ -1641,15 +1869,9 @@ void nativeCases(Directory Function() profile, Directory Function() work) {
                 : 'Apply the requested command policy',
             'availableDecisions': choice
                 ? [
-                    {
-                      'acceptWithExecpolicyAmendment': {
-                        'execpolicy_amendment': [
-                          'echo',
-                          List.filled(300, 'x').join(),
-                          'future-command-scope',
-                        ],
-                      },
-                    },
+                    // An oversize string name still refuses; object labels
+                    // are indexed (see Codex decision display).
+                    'future-command-scope-${List.filled(300, 'x').join()}',
                     'decline',
                   ]
                 : List.filled(16, 'decline'),
@@ -1714,7 +1936,135 @@ void nativeCases(Directory Function() profile, Directory Function() work) {
                 e['text'].toString().contains('capacity'),
           ),
         );
+        final notice = a.events
+            .where(
+              (e) =>
+                  e['kind'] == 'notice' &&
+                  e['text'].toString().startsWith(
+                    'Native approval unavailable: full details exceed display capacity;',
+                  ),
+            )
+            .single;
+        final text = notice['text']! as String;
+        expect(text, contains(' [display-v1 '));
+        expect(text, isNot(contains('future-command-scope')));
+        expect(utf8.encode(text).length, lessThan(1024));
         await a.close();
+      },
+    );
+  }
+  for (final surface in [
+    'error',
+    'tool title',
+    'stderr tail',
+    'truncated text',
+  ]) {
+    test(
+      'Codex: clipped $surface never exposes a known secret boundary',
+      () async {
+        final f = await fixture();
+        final report = await saveAgentFixture(
+          f.desktop,
+          work(),
+          id: 'boundary-secret-owner',
+        );
+        final owner = AgentPeer(f.desktop);
+        await owner.start(f.workspace, runtime: 'boundary-secret-owner');
+        await owner.attach();
+        final launch = await waitFixture(
+          report,
+          (row) => row['mcpServers'] is List,
+        );
+        final server = (launch['mcpServers'] as List).single as Json;
+        final secret =
+            ((server['env'] as List).cast<Json>().firstWhere(
+                  (entry) => entry['name'] == 'KUMIKO_TOOL_SECRET',
+                )['value'])!
+                as String;
+        expect(secret.length == 43, true);
+        final fragment = surface == 'stderr tail'
+            ? secret.substring(1)
+            : secret.substring(0, 42);
+        final clipped = '${List.filled(4096 - 42, 'x').join()}${secret}end';
+        final script = jsonDecode(f.scriptFile.readAsStringSync()) as Json;
+        if (surface == 'stderr tail') {
+          script['newActions'] = [
+            {'stderr': '$secret${List.filled(4096 - 42, 'x').join()}'},
+          ];
+          script['startError'] = {
+            'code': -32001,
+            'message': 'fixture startup refused',
+          };
+        } else if (surface == 'truncated text') {
+          script['turns'] = [
+            {
+              'actions': [
+                deltaEvent(
+                  '${List.filled(1024 * 1024 - 42, 'x').join()}${secret}end',
+                ),
+                deltaEvent('unrelated next delta'),
+                terminalEvent('completed'),
+              ],
+            },
+          ];
+        } else if (surface == 'error') {
+          script['turns'] = [
+            {
+              'error': {'code': -32001, 'message': clipped},
+            },
+          ];
+        } else {
+          script['turns'] = [
+            {
+              'actions': [
+                nativeEvent('item/completed', {
+                  'threadId': r'$thread',
+                  'turnId': r'$turn',
+                  'item': {
+                    'id': 'boundary-tool',
+                    'type': 'commandExecution',
+                    'command': clipped,
+                    'cwd': '/fixture',
+                    'commandActions': <Object?>[],
+                    'status': 'completed',
+                    'aggregatedOutput': 'done',
+                  },
+                }),
+                terminalEvent('completed'),
+              ],
+            },
+          ];
+        }
+        f.scriptFile.writeAsStringSync(jsonEncode(script));
+        await owner.close();
+        String public;
+        if (surface == 'stderr tail') {
+          final error = await refusedStart(f);
+          public = '${error.message}${jsonEncode(error.data)}';
+        } else {
+          final agent = await f.start();
+          await agent.prompt();
+          await agent.wait(Method.agentTurnEnded);
+          if (surface == 'tool title') {
+            await eventually(
+              () => agent.events.any((event) => event['kind'] == 'toolUpdate'),
+            );
+          }
+          if (surface == 'truncated text') {
+            await eventually(
+              () => agent.events.any(
+                (event) =>
+                    event['kind'] == 'agentText' &&
+                    event['text'].toString().contains('unrelated next delta'),
+              ),
+            );
+          }
+          public = '${agent.events}${agent.notifications}';
+          await agent.close();
+        }
+        // Only booleans reach a failing assertion, never this ephemeral grant.
+        expect(public.contains(fragment), false);
+        expect(public.contains('<redacted>'), true);
       },
     );
   }
@@ -1799,6 +2149,551 @@ void nativeCases(Directory Function() profile, Directory Function() work) {
       await a.close();
     },
   );
+  Future<void> commandDecisionCase(
+    Json params, {
+    List<Object?>? offered,
+    int selected = 0,
+    bool child = false,
+  }) async {
+    final f = await fixture({
+      'turns': [
+        {
+          'actions': [
+            if (child) ...[
+              nativeEvent('thread/started', {
+                'thread': {
+                  'id': 'approval-child',
+                  'parentThreadId': 'root-thread',
+                  'status': {'type': 'active'},
+                },
+              }),
+              nativeEvent('turn/started', {
+                'threadId': 'approval-child',
+                'turn': {
+                  'id': 'child-turn',
+                  'status': 'inProgress',
+                  'items': <Object?>[],
+                },
+              }),
+            ],
+            {
+              'send': {
+                'id': 'command-decisions',
+                'method': 'item/commandExecution/requestApproval',
+                'params': {
+                  'threadId': child ? 'approval-child' : r'$thread',
+                  'turnId': child ? 'child-turn' : r'$turn',
+                  'itemId': 'cmd',
+                  'startedAtMs': 1,
+                  'command': 'echo fixture',
+                  ...params,
+                },
+              },
+            },
+            {'waitReply': 'command-decisions'},
+            terminalEvent('completed'),
+          ],
+        },
+        {
+          'actions': [
+            deltaEvent('later root reply'),
+            terminalEvent('completed'),
+          ],
+        },
+      ],
+    });
+    final a = await f.start();
+    await a.prompt();
+    Json? permission;
+    if (offered != null) {
+      permission = await a.wait(
+        Method.agentPermissionRequested,
+        within: const Duration(seconds: 2),
+      );
+      final options = (permission['options'] as List).cast<Json>();
+      expect(options.map((o) => o['name']), [
+        for (var i = 0; i < offered.length; i++)
+          offered[i] is String ? offered[i] : 'Native option ${i + 1}',
+      ]);
+      expect(options.map((o) => o['kind']), [
+        for (final value in offered)
+          value is! String
+              ? 'allow_always'
+              : value == 'acceptForSession'
+              ? 'allow_always'
+              : value == 'decline' || value == 'cancel'
+              ? 'reject_once'
+              : 'allow_once',
+      ]);
+      expect(
+        (permission['preview'] as String).contains('Native decisions: '),
+        offered.any((value) => value is! String),
+      );
+      expect(
+        options.map((o) => o['optionId']).toSet(),
+        hasLength(offered.length),
+      );
+      expect(options.map((o) => o['optionId']), isNot(contains('accept')));
+      expect(
+        f.requests.where((m) => m['id'] == 'command-decisions'),
+        isEmpty,
+        reason: 'native answer requires an explicit user action',
+      );
+      if (child) expect(permission['title'], contains('approval-child'));
+      await a.call(Method.agentPermissionReply, {
+        'sessionId': a.id,
+        'requestId': permission['requestId'],
+        'optionId': options[selected]['optionId'],
+      });
+    }
+    await a.wait(Method.agentTurnEnded, within: const Duration(seconds: 3));
+    expect(
+      f.requests.where((m) => m['id'] == 'command-decisions').single['result'],
+      {'decision': offered == null ? 'decline' : offered[selected]},
+    );
+    if (offered == null) {
+      expect(a.of(Method.agentPermissionRequested), isEmpty);
+      await eventually(
+        () => a.events.any(
+          (e) =>
+              e['kind'] == 'notice' &&
+              (e['text'] as String).contains('Native approval unavailable'),
+        ),
+      );
+      final notices = a.events.where(
+        (e) =>
+            e['kind'] == 'notice' &&
+            (e['text'] as String).contains('Native approval unavailable'),
+      );
+      expect(notices, hasLength(1));
+      expect((notices.single['text'] as String).length, lessThan(256));
+    } else {
+      final before = f.requests.length;
+      await rpcFailure(
+        a.call(Method.agentPermissionReply, {
+          'sessionId': a.id,
+          'requestId': permission!['requestId'],
+          'optionId':
+              ((permission['options'] as List)[selected] as Json)['optionId'],
+        }),
+      );
+      expect(
+        f.requests.length,
+        before,
+        reason: 'duplicate or retired answer cannot write',
+      );
+    }
+    await a.prompt('later ordinary root prompt');
+    await a.wait(
+      Method.agentTurnEnded,
+      where: (_) => a.of(Method.agentTurnEnded).length == 2,
+    );
+    await eventually(
+      () => a.events.any((e) => e['text'] == 'later root reply'),
+    );
+    expect(
+      f.requests.where((m) => m['method'] == 'thread/start'),
+      hasLength(1),
+    );
+    expect(
+      f.requests
+          .where((m) => m['method'] == 'turn/start')
+          .map((m) => (m['params'] as Json)['threadId']),
+      ['root-thread', 'root-thread'],
+    );
+    expect(
+      f.requests.where((m) => m['id'] == 'command-decisions'),
+      hasLength(1),
+    );
+    await a.close();
+  }
+
+  for (final entry in <String, Json>{
+    'absent accept': {},
+    'null cancel': {'availableDecisions': null},
+    'command kind': {'kind': 'command'},
+    'null contexts and policy proposals': {
+      'networkApprovalContext': null,
+      'additionalPermissions': null,
+      'proposedExecpolicyAmendment': ['echo'],
+      'proposedNetworkPolicyAmendments': [
+        {'action': 'allow', 'host': 'fixture'},
+      ],
+    },
+    'known child': {},
+  }.entries) {
+    test(
+      'Codex: Ordinary command defaults require an explicit answer ${entry.key}',
+      () async {
+        await commandDecisionCase(
+          entry.value,
+          offered: ['accept', 'cancel'],
+          selected: entry.key == 'null cancel' ? 1 : 0,
+          child: entry.key == 'known child',
+        );
+      },
+    );
+  }
+  final explicit = <Object?>[
+    'future_native_decision',
+    {
+      'futureScopedDecision': {'scope': 'single', 'opaque': 7},
+    },
+    'cancel',
+    'acceptForSession',
+  ];
+  for (var selected = 0; selected < explicit.length; selected++) {
+    final choice = selected;
+    test(
+      'Codex: Explicit command decisions remain authoritative choice=$choice',
+      () async {
+        await commandDecisionCase(
+          {
+            'kind': 'network',
+            'networkApprovalContext': {'host': 'fixture'},
+            'additionalPermissions': {},
+            'availableDecisions': explicit,
+          },
+          offered: explicit,
+          selected: choice,
+        );
+      },
+    );
+  }
+  for (final entry in <String, Object?>{
+    'empty': <Object?>[],
+    'string': 'accept',
+    'object': {'accept': true},
+    'over limit': List.filled(17, 'accept'),
+    'null entry': ['accept', null],
+    'boolean entry': ['accept', true],
+    'number entry': ['accept', 1],
+    'list entry': ['accept', <Object?>[]],
+  }.entries) {
+    test(
+      'Codex: Empty or malformed command decisions stay unavailable ${entry.key}',
+      () async {
+        await commandDecisionCase({'availableDecisions': entry.value});
+      },
+    );
+  }
+  for (final context in <String, Json>{
+    'null kind': {'kind': null},
+    'network kind': {'kind': 'network'},
+    'network context': {'networkApprovalContext': {}},
+    'additional permissions': {'additionalPermissions': {}},
+  }.entries) {
+    for (final nullList in [false, true]) {
+      test(
+        'Codex: Special approvals do not use ordinary defaults ${context.key} null=$nullList',
+        () async {
+          await commandDecisionCase({
+            ...context.value,
+            if (nullList) 'availableDecisions': null,
+          });
+        },
+      );
+    }
+  }
+  Future<(NativeFixture, AgentPeer)> decisionRequest(Json params) async {
+    final f = await fixture({
+      'turns': [
+        {
+          'actions': [
+            {
+              'send': {
+                'id': 'command-decisions',
+                'method': 'item/commandExecution/requestApproval',
+                'params': {
+                  'threadId': r'$thread',
+                  'turnId': r'$turn',
+                  'itemId': 'cmd',
+                  'startedAtMs': 1,
+                  'command': 'echo fixture',
+                  'cwd': 'C:/native-cwd',
+                  'reason': 'why',
+                  ...params,
+                },
+              },
+            },
+            {'waitReply': 'command-decisions'},
+            terminalEvent('completed'),
+          ],
+        },
+      ],
+    });
+    final a = await f.start();
+    await a.prompt();
+    return (f, a);
+  }
+
+  final longObject = <String, Object?>{
+    'futureScopedDecision': {
+      'scope': 'single',
+      'opaque': [
+        7,
+        null,
+        true,
+        {'nested': 'caf\u00e9 \u65e5\u672c\u8a9e'},
+      ],
+      'text': 'line one\nline two ``` fenced\n```',
+      'padding': List.filled(300, 'p').join(),
+    },
+  };
+  for (final selected in [1, 3]) {
+    test(
+      'Codex decision display: objects are indexed with the full ordered array selected=$selected',
+      () async {
+        final decisions = <Object?>[
+          'future_native_decision',
+          longObject,
+          'cancel',
+          {'second': 1},
+          'acceptForSession',
+        ];
+        expect(utf8.encode(jsonEncode(longObject)).length, greaterThan(256));
+        {
+          final (f, a) = await decisionRequest({
+            'availableDecisions': decisions,
+          });
+          final p = await a.wait(
+            Method.agentPermissionRequested,
+            within: const Duration(seconds: 2),
+          );
+          final options = (p['options'] as List).cast<Json>();
+          expect(options.map((o) => o['name']), [
+            'future_native_decision',
+            'Native option 2',
+            'cancel',
+            'Native option 4',
+            'acceptForSession',
+          ]);
+          expect(options.map((o) => o['kind']), [
+            'allow_once',
+            'allow_always',
+            'reject_once',
+            'allow_always',
+            'allow_always',
+          ]);
+          expect(
+            options.map((o) => o['kind']).where((k) => k == 'allow_once'),
+            ['allow_once'],
+          );
+          final preview = p['preview'] as String;
+          expect(
+            preview,
+            'Command: echo fixture\nWorking directory: C:/native-cwd\n'
+            'Reason: why\nNative decisions: ${jsonEncode(decisions)}',
+          );
+          expect(preview.split('\n'), hasLength(4));
+          expect(
+            f.requests.where((m) => m['id'] == 'command-decisions'),
+            isEmpty,
+          );
+          await a.call(Method.agentPermissionReply, {
+            'sessionId': a.id,
+            'requestId': p['requestId'],
+            'optionId': options[selected]['optionId'],
+          });
+          await a.wait(Method.agentTurnEnded);
+          expect(
+            f.requests
+                .where((m) => m['id'] == 'command-decisions')
+                .single['result'],
+            {'decision': decisions[selected]},
+          );
+          await a.close();
+        }
+      },
+    );
+  }
+  test('Codex decision display: string-only lists are unchanged', () async {
+    final (f, a) = await decisionRequest({
+      'availableDecisions': ['accept', 'decline'],
+    });
+    final p = await a.wait(
+      Method.agentPermissionRequested,
+      within: const Duration(seconds: 2),
+    );
+    expect((p['options'] as List).map((o) => (o as Json)['name']), [
+      'accept',
+      'decline',
+    ]);
+    expect(p['preview'], isNot(contains('Native decisions')));
+    expect(f.requests.where((m) => m['id'] == 'command-decisions'), isEmpty);
+    await a.call(Method.agentPermissionReply, {
+      'sessionId': a.id,
+      'requestId': p['requestId'],
+      'optionId': ((p['options'] as List).first as Json)['optionId'],
+    });
+    await a.wait(Method.agentTurnEnded);
+    await a.close();
+  });
+  test('Codex decision display: known child objects keep identity', () async {
+    await commandDecisionCase(
+      {
+        'availableDecisions': [
+          {'childScoped': 'x'},
+          'accept',
+        ],
+      },
+      offered: [
+        {'childScoped': 'x'},
+        'accept',
+      ],
+      selected: 0,
+      child: true,
+    );
+  });
+  test('Codex decision display: live and revoked secrets are redacted', () async {
+    final f = await fixture();
+    final report = await saveAgentFixture(
+      f.desktop,
+      work(),
+      id: 'decision-secret-owner',
+    );
+    final owner = AgentPeer(f.desktop);
+    await owner.start(f.workspace, runtime: 'decision-secret-owner');
+    await owner.attach();
+    final launch = await waitFixture(report, (r) => r['mcpServers'] is List);
+    final server = (launch['mcpServers'] as List).single as Json;
+    final secret =
+        ((server['env'] as List).cast<Json>().firstWhere(
+              (e) => e['name'] == 'KUMIKO_TOOL_SECRET',
+            )['value'])!
+            as String;
+    final decision = {'scope': 'C:/$secret/scope'};
+    final script = jsonDecode(f.scriptFile.readAsStringSync()) as Json;
+    script['turns'] = [
+      for (var turn = 0; turn < 2; turn++)
+        {
+          'actions': [
+            {
+              'send': {
+                'id': 'secret-decision-$turn',
+                'method': 'item/commandExecution/requestApproval',
+                'params': {
+                  'threadId': r'$thread',
+                  'turnId': r'$turn',
+                  'itemId': 'scope-$turn',
+                  'startedAtMs': 1,
+                  'command': 'echo $secret',
+                  'availableDecisions': ['accept', decision],
+                },
+              },
+            },
+            {'waitReply': 'secret-decision-$turn'},
+            terminalEvent('completed'),
+          ],
+        },
+    ];
+    f.scriptFile.writeAsStringSync(jsonEncode(script));
+    final a = await f.start();
+    for (var turn = 0; turn < 2; turn++) {
+      if (turn == 1) await owner.close();
+      await a.prompt();
+      final p = await a.wait(
+        Method.agentPermissionRequested,
+        where: (p) =>
+            p['requestId'] !=
+            (turn == 0
+                ? null
+                : a.of(Method.agentPermissionRequested).first['requestId']),
+      );
+      final preview = p['preview']! as String;
+      final options = (p['options'] as List).cast<Json>();
+      // Boolean assertions keep a failure from logging the credential.
+      expect(preview.contains(secret), isFalse);
+      expect(preview.contains('<redacted>'), isTrue);
+      expect(jsonEncode(p).contains(secret), isFalse);
+      expect(options.map((o) => o['name']), ['accept', 'Native option 2']);
+      await a.call(Method.agentPermissionReply, {
+        'sessionId': a.id,
+        'requestId': p['requestId'],
+        'optionId': options[1]['optionId'],
+      });
+      await a.wait(
+        Method.agentTurnEnded,
+        where: (_) => a.of(Method.agentTurnEnded).length == turn + 1,
+      );
+      // The opaque token keeps the exact native value, never the display copy.
+      final result = f.requests
+          .where((m) => m['id'] == 'secret-decision-$turn')
+          .single['result'];
+      expect(jsonEncode(result) == jsonEncode({'decision': decision}), true);
+    }
+    await a.close();
+  });
+  Future<void> decisionCancelCase(
+    List<Object?> decisions, {
+    String reason = 'why',
+    String notice = 'capacity',
+  }) async {
+    final (f, a) = await decisionRequest({
+      'availableDecisions': decisions,
+      'reason': reason,
+    });
+    await eventually(
+      () =>
+          a.of(Method.agentPermissionRequested).isNotEmpty ||
+          f.requests.any((m) => m['id'] == 'command-decisions'),
+    );
+    expect(a.of(Method.agentPermissionRequested), isEmpty);
+    await a.wait(Method.agentTurnEnded);
+    expect(
+      f.requests.where((m) => m['id'] == 'command-decisions').single['result'],
+      {'decision': 'cancel'},
+    );
+    await eventually(
+      () => a.events.any(
+        (e) =>
+            e['kind'] == 'notice' &&
+            (e['text'] as String).startsWith('Native approval unavailable') &&
+            (e['text'] as String).contains(notice),
+      ),
+    );
+    final notices = a.events.where(
+      (e) =>
+          e['kind'] == 'notice' &&
+          (e['text'] as String).startsWith('Native approval unavailable'),
+    );
+    expect(notices, hasLength(1));
+    expect(
+      utf8.encode(notices.single['text']! as String).length,
+      lessThan(1024),
+    );
+    expect(notices.single['text'], isNot(contains('future-scope')));
+    await a.close();
+  }
+
+  test('Codex decision overflow: raw preview exceeds its bound', () async {
+    await decisionCancelCase([
+      {'scope': 'future-scope-${List.filled(17000, 'x').join()}'},
+      'decline',
+    ]);
+  });
+  test(
+    'Codex decision overflow: JSON-encoded preview exceeds its bound',
+    () async {
+      // 3000 control characters fit raw but expand to 18000 encoded bytes.
+      await decisionCancelCase([
+        {'scope': 'future-scope', 'pad': List.filled(3000, '\u0001').join()},
+        'decline',
+      ]);
+    },
+  );
+  test('Codex decision overflow: oversize string names still refuse', () async {
+    await decisionCancelCase([
+      'future-scope-${List.filled(300, 'x').join()}',
+      {'a': 1},
+    ]);
+  });
+  test('Codex decision overflow: ambiguous option labels refuse', () async {
+    await decisionCancelCase([
+      'Native option 2',
+      {'future-scope': 1},
+    ], notice: 'ambiguous');
+  });
   test('Codex: Approve a command', () async {
     final f = await fixture({
       'turns': [
@@ -2176,39 +3071,441 @@ void nativeCases(Directory Function() profile, Directory Function() work) {
     expect(a.events.where((e) => e['kind'] == 'toolUpdate'), hasLength(1));
     await a.close();
   });
-  for (final duringTurn in [false, true]) {
+  const signedOut = {'account': null, 'requiresOpenaiAuth': true};
+  const preflightSignal = {
+    'KUMIKO_TEST_CODEX_AUTH_SIGNATURES': '["account-unauthenticated"]',
+  };
+  // An explicit empty override: the production registry confirms signals.
+  const noSignals = {'KUMIKO_TEST_CODEX_AUTH_SIGNATURES': '[]'};
+  const turnSignal = {'KUMIKO_TEST_CODEX_AUTH_SIGNATURES': '["turn-http-401"]'};
+  Json failed401([Object? info]) => nativeEvent('turn/completed', {
+    'threadId': r'$thread',
+    'turn': {
+      'id': r'$turn',
+      'status': 'failed',
+      'items': <Object?>[],
+      'error': {
+        'message': 'unexpected status 401 Unauthorized, request id fixture-1',
+        'codexErrorInfo':
+            info ??
+            {
+              'httpConnectionFailed': {'httpStatusCode': 401},
+            },
+      },
+    },
+  });
+  List<String> methods(NativeFixture f, [int skip = 0]) => [
+    for (final r in f.requests.skip(skip))
+      if (r['method'] is String) r['method']! as String,
+  ];
+  test('Codex: test host refuses an unknown auth signal name', () async {
+    await expectLater(
+      Desktop.start(
+        profile(),
+        environment: {'KUMIKO_TEST_CODEX_AUTH_SIGNATURES': '["unauthorized"]'},
+      ),
+      throwsA(anything),
+    );
+  });
+  for (final provider in [null, 'openai']) {
     test(
-      'Codex: Known Codex authentication failure duringTurn=$duringTurn',
+      'Codex: confirmed account-unauthenticated refuses Start before thread/start provider=$provider',
       () async {
-        final error = {
-          'code': -32123,
-          'message': 'fixture-confirmed-native-auth',
-        };
-        final f = await fixture(
-          duringTurn
-              ? {
-                  'turns': [
-                    {'error': error},
-                  ],
-                }
-              : {'startError': error},
-          {
-            'KUMIKO_TEST_CODEX_AUTH_SIGNATURES':
-                '[[-32123,"fixture-confirmed-native-auth"]]',
-          },
+        final f = await fixture({
+          'accountRead': signedOut,
+          if (provider != null)
+            'cliOverrides': [
+              {'key': 'model_provider', 'value': provider},
+            ],
+        }, preflightSignal);
+        final error = await refusedStart(f);
+        expect(error.reason, ErrorCode.authRequired);
+        expect(methods(f), isNot(contains('thread/start')));
+        expect(
+          f.requests
+              .where(
+                (r) =>
+                    r['method'] == 'config/read' &&
+                    !(r['params'] as Json).containsKey('includeLayers'),
+              )
+              .single['params'],
+          {'cwd': work().path},
         );
-        if (duringTurn) {
-          final a = await f.start();
-          await a.prompt();
-          final ended = await a.wait(Method.agentTurnEnded);
-          expect(ended['error'], ErrorCode.authRequired);
-          await a.close();
-        } else {
-          expect((await refusedStart(f)).reason, ErrorCode.authRequired);
-        }
+        expect(
+          f.requests
+              .where((r) => r['method'] == 'account/read')
+              .single['params'],
+          {'refreshToken': false},
+        );
+        expect(agentRows(profile()), isEmpty);
       },
     );
   }
+  for (final open in <(String, Json, Map<String, String>)>[
+    ('unconfirmed signal', {'accountRead': signedOut}, noSignals),
+    (
+      'another provider',
+      {
+        'accountRead': signedOut,
+        'cliOverrides': [
+          {'key': 'model_provider', 'value': 'azure'},
+        ],
+      },
+      preflightSignal,
+    ),
+    (
+      'unreadable configuration',
+      {
+        'accountRead': signedOut,
+        'configReadError': {'code': -32000, 'message': 'config unavailable'},
+      },
+      preflightSignal,
+    ),
+    (
+      'malformed configuration',
+      {'accountRead': signedOut, 'configReadResult': 'not a config'},
+      preflightSignal,
+    ),
+    (
+      'present account',
+      {
+        'accountRead': {
+          'account': {'type': 'apiKey'},
+          'requiresOpenaiAuth': true,
+        },
+      },
+      preflightSignal,
+    ),
+    (
+      'requiresOpenaiAuth false',
+      {
+        'accountRead': {'account': null, 'requiresOpenaiAuth': false},
+      },
+      preflightSignal,
+    ),
+    (
+      'requiresOpenaiAuth absent',
+      {
+        'accountRead': {'account': null},
+      },
+      preflightSignal,
+    ),
+    (
+      'account absent',
+      {
+        'accountRead': {'requiresOpenaiAuth': true},
+      },
+      preflightSignal,
+    ),
+    (
+      'malformed account result',
+      {'accountRead': 'signed out'},
+      preflightSignal,
+    ),
+    (
+      'native error',
+      {
+        'accountReadError': {
+          'code': -32000,
+          'message': 'Authentication required',
+        },
+      },
+      preflightSignal,
+    ),
+    ('method not found', const {}, preflightSignal),
+    ('timeout', {'accountReadHang': true}, preflightSignal),
+  ]) {
+    test('Codex: account preflight fails open on ${open.$1}', () async {
+      final f = await fixture(open.$2, open.$3);
+      final a = await f.start();
+      expect(methods(f), contains('thread/start'));
+      if (open.$1 == 'unconfirmed signal' || open.$1 == 'another provider') {
+        expect(methods(f), isNot(contains('account/read')));
+      }
+      expect(agentRows(profile()), hasLength(1));
+      await a.close();
+    });
+  }
+  test('Codex: Continue never runs the account preflight and a signed-out turn is auth-required', () async {
+    final f = NativeFixture(
+      profile(),
+      work(),
+      script: {
+        'resumeThread': {
+          'id': 'root-thread',
+          'historyMode': 'legacy',
+          'status': {'type': 'idle'},
+          'turns': [
+            {
+              'id': 'old-turn',
+              'status': 'completed',
+              'itemsView': 'full',
+              'items': [
+                {
+                  'id': 'old-reply',
+                  'type': 'agentMessage',
+                  'text': 'original answer',
+                },
+              ],
+            },
+          ],
+        },
+        'turns': [
+          {
+            'actions': [failed401()],
+          },
+        ],
+      },
+    );
+    await f.open(
+      env: {
+        'KUMIKO_TEST_CODEX_AUTH_SIGNATURES':
+            '["account-unauthenticated","turn-http-401"]',
+      },
+    );
+    final original = await f.start();
+    final row = agentRows(profile()).single;
+    await original.close();
+    await original.call(Method.agentRelease);
+    // The default account is now signed out; a saved thread still resumes.
+    final script = jsonDecode(f.scriptFile.readAsStringSync()) as Json;
+    f.scriptFile.writeAsStringSync(
+      jsonEncode({...script, 'accountRead': signedOut}),
+    );
+    final before = f.requests.length;
+    final peer = AgentPeer(f.desktop);
+    final resumed = AgentContinueResult.fromJson(
+      await peer.call(Method.agentContinue, {'sessionId': row['id']}),
+    );
+    peer.started = AgentStartResult(
+      sessionId: row['id']! as String,
+      eventChannel: resumed.eventChannel,
+      adapter: resumed.adapter,
+      capabilities: resumed.capabilities,
+    );
+    await peer.attach();
+    await peer.wait(Method.agentState, where: (s) => s['state'] == 'idle');
+    expect(methods(f, before), contains('thread/resume'));
+    expect(methods(f, before), isNot(contains('account/read')));
+    await peer.prompt();
+    final ended = await peer.wait(Method.agentTurnEnded);
+    expect(ended['error'], ErrorCode.authRequired);
+    expect(agentRows(profile()).single, row);
+    await peer.close();
+  });
+  for (final key in [
+    'httpConnectionFailed',
+    'responseStreamConnectionFailed',
+    'responseStreamDisconnected',
+    'responseTooManyFailedAttempts',
+  ]) {
+    test('Codex: confirmed turn-http-401 classifies $key', () async {
+      final f = await fixture({
+        'turns': [
+          {
+            'actions': [
+              failed401({
+                key: {'httpStatusCode': 401},
+              }),
+            ],
+          },
+        ],
+      }, turnSignal);
+      final a = await f.start();
+      final row = agentRows(profile()).single;
+      await a.prompt();
+      final ended = await a.wait(Method.agentTurnEnded);
+      expect(ended['error'], ErrorCode.authRequired);
+      await a.wait(Method.agentState, where: (s) => s['state'] == 'idle');
+      expect(agentRows(profile()).single, row);
+      await a.close();
+    });
+  }
+  for (final other in <(String, Object?, Map<String, String>)>[
+    (
+      'an unconfirmed signal',
+      {
+        'httpConnectionFailed': {'httpStatusCode': 401},
+      },
+      noSignals,
+    ),
+    (
+      'status 403',
+      {
+        'httpConnectionFailed': {'httpStatusCode': 403},
+      },
+      turnSignal,
+    ),
+    (
+      'a string status',
+      {
+        'httpConnectionFailed': {'httpStatusCode': '401'},
+      },
+      turnSignal,
+    ),
+    (
+      'two keys',
+      {
+        'httpConnectionFailed': {'httpStatusCode': 401},
+        'responseStreamDisconnected': {'httpStatusCode': 401},
+      },
+      turnSignal,
+    ),
+    (
+      'an unknown key',
+      {
+        'serverOverloaded': {'httpStatusCode': 401},
+      },
+      turnSignal,
+    ),
+    ('the unauthorized string', 'unauthorized', turnSignal),
+    ('a preflight-only signal', null, preflightSignal),
+  ]) {
+    test('Codex: failed turn is not auth-required with ${other.$1}', () async {
+      final f = await fixture({
+        'turns': [
+          {
+            'actions': [failed401(other.$2)],
+          },
+        ],
+      }, other.$3);
+      final a = await f.start();
+      await a.prompt();
+      final ended = await a.wait(Method.agentTurnEnded);
+      expect(ended['error'], 'adapter-error');
+      expect(ended['nativeMessage'], contains('401 Unauthorized'));
+      await a.close();
+    });
+  }
+  test(
+    'Codex: a retrying 401 error notification is never classified',
+    () async {
+      final f = await fixture({
+        'turns': [
+          {
+            'actions': [
+              nativeEvent('error', {
+                'threadId': r'$thread',
+                'turnId': r'$turn',
+                'willRetry': true,
+                'error': {
+                  'message':
+                      'unexpected status 401 Unauthorized, request id r-1',
+                  'codexErrorInfo': {
+                    'responseStreamDisconnected': {'httpStatusCode': 401},
+                  },
+                },
+              }),
+              terminalEvent('completed'),
+            ],
+          },
+        ],
+      }, turnSignal);
+      final a = await f.start();
+      await a.prompt();
+      final ended = await a.wait(Method.agentTurnEnded);
+      expect(ended['error'], isNull);
+      await a.close();
+    },
+  );
+  test(
+    'Codex: Stop aggregation holds for an auth-required root turn',
+    () async {
+      final f = await fixture({
+        'turns': [
+          {
+            'actions': [
+              nativeEvent('thread/started', {
+                'thread': {
+                  'id': 'child-a',
+                  'parentThreadId': 'root-thread',
+                  'status': {'type': 'active'},
+                },
+              }),
+              nativeEvent('turn/started', {
+                'threadId': 'child-a',
+                'turn': {
+                  'id': 'child-a-turn',
+                  'status': 'inProgress',
+                  'items': <Object?>[],
+                  'error': null,
+                },
+              }),
+              {
+                'send': {
+                  'id': 'ready-child',
+                  'method': 'item/commandExecution/requestApproval',
+                  'params': {
+                    'threadId': 'child-a',
+                    'turnId': 'child-a-turn',
+                    'itemId': 'ready',
+                    'startedAtMs': 1,
+                    'command': 'echo ready',
+                    'cwd': '/fixture',
+                    'availableDecisions': ['accept', 'decline'],
+                  },
+                },
+              },
+              {'waitInterrupt': true},
+              failed401(),
+              {'waitInterrupt': 'child-a-turn'},
+              nativeEvent('turn/completed', {
+                'threadId': 'child-a',
+                'turn': {
+                  'id': 'child-a-turn',
+                  'status': 'interrupted',
+                  'items': <Object?>[],
+                  'error': null,
+                },
+              }),
+            ],
+          },
+        ],
+      }, turnSignal);
+      final a = await f.start();
+      await a.prompt();
+      await a.wait(Method.agentPermissionRequested);
+      await a.call(Method.agentStop);
+      final ended = await a.wait(Method.agentTurnEnded);
+      expect(ended['error'], ErrorCode.authRequired);
+      await a.wait(Method.agentStopResult);
+      expect(a.of(Method.agentState).last['state'], 'idle');
+      await a.close();
+    },
+  );
+  test(
+    'Codex: auth-required completion after the Stop deadline stays honest',
+    () async {
+      final f = await fixture({
+        'turns': [
+          {
+            'actions': [
+              {'waitInterrupt': true},
+              {'delayMs': 11000},
+              failed401(),
+            ],
+          },
+        ],
+      }, turnSignal);
+      final a = await f.start();
+      await a.prompt();
+      await a.wait(Method.agentState, where: (p) => p['turnId'] != null);
+      await a.call(Method.agentStop);
+      await a.wait(
+        Method.agentStopResult,
+        where: (r) => r['outcome'] == 'notConfirmed',
+      );
+      expect(a.of(Method.agentState).last['state'], 'stopping');
+      final ended = await a.wait(Method.agentTurnEnded);
+      expect(ended['error'], ErrorCode.authRequired);
+      final late = await a.wait(
+        Method.agentStopResult,
+        where: (r) => r['late'] == true,
+      );
+      expect(late['outcome'], isNot('notConfirmed'));
+      await a.close();
+    },
+  );
   test('Codex: repeated steering at stalled credit refuses before draft removal or native write', () async {
     final f = await fixture({
       'turns': [
@@ -3222,6 +4519,14 @@ void nativeCases(Directory Function() profile, Directory Function() work) {
       await eventually(() => a.events.toString().contains('<redacted>'));
       expect(a.events.toString().contains(secret), false);
       expect(a.notifications.toString().contains(secret), false);
+      expect(
+        a.events
+                .where((event) => event['kind'] == 'agentText')
+                .map((event) => event['text'])
+                .join() ==
+            '<redacted>',
+        true,
+      );
       await a.close();
     },
   );

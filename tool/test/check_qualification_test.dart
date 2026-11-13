@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:test/test.dart';
@@ -77,6 +78,77 @@ String _results({
 String _oneCell(String os, String item, String value) =>
     _results(result: (o, i) => o == os && i == item ? value : 'pass');
 
+const _nativeItems = [
+  'launch',
+  'streaming',
+  'tool activity',
+  'command approval',
+  'Stop',
+  'close/descendant containment',
+  'kumiko tool call',
+  'auth-required',
+];
+const _emptyAuth =
+    'const confirmedCodexAuthSignatures = <(String, String, String)>[];';
+
+String _nativeLiteral(String value) =>
+    "'${value.replaceAll(r'\', r'\\').replaceAll("'", r"\'").replaceAll(r'$', r'\$').replaceAll('\n', r'\n').replaceAll('\r', r'\r').replaceAll('\t', r'\t')}'";
+String _nativeCell(String value) => value
+    .replaceAll(r'\', r'\\')
+    .replaceAll('|', r'\|')
+    .replaceAll('\n', r'\n')
+    .replaceAll('\r', r'\r')
+    .replaceAll('\t', r'\t');
+String _authSource({
+  String version = '0.166.0',
+  String os = 'windows',
+  String signal = 'turn-http-401',
+}) =>
+    'const confirmedCodexAuthSignatures = <(String, String, String)>['
+    "('$version', '$os', '$signal'),];";
+
+String _nativeResults({
+  String version = '0.166.0',
+  String os = 'windows',
+  String? omit,
+  String status = 'pass',
+  bool auth = false,
+  String? item,
+  String? result,
+  String extra = '',
+  String? notes,
+}) {
+  return '## native codex-app-server codex $version\n### $os\n'
+      '| Item | Kind | Result | Notes | Auth code | Auth message |\n'
+      '|---|---|---|---|---|---|\n'
+      '${_nativeItems.where((i) => i != omit).map((i) {
+        final r = i == item
+            ? result!
+            : i == 'auth-required' && !auth
+            ? 'unverified'
+            : status;
+        return '| $i | user | $r | ${notes ?? 'synthetic parser evidence only'} | '
+            '${i == 'auth-required' && auth ? 'turn-http-401' : ''} |  |';
+      }).join('\n')}\n$extra';
+}
+
+QualificationReport _nativeCheck(
+  String text, {
+  String auth = _emptyAuth,
+  String failures = '',
+  String? claude,
+}) => checkQualification(
+  claude ?? '# No Claude claims\n',
+  _source(
+    entries: claude == null
+        ? ''
+        : "('$_name', '$_version', <String>['load', 'resume']),",
+    failures: failures,
+  ),
+  codexMarkdown: text,
+  codexAuthSource: auth,
+);
+
 void _fails(QualificationReport report, Iterable<String> details) {
   expect(report.verdict, isNull);
   expect(report.exitCode, 1);
@@ -88,6 +160,575 @@ void _fails(QualificationReport report, Iterable<String> details) {
 }
 
 void main() {
+  group('native observations', () {
+    for (final malformed in [false, true]) {
+      test(
+        'later native auth pass requires valid original provenance missing=${!malformed}',
+        () {
+          final original = malformed
+              ? '${_nativeResults(auth: true, omit: 'launch')}\n'
+              : '';
+          final report = _nativeCheck(
+            '$original${_nativeResults(version: '0.167.0', auth: true)}',
+            auth: _authSource(),
+          );
+          expect(report.exitCode, 1);
+          expect(
+            report.failures.any((failure) => failure.contains('provenance')),
+            true,
+          );
+          expect(
+            report.codexObservations.last,
+            'CODEX OBSERVATIONS: 0.167.0 windows: FAIL',
+          );
+        },
+      );
+    }
+    test('valid auth provenance remains independent of other version observation outcomes', () {
+      for (final status in ['fail', 'unverified']) {
+        final report = _nativeCheck(
+          '${_nativeResults(auth: true, item: 'Stop', result: status)}\n'
+          '${_nativeResults(version: '0.167.0', auth: true)}',
+          auth: _authSource(),
+        );
+        expect(
+          report.failures.any((failure) => failure.contains('provenance')),
+          false,
+        );
+        expect(
+          report.codexObservations.last,
+          'CODEX OBSERVATIONS: 0.167.0 windows: PASS',
+        );
+      }
+    });
+    test('later native auth pass uses confirmed pair without a provenance-version gate', () {
+      final report = _nativeCheck(
+        '${_nativeResults(auth: true)}\n${_nativeResults(version: '0.167.0', auth: true)}',
+        auth: _authSource(),
+      );
+      expect(report.failures, isEmpty);
+      expect(report.codexObservations, [
+        'CODEX OBSERVATIONS: 0.166.0 windows: PASS',
+        'CODEX OBSERVATIONS: 0.167.0 windows: PASS',
+      ]);
+    });
+    test('native auth pass may record both signals in fixed order', () {
+      final markdown = _nativeResults(auth: true).replaceAll(
+        '| turn-http-401 |',
+        '| account-unauthenticated, turn-http-401 |',
+      );
+      final auth =
+          'const confirmedCodexAuthSignatures = <(String, String, String)>['
+          "('0.166.0', 'windows', 'account-unauthenticated'),"
+          "('0.166.0', 'windows', 'turn-http-401'),];";
+      expect(_nativeCheck(markdown, auth: auth).failures, isEmpty);
+      _fails(_nativeCheck(markdown, auth: _authSource()), [
+        'account-unauthenticated',
+        'registry',
+      ]);
+    });
+    test('unclosed native evidence fence cannot print a passing section', () {
+      final report = _nativeCheck(
+        '${_nativeResults(auth: true)}\n```\n',
+        auth: _authSource(),
+      );
+      expect(report.exitCode, 1);
+      expect(report.codexObservations, [
+        'CODEX OBSERVATIONS: 0.166.0 windows: FAIL',
+      ]);
+    });
+    test(
+      'native exact diagnostics decode quotes slashes Unicode and delimiters',
+      () {
+        const diagnostic =
+            '\nNative isn\'t signed in: C:\\路径\\user | "login" \$value\r\t';
+        final failure = _nativeResults(item: 'kumiko tool call', result: 'fail')
+            .replaceAll(
+              'synthetic parser evidence only',
+              _nativeCell('observed: ${jsonEncode(diagnostic)}'),
+            );
+        final failed = _nativeCheck(
+          failure,
+          failures:
+              "('codex-app-server', '0.166.0', ${_nativeLiteral(diagnostic)}),",
+        );
+        expect(failed.toolDeliveryFailures, [
+          'codex-app-server 0.166.0 windows: $diagnostic',
+        ]);
+        expect(failed.failures, hasLength(1));
+        expect(failed.codexObservations, [
+          'CODEX OBSERVATIONS: 0.166.0 windows: FAIL',
+        ]);
+      },
+    );
+    test(
+      'native JSON diagnostic preserves embedded quote boundaries exactly',
+      () {
+        const diagnostic = 'native "first" then "second"';
+        final failure = _nativeResults(
+          item: 'kumiko tool call',
+          result: 'fail',
+          notes: _nativeCell('observed: ${jsonEncode(diagnostic)}'),
+        );
+        final report = _nativeCheck(
+          failure,
+          failures:
+              "('codex-app-server', '0.166.0', ${_nativeLiteral(diagnostic)}),",
+        );
+        expect(report.toolDeliveryFailures, [
+          'codex-app-server 0.166.0 windows: $diagnostic',
+        ]);
+        expect(report.failures, hasLength(1));
+      },
+    );
+    test('default unrecorded native document is optional but an existing blank document fails', () {
+      final dir = Directory.systemTemp.createTempSync(
+        'kumiko_default_checker_',
+      );
+      addTearDown(() => dir.deleteSync(recursive: true));
+      final script = File('tool/check_qualification.dart').absolute.path;
+      File.fromUri(dir.uri.resolve(defaultQualificationResultsPath))
+        ..parent.createSync(recursive: true)
+        ..writeAsStringSync('# No claims');
+      File.fromUri(dir.uri.resolve(defaultQualifiedAdaptersPath))
+        ..parent.createSync(recursive: true)
+        ..writeAsStringSync(_source(entries: ''));
+      File.fromUri(dir.uri.resolve(defaultCodexAuthSourcePath))
+        ..parent.createSync(recursive: true)
+        ..writeAsStringSync(_emptyAuth);
+      ProcessResult run() => Process.runSync(Platform.resolvedExecutable, [
+        script,
+      ], workingDirectory: dir.path);
+      final missing = run();
+      expect(
+        missing.exitCode,
+        0,
+        reason: '${missing.stdout}\n${missing.stderr}',
+      );
+      expect(missing.stdout, isNot(contains('CODEX OBSERVATIONS')));
+      File.fromUri(dir.uri.resolve(defaultCodexResultsPath))
+          .writeAsStringSync(' \n');
+      final blank = run();
+      expect(blank.exitCode, 1, reason: '${blank.stdout}\n${blank.stderr}');
+      expect(blank.stdout, contains('Codex results: document is blank'));
+    });
+    test('native escape grammar refuses malformed escapes and conflicting JSON diagnostics', () {
+      for (final bad in [r'\q', r'\u00zz', '\\']) {
+        final source =
+            "const confirmedCodexAuthSignatures = <(String, String, String)>[("
+            "'0.166.0', 'windows', '$bad'),];";
+        _fails(_nativeCheck('# No observations', auth: source), [
+          'source',
+          'auth',
+        ]);
+      }
+      for (final bad in [r'\q', '\\']) {
+        final text = _nativeResults().replaceAll(
+          'synthetic parser evidence only',
+          bad,
+        );
+        _fails(_nativeCheck(text), ['escape']);
+      }
+      const diagnostic = 'one "quoted" | exact';
+      final failure = _nativeResults(
+        item: 'kumiko tool call',
+        result: 'fail',
+        notes: _nativeCell(
+          'observed: ${jsonEncode(diagnostic)}; observed: "second"',
+        ),
+      );
+      _fails(
+        _nativeCheck(
+          failure,
+          failures:
+              "('codex-app-server', '0.166.0', ${_nativeLiteral(diagnostic)}),",
+        ),
+        ['observed'],
+      );
+    });
+    test(
+      'native CLI prints native status and rejects explicitly missing inputs',
+      () {
+        final dir = Directory.systemTemp.createTempSync(
+          'kumiko_native_checker_',
+        );
+        addTearDown(() => dir.deleteSync(recursive: true));
+        final claude = File.fromUri(dir.uri.resolve('claude.md'))
+          ..writeAsStringSync('# No claims');
+        final native = File.fromUri(dir.uri.resolve('native.md'))
+          ..writeAsStringSync(_nativeResults());
+        final source = File.fromUri(dir.uri.resolve('qualified.dart'))
+          ..writeAsStringSync(_source(entries: ''));
+        final auth = File.fromUri(dir.uri.resolve('auth.dart'))
+          ..writeAsStringSync(_emptyAuth);
+        final out = StringBuffer();
+        expect(
+          runQualificationCheck(
+            [claude.path, source.path],
+            out: out,
+            codexResultsPath: native.path,
+            codexAuthSourcePath: auth.path,
+          ),
+          0,
+        );
+        expect(
+          out.toString(),
+          contains('CODEX OBSERVATIONS: 0.166.0 windows: INCOMPLETE'),
+        );
+        for (final missingAuth in [false, true]) {
+          final failed = StringBuffer();
+          expect(
+            runQualificationCheck(
+              [claude.path, source.path],
+              out: failed,
+              codexResultsPath: missingAuth
+                  ? native.path
+                  : '${native.path}.missing',
+              codexAuthSourcePath: missingAuth
+                  ? '${auth.path}.missing'
+                  : auth.path,
+            ),
+            1,
+          );
+          expect(
+            failed.toString(),
+            contains(missingAuth ? 'auth' : 'Codex results'),
+          );
+        }
+      },
+    );
+    test('native claims cannot enter the qualified-adapter allowlist', () {
+      _fails(
+        checkQualification(
+          _nativeResults(),
+          _source(entries: "('codex-app-server', '0.166.0', <String>[]),"),
+        ),
+        ['source', 'Codex', 'qualifiedAdapters'],
+      );
+    });
+    test('blank explicit native document is malformed', () {
+      _fails(_nativeCheck(' \r\n'), ['Codex', 'blank']);
+    });
+    test('Codex: Real Windows evidence passes (checker)', () {
+      final report = _nativeCheck(
+        _nativeResults(auth: true),
+        auth: _authSource(),
+      );
+      expect(report.failures, isEmpty);
+      expect(report.codexObservations, [
+        'CODEX OBSERVATIONS: 0.166.0 windows: PASS',
+      ]);
+      expect(report.verdict, 'NO CLAIMS (no adapter qualified)');
+    });
+    test('required unverified is INCOMPLETE without admission failure', () {
+      final report = _nativeCheck(_nativeResults());
+      expect(report.exitCode, 0);
+      expect(report.codexObservations, [
+        'CODEX OBSERVATIONS: 0.166.0 windows: INCOMPLETE',
+      ]);
+      expect(
+        report.unproven,
+        contains('codex-app-server codex 0.166.0: windows: auth-required'),
+      );
+    });
+    test(
+      'absent native observations do not gate later compatible versions',
+      () {
+        final report = _nativeCheck(
+          '# Research only; installed 0.167.0 unobserved\n',
+        );
+        expect(report.failures, isEmpty);
+        expect(report.codexObservations, isEmpty);
+      },
+    );
+    test('each required item is mandatory in every recorded section', () {
+      for (final item in _nativeItems) {
+        final report = _nativeCheck(_nativeResults(omit: item));
+        _fails(report, ['0.166.0', 'windows', item, 'missing']);
+        expect(report.codexObservations, [
+          'CODEX OBSERVATIONS: 0.166.0 windows: FAIL',
+        ]);
+      }
+    });
+    test('any required failure is FAIL', () {
+      final report = _nativeCheck(_nativeResults(item: 'Stop', result: 'fail'));
+      _fails(report, ['0.166.0', 'windows', 'Stop', 'fail']);
+      expect(report.codexObservations, [
+        'CODEX OBSERVATIONS: 0.166.0 windows: FAIL',
+      ]);
+    });
+    test('optional claims each need their own valid result', () {
+      for (final item in [
+        'recovery',
+        'steering',
+        'structured question',
+        'child attribution',
+      ]) {
+        for (final result in ['pass', 'unverified', 'fail', '']) {
+          final report = _nativeCheck(
+            _nativeResults(
+              auth: true,
+              extra:
+                  '| $item | user | $result | synthetic optional evidence | | |\n',
+            ),
+            auth: _authSource(),
+          );
+          expect(report.codexObservations, [
+            'CODEX OBSERVATIONS: 0.166.0 windows: ${result == 'fail' || result.isEmpty ? 'FAIL' : 'PASS'}',
+          ]);
+          expect(report.exitCode, result == 'fail' || result.isEmpty ? 1 : 0);
+        }
+      }
+    });
+    test('auth pass requires ordered known signal names, no message and registry provenance', () {
+      _fails(_nativeCheck(_nativeResults(auth: true)), ['auth-required']);
+      for (final code in [
+        '',
+        'login',
+        '-32001',
+        'unauthorized',
+        'Turn-Http-401',
+        'turn-http-401, account-unauthenticated',
+        'turn-http-401, turn-http-401',
+        'turn-http-401,',
+      ]) {
+        _fails(
+          _nativeCheck(
+            _nativeResults(auth: true)
+                .replaceAll('| turn-http-401 |', '| $code |'),
+            auth: _authSource(),
+          ),
+          ['auth-required'],
+        );
+      }
+      _fails(
+        _nativeCheck(
+          _nativeResults(auth: true)
+              .replaceAll('| turn-http-401 |  |', '| turn-http-401 | 401 |'),
+          auth: _authSource(),
+        ),
+        ['auth-required', 'Message'],
+      );
+      _fails(
+        _nativeCheck(
+          _nativeResults(auth: true),
+          auth: _authSource(signal: 'account-unauthenticated'),
+        ),
+        ['auth'],
+      );
+      _fails(
+        _nativeCheck(
+          _nativeResults(auth: true),
+          auth: _authSource(os: 'linux'),
+        ),
+        ['auth'],
+      );
+      _fails(
+        _nativeCheck(
+          _nativeResults(auth: true),
+          auth: _authSource(version: '0.167.0'),
+        ),
+        ['auth'],
+      );
+    });
+    test('auth signature provenance needs its matching recorded auth pass', () {
+      for (final text in [
+        '# No observations',
+        _nativeResults(),
+        _nativeResults(omit: 'auth-required'),
+      ]) {
+        _fails(_nativeCheck(text, auth: _authSource()), [
+          'auth',
+          '0.166.0',
+          'windows',
+        ]);
+      }
+      final report = _nativeCheck(
+        '${_nativeResults(auth: true)}\n${_nativeResults(version: '0.167.0')}',
+        auth: _authSource(),
+      );
+      expect(report.failures, isEmpty);
+      expect(report.codexObservations, [
+        'CODEX OBSERVATIONS: 0.166.0 windows: PASS',
+        'CODEX OBSERVATIONS: 0.167.0 windows: INCOMPLETE',
+      ]);
+    });
+    test('unverified auth cannot claim a code or message', () {
+      _fails(
+        _nativeCheck(
+          _nativeResults().replaceAll(
+            RegExp(r'\| auth-required \| user \| unverified \|[^\n]*'),
+            '| auth-required | user | unverified | synthetic parser evidence only | turn-http-401 | |',
+          ),
+        ),
+        ['auth-required'],
+      );
+    });
+    test(
+      'native Windows evidence does not manufacture other OS observations',
+      () {
+        final report = _nativeCheck(
+          _nativeResults(auth: true),
+          auth: _authSource(),
+        );
+        expect(report.codexObservations, hasLength(1));
+        expect(report.unproven, isEmpty);
+        expect(report.failures, isEmpty);
+      },
+    );
+    test('malformed duplicate and missing native cells or sections fail', () {
+      for (final text in [
+        _nativeResults().replaceAll('codex 0.166.0', 'codex latest'),
+        _nativeResults().replaceAll('codex-app-server codex', 'unknown codex'),
+        _nativeResults().replaceAll('### windows', '### plan9'),
+        _nativeResults().replaceAll('### windows\n', ''),
+        _nativeResults().replaceAll(
+          RegExp(r'\| launch \| user \| pass \|[^\n]*'),
+          '| launch | user | pass |',
+        ),
+        _nativeResults().replaceAll(
+          '| launch | user | pass',
+          '| launch | robot | pass',
+        ),
+        _nativeResults().replaceAll(
+          '| launch | user | pass',
+          '| launch | user | qualified',
+        ),
+        _nativeResults(notes: ''),
+        '${_nativeResults()}\n### windows\n',
+        '${_nativeResults()}\n${_nativeResults()}',
+        '${_nativeResults()}\n| launch | user | pass | repeated | | |\n',
+        '${_nativeResults()}\n| invented capability | user | pass | invented | | |\n',
+        '## native codex-app-server codex 0.166.0\n',
+      ]) {
+        expect(_nativeCheck(text).failures, isNotEmpty, reason: text);
+      }
+    });
+    test('native CRLF and fences cannot invent evidence', () {
+      expect(
+        _nativeCheck(_nativeResults().replaceAll('\n', '\r\n'))
+            .codexObservations,
+        ['CODEX OBSERVATIONS: 0.166.0 windows: INCOMPLETE'],
+      );
+      for (final fence in ['```', '~~~~']) {
+        final report = _nativeCheck(
+          '$fence markdown\n${_nativeResults()}$fence\n',
+        );
+        expect(report.codexObservations, isEmpty);
+        expect(report.failures, isEmpty);
+      }
+      _fails(_nativeCheck('```\n${_nativeResults()}'), ['fence']);
+    });
+    test('matched native tool failure is FAIL with exact diagnostic on observed OS only', () {
+      const text = 'native MCP failed exactly';
+      final results = _nativeResults(item: 'kumiko tool call', result: 'fail')
+          .replaceAll(
+            '| kumiko tool call | user | fail | synthetic parser evidence only |',
+            '| kumiko tool call | user | fail | observed: "$text" |',
+          );
+      final report = _nativeCheck(
+        results,
+        failures: _failure(text, name: 'codex-app-server', version: '0.166.0'),
+      );
+      expect(report.codexObservations, [
+        'CODEX OBSERVATIONS: 0.166.0 windows: FAIL',
+      ]);
+      expect(report.toolDeliveryFailures, [
+        'codex-app-server 0.166.0 windows: $text',
+      ]);
+      expect(report.failures, hasLength(1));
+      expect(report.failures.single, contains('kumiko tool call: fail'));
+    });
+    test('native failure diagnostics cannot be absent unsigned contradictory or mismatched', () {
+      final listed = _failure(
+        'native failure',
+        name: 'codex-app-server',
+        version: '0.166.0',
+      );
+      for (final text in [
+        '# Unrun',
+        _nativeResults(),
+        _nativeResults(item: 'kumiko tool call', result: 'fail'),
+        _nativeResults(
+          item: 'kumiko tool call',
+          result: 'fail',
+          notes: 'observed: "different"',
+        ),
+      ]) {
+        _fails(_nativeCheck(text, failures: listed), [
+          'codex-app-server',
+          '0.166.0',
+          'kumiko tool call',
+        ]);
+      }
+      _fails(
+        _nativeCheck(
+          _nativeResults(
+            item: 'kumiko tool call',
+            result: 'fail',
+            notes: 'observed: "native failure"',
+          ),
+        ),
+        ['kumiko tool call', 'not listed'],
+      );
+      _fails(
+        _nativeCheck(
+          _nativeResults(
+            item: 'kumiko tool call',
+            result: 'fail',
+            notes: 'observed: "one"; observed: "two"',
+          ),
+          failures: listed,
+        ),
+        ['kumiko tool call', 'observed'],
+      );
+    });
+    test('native auth registry grammar is strict and cannot hide unused signatures', () {
+      for (final auth in [
+        '',
+        'const confirmedCodexAuthSignatures = arbitrary;',
+        '$_emptyAuth const ignored = 1;',
+        _authSource(signal: 'unauthorized'),
+        _authSource(signal: 'Turn-Http-401'),
+        _authSource(version: 'latest'),
+        _authSource(os: 'plan9'),
+        _authSource(signal: ''),
+        _authSource(signal: r'$secret'),
+        _authSource().replaceAll(
+          '];',
+          "('0.166.0', 'windows', 'turn-http-401'),];",
+        ),
+        _authSource().replaceAll(', String)', ', int, String)'),
+      ]) {
+        _fails(_nativeCheck('# Unrun', auth: auth), ['source', 'auth']);
+      }
+    });
+    test('Claude and native evidence retain independent semantics', () {
+      final report = _nativeCheck(_nativeResults(), claude: _results());
+      expect(report.failures, isEmpty);
+      expect(report.verdict, 'QUALIFIED');
+      expect(report.codexObservations, [
+        'CODEX OBSERVATIONS: 0.166.0 windows: INCOMPLETE',
+      ]);
+    });
+  });
+
+  test('Codex: Tests pass but walk is unrun', () {
+    final report = checkQualification(
+      '# Contract research only\n\n'
+      '## native codex-app-server codex 0.166.0\n\n'
+      '### windows\n\n'
+      '| Item | Kind | Result | Notes | Auth code | Auth message |\n'
+      '|---|---|---|---|---|---|\n'
+      '${['launch', 'streaming', 'tool activity', 'command approval', 'Stop', 'close/descendant containment', 'kumiko tool call', 'auth-required'].map((item) => '| $item | user | unverified | walk unrun | | |').join('\n')}\n',
+      _source(entries: ''),
+    );
+    expect(
+      report.unproven,
+      contains('codex-app-server codex 0.166.0: windows: launch'),
+    );
+  });
+
   group('qualification check', () {
     test('every checked item pass prints QUALIFIED', () {
       final report = checkQualification(_results(), _source());

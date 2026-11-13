@@ -1,0 +1,207 @@
+{
+  "schema": 1,
+  "protocol": "codex-app-server",
+  "nativeVersion": "0.166.0",
+  "os": "windows",
+  "manifestSha256": "1e7c42ac40bf240cc665f0ab8d592dfdec89b4ad5a5ef3ede79a823a912c9bcc",
+  "nativeExecutableSha256": "9d563ee4e0441ff9d59d612013e0460ddf8e5709735c2d9f6b98b7ef8ca4eb42",
+  "hostExecutableSha256": "84560d9c26e827fb0bdd4431c5f0f9263f6ddce23f9044d98ecd025157affdfe",
+  "ownerApproved": true,
+  "ownerPausedOtherCodexSessions": true,
+  "claimedAt": "2026-11-12T11:31:46.215328Z",
+  "finishedAt": "2026-11-12T11:33:38.078368Z",
+  "commandExitCode": 0,
+  "manifestConsumed": true,
+  "automaticRetries": 0,
+  "approvalPolicyOverride": false,
+  "auditProfile": "large-native-home",
+  "nativeSelection": "changed-artifacts-v4",
+  "rawHelperObservations": {
+    "launch": "pass",
+    "streaming": "pass",
+    "tool activity": "pass",
+    "command approval": "pass",
+    "Stop": "pass",
+    "close/descendant containment": "pass",
+    "kumiko tool call": "pass",
+    "auth-required": "unverified",
+    "recovery": "unverified",
+    "steering": "unverified",
+    "structured question": "unverified",
+    "child attribution": "unverified",
+    "walkDiagnostics": {
+      "turnEnds": [
+        {
+          "stopReason": "end_turn",
+          "error": "none",
+          "hasStopReason": true,
+          "hasError": false,
+          "hasMessage": false,
+          "hasNativeMessage": false,
+          "nativeMessageTruncated": false,
+          "errorReasons": [
+            "none"
+          ]
+        },
+        {
+          "stopReason": "end_turn",
+          "error": "none",
+          "hasStopReason": true,
+          "hasError": false,
+          "hasMessage": false,
+          "hasNativeMessage": false,
+          "nativeMessageTruncated": false,
+          "errorReasons": [
+            "none"
+          ]
+        },
+        {
+          "stopReason": "cancelled",
+          "error": "none",
+          "hasStopReason": true,
+          "hasError": false,
+          "hasMessage": false,
+          "hasNativeMessage": false,
+          "nativeMessageTruncated": false,
+          "errorReasons": [
+            "none"
+          ]
+        }
+      ],
+      "turnEndsTruncated": false,
+      "noticeFlags": {}
+    },
+    "textEvents": 71,
+    "firstTurnIncrementalEvents": 28,
+    "toolEvents": 9,
+    "mcpProbeStage": "called",
+    "unrelatedMcpEnvironmentIsolated": true,
+    "unrelatedCommandEnvironmentIsolated": true,
+    "canaryAudit": {
+      "auditProfile": "large-native-home",
+      "maxFiles": 4096,
+      "maxFileBytes": 268435456,
+      "maxTotalBytes": 536870912,
+      "complete": true,
+      "errorCount": 0,
+      "errorCategories": {
+        "metadataAdmission": 0,
+        "nonRegular": 0,
+        "fileLimit": 0,
+        "aggregateLimit": 0,
+        "unstable": 0,
+        "statIo": 0,
+        "enumerationIo": 0,
+        "openIo": 0,
+        "readIo": 0,
+        "closeIo": 0
+      },
+      "ioErrorCategories": {
+        "sharingViolation": 0,
+        "lockViolation": 0,
+        "accessDenied": 0,
+        "other": 0
+      },
+      "scannedFiles": 59,
+      "matchedFiles": 0,
+      "scannedBytes": 326946613,
+      "readBytes": 326946613,
+      "chargedBytes": 326946613,
+      "nativeSelection": "changed-artifacts-v4",
+      "rootErrorCategories": {
+        "nonDirectory": 0,
+        "metadataIo": 0
+      },
+      "rootIoErrorCategories": {
+        "sharingViolation": 0,
+        "lockViolation": 0,
+        "accessDenied": 0,
+        "other": 0
+      },
+      "nativeErrorCategories": {
+        "metadataLimit": 0,
+        "nonRegular": 0,
+        "metadataIo": 0,
+        "traversalIo": 0,
+        "baselineIncomplete": 0,
+        "removedEntry": 0,
+        "changedUnknownFile": 0,
+        "changedUnknownDirectory": 0,
+        "directoryUnstable": 0,
+        "protectedEntry": 0,
+        "metadataStorage": 0,
+        "linkObservation": 0
+      },
+      "nativeBaselineErrorCategories": {
+        "metadataLimit": 0,
+        "nonRegular": 0,
+        "metadataIo": 0,
+        "traversalIo": 0,
+        "baselineIncomplete": 0,
+        "removedEntry": 0,
+        "changedUnknownFile": 0,
+        "changedUnknownDirectory": 0,
+        "directoryUnstable": 0,
+        "protectedEntry": 0,
+        "metadataStorage": 0,
+        "linkObservation": 0
+      },
+      "nativeIoErrorCategories": {
+        "sharingViolation": 0,
+        "lockViolation": 0,
+        "accessDenied": 0,
+        "other": 0
+      },
+      "nativeBaselineIoErrorCategories": {
+        "sharingViolation": 0,
+        "lockViolation": 0,
+        "accessDenied": 0,
+        "other": 0
+      },
+      "nativeUnknownArtifactCategories": {
+        "credential": 0,
+        "config": 0,
+        "modelCache": 0,
+        "versionCache": 0,
+        "tempDirectory": 0,
+        "otherFile": 0,
+        "otherDirectory": 0
+      },
+      "nativeSelectionCounters": {
+        "inventoryEntries": 13166,
+        "directoriesAccounted": 3941,
+        "changedFiles": 32,
+        "alwaysScanFiles": 33,
+        "protectedMetadataOnly": 2,
+        "selectedFiles": 52,
+        "linksAccounted": 5,
+        "socketsAccounted": 2,
+        "socketsChanged": 0,
+        "removedEntries": 5
+      },
+      "nativeDetectorLimits": [
+        "metadata-equality: unchanged ordinary files outside the always-scan set are not read",
+        "ASCII/UTF-8: only the ASCII canary encoded as UTF-8 bytes is matched",
+        "unchanged-link: traversal through an unchanged link is excluded, so its target gets no coverage merely because the link is present; link equality is established at the two observation times only",
+        "concurrent-writers: other processes that write the native home during the walk, such as other Codex sessions, are not distinguishable from the walked run",
+        "sockets: Unix-domain sockets have no contents; they are recorded without being opened and an added, removed or changed socket is counted but not scanned",
+        "removals: a removed non-protected entry is counted but not scanned because no content remains; a removed protected entry still makes the audit incomplete"
+      ]
+    }
+  },
+  "diagnosis": {
+    "launch": "Root session started; the prepared workspace was intact and empty.",
+    "ownerPause": "No Codex process was running at approval time; the one Orca Codex chat was idle (done) and was not closed. OMP and Claude sessions were left alone.",
+    "approval": "Both command approvals were answered under the reviewed native command wrapper rule; the canary command reported both secrets absent.",
+    "stop": "Pass. The running marker was read from the third command's streamed output deltas; Stop was sent and the turn ended cancelled.",
+    "probe": "Pass. With env_presence declared read-only, Codex called it without an approval request (no MCP elicitation was flagged); the probe reached the called stage and reported both the tool secret and the tool endpoint absent.",
+    "containment": "Pass. The probe was alive before close and settled after.",
+    "submittedRootPrompts": 3,
+    "cleanup": "Host disposed; no attempt-owned test-host or Codex processes remained.",
+    "additionalNativeContentReads": 0
+  },
+  "sectionResult": "INCOMPLETE",
+  "authenticationSignatureAdded": false,
+  "toolDeliveryFailureEntryAdded": false,
+  "interpretation": "All seven walked required rows pass: launch, streaming, tool activity, command approval, Stop, close/descendant containment and the kumiko tool call. Complete normal-home audit: 0 errors, 59 files scanned (326,946,613 bytes), 0 canary matches. The section stays INCOMPLETE only on auth-required, which needs the separate, still unapproved isolated authentication experiment. The claim is consumed."
+}

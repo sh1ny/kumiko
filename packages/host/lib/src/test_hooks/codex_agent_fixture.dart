@@ -60,6 +60,27 @@ Future<int> runCodexFixture(List<String> args) async {
   ];
   Object? nativeServers;
   Json? currentNativeEntry;
+  // Independently authored wire-fixture model: ordered dotted-key writes replace
+  // the value at their destination, including a whole table at a root key.
+  Json configuration(Iterable<MapEntry<String, Object?>> overrides) {
+    final result = <String, Object?>{};
+    for (final override in overrides) {
+      final segments = override.key.split('.');
+      var target = result;
+      for (final segment in segments.take(segments.length - 1)) {
+        final existing = target[segment];
+        if (existing is! Json) target[segment] = <String, Object?>{};
+        target = target[segment]! as Json;
+      }
+      target[segments.last] = jsonDecode(jsonEncode(override.value));
+    }
+    return result;
+  }
+
+  final cliOverrides = [
+    for (final row in script['cliOverrides'] as List? ?? const [])
+      MapEntry((row as Json)['key']! as String, row['value']),
+  ];
   Future<void> runTools(String when) async {
     if (tool?.when == when) await tool!.run(nativeServers);
     for (final peer in peerTools) {
@@ -99,29 +120,33 @@ Future<int> runCodexFixture(List<String> args) async {
     final otherMcpIsolated = await inspectEnvironment(
       audit['otherEnv'] as Json? ?? const {'OTHER_MCP_ENTRY': 'unrelated'},
     );
+    final auditHome =
+        script['toolsAuditHome'] as String? ??
+        p.join(report.parent.path, 'fixture-native-home');
     for (final relative in const [
       ['sessions', 'session.jsonl'],
       ['logs', 'native.log'],
       ['state', 'native.state'],
     ]) {
-      final artifact = File(
-        p.joinAll([report.parent.path, 'fixture-native-home', ...relative]),
-      );
+      final artifact = File(p.joinAll([auditHome, ...relative]));
       await artifact.parent.create(recursive: true);
       await artifact.writeAsString(
         'authored native fixture state; no private configuration\n',
       );
     }
     if (script['persistSecretForScanTest'] == true) {
-      final canary = File(
-        p.join(
-          report.parent.path,
-          'fixture-native-home',
-          'state',
-          'canary.txt',
-        ),
-      );
+      final canary = File(p.join(auditHome, 'state', 'canary.txt'));
       await canary.writeAsString(secret);
+    }
+    // Synthetic persistence at fixture-chosen relative paths, so selection
+    // tests can place the run secret in caches, unclassified directories and
+    // protected leaves of an owned native home.
+    for (final relative in script['persistSecretPaths'] as List? ?? const []) {
+      final artifact = File(
+        p.joinAll([auditHome, ...(relative as String).split('/')]),
+      );
+      await artifact.parent.create(recursive: true);
+      await artifact.writeAsString(secret);
     }
     var secretFound = false;
     var scannedFiles = 0;
@@ -242,6 +267,10 @@ Future<int> runCodexFixture(List<String> args) async {
         child.exitCode.ignore();
       }
       if (action['send'] case final Json message) await send(message);
+      if (action['stderr'] case final String message) {
+        stderr.write(message);
+        await stderr.flush();
+      }
       if (action['closeStdout'] == true) await stdout.close();
     }
   }
@@ -294,7 +323,40 @@ Future<int> runCodexFixture(List<String> args) async {
         resumed = method == 'thread/resume';
         final params = m['params'] as Json;
         final config = params['config'];
-        final servers = config is Json ? config['mcp_servers'] : null;
+        final effective = configuration([
+          ...cliOverrides,
+          if (config is Json) ...config.entries,
+        ]);
+        final servers = effective['mcp_servers'];
+        if (script.containsKey('cliOverrides')) {
+          record({
+            'mcpConfiguration': {
+              'method': method,
+              'entries': servers is Json ? servers.keys.toList() : <String>[],
+              'privateEnvironmentOnlyInKumiko':
+                  servers is Json &&
+                  servers.entries.every(
+                    (entry) =>
+                        entry.key == 'kumiko' ||
+                        entry.value is Json &&
+                            !((entry.value as Json)['env'] as Json? ?? const {})
+                                .keys
+                                .any((key) => key.startsWith('KUMIKO_')),
+                  ),
+              'probe': servers is Json ? servers['unrelated_probe'] : null,
+              'kumikoHasPrivateEnvironment':
+                  servers is Json &&
+                  servers['kumiko'] is Json &&
+                  ((servers['kumiko'] as Json)['env'] as Json? ?? const {}).keys
+                      .toSet()
+                      .containsAll(const [
+                        'KUMIKO_TOOL_ENDPOINT',
+                        'KUMIKO_TOOL_SECRET',
+                        'KUMIKO_UNIT',
+                      ]),
+            },
+          });
+        }
         final entry = servers is Json ? servers['kumiko'] : null;
         currentNativeEntry = entry is Json ? entry : null;
         nativeServers = [
@@ -374,10 +436,22 @@ Future<int> runCodexFixture(List<String> args) async {
                 script['configReadResult'] ??
                 script['effectiveConfig'] ??
                 {
-                  'config': {'mcp_servers': <String, Object?>{}},
+                  'config': configuration(cliOverrides),
                   'origins': <String, Object?>{},
                   'layers': <Object?>[],
                 },
+        });
+      case 'account/read':
+        // Absent script keys keep the method unsupported (fail-open preflight).
+        if (script['accountReadHang'] == true) continue;
+        await send({
+          'id': id,
+          if (script['accountReadError'] case final Json error)
+            'error': error
+          else if (script.containsKey('accountRead'))
+            'result': script['accountRead']
+          else
+            'error': {'code': -32601, 'message': 'fixture unsupported'},
         });
       case 'turn/start':
         await runTools('prompt');

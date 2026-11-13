@@ -80,6 +80,17 @@ ToolGrant newGrant(
   onCallSucceeded: onCallSucceeded,
 );
 
+class HeldCloseConnection extends FakeConnection {
+  final releaseClose = Completer<void>();
+  Future<void>? _closing;
+
+  @override
+  Future<void> close() {
+    closeCalled = true;
+    return _closing ??= releaseClose.future.then((_) => super.close());
+  }
+}
+
 Future<FakeConnection> connect(ToolService s, ToolGrant g) async {
   final c = FakeConnection();
   s.accept(c);
@@ -136,6 +147,58 @@ void main() {
         c.send({'kumikoBridge': 1, 'secret': g.secret});
         expect(await c.next(), {'ok': false, 'error': 'unauthenticated'});
         await c.closed;
+      },
+    );
+
+    test(
+      'revoke reserves its authenticated slot until transport close joins',
+      () async {
+        final grant = newGrant(service);
+        final c = HeldCloseConnection();
+        try {
+          service.accept(c);
+          c.send({'kumikoBridge': 1, 'secret': grant.secret});
+          expect(await c.next(), {'ok': true});
+          c.send(callReq(1, 'kumiko_session_info', <String, Object?>{}));
+          // Ping is processed after the call has registered its binding waiter.
+          c.send(req(2, 'ping'));
+          expect((await c.next())['id'], 2);
+          expect(grant.pendingBindingWaiters, 1);
+          expect(service.pendingBindingCount, 1);
+          expect(service.authenticatedCount, 1);
+
+          grant.revoke();
+          expect(grant.isLive, isFalse);
+          expect(grant.pendingBindingWaiters, 0);
+          expect(service.pendingBindingCount, 0);
+          expect(c.closeCalled, isTrue);
+          expect(c.isClosed, isFalse);
+          expect(service.authenticatedCount, 1);
+          final refusedCall = await c.next();
+          expect(refusedCall['id'], 1);
+          expect(
+            (refusedCall['error'] as Map)['message'],
+            'session unavailable',
+          );
+          final retry = FakeConnection();
+          service.accept(retry);
+          retry.send({'kumikoBridge': 1, 'secret': grant.secret});
+          expect(await retry.next(), {'ok': false, 'error': 'unauthenticated'});
+          await retry.closed;
+          expect(service.authenticatedCount, 1);
+          expect(c.unread, isEmpty);
+
+          c.releaseClose.complete();
+          // Service close joins the same in-progress transport close future.
+          await service.close();
+          expect(c.isClosed, isTrue);
+          expect(service.authenticatedCount, 0);
+          expect(grant.pendingBindingWaiters, 0);
+          expect(service.pendingBindingCount, 0);
+        } finally {
+          if (!c.releaseClose.isCompleted) c.releaseClose.complete();
+          await service.close();
+        }
       },
     );
   });

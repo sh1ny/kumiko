@@ -1,0 +1,41 @@
+{
+  "schema": 1,
+  "protocol": "codex-app-server",
+  "nativeVersion": "0.166.0",
+  "os": "windows",
+  "manifestSha256": "d54897088e3bee53d56f17844bad6abdb6fcea358a05a897e5b2b4e331c46f28",
+  "nativeExecutableSha256": "9d563ee4e0441ff9d59d612013e0460ddf8e5709735c2d9f6b98b7ef8ca4eb42",
+  "ownerApproved": true,
+  "claimedAt": "2026-11-11T07:42:29.900867Z",
+  "failedAt": "2026-11-11T07:42:30.377362Z",
+  "commandExitCode": 1,
+  "submittedRootPrompts": 0,
+  "automaticRetries": 0,
+  "manifestConsumed": true,
+  "diagnostic": {
+    "reason": "adapter-protocol",
+    "message": null,
+    "stage": null,
+    "nativeCode": null,
+    "nativeMessage": null,
+    "originalMessageAndStageLost": true
+  },
+  "startupCleanup": {
+    "probeUnitsCleaned": 2,
+    "nativeUnitCleaned": true,
+    "hostExitCode": 0,
+    "interactiveContainmentTested": false
+  },
+  "canaryAudit": {
+    "performed": false,
+    "complete": false,
+    "matchedFiles": null,
+    "reason": "No session identity returned; original stage was lost, so lack of private-entry injection cannot be proven."
+  },
+  "originalHelperLaunchResult": "unverified",
+  "reconciledLaunchResult": "fail",
+  "reconciliationReason": "The approved startup request failed; the helper did not classify that failure or retain its public diagnostic message and stage.",
+  "otherRequiredAndOptionalObservations": "unverified",
+  "authenticationSignatureAdded": false,
+  "toolDeliveryFailureEntryAdded": false
+}

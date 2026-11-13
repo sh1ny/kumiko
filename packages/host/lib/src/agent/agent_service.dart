@@ -17,8 +17,11 @@ import '../unit_manager.dart';
 import '../workspace_service.dart';
 import '../workspace_resolver.dart';
 import 'acp/acp_client.dart';
+import 'codex/codex_auth_signal.dart';
 import 'codex/codex_client.dart';
 import 'codex/version_probe.dart';
+import 'codex/native_home_audit.dart';
+import 'tool_file_audit.dart';
 import 'runtime_driver.dart';
 import 'agent_session.dart';
 import 'adapter_detector.dart';
@@ -28,6 +31,8 @@ import 'qualification.dart';
 import 'qualified_adapters.dart';
 import 'runtime_profile_service.dart';
 import 'tools/tool_service.dart';
+import 'tool_secret_redaction.dart';
+import 'startup_diagnostics.dart';
 
 /// The captured execution target is never derived again from desktop focus or
 /// a mutable workspace row. Continue will compare this durable identity.
@@ -109,15 +114,16 @@ class _AgentIO {
     this.launch, {
     String? codexVersion,
     List<(String, String, List<String>)> qualified = qualifiedAdapters,
-    List<(int, String)> authSignatures = const [],
+    Set<CodexAuthSignal> authSignals = const {},
   }) : client = codexVersion == null
            ? AcpRuntimeDriver(
                AcpClient.pipes(launch.pipes!),
                qualified: qualified,
              )
            : CodexRuntimeDriver(
-               CodexClient.pipes(launch.pipes!, authSignatures: authSignatures),
+               CodexClient.pipes(launch.pipes!),
                codexVersion,
+               authSignals: authSignals,
              ) {
     errors = launch.pipes!.stderr.listen(
       stderr.add,
@@ -389,11 +395,7 @@ class AgentService {
   /// run's own grant is revoked before its diagnostics are built, and other
   /// revocations may meanwhile have evicted it from the recent ones.
   String _redact(String text, [ToolGrant? own]) {
-    var out = text;
-    for (final secret in _secretsFor(own)) {
-      out = out.replaceAll(secret, '<redacted>');
-    }
-    return out;
+    return redactToolSecrets(text, _secretsFor(own));
   }
 
   /// Every secret [_redact] removes: the run's own, live and kept revoked.
@@ -425,6 +427,7 @@ class AgentService {
     String sessionId,
     List<String> roots,
   ) async {
+    _toolAuditStarted = true;
     final a = _agents[sessionId];
     final secret = a?.grant?.secret;
     if (a == null || secret == null || roots.isEmpty || roots.length > 4) {
@@ -434,19 +437,47 @@ class AgentService {
       await profileDirectory.resolveSymbolicLinks(),
       await Directory(a.record.target.path).resolveSymbolicLinks(),
     ];
+    final nativeAudit = _nativeHomeAudit;
+    if (nativeAudit != null &&
+        roots.any((root) => p.equals(p.normalize(root), nativeAudit.home))) {
+      final driver = a.io.client;
+      if (driver is! CodexRuntimeDriver || !a.ending) {
+        throw RpcException(
+          ErrorCode.invalidParams,
+          'native audit requires a closed native run',
+        );
+      }
+      final identity = await driver.client.initialize();
+      final actualHome = identity.codexHome == null
+          ? null
+          : await Directory(identity.codexHome!).resolveSymbolicLinks();
+      if (actualHome == null || !p.equals(actualHome, nativeAudit.home)) {
+        throw RpcException(
+          ErrorCode.invalidParams,
+          'native audit home differs from initialized run',
+        );
+      }
+      allowed.add(nativeAudit.home);
+    }
     var errorCount = 0;
-    var scannedFiles = 0;
-    var matchedFiles = 0;
-    var scannedBytes = 0;
-    const fileBound = 16 * 1024 * 1024;
-    const totalBound = 32 * 1024 * 1024;
-    final seen = <String>{};
+    final rootCategories = <String, int>{'nonDirectory': 0, 'metadataIo': 0};
+    final rootIoErrors = AuditIoErrorCounts();
+    var includedNative = false;
+    final candidates = <String>[];
     for (final root in roots) {
       String canonical;
       try {
+        if (await FileSystemEntity.type(root, followLinks: false) !=
+            FileSystemEntityType.directory) {
+          errorCount++;
+          rootCategories['nonDirectory'] = rootCategories['nonDirectory']! + 1;
+          continue;
+        }
         canonical = await Directory(root).resolveSymbolicLinks();
-      } on FileSystemException {
+      } on FileSystemException catch (error) {
         errorCount++;
+        rootCategories['metadataIo'] = rootCategories['metadataIo']! + 1;
+        rootIoErrors.record(error);
         continue;
       }
       if (!allowed.any(
@@ -457,67 +488,95 @@ class AgentService {
           'test secret scan must stay in the run target or host profile',
         );
       }
-      try {
-        await for (final entity in Directory(
-          canonical,
-        ).list(recursive: true, followLinks: false)) {
-          if (entity is! File || !seen.add(p.normalize(entity.path))) continue;
-          if (seen.length > 4096 || scannedBytes >= totalBound) {
-            errorCount++;
-            break;
-          }
-          try {
-            final before = await entity.stat();
-            if (before.type == FileSystemEntityType.file && before.size == 0) {
-              final after = await entity.stat();
-              if (after.type == before.type &&
-                  after.size == 0 &&
-                  after.modified == before.modified &&
-                  after.changed == before.changed) {
-                // Empty bytes are fully accounted without trying to read an
-                // intentionally locked, empty profile coordination file.
-                scannedFiles++;
-                continue;
-              }
-            }
-            if (before.size > fileBound ||
-                scannedBytes + before.size > totalBound) {
-              errorCount++;
-              continue;
-            }
-            final reader = await entity.open();
-            try {
-              final bytes = await reader.read(before.size + 1);
-              final after = await entity.stat();
-              if (bytes.length != before.size ||
-                  after.size != before.size ||
-                  after.modified != before.modified ||
-                  after.changed != before.changed) {
-                errorCount++;
-                continue;
-              }
-              scannedFiles++;
-              scannedBytes += bytes.length;
-              if (utf8.decode(bytes, allowMalformed: true).contains(secret)) {
-                matchedFiles++;
-              }
-            } finally {
-              await reader.close();
-            }
-          } on FileSystemException {
-            errorCount++;
-          }
-        }
-      } on FileSystemException {
-        errorCount++;
+      if (nativeAudit != null && p.equals(canonical, nativeAudit.home)) {
+        includedNative = true;
+        final (files, errors) = await nativeAudit.changedFiles();
+        errorCount += errors;
+        candidates.addAll(files.map((file) => file.path));
+      } else {
+        candidates.add(canonical);
       }
     }
+    final result = await ToolFileAudit(budget: _toolAuditBudget)
+        .scan(candidates, secret);
+    result['nativeSelection'] = _nativeSelection.wire;
+    result['errorCount'] = (result['errorCount']! as int) + errorCount;
+    result['complete'] = result['errorCount'] == 0;
+    result['rootErrorCategories'] = rootCategories;
+    result['rootIoErrorCategories'] = Map<String, int>.of(rootIoErrors.counts);
+    if (includedNative && nativeAudit != null) {
+      result['nativeErrorCategories'] = nativeAudit.errorCategories;
+      result['nativeBaselineErrorCategories'] =
+          nativeAudit.baselineErrorCategories;
+      result['nativeIoErrorCategories'] = nativeAudit.ioErrorCategories;
+      result['nativeBaselineIoErrorCategories'] =
+          nativeAudit.baselineIoErrorCategories;
+      result['nativeUnknownArtifactCategories'] =
+          nativeAudit.unknownArtifactCategories;
+      if (_nativeSelection != NativeSelection.legacy) {
+        result['nativeSelectionCounters'] = nativeAudit.selectionCounters;
+        result['nativeDetectorLimits'] = nativeAudit.detectorLimits;
+      }
+    }
+    return result;
+  }
+
+  NativeHomeAudit? _nativeHomeAudit;
+  AuditBudget _toolAuditBudget = AuditBudget.defaults;
+  NativeSelection _nativeSelection = NativeSelection.legacy;
+  bool _toolAuditPrepared = false;
+  bool _toolAuditStarted = false;
+  bool _toolAuditRunStarted = false;
+
+  /// The test entrypoint supplies one immutable opt-in home before any native
+  /// run. No production RPC reaches this diagnostic or accepts audit roots.
+  Future<Json> prepareNativeHomeAuditForTesting(
+    String home, {
+    String auditProfile = 'default',
+    String nativeSelection = 'legacy',
+  }) async {
+    final AuditBudget budget;
+    final NativeSelection selection;
+    try {
+      budget = AuditBudget.named(auditProfile);
+      selection = NativeSelection.named(nativeSelection);
+    } on FormatException {
+      throw RpcException(
+        ErrorCode.invalidParams,
+        'invalid audit profile or native selection',
+      );
+    }
+    if (_toolAuditPrepared ||
+        _toolAuditStarted ||
+        _toolAuditRunStarted ||
+        _nativeHomeAudit != null ||
+        _agents.isNotEmpty ||
+        units.live.isNotEmpty) {
+      throw RpcException(
+        ErrorCode.invalidParams,
+        'native audit preparation must precede runs',
+      );
+    }
+    _toolAuditPrepared = true;
+    _toolAuditBudget = budget;
+    _nativeSelection = selection;
+    final audit = _nativeHomeAudit = await NativeHomeAudit.prepare(
+      home,
+      selection: selection,
+    );
+    // Counters only: no names, paths or contents. An incomplete wider baseline
+    // stays bound (preparation is once-only), so no caller can fall back.
     return {
-      'complete': errorCount == 0,
-      'errorCount': errorCount,
-      'scannedFiles': scannedFiles,
-      'matchedFiles': matchedFiles,
-      'scannedBytes': scannedBytes,
+      ...budget.echo,
+      'nativeSelection': selection.wire,
+      'complete': audit.complete,
+      'baselineComplete': audit.complete,
+      'baselineErrorCount': audit.baselineErrorCount,
+      // Fixed category keys with integer counts, so an incomplete baseline
+      // can be diagnosed without names or paths.
+      'baselineErrorCategories': audit.baselineErrorCategories,
+      'baselineIoErrorCategories': audit.baselineIoErrorCategories,
+      'files': audit.before.length,
     };
   }
 
@@ -554,6 +613,7 @@ class AgentService {
   }
 
   Future<AgentStartResult> start(AgentStartParams params) async {
+    _toolAuditRunStarted = true;
     _available();
     if (params.workspaceId.isEmpty) {
       throw RpcException(
@@ -737,6 +797,7 @@ class AgentService {
   Future<AgentContinueResult> continueSession(
     AgentContinueParams params,
   ) async {
+    _toolAuditRunStarted = true;
     _available();
     final record = _record(params.sessionId);
     if (record == null) {
@@ -930,7 +991,7 @@ class AgentService {
         launch,
         codexVersion: codexVersion,
         qualified: qualifiedAdaptersOverride ?? qualifiedAdapters,
-        authSignatures: options.codexAuthSignatures,
+        authSignals: options.codexAuthSignatures,
       );
       _io.add(io);
       final mcpServers = <Json>[
@@ -1077,11 +1138,21 @@ class AgentService {
         }
         rethrow;
       }
+      final tail = _redact(io?.stderr.tail() ?? '', grant);
+      final status = io?.status;
       if (error is CodexProtocolException) {
+        final message = _redact(error.message, grant);
         throw RpcException(
           ErrorCode.adapterProtocol,
-          _redact(error.message, grant),
-          {'stage': stage},
+          clampUtf8(
+            '$message${status == null ? '' : ' (exit status $status)'}${tail.isEmpty ? '' : '\n$tail'}',
+            4096,
+          ),
+          {
+            'stage': stage,
+            'detail': clampUtf8(tail.isEmpty ? message : tail, 4096),
+            'status': ?status,
+          },
         );
       }
       if (error is AcpProtocolException) {
@@ -1091,8 +1162,6 @@ class AgentService {
           {'stage': stage},
         );
       }
-      final tail = _redact(io?.stderr.tail() ?? '', grant);
-      final status = io?.status;
       final reason =
           error is CodexRemoteException && error.isAuthenticationRequired
           ? ErrorCode.authRequired
@@ -1182,6 +1251,8 @@ class AgentService {
           : _startTools(grant, record.adapter),
       toolsAuthenticated: grant?.everAuthenticated ?? false,
       redact: (text) => _redact(text, grant),
+      redactStreaming: (text) =>
+          redactToolSecrets(text, _secretsFor(grant), clippedBoundaries: false),
       secrets: () => _secretsFor(grant),
       enqueueEvents: a.relay.enqueue,
       reserveEarly: a.relay.reserveEarly,
@@ -1773,10 +1844,13 @@ class AgentService {
     await io.client.close();
     // Settlement precedes this operation. Drain stderr through EOF before
     // capturing a start-error tail; close() also unblocks paused stdout.
-    await io.errorsDone.future.timeout(
-      options.postExitReadDeadline,
-      onTimeout: () {},
+    final observedStatus = await drainStartupDiagnostics(
+      stderrDone: io.errorsDone.future,
+      exitCode: io.launch.unit.exitCode,
+      budget: options.postExitReadDeadline,
+      knownStatus: io.status,
     );
+    io.status = observedStatus ?? io.status;
     await io.launch.pipes!.close();
     await io.errors.cancel();
     _io.remove(io);

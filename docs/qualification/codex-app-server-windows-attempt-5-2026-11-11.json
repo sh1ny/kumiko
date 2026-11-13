@@ -1,0 +1,126 @@
+{
+  "schema": 1,
+  "protocol": "codex-app-server",
+  "nativeVersion": "0.166.0",
+  "os": "windows",
+  "manifestSha256": "7e84ad19f2cc31f7e65c92b91c209a45f3913b56b4c6b37223ca991ea0b24953",
+  "nativeExecutableSha256": "9d563ee4e0441ff9d59d612013e0460ddf8e5709735c2d9f6b98b7ef8ca4eb42",
+  "hostExecutableSha256": "0783a18f5dd702151db3a71711afead941c80e7061f156b2b1ae31f3bdba15ce",
+  "ownerApproved": true,
+  "claimedAt": "2026-11-11T19:04:46.400245Z",
+  "finishedAt": "2026-11-11T19:06:18.191128Z",
+  "commandExitCode": 0,
+  "submittedRootPrompts": 3,
+  "automaticRetries": 0,
+  "manifestConsumed": true,
+  "approvalPolicyOverride": false,
+  "rawHelperObservations": {
+    "launch": "pass",
+    "streaming": "pass",
+    "tool activity": "pass",
+    "command approval": "unverified",
+    "Stop": "unverified",
+    "close/descendant containment": "unverified",
+    "kumiko tool call": "unverified",
+    "auth-required": "unverified",
+    "recovery": "unverified",
+    "steering": "unverified",
+    "structured question": "unverified",
+    "child attribution": "unverified",
+    "walkDiagnostics": {
+      "turnEnds": [
+        {
+          "stopReason": "end_turn",
+          "error": "none",
+          "hasStopReason": true,
+          "hasError": false,
+          "hasMessage": false,
+          "hasNativeMessage": false,
+          "nativeMessageTruncated": false,
+          "errorReasons": [
+            "none"
+          ]
+        },
+        {
+          "stopReason": "cancelled",
+          "error": "none",
+          "hasStopReason": true,
+          "hasError": false,
+          "hasMessage": false,
+          "hasNativeMessage": false,
+          "nativeMessageTruncated": false,
+          "errorReasons": [
+            "none"
+          ]
+        },
+        {
+          "stopReason": "cancelled",
+          "error": "none",
+          "hasStopReason": true,
+          "hasError": false,
+          "hasMessage": false,
+          "hasNativeMessage": false,
+          "nativeMessageTruncated": false,
+          "errorReasons": [
+            "none"
+          ]
+        }
+      ],
+      "turnEndsTruncated": false,
+      "noticeFlags": {
+        "approvalDisplayUnavailable": true
+      }
+    },
+    "textEvents": 75,
+    "firstTurnIncrementalEvents": 43,
+    "toolEvents": 4,
+    "unrelatedMcpEnvironmentIsolated": false,
+    "unrelatedCommandEnvironmentIsolated": false,
+    "canaryAudit": {
+      "auditProfile": "large-native-home",
+      "maxFiles": 4096,
+      "maxFileBytes": 268435456,
+      "maxTotalBytes": 536870912,
+      "complete": false,
+      "errorCount": 2,
+      "scannedFiles": 32,
+      "matchedFiles": 0,
+      "scannedBytes": 275005267,
+      "readBytes": 275005267,
+      "chargedBytes": 275005267
+    }
+  },
+  "cleanup": {
+    "launchedUnits": 3,
+    "activeDescendantContainmentVerified": false,
+    "cleanedUnits": 3,
+    "helperDisposeCompleted": true,
+    "probeReportPresent": false
+  },
+  "diagnosis": {
+    "firstTurnEndedNormally": true,
+    "exactLostDisplayField": "not retained; not proven",
+    "nativeApprovalShapesRecovered": 0,
+    "currentSessionMetadataFileBytes": 286743,
+    "approvalDisplayUnavailableObserved": true,
+    "laterTurnsCancelled": 2,
+    "additionalReadLedger": {
+      "auditChargedBytes": 275005267,
+      "profileDatabaseUpperBound": 69632,
+      "nativeCurrentSessionBytes": 286743,
+      "totalUpperBound": 355075420,
+      "secondProfileDatabaseUpperBound": 69632,
+      "logShapeReadBytes": 74759584,
+      "walFieldReadBytes": 4812192,
+      "profileHostLogReadBytes": 2738,
+      "thirdProfileDatabaseUpperBound": 69632
+    },
+    "interpretation": "No transcript text or secrets printed. Diagnostic reads remain within the approved aggregate bound and do not repair the incomplete audit.",
+    "currentSessionMetadataSha256": "5dbfeef8949dbdd098e9b65a89840c06b960a8a9b71b742705b112101a86458c",
+    "logShapeInspection": "bounded existing log/WAL inspection emitted shape metadata only; no parsable current approval payload recovered"
+  },
+  "sectionResult": "INCOMPLETE",
+  "authenticationSignatureAdded": false,
+  "toolDeliveryFailureEntryAdded": false,
+  "interpretation": "Helper exit0 is completion only. A display-fidelity refusal was observed, native approval/Stop/active-descendant and unrelated environment isolation remain unverified. Zero canary matches cover an incomplete subset with2errors; no clean privacy result or further attempt authorized."
+}

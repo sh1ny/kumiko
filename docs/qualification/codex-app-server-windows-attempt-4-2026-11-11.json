@@ -1,0 +1,90 @@
+{
+  "schema": 1,
+  "protocol": "codex-app-server",
+  "nativeVersion": "0.166.0",
+  "os": "windows",
+  "manifestSha256": "3b990826ebbe1699ea44585be1ad81ce5a58d279558a85f28acd11f70d739815",
+  "nativeExecutableSha256": "9d563ee4e0441ff9d59d612013e0460ddf8e5709735c2d9f6b98b7ef8ca4eb42",
+  "hostExecutableSha256": "1976e089f5632880c292b5d539341cf8cdc2e01412b17329354a2bcd519b9c5e",
+  "ownerApproved": true,
+  "claimedAt": "2026-11-11T16:50:26.384708Z",
+  "finishedAt": "2026-11-11T16:51:44.444781Z",
+  "commandExitCode": 0,
+  "submittedRootPrompts": 3,
+  "automaticRetries": 0,
+  "manifestConsumed": true,
+  "approvalPolicyOverride": false,
+  "effectiveNativeApprovalPolicy": "on-request",
+  "rawHelperObservations": {
+    "launch": "pass",
+    "streaming": "pass",
+    "tool activity": "pass",
+    "command approval": "unverified",
+    "Stop": "unverified",
+    "close/descendant containment": "unverified",
+    "kumiko tool call": "unverified",
+    "auth-required": "unverified",
+    "recovery": "unverified",
+    "steering": "unverified",
+    "structured question": "unverified",
+    "child attribution": "unverified",
+    "textEvents": 74,
+    "firstTurnIncrementalEvents": 46,
+    "toolEvents": 4,
+    "unrelatedMcpEnvironmentIsolated": false,
+    "unrelatedCommandEnvironmentIsolated": false,
+    "canaryAudit": {
+      "complete": false,
+      "errorCount": 11,
+      "scannedFiles": 29,
+      "matchedFiles": 0,
+      "scannedBytes": 20170523
+    }
+  },
+  "currentRunMetadata": {
+    "scope": "Exact current-session file identified through the owned profile database; only bounded counts and fixed flags emitted, no transcript text or secrets.",
+    "outcomes": {
+      "task_started": 3,
+      "task_complete": 1,
+      "turn_aborted": 2
+    },
+    "privacyConclusion": "Metadata diagnosis does not complete or supersede the incomplete canary audit.",
+    "reads": 3,
+    "commandOutputsAborted": 2,
+    "fileSha256": "7b3d3dccc36f50b8641c85a651bf50339a25c2752a33ae4039121f3f5ce47e66",
+    "fileBytes": 288898,
+    "sessionInfoResponseObserved": true,
+    "totalBytesIncludingCanaryScan": 21037217
+  },
+  "cleanup": {
+    "cleanedUnits": 3,
+    "probeReportPresent": false,
+    "launchedUnits": 3,
+    "helperDisposeCompleted": true,
+    "activeDescendantContainmentVerified": false
+  },
+  "sectionResult": "INCOMPLETE",
+  "authenticationSignatureAdded": false,
+  "toolDeliveryFailureEntryAdded": false,
+  "interpretation": "Exit 0 means the helper completed; command approval, Stop, active-descendant containment and tool-delivery isolation remain unverified. Zero canary matches cover only an incomplete subset with 11 errors. No new attempt is authorized.",
+  "subsequentAuditMetadata": {
+    "scope": "Current native-home metadata only; no file content reads and no paths emitted. Not the historical before/after snapshot.",
+    "entriesVisited": 440,
+    "counts": {
+      "files": 366,
+      "directories": 74,
+      "oversizedFiles": 7,
+      "oversizedAlwaysScannedMutableFiles": 2
+    },
+    "oversizedMutableFiles": [
+      {
+        "category": "root-state-or-history",
+        "bytes": 69947392
+      },
+      {
+        "category": "root-state-or-history",
+        "bytes": 136392704
+      }
+    ]
+  }
+}

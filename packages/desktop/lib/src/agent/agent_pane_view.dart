@@ -512,7 +512,9 @@ class _AgentPaneViewState extends State<AgentPaneView> {
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             SelectableText(request.title),
-            if (request.preview != null) AgentPlainText(request.preview!),
+            // Literal text: the transcript fence renderer would drop and
+            // restyle parts of a command or native decision preview.
+            if (request.preview != null) SelectableText(request.preview!),
             Text(permission.label),
             if (request.truncated) const Text('truncated'),
             Wrap(

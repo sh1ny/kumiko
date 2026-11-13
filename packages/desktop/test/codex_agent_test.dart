@@ -712,6 +712,72 @@ void main() {
     expect(host.agentReplies.single.optionId, 'native-choice');
     expect(find.text('Allow always'), findsNothing);
   });
+  for (final entry in <String, ({String preview, List<String> names})>{
+    'command with fences and newlines': (
+      preview:
+          'Command: echo "```"\n```sh\nrm -rf x\n```\n'
+          'Working directory: /work\n```\nReason: tail ``` end',
+      names: ['accept', 'cancel'],
+    ),
+    'object decision with fences': (
+      preview:
+          'Command: echo ok\nWorking directory: /work\n'
+          r'Native decisions: ["accept",{"scope":"```\nrm -rf x\n```","opaque":[1,{"n":null}]},"cancel"]',
+      names: ['accept', 'Native option 2', 'cancel'],
+    ),
+  }.entries) {
+    uiTest('Codex decision display: ${entry.key}', (tester) async {
+      final host = nativeHost();
+      final rig = await nativeChat(tester, host);
+      final pane = chat(rig).id;
+      running(host, session(rig));
+      host.agentRequestSource.add(
+        AgentPermissionRequestedParams(
+          sessionId: session(rig),
+          requestId: 'run:decision',
+          title: 'Command approval',
+          preview: entry.value.preview,
+          options: [
+            for (var i = 0; i < entry.value.names.length; i++)
+              AgentPermissionOption(
+                optionId: 'choice-$i',
+                name: entry.value.names[i],
+                kind: entry.value.names[i].startsWith('Native option')
+                    ? 'allow_always'
+                    : i == entry.value.names.length - 1
+                    ? 'reject_once'
+                    : 'allow_once',
+              ),
+          ],
+        ),
+      );
+      await flush(tester);
+      // The complete preview is one literal selectable text: no fence split,
+      // no markup interpretation, no dropped byte.
+      final previews = tester
+          .widgetList<SelectableText>(find.byType(SelectableText))
+          .where((w) => w.data == entry.value.preview);
+      expect(previews, hasLength(1));
+      expect(previews.single.style, isNull);
+      // Ordered options; nothing is chosen automatically.
+      final labels = tester
+          .widgetList<OutlinedButton>(
+            find.byWidgetPredicate(
+              (w) =>
+                  w is OutlinedButton &&
+                  w.key.toString().contains('agent-option-$pane-run:decision-'),
+            ),
+          )
+          .map((b) => ((b.child! as Text).data))
+          .toList();
+      expect(labels, entry.value.names);
+      expect(host.agentReplies, isEmpty);
+      await tester.tap(key('agent-option-$pane-run:decision-choice-1'));
+      await flush(tester);
+      expect(host.agentReplies.single.optionId, 'choice-1');
+      expect(host.agentReplies, hasLength(1));
+    });
+  }
   uiTest('Codex: Codex authentication is required', (tester) async {
     final host = nativeHost();
     final rig = await nativeChat(tester, host);
@@ -725,6 +791,19 @@ void main() {
     await flush(tester);
     expect(find.textContaining('Run codex in a terminal'), findsOneWidget);
     expect(find.textContaining('Claude Code is not signed in'), findsNothing);
+  });
+  uiTest('Codex: Codex Start refused for sign-in offers Retry', (tester) async {
+    // The host's account-unauthenticated preflight refuses Start itself.
+    final host = nativeHost()
+      ..agentStartAnswers.add(
+        RpcException(ErrorCode.authRequired, 'Codex is not signed in'),
+      );
+    final rig = await nativeChat(tester, host);
+    final pane = chat(rig).id;
+    expect(find.textContaining('Run codex in a terminal'), findsOneWidget);
+    expect(find.textContaining('Claude Code is not signed in'), findsNothing);
+    expect(agents(rig).linkOf(pane)!.canRetry, isTrue);
+    expect(key('agent-retry-$pane'), findsOneWidget);
   });
   uiTest('Codex: Codex launcher with incompatible default', (tester) async {
     final host = nativeHost();
