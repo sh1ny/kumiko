@@ -1266,12 +1266,8 @@ Future<String> _buildHost() async {
 }
 
 Future<void> _dryRun(String executable) async {
-  // The host compares scan roots with canonical paths, so the fixture's
-  // folder is canonical too (macOS /var is a link, Windows temp may use an
-  // 8.3 short name).
-  final owned = Directory(
-    await (await Directory.systemTemp.createTemp('kumiko_codex_qualification_'))
-        .resolveSymbolicLinks(),
+  final owned = await Directory.systemTemp.createTemp(
+    'kumiko_codex_qualification_',
   );
   _WalkHost? host;
   try {

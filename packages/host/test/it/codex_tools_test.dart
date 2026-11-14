@@ -1186,11 +1186,24 @@ void main() {
       await process.exitCode;
     }
   });
-  test(
-    'Codex: opt-in native home audit is bound and finds a persisted run secret',
-    () async {
-      final home = tempDir('qualification_native_home_');
-      addTearDown(() => deleteTree(home));
+  // On macOS the system temp folder is itself reached through a link
+  // (/var -> /private/var); the linked variant reproduces that on any POSIX
+  // system.
+  for (final linked in [false, if (!Platform.isWindows) true]) {
+    test('Codex: opt-in native home audit is bound and finds a persisted run secret'
+        '${linked ? ' through a linked parent' : ''}', () async {
+      final Directory home;
+      if (linked) {
+        final real = tempDir('qualification_native_real_');
+        final parent = tempDir('qualification_native_link_');
+        addTearDown(() => deleteTree(real));
+        addTearDown(() => deleteTree(parent));
+        final via = Link(p.join(parent.path, 'via'))..createSync(real.path);
+        home = Directory(p.join(via.path, 'home'))..createSync();
+      } else {
+        home = tempDir('qualification_native_home_');
+        addTearDown(() => deleteTree(home));
+      }
       Directory(p.join(home.path, 'sessions')).createSync();
       Directory(p.join(home.path, 'log')).createSync();
       final fixture = NativeFixture(
@@ -1229,8 +1242,8 @@ void main() {
       expect((clean['secretAudit'] as Json)['complete'], true);
       expect((clean['secretAudit'] as Json)['matchedFiles'], 1);
       expect(jsonEncode(clean), isNot(contains('KUMIKO_TOOL_SECRET')));
-    },
-  );
+    });
+  }
   setUpAll(buildTestHost);
   setUp(() {
     profile = tempDir('codex_tools_profile_');

@@ -440,8 +440,31 @@ class AgentService {
       await Directory(a.record.target.path).resolveSymbolicLinks(),
     ];
     final nativeAudit = _nativeHomeAudit;
-    if (nativeAudit != null &&
-        roots.any((root) => p.equals(p.normalize(root), nativeAudit.home))) {
+    // The native home is held in canonical form, so each root is compared
+    // in that form too (macOS reaches its temp folder through /var). A root
+    // that is itself a link is never resolved: the scan below refuses it.
+    Future<bool> isNativeHome(String root) async {
+      try {
+        if (await FileSystemEntity.type(root, followLinks: false) !=
+            FileSystemEntityType.directory) {
+          return false;
+        }
+        return p.equals(
+          await Directory(root).resolveSymbolicLinks(),
+          nativeAudit!.home,
+        );
+      } on FileSystemException {
+        return false;
+      }
+    }
+
+    var namesNativeHome = false;
+    if (nativeAudit != null) {
+      for (final root in roots) {
+        if (await isNativeHome(root)) namesNativeHome = true;
+      }
+    }
+    if (nativeAudit != null && namesNativeHome) {
       final driver = a.io.client;
       if (driver is! CodexRuntimeDriver || !a.ending) {
         throw RpcException(
