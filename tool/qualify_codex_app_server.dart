@@ -2261,7 +2261,17 @@ Future<void> main(List<String> args) async {
       return;
     }
     if (args.length == 1 && args.single == '--dry-run') {
-      await _dryRun(await _buildHost());
+      try {
+        await _dryRun(await _buildHost());
+      } on Object catch (error, stack) {
+        // The dry run talks only to the fixture, so its error and the first
+        // frames are safe to show and are what a CI failure needs.
+        final detail = '$error\n$stack';
+        stderr.writeln(
+          'FAILED: dry run ${detail.length > 4096 ? detail.substring(0, 4096) : detail}',
+        );
+        exitCode = 1;
+      }
       return;
     }
     const modes = ['--prepare', '--walk', '--prepare-auth', '--walk-auth'];

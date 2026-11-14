@@ -2300,54 +2300,63 @@ void main() {
     expect(diagnostic['code'], -32001);
     expect(observations['launch'], 'pass');
   });
-  test('approved walk consumes attempt before host startup failure and rejects replay', () async {
-    final directory = Directory.systemTemp.createTempSync(
-      'kumiko_walk_attempt_',
-    );
-    addTearDown(() => directory.deleteSync(recursive: true));
-    // An existing empty workspace passes the pre-claim check, so the walk
-    // reaches the claim and then fails at host startup.
-    final work = Directory(p.join(directory.path, 'work'))..createSync();
-    final value = makeCodexWalkPlan(
-      workspace: work.path,
-      profile: p.join(directory.path, 'profile'),
-      executable: r'F:\native\codex.exe',
-      nativeHome: r'C:\user\.codex',
-      version: '0.166.0',
-      hostExecutable: '${directory.path}/missing-host.exe',
-      canaryCommand: 'inert canary command',
-      stopCommand: 'inert long command',
-    );
-    final bytes = utf8.encode(jsonEncode(value));
-    final manifest = File('${directory.path}/manifest.json')
-      ..writeAsBytesSync(bytes);
-    final script = File('tool/qualify_codex_app_server.dart').absolute.path;
-    final args = [
-      script,
-      '--walk',
-      '--manifest',
-      manifest.path,
-      '--approved-sha256',
-      sha256.convert(bytes).toString(),
-    ];
-    final first = await Process.run(Platform.resolvedExecutable, args);
-    expect(first.exitCode, 1);
-    final observationsFile = File('${directory.path}/observations.json');
-    expect(observationsFile.existsSync(), true);
-    final observations =
-        jsonDecode(observationsFile.readAsStringSync()) as Json;
-    expect(observations['launch'], 'fail');
-    expect((observations['canaryAudit']! as Json)['complete'], false);
-    expect((observations['canaryAudit']! as Json)['scanned'], false);
-    expect(observations.containsKey('nativeDiagnostic'), false);
-    final marker = File('${directory.path}/attempt.jsonl');
-    expect(marker.existsSync(), true);
-    final initial = marker.readAsStringSync();
-    expect(initial, contains('failed'));
-    final second = await Process.run(Platform.resolvedExecutable, args);
-    expect(second.exitCode, 1);
-    expect(marker.readAsStringSync() == initial, true);
-  });
+  test(
+    'approved walk consumes attempt before host startup failure and rejects replay',
+    () async {
+      final directory = Directory.systemTemp.createTempSync(
+        'kumiko_walk_attempt_',
+      );
+      addTearDown(() => directory.deleteSync(recursive: true));
+      // An existing empty workspace passes the pre-claim check, so the walk
+      // reaches the claim and then fails at host startup.
+      final work = Directory(p.join(directory.path, 'work'))..createSync();
+      final value = makeCodexWalkPlan(
+        workspace: work.path,
+        profile: p.join(directory.path, 'profile'),
+        executable: r'F:\native\codex.exe',
+        nativeHome: r'C:\user\.codex',
+        version: '0.166.0',
+        hostExecutable: '${directory.path}/missing-host.exe',
+        canaryCommand: 'inert canary command',
+        stopCommand: 'inert long command',
+      );
+      final bytes = utf8.encode(jsonEncode(value));
+      final manifest = File('${directory.path}/manifest.json')
+        ..writeAsBytesSync(bytes);
+      final script = File('tool/qualify_codex_app_server.dart').absolute.path;
+      final args = [
+        script,
+        '--walk',
+        '--manifest',
+        manifest.path,
+        '--approved-sha256',
+        sha256.convert(bytes).toString(),
+      ];
+      final first = await Process.run(Platform.resolvedExecutable, args);
+      expect(first.exitCode, 1);
+      final observationsFile = File('${directory.path}/observations.json');
+      expect(observationsFile.existsSync(), true);
+      final observations =
+          jsonDecode(observationsFile.readAsStringSync()) as Json;
+      expect(observations['launch'], 'fail');
+      expect((observations['canaryAudit']! as Json)['complete'], false);
+      expect((observations['canaryAudit']! as Json)['scanned'], false);
+      expect(observations.containsKey('nativeDiagnostic'), false);
+      final marker = File('${directory.path}/attempt.jsonl');
+      expect(marker.existsSync(), true);
+      final initial = marker.readAsStringSync();
+      expect(initial, contains('failed'));
+      final second = await Process.run(Platform.resolvedExecutable, args);
+      expect(second.exitCode, 1);
+      expect(marker.readAsStringSync() == initial, true);
+    },
+    // The walk resolves its trusted PowerShell from the Windows registry;
+    // elsewhere it refuses before the claim (covered by "the walk refuses
+    // before the claim when no shell is trusted").
+    skip: Platform.isWindows
+        ? false
+        : 'the walk needs a registry-trusted PowerShell (Windows only)',
+  );
   test('streaming requires incremental observations within a turn', () {
     expect(nativeStreamingObserved([1, 1, 1]), false);
     expect(nativeStreamingObserved([2, 0, 0]), true);
