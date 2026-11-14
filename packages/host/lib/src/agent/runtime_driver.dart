@@ -1564,6 +1564,7 @@ class CodexRuntimeDriver extends RuntimeDriver {
       'turn/completed',
       'item/agentMessage/delta',
       'item/reasoning/summaryTextDelta',
+      'turn/plan/updated',
       'item/started',
       'item/completed',
       'item/commandExecution/outputDelta',
@@ -1641,6 +1642,31 @@ class CodexRuntimeDriver extends RuntimeDriver {
         AgentEventKind.agentText,
         bounded,
         truncated: bounded.length != text.length,
+      );
+    } else if (method == 'turn/plan/updated') {
+      // The turn's progress plan replaces the shown plan. Steps of a shape
+      // this version does not match are left out; the plan stays bounded.
+      final steps = raw['plan'];
+      if (steps is! List) return null;
+      final entries = <Json>[
+        for (final step in steps.take(64))
+          if (step case {
+            'step': final String text,
+            'status': final String status,
+          })
+            {
+              'content': clampUtf8(text, 1024),
+              'status': switch (status) {
+                'inProgress' => 'in_progress',
+                'completed' => 'completed',
+                _ => 'pending',
+              },
+            },
+      ];
+      update = RuntimeUpdate(
+        AgentEventKind.plan,
+        '',
+        event: AgentEvent.plan(entries),
       );
     } else if (method == 'item/reasoning/summaryTextDelta') {
       // Thinking streams as reasoning summary deltas; the completed reasoning

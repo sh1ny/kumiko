@@ -1281,6 +1281,42 @@ void nativeCases(Directory Function() profile, Directory Function() work) {
     expect(cards.last.toString(), contains('session details'));
     await a.close();
   });
+  test('Codex: the turn progress plan is shown', () async {
+    final f = NativeFixture(
+      profile(),
+      work(),
+      script: {
+        'turns': [
+          {
+            'actions': [
+              nativeEvent('turn/plan/updated', {
+                'threadId': r'$thread',
+                'turnId': r'$turn',
+                'explanation': null,
+                'plan': [
+                  {'step': 'Read the code', 'status': 'completed'},
+                  {'step': 'Write the fix', 'status': 'inProgress'},
+                  {'step': 'Run the tests', 'status': 'pending'},
+                ],
+              }),
+              terminalEvent('completed'),
+            ],
+          },
+        ],
+      },
+    );
+    await f.open();
+    final a = await f.start();
+    await a.prompt();
+    await a.wait(Method.agentTurnEnded);
+    await eventually(() => a.events.any((e) => e['kind'] == 'plan'));
+    expect(a.events.singleWhere((e) => e['kind'] == 'plan')['entries'], [
+      {'content': 'Read the code', 'status': 'completed'},
+      {'content': 'Write the fix', 'status': 'in_progress'},
+      {'content': 'Run the tests', 'status': 'pending'},
+    ]);
+    await a.close();
+  });
   test('Codex: restored history shows thinking and MCP tool calls', () async {
     final f = NativeFixture(
       profile(),
