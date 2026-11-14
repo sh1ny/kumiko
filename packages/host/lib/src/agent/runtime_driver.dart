@@ -1267,7 +1267,9 @@ class CodexRuntimeDriver extends RuntimeDriver {
       (_) {},
       onError: (Object error, StackTrace st) {
         if (identical(_turn, completion)) {
-          _retireMapping(error);
+          // A native rejection of turn/start ends only the root turn: the
+          // transport and its child threads are still live.
+          _retireMapping(error, teardown: error is! CodexRemoteException);
           if (error is TimeoutException) {
             client.close().ignore();
             _onFailure?.call(error);
@@ -1278,7 +1280,7 @@ class CodexRuntimeDriver extends RuntimeDriver {
     return completion.future;
   }
 
-  void _retireMapping(Object error) {
+  void _retireMapping(Object error, {bool teardown = true}) {
     final c = _turn;
     _turn = null;
     _turnId = null;
@@ -1304,7 +1306,7 @@ class CodexRuntimeDriver extends RuntimeDriver {
     _unknownDelivery = null;
     _expiredUnknownDelivery?.release();
     _expiredUnknownDelivery = null;
-    if (_children.isNotEmpty && !_childrenDisconnected) {
+    if (teardown && _children.isNotEmpty && !_childrenDisconnected) {
       _childrenDisconnected = true;
       _childrenIncomplete = true;
       final lines = <Uint8List>[];
@@ -2382,6 +2384,9 @@ class CodexRuntimeDriver extends RuntimeDriver {
       client.deny(id, -32602, 'interaction exceeds control capacity');
       return notice('Native interaction refused: control capacity exceeded.');
     }
+    // A core approval without a valid thread identity is a protocol fault,
+    // never an untracked child.
+    if (coreApproval) _identity(raw, 'threadId');
     if (raw['threadId'] != root && !_children.containsKey(raw['threadId'])) {
       _childrenIncomplete = true;
       onDelegatedChanged?.call();

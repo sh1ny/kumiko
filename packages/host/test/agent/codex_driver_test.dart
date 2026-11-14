@@ -885,6 +885,66 @@ void main() {
       expect(writes.where((m) => m['method'] == 'turn/interrupt'), isEmpty);
     },
   );
+  test(
+    'a natively rejected turn/start keeps delegated activity complete',
+    () async {
+      await driver.newSession('/fixture');
+      peer.event('thread/started', {
+        'thread': {
+          'id': 'child',
+          'parentThreadId': 'root',
+          'status': {'type': 'idle'},
+        },
+      });
+      for (var i = 0; i < 5; i++) {
+        await pumpCodex();
+      }
+      expect(driver.delegated.incomplete, isFalse);
+      peer.onWrite = (m) {
+        if (m['method'] == 'turn/start') {
+          peer.send({
+            'id': m['id'],
+            'error': {'code': -32600, 'message': 'turn refused'},
+          });
+        }
+      };
+      await expectLater(
+        driver.prompt('root', 'hello'),
+        throwsA(isA<CodexRemoteException>()),
+      );
+      for (var i = 0; i < 5; i++) {
+        await pumpCodex();
+      }
+      expect(driver.delegated.incomplete, isFalse);
+    },
+  );
+  for (final threadId in <Object?>[null, 7, '']) {
+    test('a native approval with threadId $threadId fails the run', () async {
+      await driver.newSession('/fixture');
+      final failures = <Object>[];
+      driver.onFailure = failures.add;
+      final writes = <Json>[];
+      peer.onWrite = writes.add;
+      peer.send({
+        'id': 'bad-approval',
+        'method': 'item/commandExecution/requestApproval',
+        'params': {
+          'threadId': ?threadId,
+          'turnId': 'turn',
+          'itemId': 'cmd',
+          'startedAtMs': 1,
+          'command': 'echo bad',
+          'availableDecisions': ['accept', 'cancel'],
+        },
+      });
+      for (var i = 0; i < 5; i++) {
+        await pumpCodex();
+      }
+      expect(failures.single, isA<CodexProtocolException>());
+      expect(driver.delegated.incomplete, isFalse);
+      expect(writes.where((m) => m['id'] == 'bad-approval'), isEmpty);
+    });
+  }
   test('a prompt waits until the stopped turn has reported its end', () async {
     await driver.newSession('/fixture');
     var gate = Completer<void>();
