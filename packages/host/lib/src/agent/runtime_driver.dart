@@ -2338,6 +2338,33 @@ class CodexRuntimeDriver extends RuntimeDriver {
     return value;
   }
 
+  /// Shows [value] in an approval preview with every control, line or
+  /// paragraph separator and bidi formatting character written as a visible
+  /// `\u{XXXX}` escape. A native value then cannot add a line that looks
+  /// like another field, nor reorder the card shown beside the choices. The
+  /// native request itself, and the decision sent back, are unchanged.
+  static String _visiblePreviewText(String value) {
+    final out = StringBuffer();
+    for (final rune in value.runes) {
+      final hidden =
+          rune < 0x20 ||
+          (rune >= 0x7F && rune <= 0x9F) ||
+          rune == 0x061C ||
+          rune == 0x200E ||
+          rune == 0x200F ||
+          (rune >= 0x2028 && rune <= 0x202E) ||
+          (rune >= 0x2066 && rune <= 0x2069);
+      if (hidden) {
+        out.write(
+          '\\u{${rune.toRadixString(16).toUpperCase().padLeft(4, '0')}}',
+        );
+      } else {
+        out.writeCharCode(rune);
+      }
+    }
+    return out.toString();
+  }
+
   String? _approvalPreview(
     Json raw,
     Map<String, String> fields, {
@@ -2350,10 +2377,12 @@ class CodexRuntimeDriver extends RuntimeDriver {
       if (value is! String) {
         throw CodexProtocolException('invalid approval ${field.key}');
       }
-      lines.add('${field.value}: $value');
+      lines.add('${field.value}: ${_visiblePreviewText(value)}');
     }
     if (permissions != null) {
-      lines.add('Requested permissions: ${jsonEncode(permissions)}');
+      lines.add(
+        'Requested permissions: ${_visiblePreviewText(jsonEncode(permissions))}',
+      );
     }
     return lines.isEmpty ? null : lines.join('\n');
   }
@@ -2491,11 +2520,12 @@ class CodexRuntimeDriver extends RuntimeDriver {
       ]) {
         final context = raw[key];
         if (!command || context == null) continue;
-        final line = '$label: ${jsonEncode(context)}';
+        final line = '$label: ${_visiblePreviewText(jsonEncode(context))}';
         preview = preview == null ? line : '$preview\n$line';
       }
       if (decisions.any((decision) => decision is! String)) {
-        final line = 'Native decisions: ${jsonEncode(decisions)}';
+        final line =
+            'Native decisions: ${_visiblePreviewText(jsonEncode(decisions))}';
         preview = preview == null ? line : '$preview\n$line';
       }
       return _deliverInteraction(

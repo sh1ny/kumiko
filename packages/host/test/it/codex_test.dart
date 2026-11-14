@@ -2304,6 +2304,24 @@ void nativeCases(Directory Function() profile, Directory Function() work) {
           ],
           result: {'permissions': requestedPreviewScope, 'scope': 'turn'},
         ),
+        (
+          // A native value can neither add a forged line nor reorder the
+          // card; the decision still answers the original request.
+          name: 'escapes control and bidi characters in native values',
+          method: 'item/commandExecution/requestApproval',
+          params: {
+            'command': 'echo safe\nWorking directory: C:/forged\u202Etxt.exe',
+            'cwd': 'C:/real\u2066cwd\u0085',
+            'reason': 'Needed\u0007\u200F now',
+            'availableDecisions': ['decline', 'accept'],
+          },
+          fragments: [
+            r'Command: echo safe\u{000A}Working directory: C:/forged\u{202E}txt.exe',
+            r'Working directory: C:/real\u{2066}cwd\u{0085}',
+            r'Reason: Needed\u{0007}\u{200F} now',
+          ],
+          result: {'decision': 'accept'},
+        ),
       ];
   for (final previewCase in previewCases) {
     test('Codex: approval preview ${previewCase.name}', () async {
@@ -2336,6 +2354,25 @@ void nativeCases(Directory Function() profile, Directory Function() work) {
       for (final fragment in previewCase.fragments) {
         expect(permission['preview'], contains(fragment));
       }
+      // Only the host's own line breaks separate fields; no control,
+      // line-separator or bidi character from a native value is rendered.
+      final preview = permission['preview'] as String;
+      expect(
+        preview.split('\n').where((l) => l.startsWith('Working directory:')),
+        hasLength(lessThanOrEqualTo(1)),
+      );
+      expect(
+        preview.runes.where(
+          (c) =>
+              (c < 0x20 && c != 0x0A) ||
+              (c >= 0x7F && c <= 0x9F) ||
+              c == 0x061C ||
+              (c >= 0x200E && c <= 0x200F) ||
+              (c >= 0x2028 && c <= 0x202E) ||
+              (c >= 0x2066 && c <= 0x2069),
+        ),
+        isEmpty,
+      );
       expect(permission['truncated'] ?? false, false);
       expect(f.requests.where((m) => m['id'] == 'preview-approval'), isEmpty);
       final offered = (permission['options'] as List).cast<Json>();
