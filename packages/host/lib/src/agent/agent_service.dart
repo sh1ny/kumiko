@@ -1586,7 +1586,15 @@ class AgentService {
         }
       }
       final current = _extensionRun(params.sessionId, params.runId);
-      current.session.acceptSteer(params.expectedTurnId, params.text, delivery);
+      final revision = removed;
+      current.session.acceptSteer(
+        params.expectedTurnId,
+        params.text,
+        delivery,
+        restoreDraft: revision == null
+            ? null
+            : () => drafts.restoreSend(params.sessionId, params.text, revision),
+      );
     } on Object {
       delivery.release();
       if (removed != null) {

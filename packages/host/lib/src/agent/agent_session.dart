@@ -731,17 +731,57 @@ class AgentSession {
     return RuntimeDelivery(lines, bytes, releaseEarly, null);
   }
 
+  /// [restoreDraft] puts the steering text back in the stored draft when
+  /// the native runtime definitely rejects it after admission; it returns
+  /// whether the draft was restored (a newer save wins).
   void acceptSteer(
     String expectedTurnId,
     String text,
-    RuntimeDelivery delivery,
-  ) {
+    RuntimeDelivery delivery, {
+    Future<bool> Function()? restoreDraft,
+  }) {
     checkCanSteer(expectedTurnId, text);
     final completion = client.steer(_nativeSessionId!, expectedTurnId, text);
     _consume(delivery).catchError((Object error) {
       fail(error);
     });
-    _observeNativeControl(completion, 'Steering');
+    if (restoreDraft == null) {
+      _observeNativeControl(completion, 'Steering');
+      return;
+    }
+    completion.then<void>(
+      (_) {},
+      onError: (Object error, StackTrace stack) {
+        if (_disposed || _terminal) return;
+        if (client.isClosed) {
+          fail(error);
+          return;
+        }
+        if (error is! CodexRemoteException) {
+          // A lost or timed-out outcome may still have been applied.
+          notice(
+            'Steering outcome unavailable or unknown: ${_redact(error.toString())}',
+          ).ignore();
+          return;
+        }
+        // A definite native rejection: the text was never applied.
+        restoreDraft()
+            .then<bool>((restored) => restored, onError: (Object _) => false)
+            .then((restored) {
+              if (_disposed) return;
+              _enqueue(
+                encodeAgentEvent(
+                  AgentEvent.fromJson({
+                    'kind': 'notice',
+                    'text':
+                        'Steering rejected: ${_redact(error.toString())}${restored ? '; your text is back in the draft.' : ''}',
+                    if (restored) 'draftRestored': true,
+                  }),
+                ),
+              ).ignore();
+            });
+      },
+    );
   }
 
   Object? _nativePermission(RuntimePermission request) {

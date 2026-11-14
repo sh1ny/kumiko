@@ -4930,6 +4930,48 @@ void nativeCases(Directory Function() profile, Directory Function() work) {
     await a.close();
   });
 
+  test('Codex: a natively rejected steer restores its saved draft', () async {
+    final f = await fixture({
+      'steerError': {'code': -32600, 'message': 'expected turn mismatch'},
+      'turns': [
+        {
+          'actions': [
+            {'waitInterrupt': true},
+            terminalEvent('interrupted'),
+          ],
+        },
+      ],
+    });
+    final a = await f.start();
+    await a.prompt();
+    final state = await a.wait(
+      Method.agentState,
+      where: (p) => p['turnId'] != null,
+    );
+    await a.call(Method.agentDraftSave, {
+      'sessionId': a.id,
+      'revision': 1,
+      'text': 'first steer',
+    });
+    await a.call(Method.agentSteer, {
+      'sessionId': a.id,
+      'runId': state['runId'],
+      'expectedTurnId': state['turnId'],
+      'text': 'first steer',
+      'draftRevision': 1,
+      'draftSynced': true,
+    });
+    await eventually(
+      () => a.events.any(
+        (e) => e['kind'] == 'notice' && e['draftRestored'] == true,
+      ),
+    );
+    expect((await a.call(Method.agentDraftLoad))['text'], 'first steer');
+    await a.call(Method.agentStop);
+    await a.wait(Method.agentTurnEnded);
+    await a.close();
+  });
+
   test(
     'Codex: known unavailable steering suppresses async forms only',
     () async {

@@ -505,6 +505,34 @@ class AgentController extends ChangeNotifier implements ViewCloser {
     _changed();
   }
 
+  /// Shows a natively rejected steer that the host put back in the stored
+  /// draft, while the composer is still empty with nothing unsaved.
+  Future<void> _restoreRejectedSteer(AgentLink link) async {
+    final host = _host;
+    final id = link.sessionId;
+    if (host == null || id == null || link.composerHidden) return;
+    final generation = _generation;
+    try {
+      final loaded = await host
+          .draftLoad(id)
+          .timeout(const Duration(seconds: 10));
+      if (!_current(host, generation) ||
+          !_owns(link) ||
+          link.composerHidden ||
+          link.prompt.text.isNotEmpty ||
+          link.draft.dirty) {
+        return;
+      }
+      if (loaded.text case final text?) {
+        link._setComposer(text);
+        link.draft.markSynced(loaded.revision);
+        _changed();
+      }
+    } on Object {
+      // The text stays in the stored draft and returns on the next load.
+    }
+  }
+
   /// A session id has one link with a composer: the first pane that names it.
   void _assignComposerOwners(Iterable<PaneNode> panes) {
     final owners = <String, AgentLink>{};
@@ -1271,6 +1299,12 @@ class AgentController extends ChangeNotifier implements ViewCloser {
             if (!_current(host, generation) || !_owns(link)) return;
             link.transcript.add(event);
             link._receivedEvents++;
+            // The host put a natively rejected steer back in the stored
+            // draft; an unedited composer shows it again.
+            if (event.kind == AgentEventKind.notice &&
+                event.toJson()['draftRestored'] == true) {
+              unawaited(_restoreRejectedSteer(link));
+            }
             _drainExited(host, link);
             _changed();
           },

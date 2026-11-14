@@ -623,6 +623,35 @@ void main() {
     });
   }
   uiTest(
+    'Codex: a natively rejected steer puts the restored draft back in the composer',
+    (tester) async {
+      final host = nativeHost();
+      final rig = await nativeChat(tester, host);
+      final pane = chat(rig).id;
+      final link = agents(rig).linkOf(pane)!;
+      running(host, session(rig));
+      await flush(tester);
+      await tester.enterText(key('agent-prompt-$pane'), 'steer me');
+      await tester.tap(key('agent-steer-$pane'));
+      await flush(tester);
+      expect(link.prompt.text, isEmpty);
+      // The host put the rejected text back in the stored draft.
+      host.storedDrafts[session(rig)] = (
+        text: 'steer me',
+        revision: (host.storedDrafts[session(rig)]?.revision ?? 0) + 1,
+      );
+      host.agentChannels[session(rig)]!.add(
+        AgentEvent.fromJson({
+          'kind': 'notice',
+          'text': 'Steering rejected; your text is back in the draft.',
+          'draftRestored': true,
+        }),
+      );
+      await flush(tester);
+      expect(link.prompt.text, 'steer me');
+    },
+  );
+  uiTest(
     'Codex: unavailable question path preserves ordinary chat and later blocking questions',
     (tester) async {
       final host = nativeHost();
