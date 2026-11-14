@@ -4725,6 +4725,67 @@ void nativeCases(Directory Function() profile, Directory Function() work) {
     },
   );
   test(
+    'Codex: Native input is full refuses an idle Send and keeps its draft',
+    () async {
+      final f = await fixture({
+        'noReadAfterTurn': true,
+        'turns': [
+          {
+            'actions': [
+              {'delayMs': 1500},
+              terminalEvent('completed'),
+            ],
+          },
+        ],
+      });
+      final a = await f.start();
+      await a.prompt();
+      final state = await a.wait(
+        Method.agentState,
+        where: (p) => p['turnId'] != null,
+      );
+      // Fill native input while the turn runs; the runtime reads no more.
+      final filler = List.filled(200000, 'n').join();
+      for (var i = 0; i < 20; i++) {
+        try {
+          await a.call(Method.agentSteer, {
+            'sessionId': a.id,
+            'runId': state['runId'],
+            'expectedTurnId': state['turnId'],
+            'text': filler,
+          });
+        } on RpcException catch (e) {
+          expect(e.reason, ErrorCode.busy);
+          break;
+        }
+      }
+      await a.wait(Method.agentTurnEnded);
+      await a.wait(Method.agentState, where: (p) => p['state'] == 'idle');
+      final users = a.events.where((e) => e['kind'] == 'user').length;
+      // A Send near the 256 KiB limit cannot fit in the full input queue.
+      final send = List.filled(250000, 's').join();
+      await a.call(Method.agentDraftSave, {
+        'sessionId': a.id,
+        'revision': 1,
+        'text': send,
+      });
+      final refusal = await rpcFailure(
+        a.call(Method.agentPrompt, {
+          'sessionId': a.id,
+          'text': send,
+          'draftRevision': 1,
+          'draftSynced': true,
+        }),
+      );
+      expect(refusal.reason, ErrorCode.busy);
+      expect((await a.call(Method.agentDraftLoad))['text'], send);
+      expect(a.of(Method.agentState).last['state'], 'idle');
+      await Future<void>.delayed(const Duration(milliseconds: 200));
+      expect(a.events.where((e) => e['kind'] == 'user'), hasLength(users));
+      await a.close();
+    },
+  );
+  test(
     'Codex: Native transport breaks after admission and settles shared unit',
     () async {
       final f = await fixture({

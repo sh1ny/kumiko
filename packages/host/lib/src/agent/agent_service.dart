@@ -1483,8 +1483,9 @@ class AgentService {
       );
     }
     a.sending = true;
+    final int removed;
     try {
-      await drafts.commitSend(
+      removed = await drafts.commitSend(
         params.sessionId,
         revision,
         synced: params.draftSynced ?? false,
@@ -1492,9 +1493,20 @@ class AgentService {
     } finally {
       a.sending = false;
     }
-    _available();
-    final again = _require(params.sessionId);
-    again.session.acceptPrompt(params.text);
+    try {
+      _available();
+      final again = _require(params.sessionId);
+      again.session.acceptPrompt(params.text);
+    } on Object {
+      // Refused after its draft was removed (design D4), for example at full
+      // native input: put the text back unless a newer revision was saved.
+      try {
+        await drafts.restoreSend(params.sessionId, params.text, removed);
+      } on Object {
+        // The desktop keeps the text and saves it again.
+      }
+      rethrow;
+    }
   }
 
   Future<AgentDraftSaveResult> draftSave(AgentDraftSaveParams params) async {
