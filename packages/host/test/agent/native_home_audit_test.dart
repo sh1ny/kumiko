@@ -255,7 +255,14 @@ void main() {
   });
   setUp(
     () =>
-        home = Directory.systemTemp.createTempSync('kumiko_native_audit_unit_'),
+        // The audit keys its inventory by canonical path; the temp folder
+        // can be reached through a link (macOS /var) or a short name
+        // (Windows 8.3), so the tests use its canonical form too.
+        home = Directory(
+          Directory.systemTemp
+              .createTempSync('kumiko_native_audit_unit_')
+              .resolveSymbolicLinksSync(),
+        ),
   );
   tearDown(() => home.deleteSync(recursive: true));
   test('native audit missing baseline artifact stays incomplete', () async {

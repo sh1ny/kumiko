@@ -1932,11 +1932,16 @@ void nativeCases(Directory Function() profile, Directory Function() work) {
     expect(a.started.adapter.version, '0.166.0');
     final launches = f.reports.where((r) => r.containsKey('launch')).toList();
     expect(launches.map((r) => r['launch']), ['probe', 'root']);
-    expect(launches.first['cwd'], profile().path);
+    // The probe runs in the profile; compare canonical forms, since the
+    // temp folder may be reached through a link or a short name.
+    expect(
+      Directory(launches.first['cwd'] as String).resolveSymbolicLinksSync(),
+      profile().resolveSymbolicLinksSync(),
+    );
     expect(launches.first['unit'], true);
     expect(launches.first['parentCanary'], false);
     expect(launches.first['profileCanary'], false);
-    expect(launches.last['cwd'], work().path);
+    expect(launches.last['cwd'], work().resolveSymbolicLinksSync());
     expect(launches.every((r) => r['secret'] == false), true);
     expect(f.requests.map((r) => r['method']), [
       'initialize',
@@ -3778,7 +3783,7 @@ void nativeCases(Directory Function() profile, Directory Function() work) {
                     !(r['params'] as Json).containsKey('includeLayers'),
               )
               .single['params'],
-          {'cwd': work().path},
+          {'cwd': work().resolveSymbolicLinksSync()},
         );
         expect(
           f.requests
