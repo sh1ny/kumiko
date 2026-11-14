@@ -289,19 +289,28 @@ class SessionLink implements HostLink {
       _request(Method.runtimeSetDefault, RuntimeSetDefaultParams(id).toJson());
 
   @override
-  Future<AgentStartResult> startAgent(AgentStartParams params) async =>
-      AgentStartResult.fromJson(
-        await _request(Method.agentStart, params.toJson()),
-      );
+  Future<AgentStartResult> startAgent(AgentStartParams params) async {
+    if (params.runtimeKind == 'codex') {
+      requireCodexCapabilities(hello.capabilities);
+    }
+    return AgentStartResult.fromJson(
+      await _request(Method.agentStart, params.toJson()),
+    );
+  }
 
   @override
-  Future<AgentContinueResult> continueAgent(String sessionId) async =>
-      AgentContinueResult.fromJson(
-        await _request(
-          Method.agentContinue,
-          AgentSessionParams(sessionId).toJson(),
-        ),
-      );
+  Future<AgentContinueResult> continueAgent(
+    String sessionId, {
+    String? runtimeProfileId,
+  }) async => AgentContinueResult.fromJson(
+    await _request(
+      Method.agentContinue,
+      AgentContinueParams(
+        sessionId,
+        runtimeProfileId: runtimeProfileId,
+      ).toJson(),
+    ),
+  );
 
   @override
   Stream<AgentEvent> attachAgent(String sessionId, int eventChannel) {
@@ -375,6 +384,28 @@ class SessionLink implements HostLink {
     return events.stream;
   }
 
+  @override
+  Future<void> steerAgent(AgentSteerParams params) {
+    requireCodexCapabilities(hello.capabilities);
+    return _request(Method.agentSteer, params.toJson());
+  }
+
+  @override
+  Future<void> answerAgentQuestion(AgentQuestionAnswerParams params) {
+    requireCodexCapabilities(hello.capabilities);
+    return _request(Method.agentQuestionAnswer, params.toJson());
+  }
+
+  @override
+  Stream<AgentQuestionRequestedParams> get agentQuestions => session
+      .notifications
+      .where((n) => n.method == Method.agentQuestionRequested)
+      .map((n) => AgentQuestionRequestedParams.fromJson(n.params));
+  @override
+  Stream<AgentQuestionResolvedParams> get agentQuestionResolutions => session
+      .notifications
+      .where((n) => n.method == Method.agentQuestionResolved)
+      .map((n) => AgentQuestionResolvedParams.fromJson(n.params));
   @override
   Future<void> promptAgent(AgentPromptParams params) =>
       _request(Method.agentPrompt, params.toJson());

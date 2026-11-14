@@ -111,6 +111,8 @@ class Host {
         Capability.workbench,
         Capability.terminal,
         Capability.agent,
+        Capability.codex,
+        Capability.agentExtensionsV1,
         if (options.advertiseLifecycle) Capability.lifecycle,
         ...?extension?.capabilities,
       },
@@ -325,6 +327,7 @@ class Host {
     );
     faults.onDraftRelease = drafts.releaseHeld;
     _agents = AgentService(
+      profileDirectory: profile,
       connection: _connection,
       units: units,
       workspaces: workspaces,
@@ -469,7 +472,7 @@ class Host {
             .toJson();
       case Method.agentContinue:
         return (await _agents!.continueSession(
-          AgentSessionParams.fromJson(params),
+          AgentContinueParams.fromJson(params),
         )).toJson();
       case Method.agentRecords:
         return (await _agents!.records(AgentRecordsParams.fromJson(params)))
@@ -479,6 +482,12 @@ class Host {
         return <String, Object?>{};
       case Method.agentPrompt:
         await _agents!.prompt(AgentPromptParams.fromJson(params));
+        return <String, Object?>{};
+      case Method.agentSteer:
+        await _agents!.steer(AgentSteerParams.fromJson(params));
+        return <String, Object?>{};
+      case Method.agentQuestionAnswer:
+        _agents!.questionAnswer(AgentQuestionAnswerParams.fromJson(params));
         return <String, Object?>{};
       case Method.agentDraftSave:
         return (await _agents!.draftSave(AgentDraftSaveParams.fromJson(params)))
@@ -511,6 +520,7 @@ class Host {
           connection: _connection,
           agents: _agents!,
           tools: _tools!,
+          terminals: _terminals!,
         ),
         method,
         params,

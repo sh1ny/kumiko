@@ -6,6 +6,8 @@ import 'package:process_containment/process_containment.dart';
 
 import '../profile_lock.dart';
 import 'acp_agent_fixture.dart';
+import 'codex_agent_fixture.dart';
+import 'qualification_mcp_probe.dart';
 
 /// Where fixtures report themselves: each process writes one
 /// `role pid startTime marker sid` line to its own
@@ -24,6 +26,11 @@ Future<int> runTestFixture(List<String> args) async {
     return 64;
   }
   switch (args.first) {
+    case 'qualification-mcp-env':
+      return runQualificationMcpProbe(args.sublist(1));
+    case 'codex-agent':
+      _report('codex-agent');
+      return runCodexFixture(args.sublist(1));
     case 'acp-agent':
       _report('acp-agent');
       return runAcpAgentFixture(args.sublist(1));

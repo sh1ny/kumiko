@@ -106,7 +106,11 @@ class RuntimeProfileService {
   Future<RuntimeListResult> list() async {
     final detection = await _detected;
     final profiles = _read(
-      () => [if (detection.profile != null) detection.profile!, ..._users()],
+      () => [
+        if (detection.profile != null) detection.profile!,
+        if (detection.codex != null) detection.codex!,
+        ..._users(),
+      ],
     );
     var id = _read(_defaultId);
     if (id == null && profiles.isNotEmpty) {
@@ -135,6 +139,7 @@ class RuntimeProfileService {
   Future<RuntimeProfile?> find(String id) async {
     final detection = await _detected;
     if (detection.profile?.id == id) return detection.profile;
+    if (detection.codex?.id == id) return detection.codex;
     return _read(() {
       for (final profile in _users()) {
         if (profile.id == id) return profile;
@@ -198,7 +203,9 @@ class RuntimeProfileService {
         ],
       );
       if (_defaultId() == null) {
-        _setDefault(detection.profile?.id ?? _users().first.id);
+        _setDefault(
+          detection.profile?.id ?? detection.codex?.id ?? _users().first.id,
+        );
       }
     });
     _log.event('runtime-save', ids: {'profile': profile.id});
@@ -221,7 +228,9 @@ class RuntimeProfileService {
   Future<EmptyResult> setDefault(RuntimeSetDefaultParams params) async {
     final detection = await _detected;
     _write(() {
-      if (detection.profile?.id != params.id && !_exists(params.id)) {
+      if (detection.profile?.id != params.id &&
+          detection.codex?.id != params.id &&
+          !_exists(params.id)) {
         throw _unknown(params.id);
       }
       _setDefault(params.id);

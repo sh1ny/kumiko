@@ -1,0 +1,166 @@
+{
+  "schema": 1,
+  "protocol": "codex-app-server",
+  "nativeVersion": "0.166.0",
+  "os": "windows",
+  "manifestSha256": "561db06b745cf3d512dab90c80e4cfc09109b0031febbd9463510d4af75e35ed",
+  "nativeExecutableSha256": "9d563ee4e0441ff9d59d612013e0460ddf8e5709735c2d9f6b98b7ef8ca4eb42",
+  "hostExecutableSha256": "0aa989aac2435b9236bdb159215f0d35a7cfdfd1c089d317b5f0261c14df49b6",
+  "ownerApproved": true,
+  "claimedAt": "2026-11-11T20:19:30.624733Z",
+  "finishedAt": "2026-11-11T20:20:55.39971Z",
+  "commandExitCode": 1,
+  "manifestConsumed": true,
+  "automaticRetries": 0,
+  "approvalPolicyOverride": false,
+  "rawHelperObservations": {
+    "launch": "pass",
+    "streaming": "pass",
+    "tool activity": "pass",
+    "command approval": "unverified",
+    "Stop": "unverified",
+    "close/descendant containment": "unverified",
+    "kumiko tool call": "unverified",
+    "auth-required": "unverified",
+    "recovery": "unverified",
+    "steering": "unverified",
+    "structured question": "unverified",
+    "child attribution": "unverified",
+    "walkDiagnostics": {
+      "turnEnds": [
+        {
+          "stopReason": "end_turn",
+          "error": "none",
+          "hasStopReason": true,
+          "hasError": false,
+          "hasMessage": false,
+          "hasNativeMessage": false,
+          "nativeMessageTruncated": false,
+          "errorReasons": [
+            "none"
+          ]
+        }
+      ],
+      "turnEndsTruncated": false,
+      "noticeFlags": {
+        "approvalDisplayUnavailable": true
+      },
+      "approvalDisplayRefusals": [
+        {
+          "category": "command",
+          "isChild": false,
+          "titleLoss": false,
+          "previewLoss": false,
+          "namesLoss": true,
+          "countLoss": false,
+          "encodedLoss": false,
+          "titleBytes": 16,
+          "previewBytes": 580,
+          "maxNameBytes": 406,
+          "optionCount": 3
+        }
+      ]
+    },
+    "walkAbortedReason": "approval-display-unavailable",
+    "textEvents": 45,
+    "firstTurnIncrementalEvents": 34,
+    "toolEvents": 2,
+    "unrelatedMcpEnvironmentIsolated": false,
+    "unrelatedCommandEnvironmentIsolated": false,
+    "canaryAudit": {
+      "auditProfile": "large-native-home",
+      "maxFiles": 4096,
+      "maxFileBytes": 268435456,
+      "maxTotalBytes": 536870912,
+      "complete": false,
+      "errorCount": 2,
+      "errorCategories": {
+        "metadataAdmission": 0,
+        "nonRegular": 0,
+        "fileLimit": 0,
+        "aggregateLimit": 0,
+        "unstable": 0,
+        "statIo": 0,
+        "enumerationIo": 0,
+        "openIo": 0,
+        "readIo": 0,
+        "closeIo": 0
+      },
+      "ioErrorCategories": {
+        "sharingViolation": 0,
+        "lockViolation": 0,
+        "accessDenied": 0,
+        "other": 0
+      },
+      "scannedFiles": 32,
+      "matchedFiles": 0,
+      "scannedBytes": 281381306,
+      "readBytes": 281381306,
+      "chargedBytes": 281381306,
+      "rootErrorCategories": {
+        "nonDirectory": 0,
+        "metadataIo": 0
+      },
+      "rootIoErrorCategories": {
+        "sharingViolation": 0,
+        "lockViolation": 0,
+        "accessDenied": 0,
+        "other": 0
+      },
+      "nativeErrorCategories": {
+        "metadataLimit": 0,
+        "nonRegular": 0,
+        "metadataIo": 0,
+        "traversalIo": 0,
+        "baselineIncomplete": 0,
+        "removedEntry": 0,
+        "changedUnknownFile": 1,
+        "changedUnknownDirectory": 1
+      },
+      "nativeBaselineErrorCategories": {
+        "metadataLimit": 0,
+        "nonRegular": 0,
+        "metadataIo": 0,
+        "traversalIo": 0,
+        "baselineIncomplete": 0,
+        "removedEntry": 0,
+        "changedUnknownFile": 0,
+        "changedUnknownDirectory": 0
+      },
+      "nativeIoErrorCategories": {
+        "sharingViolation": 0,
+        "lockViolation": 0,
+        "accessDenied": 0,
+        "other": 0
+      },
+      "nativeBaselineIoErrorCategories": {
+        "sharingViolation": 0,
+        "lockViolation": 0,
+        "accessDenied": 0,
+        "other": 0
+      },
+      "nativeUnknownArtifactCategories": {
+        "credential": 0,
+        "config": 0,
+        "modelCache": 1,
+        "versionCache": 0,
+        "tempDirectory": 0,
+        "otherFile": 0,
+        "otherDirectory": 1
+      }
+    }
+  },
+  "diagnosis": {
+    "display": "Root command approval: name fidelity loss only; max option name406bytes exceeds256byte shared cap. Preview580bytes fits; title/count/encoded flags report no loss.",
+    "sourceMechanism": "runtime_driver.dart serializes JSON decision objects as option labels; messages.dart clamps option names to256UTF8bytes; agent_session.dart cancels when notification fidelity changes. No raw decision payload retained or reconstructed.",
+    "audit": "Two native metadata-diff errors: one changed model-cache file and one changed other directory. Scanner/root/baseline/I/O category counts are zero. Unread changed artifacts keep completeness false.",
+    "submittedRootPrompts": 2,
+    "submittedRootPromptsBasis": "The first root turn ended normally; the second produced the root command refusal. The approved helper aborts before any further prompt.",
+    "cleanup": "Existing finally path completed the single audit and host disposal; no matching attempt-owned SDK/test-host processes remained. Active-descendant containment remains unverified.",
+    "additionalNativeContentReads": 0
+  },
+  "sectionResult": "INCOMPLETE",
+  "authenticationSignatureAdded": false,
+  "toolDeliveryFailureEntryAdded": false,
+  "interpretation": "Intentional diagnostic abort; no native approval answer or Stop result. Zero subset matches with two unscanned changed-artifact errors is not a clean audit. Existing display caps and conservative audit policy behaved as designed; further policy/rendering changes require review. No further actual attempt is authorized."
+}

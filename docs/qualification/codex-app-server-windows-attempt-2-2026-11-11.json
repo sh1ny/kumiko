@@ -1,0 +1,41 @@
+{
+  "schema": 1,
+  "protocol": "codex-app-server",
+  "nativeVersion": "0.166.0",
+  "os": "windows",
+  "manifestSha256": "4d9e8468fa12016f1d496698f0cbc7b9ad54236bd04baee76c199e007f09cd99",
+  "nativeExecutableSha256": "9d563ee4e0441ff9d59d612013e0460ddf8e5709735c2d9f6b98b7ef8ca4eb42",
+  "ownerApproved": true,
+  "claimedAt": "2026-11-11T08:36:19.232667Z",
+  "failedAt": "2026-11-11T08:36:19.607065Z",
+  "commandExitCode": 1,
+  "submittedRootPrompts": 0,
+  "automaticRetries": 0,
+  "manifestConsumed": true,
+  "diagnostic": {
+    "reason": "adapter-protocol",
+    "stage": "initialize",
+    "status": null,
+    "message": "native output closed\nError: approval_policy = \"untrusted\" is no longer supported; remove this setting\n",
+    "messageTruncated": false,
+    "detail": "Error: approval_policy = \"untrusted\" is no longer supported; remove this setting\n"
+  },
+  "startupCleanup": {
+    "launchedUnits": 3,
+    "cleanedUnits": 3,
+    "hostExitCode": 0,
+    "interactiveContainmentTested": false
+  },
+  "privateMcpEntryDeliveryReached": false,
+  "deliveryEvidence": "Failure stage is initialize; the host prepares the private per-run MCP entry only after initialization.",
+  "canaryAudit": {
+    "performed": false,
+    "complete": false,
+    "matchedFiles": null,
+    "reason": "Startup returned no session identity; no filesystem scan was performed."
+  },
+  "launchResult": "fail",
+  "otherRequiredAndOptionalObservations": "unverified",
+  "authenticationSignatureAdded": false,
+  "toolDeliveryFailureEntryAdded": false
+}

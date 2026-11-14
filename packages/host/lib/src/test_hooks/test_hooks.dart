@@ -7,6 +7,8 @@ import 'dart:typed_data';
 import 'package:host_protocol/host_protocol.dart';
 
 import '../agent/tools/tool_service.dart';
+import '../agent/codex/codex_auth_signal.dart';
+import '../agent/codex/version_probe.dart';
 import '../host_extension.dart';
 import '../host_faults.dart';
 import '../host_options.dart';
@@ -22,6 +24,8 @@ class TestHostExtension implements HostExtension {
     this.options = const HostOptions(),
     this.qualifiedAdaptersOverride,
     this.toolDeliveryFailuresOverride,
+    this.qualificationNativeHome,
+    this.qualificationExecutable,
   });
 
   /// Options from `KUMIKO_TEST_*` variables, which make timing deterministic:
@@ -49,6 +53,9 @@ class TestHostExtension implements HostExtension {
     final candidates = env['KUMIKO_TEST_QUALIFIED_ADAPTERS'];
     final failures = env['KUMIKO_TEST_TOOL_DELIVERY_FAILURES'];
     return TestHostExtension(
+      qualificationNativeHome: env['KUMIKO_TEST_CODEX_AUDIT_HOME'],
+      qualificationExecutable:
+          env['KUMIKO_TEST_CODEX_QUALIFICATION_EXECUTABLE'],
       toolDeliveryFailuresOverride: failures == null
           ? null
           : [
@@ -70,6 +77,23 @@ class TestHostExtension implements HostExtension {
                 ),
             ],
       options: HostOptions(
+        codexAuthSignatures: env['KUMIKO_TEST_CODEX_AUTH_SIGNATURES'] == null
+            ? null
+            : {
+                for (final name in (jsonDecode(
+                  env['KUMIKO_TEST_CODEX_AUTH_SIGNATURES'] ?? '[]',
+                ) as List))
+                  CodexAuthSignal.named(name as String) ??
+                      (throw ArgumentError.value(
+                        name,
+                        'KUMIKO_TEST_CODEX_AUTH_SIGNATURES',
+                        'unknown Codex signal',
+                      )),
+              },
+        codexProbeArgs: env['KUMIKO_TEST_CODEX_PROBE_ARGS'] == null
+            ? null
+            : (jsonDecode(env['KUMIKO_TEST_CODEX_PROBE_ARGS']!) as List)
+                  .cast<String>(),
         runtimeSearchPath: runtimePath == null
             ? null
             : splitSearchPath(runtimePath, separator),
@@ -116,6 +140,8 @@ class TestHostExtension implements HostExtension {
 
   @override
   final HostOptions options;
+  final String? qualificationNativeHome;
+  final String? qualificationExecutable;
 
   @override
   final List<(String, String, List<String>)>? qualifiedAdaptersOverride;
@@ -136,6 +162,44 @@ class TestHostExtension implements HostExtension {
   @override
   Future<Object?> handle(HostServices host, String method, Json params) async {
     switch (method) {
+      case 'test/codex.audit.prepare':
+        // Closed two-key allowlist: nothing else, including protected names or
+        // budgets, can be supplied through this request.
+        if (params.keys.any(
+              (key) => key != 'auditProfile' && key != 'nativeSelection',
+            ) ||
+            (params.containsKey('auditProfile') &&
+                params['auditProfile'] is! String) ||
+            (params.containsKey('nativeSelection') &&
+                params['nativeSelection'] is! String)) {
+          throw RpcException(
+            ErrorCode.invalidParams,
+            'invalid audit preparation',
+          );
+        }
+        final home = qualificationNativeHome;
+        if (home == null) {
+          throw RpcException(ErrorCode.methodNotAvailable, method);
+        }
+        return host.agents.prepareNativeHomeAuditForTesting(
+          home,
+          auditProfile: params['auditProfile'] as String? ?? 'default',
+          nativeSelection: params['nativeSelection'] as String? ?? 'legacy',
+        );
+      case 'test/codex.probe':
+        EmptyParams.fromJson(params);
+        final executable = qualificationExecutable;
+        if (executable == null) {
+          throw RpcException(ErrorCode.methodNotAvailable, method);
+        }
+        return {
+          'version': await probeCodexVersion(
+            host.units,
+            host.agents.profileDirectory,
+            executable,
+            options,
+          ),
+        };
       case Method.testUnitLaunch:
         final p = TestUnitLaunchParams.fromJson(params);
         final launched = await host.units.launch(
@@ -179,15 +243,38 @@ class TestHostExtension implements HostExtension {
       case 'test/tools.revoke':
         return _tools(host.tools, method, params);
       case 'test/terminal.stats':
-        return {'activityReads': host.faults.activityReads};
+        return {
+          'activityReads': host.faults.activityReads,
+          'inputBuffers': host.terminals.inputBufferSnapshot(),
+        };
       case 'test/draft.stats':
         EmptyParams.fromJson(params);
         return host.agents.draftSnapshot();
       case 'test/agent.stats':
-        EmptyParams.fromJson(params);
+        if (params.keys.any(
+          (key) => key != 'secretScanRoots' && key != 'secretScanSessionId',
+        )) {
+          throw RpcException(ErrorCode.invalidParams, 'invalid test stats key');
+        }
+        final scanRoots = params['secretScanRoots'];
+        final scanSession = params['secretScanSessionId'];
+        if (scanRoots != null &&
+            (scanRoots is! List ||
+                scanRoots.any((root) => root is! String) ||
+                scanSession is! String)) {
+          throw RpcException(
+            ErrorCode.invalidParams,
+            'invalid test secret scan',
+          );
+        }
         return {
           'sessions': host.agents.snapshot(),
           'heldResolutions': host.faults.heldResolutions,
+          if (scanRoots != null)
+            'secretAudit': await host.agents.auditToolFilesForTesting(
+              scanSession! as String,
+              [for (final root in scanRoots as List) root as String],
+            ),
         };
       case Method.testChannelOpen:
         final p = TestChannelOpenParams.fromJson(params);
@@ -273,6 +360,7 @@ Object? _tools(ToolService tools, String method, Json params) {
         'reason': tools.unavailableReason,
         'unauthenticated': tools.unauthenticatedCount,
         'authenticated': tools.authenticatedCount,
+        'pendingBindings': tools.pendingBindingCount,
         'authFailures': tools.authFailureCount,
         'grants': {
           for (final e in _testGrants.entries)

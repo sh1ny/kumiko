@@ -37,8 +37,9 @@ void main() {
   Future<ContainedUnit> start(
     List<String> args, {
     String? workingDirectory,
+    Map<String, String> env = const {},
   }) async {
-    final environment = {'PC_FIXTURE_OUT': out.path};
+    final environment = {'PC_FIXTURE_OUT': out.path, ...env};
     final ContainedUnit unit;
     if (Platform.isWindows) {
       unit = spawnWindowsUnit(
@@ -61,6 +62,27 @@ void main() {
     }
     units.add(unit);
     return unit;
+  }
+
+  for (final inherit in [true, false]) {
+    test(
+      'contained environment inheritance $inherit preserves explicit vars and marker',
+      () async {
+        final unit = await start(
+          ['pipes-env-parent', '$inherit'],
+          env: {'PC_PARENT_CANARY': 'controlled'},
+        );
+        final output = utf8.decoder.bind(unit.pipes!.stdout).join();
+        final errors = unit.pipes!.stderr.drain<void>();
+        expect(jsonDecode(await output), {
+          'parentMarker': inherit,
+          'explicit': true,
+          'unitMarker': true,
+        });
+        await errors;
+        expect(await unit.exitCode, 0);
+      },
+    );
   }
 
   test('pipes echo stdin to stdout and keep stderr separate', () async {

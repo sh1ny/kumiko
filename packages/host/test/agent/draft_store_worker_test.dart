@@ -245,6 +245,28 @@ void main() {
       expect(storedRevisionOf(await failure(s.save('d', 'x', 4))), 4);
     });
 
+    test('a refused send restores its text unless a newer save won', () async {
+      final s = open();
+      await s.save('a', 'P', 5);
+      final floor = await s.commitSend('a', 5, synced: true);
+      expect(await s.restoreSend('a', 'P', floor), true);
+      final a = await s.load('a');
+      expect((a.text, a.revision), ('P', 5));
+
+      // A newer save after the removal wins.
+      await s.save('b', 'P', 5);
+      final removed = await s.commitSend('b', 5, synced: true);
+      await s.save('b', 'newer', 6);
+      expect(await s.restoreSend('b', 'P', removed), false);
+      expect((await s.load('b')).text, 'newer');
+
+      // Newer synced text kept by the send is never overwritten.
+      await s.save('c', 'R', 6);
+      final kept = await s.commitSend('c', 5, synced: true);
+      expect(await s.restoreSend('c', 'P', kept), false);
+      expect((await s.load('c')).text, 'R');
+    });
+
     test(
       'total bytes are capped; replacing a draft does not count twice',
       () async {

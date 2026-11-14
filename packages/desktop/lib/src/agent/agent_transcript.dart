@@ -11,13 +11,14 @@ class AgentPermission {
   final AgentPermissionRequestedParams request;
   AgentPermissionResolvedParams? resolution;
   bool unavailable = false;
+  String? unavailableReason;
   bool replying = false;
   bool get pending => resolution == null && !unavailable;
   String get label {
     final answer = resolution;
     if (answer == null) {
       return unavailable
-          ? 'Unanswerable: host or session ended'
+          ? (unavailableReason ?? 'Unanswerable: host or session ended')
           : 'Waiting for approval';
     }
     if (answer.outcome == AgentPermissionOutcome.cancelled) return 'Cancelled';
@@ -84,6 +85,8 @@ class AgentTranscript {
       if (tail != null &&
           tail.permission == null &&
           tail.kind == event.kind &&
+          tail.fields['threadId'] == fields['threadId'] &&
+          tail.fields['parentThreadId'] == fields['parentThreadId'] &&
           tail.textBytes + size <= maxAgentTextEventBytes &&
           tail.fields['truncated'] != true) {
         tail.append(text, size);
@@ -131,6 +134,11 @@ class AgentTranscript {
       entry.append(text, utf8.encode(text).length);
       // Text lives in the accumulator, not a second retained JSON copy.
       entry.fields['text'] = '';
+      // Other retained fields (thread identities, status) are charged once.
+      final metadata = Map.of(entry.fields)..remove('text');
+      if (metadata.isNotEmpty) {
+        entry.bytes += utf8.encode(jsonEncode(metadata)).length;
+      }
     } else {
       entry.bytes = utf8.encode(jsonEncode(fields)).length;
     }

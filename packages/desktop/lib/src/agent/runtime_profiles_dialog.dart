@@ -59,15 +59,16 @@ Future<String?> showRuntimePicker(BuildContext context, AgentLaunch launch) =>
 Future<void> _configureMissingRuntime(
   BuildContext context,
   WorkbenchController controller,
-  String? message,
-) async {
+  String? message, {
+  String runtimeKind = 'claude-code',
+}) async {
   final add = await showDialog<bool>(
     context: context,
     builder: (context) => AlertDialog(
       key: const Key('no-runtime-profile-prompt'),
       title: const Text('No runtime profile'),
       content: Text(
-        '$runtimeInstallMessage${message == null ? '' : '\n$message'}',
+        '${runtimeKind == 'codex' ? 'Install Codex CLI or add an argv profile for your installed Codex executable.' : runtimeInstallMessage}${message == null ? '' : '\n$message'}',
       ),
       actions: [
         TextButton(
@@ -91,11 +92,17 @@ Future<void> _configureMissingRuntime(
 Future<String?> chooseRecoveryRuntime(
   BuildContext context,
   WorkbenchController controller,
-  RuntimeListResult list,
-) async {
+  RuntimeListResult list, {
+  String runtimeKind = 'claude-code',
+}) async {
   if (!context.mounted) return null;
   if (list.profiles.isEmpty) {
-    await _configureMissingRuntime(context, controller, list.defaultReason);
+    await _configureMissingRuntime(
+      context,
+      controller,
+      list.defaultReason,
+      runtimeKind: runtimeKind,
+    );
     return null;
   }
   final id = await showRuntimePicker(
@@ -120,11 +127,13 @@ Future<void> launchAgentFlow(
   bool choose = false,
   String? profileId,
   String? workspaceId,
+  String runtimeKind = 'claude-code',
 }) async {
   final result = await controller.launchAgent(
     choose: choose,
     profileId: profileId,
     workspaceId: workspaceId,
+    runtimeKind: runtimeKind,
   );
   if (!context.mounted) return;
   switch (result.kind) {
@@ -145,15 +154,23 @@ Future<void> launchAgentFlow(
           controller,
           profileId: id,
           workspaceId: result.workspaceId,
+          runtimeKind: runtimeKind,
         );
       }
     case AgentLaunchKind.noProfile:
-      await _configureMissingRuntime(context, controller, result.message);
+      await _configureMissingRuntime(
+        context,
+        controller,
+        result.message,
+        runtimeKind: runtimeKind,
+      );
     case AgentLaunchKind.noWorkspace:
       final open = await showDialog<bool>(
         context: context,
         builder: (context) => AlertDialog(
-          title: const Text('Claude Code needs a workspace'),
+          title: Text(
+            '${runtimeKind == 'codex' ? 'Codex' : 'Claude Code'} needs a workspace',
+          ),
           content: const Text(
             'Open or select a folder first. No agent has been started.',
           ),
@@ -206,6 +223,9 @@ class _RuntimeProfilesDialogState extends State<RuntimeProfilesDialog> {
   final _args = TextEditingController();
   final _env = TextEditingController();
   String? _editing;
+  String _runtimeKind = 'claude-code';
+  bool get _supportedKind =>
+      _runtimeKind == 'claude-code' || _runtimeKind == 'codex';
   List<String>? _keptArgs;
   Map<String, String>? _keptEnv;
   List<String> _issues = const [];
@@ -236,6 +256,7 @@ class _RuntimeProfilesDialogState extends State<RuntimeProfilesDialog> {
         : copy
         ? '${profile.name} copy'
         : profile.name;
+    _runtimeKind = profile?.runtimeKind ?? 'claude-code';
     _executable.text = profile?.executable ?? '';
     final args = profile?.args ?? const <String>[];
     final env = profile?.env ?? const <String, String>{};
@@ -283,7 +304,7 @@ class _RuntimeProfilesDialogState extends State<RuntimeProfilesDialog> {
     final definition = RuntimeProfileDefinition(
       id: _editing!,
       name: _name.text.trim(),
-      runtimeKind: 'claude-code',
+      runtimeKind: _runtimeKind,
       executable: _executable.text.trim(),
       args:
           _keptArgs ??
@@ -406,11 +427,36 @@ class _RuntimeProfilesDialogState extends State<RuntimeProfilesDialog> {
                   ],
                 ),
               ] else ...[
-                const Text(
-                  'Claude Code · ACP adapter · workspace working directory',
+                DropdownButtonFormField<String>(
+                  key: const Key('runtime-kind'),
+                  isExpanded: true,
+                  initialValue: _runtimeKind,
+                  decoration: const InputDecoration(labelText: 'Runtime kind'),
+                  items: [
+                    if (!_supportedKind)
+                      DropdownMenuItem(
+                        value: _runtimeKind,
+                        child: Text('Unsupported runtime kind: $_runtimeKind'),
+                      ),
+                    const DropdownMenuItem(
+                      value: 'claude-code',
+                      child: Text('Claude Code · ACP adapter'),
+                    ),
+                    const DropdownMenuItem(
+                      value: 'codex',
+                      child: Text('Codex native App Server'),
+                    ),
+                  ],
+                  onChanged: _busy || !_supportedKind
+                      ? null
+                      : (value) => setState(() => _runtimeKind = value!),
                 ),
                 SelectableText(
-                  'Example: ${runtimeProfileExample(defaultTargetPlatform)}',
+                  !_supportedKind
+                      ? 'This runtime kind is not supported by this desktop. The stored profile is preserved read-only.'
+                      : _runtimeKind == 'codex'
+                      ? 'Codex 0.166.0 or newer. Use an absolute native executable and app-server as an argument. Sign in through Codex in a terminal.'
+                      : 'Example: ${runtimeProfileExample(defaultTargetPlatform)}',
                 ),
                 _field('name', 'Name', _name),
                 _field('executable', 'Executable', _executable),
@@ -446,7 +492,7 @@ class _RuntimeProfilesDialogState extends State<RuntimeProfilesDialog> {
                     ),
                     FilledButton(
                       key: const Key('runtime-profile-save'),
-                      onPressed: _busy ? null : _save,
+                      onPressed: _busy || !_supportedKind ? null : _save,
                       child: const Text('Save'),
                     ),
                   ],
@@ -474,6 +520,7 @@ class _RuntimeProfilesDialogState extends State<RuntimeProfilesDialog> {
     child: TextField(
       key: Key('runtime-profile-$id'),
       controller: value,
+      enabled: _supportedKind,
       minLines: multiline ? 2 : 1,
       maxLines: multiline ? null : 1,
       readOnly: kept || _busy,

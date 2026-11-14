@@ -110,6 +110,9 @@ class UnitManager {
     Map<String, String>? environment,
     PtyOptions? pty,
     bool pipes = false,
+    // Probe launches may replace parent environment; the spawn layer always
+    // inserts its own KUMIKO_UNIT after caller variables. Existing runs inherit.
+    bool inheritParentEnvironment = true,
   }) async {
     if (pipes && pty != null) {
       throw ArgumentError('pipes and pty are mutually exclusive');
@@ -207,6 +210,7 @@ class UnitManager {
           environment,
           pty,
           pipes,
+          inheritParentEnvironment,
         );
         if (faults.identityReadFails) await _failIdentity(unit);
       } on Object catch (e) {
@@ -277,6 +281,7 @@ class UnitManager {
     Map<String, String>? environment,
     PtyOptions? pty,
     bool pipes,
+    bool inheritParentEnvironment,
   ) async {
     if (Platform.isWindows) {
       return spawnWindowsUnit(
@@ -285,6 +290,7 @@ class UnitManager {
         containmentId: id,
         workingDirectory: workingDirectory,
         environment: environment,
+        inheritParentEnvironment: inheritParentEnvironment,
         pty: pty,
         pipes: pipes,
       );
@@ -295,6 +301,7 @@ class UnitManager {
       argv: argv,
       workingDirectory: workingDirectory,
       environment: environment,
+      inheritParentEnvironment: inheritParentEnvironment,
       pty: pty,
       pipes: pipes,
     );

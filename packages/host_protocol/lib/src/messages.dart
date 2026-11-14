@@ -8,6 +8,8 @@ import 'package:domain/domain.dart'
 export 'package:domain/domain.dart'
     show maxProfileArgBytes, maxProfileArgs, maxProfileBytes, maxProfileEnv;
 
+part 'codex_messages.dart';
+
 /// Every wire message of the protocol, hand-written, used by both sides
 /// (design D5, D8, D10). Parsing failures throw [RpcException] with
 /// [ErrorCode.invalidParams].
@@ -55,6 +57,10 @@ abstract final class Method {
   static const String agentContinue = 'agent/continue';
   static const String agentAttach = 'agent/attach';
   static const String agentPrompt = 'agent/prompt';
+  static const String agentSteer = 'agent/steer';
+  static const String agentQuestionAnswer = 'agent/questionAnswer';
+  static const String agentQuestionRequested = 'agent/questionRequested';
+  static const String agentQuestionResolved = 'agent/questionResolved';
   static const String agentStop = 'agent/stop';
   static const String agentPermissionReply = 'agent/permissionReply';
   static const String agentClose = 'agent/close';
@@ -82,6 +88,8 @@ abstract final class Capability {
   static const String testFaults = 'test.faults';
   static const String terminal = 'terminal';
   static const String agent = 'agent';
+  static const String codex = 'codex';
+  static const String agentExtensionsV1 = 'agent-extensions-v1';
 
   /// `app/quit` and `app/previousExit` (app-exit-and-reopen D1, D5).
   static const String lifecycle = 'lifecycle';
@@ -120,6 +128,8 @@ const Map<String, String> methodCapability = {
   Method.agentContinue: Capability.agent,
   Method.agentAttach: Capability.agent,
   Method.agentPrompt: Capability.agent,
+  Method.agentSteer: Capability.agentExtensionsV1,
+  Method.agentQuestionAnswer: Capability.agentExtensionsV1,
   Method.agentStop: Capability.agent,
   Method.agentPermissionReply: Capability.agent,
   Method.agentClose: Capability.agent,
@@ -156,6 +166,7 @@ abstract final class ErrorCode {
   static const String storeUnreadable = 'store-unreadable';
   static const String layoutInvalid = 'layout-invalid';
   static const String staleRevision = 'stale-revision';
+  static const String staleRun = 'stale-run';
   static const String resolveTimeout = 'resolve-timeout';
   static const String workspaceCap = 'workspace-cap';
   static const String workspaceInUse = 'workspace-in-use';
@@ -1885,26 +1896,48 @@ class RuntimeSetDefaultParams {
 }
 
 class AgentStartParams {
-  const AgentStartParams({required this.workspaceId, this.runtimeProfileId});
+  const AgentStartParams({
+    required this.workspaceId,
+    this.runtimeProfileId,
+    this.runtimeKind,
+  });
   factory AgentStartParams.fromJson(Json json) => AgentStartParams(
     workspaceId: _req<String>(json, 'workspaceId'),
     runtimeProfileId: _opt<String>(json, 'runtimeProfileId'),
+    runtimeKind: _opt<String>(json, 'runtimeKind'),
   );
+  final String? runtimeKind;
   final String workspaceId;
   final String? runtimeProfileId;
   Json toJson() => {
     'workspaceId': workspaceId,
+    'runtimeKind': ?runtimeKind,
     'runtimeProfileId': ?runtimeProfileId,
   };
 }
 
-/// Request shape for continue, attach, stop, close and release.
+/// Request shape for attach, stop, close and release.
 class AgentSessionParams {
   const AgentSessionParams(this.sessionId);
   factory AgentSessionParams.fromJson(Json json) =>
       AgentSessionParams(_req<String>(json, 'sessionId'));
   final String sessionId;
   Json toJson() => {'sessionId': sessionId};
+}
+
+/// Continue may explicitly select a compatible profile without changing the default.
+class AgentContinueParams extends AgentSessionParams {
+  const AgentContinueParams(super.sessionId, {this.runtimeProfileId});
+  factory AgentContinueParams.fromJson(Json json) => AgentContinueParams(
+    _req<String>(json, 'sessionId'),
+    runtimeProfileId: _opt<String>(json, 'runtimeProfileId'),
+  );
+  final String? runtimeProfileId;
+  @override
+  Json toJson() => {
+    'sessionId': sessionId,
+    'runtimeProfileId': ?runtimeProfileId,
+  };
 }
 
 class AgentAdapter {
@@ -2221,29 +2254,93 @@ enum AgentState {
   failed,
 }
 
+class AgentDelegated {
+  const AgentDelegated({
+    this.activeChildren = 0,
+    this.waitingRequests = 0,
+    this.incomplete = false,
+  });
+  factory AgentDelegated.fromJson(Json json) {
+    final active = _req<int>(json, 'activeChildren');
+    final waiting = _req<int>(json, 'waitingRequests');
+    if (active < 0 || active > 64 || waiting < 0 || waiting > 16) {
+      throw RpcException(
+        ErrorCode.invalidParams,
+        'delegated summary exceeds capacity',
+      );
+    }
+    return AgentDelegated(
+      activeChildren: active,
+      waitingRequests: waiting,
+      incomplete: _req<bool>(json, 'incomplete'),
+    );
+  }
+  final int activeChildren, waitingRequests;
+  final bool incomplete;
+  bool get hasWork => activeChildren > 0 || waitingRequests > 0 || incomplete;
+  Json toJson() {
+    final json = <String, Object?>{
+      'activeChildren': activeChildren,
+      'waitingRequests': waitingRequests,
+      'incomplete': incomplete,
+    };
+    AgentDelegated.fromJson(json);
+    return json;
+  }
+}
+
 class AgentStateParams {
   const AgentStateParams({
     required this.sessionId,
     required this.seq,
     required this.state,
     this.tools,
+    this.runId,
+    this.turnId,
+    this.delegated,
   });
-  factory AgentStateParams.fromJson(Json json) => AgentStateParams(
-    sessionId: _req<String>(json, 'sessionId'),
-    seq: _req<int>(json, 'seq'),
-    state: _enum(AgentState.values, json, 'state'),
-    tools: AgentTools.fromJsonField(json),
-  );
+  factory AgentStateParams.fromJson(Json json) {
+    final runId = _codexOptionalId(json, 'runId');
+    final turnId = _codexOptionalId(json, 'turnId');
+    if (turnId != null && runId == null) {
+      throw RpcException(ErrorCode.invalidParams, 'turnId requires runId');
+    }
+    return AgentStateParams(
+      sessionId: _req<String>(json, 'sessionId'),
+      seq: _req<int>(json, 'seq'),
+      state: _enum(AgentState.values, json, 'state'),
+      tools: AgentTools.fromJsonField(json),
+      runId: runId,
+      turnId: turnId,
+      delegated: json['delegated'] == null
+          ? null
+          : AgentDelegated.fromJson(_req<Json>(json, 'delegated')),
+    );
+  }
   final String sessionId;
   final int seq;
   final AgentState state;
   final AgentTools? tools;
-  Json toJson() => {
-    'sessionId': sessionId,
-    'seq': seq,
-    'state': state.name,
-    'tools': ?tools?.toJson(),
-  };
+  final String? runId;
+  final String? turnId;
+  final AgentDelegated? delegated;
+  Json toJson() {
+    final json = <String, Object?>{
+      'sessionId': sessionId,
+      'seq': seq,
+      'state': state.name,
+      'tools': ?tools?.toJson(),
+      'runId': ?runId,
+      'turnId': ?turnId,
+      'delegated': ?delegated?.toJson(),
+    };
+    _codexOptionalId(json, 'runId');
+    _codexOptionalId(json, 'turnId');
+    if (turnId != null && runId == null) {
+      throw RpcException(ErrorCode.invalidParams, 'turnId requires runId');
+    }
+    return json;
+  }
 }
 
 class AgentPermissionOption {

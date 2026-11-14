@@ -23,9 +23,11 @@ flowchart LR
         D[Flutter desktop<br/>UI, terminal emulation] -- "stdio frames (ADR 0002)" --> H[Execution host<br/>child process]
         H --> S[(Local SQLite store<br/>ADR 0003)]
         H -- "ACP stdio JSON-RPC" --> CC[Claude Code ACP adapter]
+        H -- "native stdio JSON-RPC (ADR 0015)" --> CX[Codex App Server root and child threads]
         H -. later .-> OMP[OMP native RPC]
         H -- "PTY bytes" --> SH[Shells and TUIs]
         CC -- "MCP stdio" --> B[mcp-bridge]
+        CX -- "isolated per-run MCP when proven safe" --> B
         B -- "per-user pipe/socket" --> H
         H --> WS[Checkouts / workspaces]
     end
@@ -38,8 +40,8 @@ flowchart LR
 |---|---|---|---|
 | Desktop (`desktop`) | Workbench UI, input, terminal emulation/rendering, close/exit confirmations | In-memory view state and terminal scrollback only | Host via ADR 0002; team server later via ADR 0007 |
 | Execution host (`host`) | Spawns and owns runtimes, adapters, PTYs and the tool service; sole local-store writer; terminates all children when the desktop goes | Live process table, session records, local store | Desktop (ADR 0002); runtimes (ACP/RPC); PTYs; bridge endpoint (ADR 0005) |
-| Runtime adapters (in host) | Map each runtime onto the session model, with qualified capabilities | Per-session protocol state | ACP over the agent's stdio; OMP RPC later (ADR 0004) |
-| Agent adapter unit (one per live session) | Run one adapter and its tool descendants in containment; no shared multi-session adapter process | Host `AgentService` / `AgentSession` own the unit, ACP state, permissions, event relay and stderr ring; `UnitManager` owns containment and ledger settlement | ACP v1 over piped stdio; desktop via one per-session event channel plus capability-gated control (ADR 0012) |
+| Runtime adapters (in host) | Map each runtime onto the session model, with qualified capabilities | Per-session protocol state | ACP for Claude; native App Server for Codex; OMP RPC later (ADR 0004, ADR 0015) |
+| Agent adapter unit (one per live session) | Run one adapter and its tool descendants in containment; no shared multi-session adapter process | Host `AgentService` / `AgentSession` own the unit, shared runtime state, permissions, event relay and stderr ring; `UnitManager` owns containment and ledger settlement | ACP v1 or native Codex App Server over piped stdio; desktop via one per-session event channel plus capability-gated control (ADR 0012) |
 | Tool service and `mcp-bridge` | Expose authorized Kumiko operations to agent sessions | Session-secret map (one grant per live session run), per-run Kumiko tools status inputs, per-role tool catalog | MCP stdio to the runtime; per-user local endpoint to the host: owner-only named pipe or `tools.sock`, secret handshake, then the built-in MCP subset (ADR 0005, ADR 0013) |
 | Local store | Durable local state | SQLite files: the main store, and the separate draft store `drafts.sqlite` owned by one host draft worker isolate (ADR 0014) | Host only, under the profile lock (ADR 0003, ADR 0014) |
 | `domain` package | Pure rules shared by local and team paths | None | Library |
@@ -56,7 +58,7 @@ flowchart LR
 | Built-in shell profiles | Host `ProfileService` | One host run | Detected again at every host start | Host memory |
 | Pane-to-terminal link | Desktop `TerminalController` | While the pane and desktop live, through moves; dropped with the pane on a user close or a clean exit (status 0, complete output) | Lost on reopen, so the pane shows *ended, not restored* | Desktop memory |
 | Workspace cleanup state (*cleanup unresolved* flag and reasons) | Host holding the profile lock | Until a retried reconciliation cleans it or the user confirms | Checked before every launch against the workspace | Local store |
-| Session record (`agent_session`: target identity/path, runtime kind/profile, creating adapter name/version, native id, timestamps) | Host `AgentService` | Inserted only after `session/new` succeeds; retained through close and profile deletion; history deletion is M2 | Immutable; Continue rechecks target identity and capabilities against its own initialized adapter without rewriting the record | Local store (store v5) |
+| Session record (`agent_session`: target identity/path, runtime kind/profile, creating adapter name/version, native id, timestamps) | Host `AgentService` | Inserted only after ACP `session/new` or Codex `thread/start` succeeds; retained through close and profile deletion; history deletion is M2 | Immutable; Continue rechecks target identity and capabilities against its own initialized adapter without rewriting the record | Local store (store v5) |
 | User runtime profiles (argv, environment, runtime kind; no `cwd`) and `default_runtime` | Host `RuntimeProfileService` | Until removed or changed | Never rebuilt; a missing selected default stays unavailable rather than being silently replaced | Local store (`runtime_profile`, `setting`, store v5) |
 | Built-in runtime profile | Host `RuntimeProfileService` | One host run | Detected at host start with a 2 s overall off-isolate deadline; read-only and memory-only | Host memory |
 | Live agent state, sequence and pending permissions | Host `AgentSession` | Live session lifetime | Lost with the host; desktop mirrors sequenced control states and shows *Stopped or unknown* on host loss | Host memory |
@@ -73,8 +75,59 @@ flowchart LR
 
 ## Boundaries and contracts
 
+### Native Codex contract (ADR 0015)
+
+The reviewed Codex design is being implemented by `codex-app-server-session`;
+these are its normative contracts, not a claim that the runtime path or real
+provider observations already pass. Claude's existing ACP behavior is retained.
+
+AgentService/AgentSession keep lifecycle, reservations, drafts, sequenced control
+and cleanup ownership. A narrow Codex driver owns native correlation and typed
+mapping, sharing only concretely reused bounded wire mechanics with ACP. One
+contained App Server owns one root and its children; UnitManager owns ledger and
+settlement. Native child completion never proves process cleanup. Root completion
+does not imply children are idle. AgentSession alone publishes the delegated
+summary in sequenced state; close, quit and Stop read it even without event credit.
+The driver owns authoritative child relationships and thread-qualified item keys;
+unknown content is withheld, and registry overflow keeps warnings conservative.
+
+`codex` profiles use native App Server; `claude-code` remains ACP. Discovery is
+file-only within the existing two-second deadline. A separately contained
+five-second version probe in the owner-only host profile directory, without
+workspace configuration/tool grants, settles before root launch. Codex >=0.166.0
+is admitted without pin or allowlist. Save exact executable version with adapter
+identity `codex-app-server`; compatible profile selection never crosses kinds,
+and adding Codex never changes an existing default. Core malformed contracts
+fail the run; unsupported optional metadata/methods disable only their feature.
+Raw native protocol stays inside the host; additive desktop controls require
+negotiated capabilities, and run/turn/request fencing prevents stale writes.
+
+Native turn completion determines outcomes, not request acknowledgements. Stop
+atomically admits cancellation replies and root/known-child interrupts; saturation
+refuses busy before writes. Timeout stays unconfirmed until native evidence.
+Explicit Steer shares revision-guarded draft removal; ordinary Send is idle-only.
+Never retry admitted input automatically. Continue revalidates immutable targets,
+uses bounded native history and deduplicated snapshot/live delivery, and never
+replays prompts or persists transcript text in Kumiko.
+
+Safe MCP requires private stdin configuration with entry-only secret environment,
+proven effective-config absence of `kumiko`, and no persistence or parent-process
+secret. Otherwise chat starts with tools visibly unavailable. Root grants bind to
+native thread creation without retry, keep per-call authorization and the existing
+four-client cap, and revoke on settlement/loss. Runtime-written files and Kumiko
+profile files require canary scans before a safe path is claimed. No child browser
+or independent child authority is introduced.
+
+Codex evidence is recorded per exact version/OS as PASS, INCOMPLETE or FAIL,
+separately from runtime admission. Required observations are launch/streaming,
+tool activity, approval, Stop, close/descendants, Kumiko call and auth-required;
+optional recovery/steering/questions/child observations remain separate. Missing
+evidence does not disable compatible versions. Claude qualification stays unchanged.
+
+### Shared contracts
+
 - **Desktop-host protocol:** defined in the `host_protocol` package, versioned with a `hello` handshake and capability set (ADR 0002). Both sides use the generated or shared types only.
-- **Runtime protocols:** ACP v1 (stdio, newline-delimited JSON-RPC; `session/new`, and `session/load` or `session/resume` only when both advertised and qualified for the exact adapter name/version); OMP RPC later. Runtime and agent methods are additive desktop-host control methods gated on `Capability.agent`; raw ACP never crosses to the desktop (ADR 0004, ADR 0012).
+- **Runtime protocols:** ACP v1 (stdio, newline-delimited JSON-RPC; `session/new`, and `session/load` or `session/resume` only when both advertised and qualified for the exact adapter name/version); native Codex App Server stdio JSON-RPC (minimum 0.166.0, no exact-version allowlist); OMP RPC later. Shared agent control uses `Capability.agent`; additive Codex controls require their negotiated capability gates. Raw ACP/native JSON-RPC never crosses to the desktop (ADR 0004, ADR 0012, ADR 0015).
 - **Runtime qualification evidence:** [`docs/qualification/`](../docs/qualification/) holds real per-version, per-OS observations independently of archived change artifacts. `qualified_adapters.dart` and `tool/check_qualification.dart` keep claims tied to this evidence; fake-agent tests prove Kumiko behaviour, not real-adapter qualification. Claude agent ACP 0.99.1 currently claims load and resume from confirmed Windows observations; Linux/macOS user items remain unproven, permitting only provisional ACCEPTED across platforms. The Windows-only M1 close is an explicit scope decision, not an upgrade of this qualification evidence.
 - **Kumiko tools:** MCP tool schemas are owned by the host tool service and versioned with it. Authorization is per call against the session's role (ADR 0005). The endpoint, bridge handshake, MCP subset, per-role catalog, tools status semantics and the `kumiko tool call` qualification item with `toolDeliveryFailures` are defined in ADR 0013.
 - **Local store schema:** a version table in each database, with forward migrations run by the host (ADR 0003).
@@ -82,6 +135,26 @@ flowchart LR
 - **Dependency rule:** no package may add product-analytics, crash-report or remote-logging SDKs (D25). A dependency audit enforces this in CI.
 
 ## Resource bounds and failure visibility
+
+Codex reuses the shared event/line/credit/write/control/stderr/transcript/unit
+bounds below (ADR 0015), including the host-wide large-line permit. It adds:
+
+| Codex resource | Bound | At limit/failure |
+|---|---|---|
+| Version probe | One per start, admitted as a UnitManager unit; 4 KiB combined retained output, 5 s | Refuse oversize/saturation; settle before root spawn |
+| Native requests | 32/run within shared serialized-write budget; startup/history 60 active seconds, steer/answer ack 10 s | Busy before mutation; no automatic resend |
+| Root turns | One foreground turn | Send disabled; explicit supported Steer only |
+| Early correlation | 64 messages/256 KiB, charged to relay; 5 s after response deadline | Fail unresolvable flood visibly |
+| Children | 64/root, shared identity limit | Visibility incomplete; extra content withheld |
+| Unknown-child attribution | 32 messages/256 KiB charged to relay; 5 s | Notice, withhold content, never attribute to root |
+| Interactions | 16/root including children, within control budget | Native cancellation/unavailable and visible capacity notice |
+| Bridge connections | Existing four/root grant | Further child bridges refused busy without changing root tools status |
+| History/child refresh | One read/root; <=50 items/page where supported; shared line cap and history deadline | Backpressure or resume unavailable |
+| Item deduplication | 4096 thread-qualified keys/root | Oldest eviction with visible truncation; snapshot boundary prevents duplicate replay |
+
+Native stdout is shared by transcript and RPC responses, so stalled transcript
+credit may delay native Stop completion; local admission/acknowledgement remains
+independent and remote timeout remains unconfirmed.
 
 Each change that introduces a flow sets its number, tests it and records it here. The mechanism and who finds out are fixed now. Numbers below marked *(scaffold)* were set by `scaffold-desktop-and-host` (design D6 and Resource Bounds).
 
@@ -138,7 +211,7 @@ Lists accepted ADRs, plus proposed ones marked as such.
 | [0001](../docs/adr/0001-desktop-and-child-execution-host.md) | Desktop UI plus one child execution host per user profile (exclusive lock); host owns all processes; ledger-based crash cleanup with workspace gate; no daemon | - |
 | [0002](../docs/adr/0002-versioned-desktop-host-protocol.md) | Length-prefixed multiplexed frames over host stdio; JSON-RPC control; raw terminal channels; hello/capability negotiation; credit flow control with control priority | - |
 | [0003](../docs/adr/0003-host-owned-local-sqlite-store.md) | Local SQLite store, host sole writer under the profile lock; transactional migrations; private by construction; package picked by M1 probe | - |
-| [0004](../docs/adr/0004-runtime-adapters-and-session-identity.md) | Host-side runtime adapters with qualified capabilities; immutable session targets; stop vs close; resume only via the runtime's qualified path | - |
+| [0004](../docs/adr/0004-runtime-adapters-and-session-identity.md) | Host-side runtime adapters with qualified capabilities; immutable session targets; stop vs close; resume only via the runtime's qualified path; Codex ACP choice superseded by 0015 only | - |
 | [0005](../docs/adr/0005-host-tool-service-and-authorization.md) | One host tool service; ACP stdio `mcp-bridge` over a per-user pipe/socket; per-session secret; per-call authorization; connected only after a successful call | - |
 | [0006](../docs/adr/0006-host-owned-ptys-and-terminal-rendering.md) | PTYs and shells in the host from argv profiles; emulation in the desktop; engine picked by M1 spike | - |
 | [0007](../docs/adr/0007-optional-team-server-boundary.md) | Optional team server is sole writer of shared records; no offline replica; private data never crosses; technology decided at the team milestone | - |
@@ -146,6 +219,10 @@ Lists accepted ADRs, plus proposed ones marked as such.
 | [0009](../docs/adr/0009-workbench-layout-document.md) | Workbench layout is a desktop-authored, host-validated snapshot per working set; `format` converted only by store migrations; tabs are `kind`, immutable `workspace`, `item`, `state` ≤ 4 KiB; unknown kinds pass through; revision-guarded saves. Amended by 0011: decision 3 (tab shape becomes the pane shape inside tabs) and decision 2 (store v4 discards format 1 layouts instead of converting them) | - |
 | [0010](../docs/adr/0010-terminal-engine.md) | *(accepted, provisional)* Terminal engine `flutter_alacritty` (patched, vendored) behind one `TerminalSurface` boundary; provisional while the Linux/macOS user-verified bar items are `unproven`; they must pass before M1 closes | - |
 | [0011](../docs/adr/0011-workbench-tabs-contain-panes.md) | Tabs contain panes: layout format 2 (tabs of split trees of panes, open set of view kinds, focus by tree and strip order); store v4 discards format 1 layouts by user decision; amends 0009 decisions 2 and 3 | - |
-| [0012](../docs/adr/0012-agent-session-transport-and-qualification.md) | *(accepted 2026-11-01; qualification provisional)* One contained adapter process per agent session; transcript data separate from sequenced control state; `Capability.agent` runtime/agent contract; argv profiles without a bundled adapter; exact-version and advertised capabilities backed by per-OS evidence checked in CI. Claude agent ACP 0.99.1 load/resume is ACCEPTED from Windows evidence; Linux/macOS user observations must pass for M1 QUALIFIED | - |
+| [0012](../docs/adr/0012-agent-session-transport-and-qualification.md) | *(accepted 2026-11-01; qualification provisional)* One contained adapter process per agent session; transcript data separate from sequenced control state; `Capability.agent` runtime/agent contract; argv profiles without a bundled adapter; exact-version and advertised capabilities backed by per-OS evidence checked in CI. Claude agent ACP 0.99.1 load/resume is ACCEPTED from Windows evidence; Linux/macOS user observations must pass for M1 QUALIFIED. Codex-only exact-version admission/feature gating superseded and initialization/process wording refined by 0015; Claude rules remain in force | - |
 | [0013](../docs/adr/0013-kumiko-tool-endpoint-bridge-and-catalog.md) | Refines 0005: owner-only named pipe (SDDL, cancellable overlapped I/O) or `tools.sock` (0600); secret handshake line with 5 s / 512 B bounds; built-in MCP subset served by the host with the bridge as a byte relay; per-role catalog (`coding -> kumiko_session_info`) checked per call; four-state tools status in sequenced agent state; `kumiko tool call` evidence item and `toolDeliveryFailures` checker rule (additive amendment of 0012 decision 7) | - |
 | [0014](../docs/adr/0014-app-exit-decisions-terminal-activity-and-local-drafts.md) | Desktop exit coordinator owns the quit decision (per-item Stop, bulk, Cancel; host told only `app/quit`); terminal busy = unit holds a process besides its shell, read on demand with an expected leader image fixed before spawn, with stated close-race, script and escapee limits; per-session revision-guarded drafts removed before dispatch; separate host-owned `drafts.sqlite` (DELETE journal, `synchronous=EXTRA`, `secure_delete`) on a bounded worker isolate with an exclusive reset; `host_instance.exit_kind` and a previous-exit snapshot taken before reconciliation. Amends 0003 (single-store wording) and 0008 (WAL rule) for drafts only | - |
+| [0015](../docs/adr/0015-native-codex-app-server-and-child-identity.md) | Accepted 2026-11-10: native Dart Codex driver; one contained App Server/root; minimum 0.166.0 without allowlist; native controls/history; isolated root MCP and attributed child activity | 0004 Codex ACP choice only; 0012 Codex exact-version gating only; refines 0005 decision 2 and 0013 decisions 7/8/12; amends 0014 decision 1 for active children. All unaffected decisions, including Claude qualification, immutable authority, drafts and terminals remain in force. |
+
+ADR 0004 and 0012 remain in force for their unchanged scope; their Codex-only
+departures are indexed in ADR 0015 above. Accepted ADR files are not rewritten.

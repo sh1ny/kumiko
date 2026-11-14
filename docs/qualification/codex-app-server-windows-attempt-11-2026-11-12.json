@@ -1,0 +1,63 @@
+{
+  "schema": 1,
+  "protocol": "codex-app-server",
+  "nativeVersion": "0.166.0",
+  "os": "windows",
+  "manifestSha256": "f890541458489176d44c878714de591c2da3fc39320f4218d4b8adf7d8de108c",
+  "nativeExecutableSha256": "9d563ee4e0441ff9d59d612013e0460ddf8e5709735c2d9f6b98b7ef8ca4eb42",
+  "hostExecutableSha256": "0f66d98f605849220482dcf1b34b051182adb232db3db6aa86e57b080692b811",
+  "ownerApproved": true,
+  "ownerPausedOtherCodexSessions": true,
+  "claimedAt": "2026-11-12T01:31:34.462857Z",
+  "finishedAt": "2026-11-12T01:31:37.928047Z",
+  "commandExitCode": 1,
+  "manifestConsumed": true,
+  "automaticRetries": 0,
+  "approvalPolicyOverride": false,
+  "auditProfile": "large-native-home",
+  "nativeSelection": "changed-artifacts-v4",
+  "rawHelperObservations": {
+    "launch": "fail",
+    "streaming": "unverified",
+    "tool activity": "unverified",
+    "command approval": "unverified",
+    "Stop": "unverified",
+    "close/descendant containment": "unverified",
+    "kumiko tool call": "unverified",
+    "auth-required": "unverified",
+    "recovery": "unverified",
+    "steering": "unverified",
+    "structured question": "unverified",
+    "child attribution": "unverified",
+    "walkDiagnostics": {
+      "turnEnds": [],
+      "turnEndsTruncated": false,
+      "noticeFlags": {}
+    },
+    "textEvents": 0,
+    "firstTurnIncrementalEvents": 0,
+    "toolEvents": 0,
+    "nativeDiagnostic": {
+      "reason": "target-unavailable",
+      "message": "CreateFileW error 0",
+      "messageTruncated": false,
+      "truncated": false
+    },
+    "canaryAudit": {
+      "complete": false,
+      "scanned": false,
+      "reason": "startup failed without a registered session id; grant delivery and persistence were not audited"
+    }
+  },
+  "diagnosis": {
+    "launch": "Session start was refused with target-unavailable (CreateFileW error 0). The owned workspace folder, created empty at preparation (00:39 UTC), no longer existed when the walk started (01:31 UTC); the profile folder from preparation was intact. The process that removed the empty folder is not known. The reported Win32 error 0 means the last-error value was not preserved, so the code carries no further detail.",
+    "ownerPause": "A Codex review process started by another Claude session (codex exec --ephemeral) was running; it was left to finish instead of being killed, and the walk started only after no Codex process remained. The two idle Orca Codex chats were not closed. OMP and Claude sessions were left alone.",
+    "submittedRootPrompts": 0,
+    "cleanup": "Host disposed; no attempt-owned test-host or Codex processes remained.",
+    "additionalNativeContentReads": 0
+  },
+  "sectionResult": "INCOMPLETE",
+  "authenticationSignatureAdded": false,
+  "toolDeliveryFailureEntryAdded": false,
+  "interpretation": "Environment failure before any session: the workspace folder vanished between preparation and walk. No prompt, provider work or content scan ran. The helper records launch as fail; this is not evidence about Codex launch, which attempt 10 passed. The claim is consumed; another attempt needs fresh exact-manifest approval."
+}

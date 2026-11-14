@@ -1,0 +1,62 @@
+{
+  "schema": "codex-auth-1",
+  "nativeVersion": "0.166.0",
+  "hostSha256": "07b9e36375d0096d1202c4df3325d8c44991262a53b072b8385ded18f5ac48c1",
+  "A": {
+    "outcome": "started",
+    "started": true,
+    "closed": true
+  },
+  "B": {
+    "outcome": "auth-required",
+    "started": true,
+    "nativeCodePresent": false,
+    "closed": true,
+    "canaryAudit": {
+      "auditProfile": "default",
+      "maxFiles": 4096,
+      "maxFileBytes": 16777216,
+      "maxTotalBytes": 33554432,
+      "complete": true,
+      "errorCount": 0,
+      "errorCategories": {
+        "metadataAdmission": 0,
+        "nonRegular": 0,
+        "fileLimit": 0,
+        "aggregateLimit": 0,
+        "unstable": 0,
+        "statIo": 0,
+        "enumerationIo": 0,
+        "openIo": 0,
+        "readIo": 0,
+        "closeIo": 0
+      },
+      "ioErrorCategories": {
+        "sharingViolation": 0,
+        "lockViolation": 0,
+        "accessDenied": 0,
+        "other": 0
+      },
+      "scannedFiles": 2598,
+      "matchedFiles": 0,
+      "scannedBytes": 31256624,
+      "readBytes": 31256624,
+      "chargedBytes": 31256624,
+      "nativeSelection": "legacy",
+      "rootErrorCategories": {
+        "nonDirectory": 0,
+        "metadataIo": 0
+      },
+      "rootIoErrorCategories": {
+        "sharingViolation": 0,
+        "lockViolation": 0,
+        "accessDenied": 0,
+        "other": 0
+      }
+    }
+  },
+  "homesDeleted": true,
+  "signalsObserved": [
+    "turn-http-401"
+  ]
+}

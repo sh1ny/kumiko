@@ -24,6 +24,7 @@ enum AgentEventKind {
   notice,
   replay,
   turn,
+  child,
 }
 
 enum AgentReplayPhase { start, end }
@@ -72,6 +73,17 @@ class AgentEvent {
     final name = json['kind'];
     final kind = AgentEventKind.values.where((k) => k.name == name).firstOrNull;
     if (kind == null) throw const FormatException('unknown agent event kind');
+    final identities = ['rootThreadId', 'threadId', 'parentThreadId'];
+    if (kind == AgentEventKind.child || identities.any(json.containsKey)) {
+      for (final key in identities) {
+        final value = json[key];
+        if (value is! String ||
+            value.isEmpty ||
+            clampJsonString(value, 4096) != value) {
+          throw FormatException('invalid agent event $key');
+        }
+      }
+    }
     void string(String key, {bool mandatory = true}) {
       if ((!mandatory && !json.containsKey(key)) || json[key] is String) return;
       throw FormatException('invalid agent event $key');
@@ -96,6 +108,11 @@ class AgentEvent {
     }
     if (kind == AgentEventKind.plan) objects('entries');
     if (kind == AgentEventKind.turn) string('stopReason');
+    if (kind == AgentEventKind.child) {
+      string('threadId');
+      string('status');
+      string('text');
+    }
     if (kind == AgentEventKind.replay &&
         json['phase'] != 'start' &&
         json['phase'] != 'end') {
@@ -121,6 +138,9 @@ class AgentEvent {
   final AgentEventKind kind;
   final Json _fields;
   String? get text => _fields['text'] as String?;
+  String? get rootThreadId => _fields['rootThreadId'] as String?;
+  String? get threadId => _fields['threadId'] as String?;
+  String? get parentThreadId => _fields['parentThreadId'] as String?;
   String? get toolCallId => _fields['toolCallId'] as String?;
   String? get title => _fields['title'] as String?;
   String? get status => _fields['status'] as String?;
@@ -181,13 +201,12 @@ final Json _tooLarge = {
 /// event serialization.
 Iterable<Uint8List> encodeAgentEvent(AgentEvent event) sync* {
   if (_textKind(event.kind)) {
+    final metadata = event.toJson()..remove('text');
     final source = event.text!;
     final text = clampUtf8(source, maxAgentTextChunkBytes);
     final truncated = event.truncated || text.length != source.length;
     final overhead = utf8
-        .encode(
-          jsonEncode({'kind': event.kind.name, 'text': '', 'truncated': true}),
-        )
+        .encode(jsonEncode({...metadata, 'text': '', 'truncated': true}))
         .length;
     final budget = maxAgentTextEventBytes - overhead;
     var start = 0;
@@ -196,10 +215,7 @@ Iterable<Uint8List> encodeAgentEvent(AgentEvent event) sync* {
     for (final rune in text.runes) {
       final cost = _jsonRuneBytes(rune);
       if (size + cost > budget) {
-        yield _line({
-          'kind': event.kind.name,
-          'text': text.substring(start, end),
-        });
+        yield _line({...metadata, 'text': text.substring(start, end)});
         start = end;
         size = 0;
       }
@@ -207,7 +223,7 @@ Iterable<Uint8List> encodeAgentEvent(AgentEvent event) sync* {
       end += rune > 0xffff ? 2 : 1;
     }
     yield _line({
-      'kind': event.kind.name,
+      ...metadata,
       'text': text.substring(start, end),
       if (truncated) 'truncated': true,
     });

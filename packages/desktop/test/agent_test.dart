@@ -92,8 +92,13 @@ class _PendingContinueHost extends FakeHostLink {
   bool _firstContinue = true;
 
   @override
-  Future<AgentContinueResult> continueAgent(String id) {
-    if (!_firstContinue) return super.continueAgent(id);
+  Future<AgentContinueResult> continueAgent(
+    String id, {
+    String? runtimeProfileId,
+  }) {
+    if (!_firstContinue) {
+      return super.continueAgent(id, runtimeProfileId: runtimeProfileId);
+    }
     _firstContinue = false;
     calls.add('agent/continue $id');
     return continueResult.future;
@@ -1730,6 +1735,30 @@ void main() {
       model.add(AgentEvent.notice('newest still arrives'));
       expect(model.plainText, endsWith('newest still arrives'));
       expect(model.retainedTools, 0);
+    });
+
+    test('attributed text events charge their retained identity metadata', () {
+      final model = AgentTranscript();
+      for (var i = 0; i < 2000; i++) {
+        final id = '$i'.padLeft(4000, 'c');
+        model.add(
+          AgentEvent.fromJson({
+            'kind': 'child',
+            'text': '',
+            'rootThreadId': 'r' * 4000,
+            'threadId': id,
+            'parentThreadId': 'p' * 4000,
+            'status': 'running',
+          }),
+        );
+      }
+      final retained = model.entries.fold<int>(
+        0,
+        (n, e) => n + utf8.encode(jsonEncode(e.fields)).length,
+      );
+      expect(retained, lessThanOrEqualTo(maxTranscriptBytes));
+      expect(model.bytes, lessThanOrEqualTo(maxTranscriptBytes));
+      expect(model.hiddenEntries, greaterThan(0));
     });
 
     uiTest('evicted transcript shows a visible hidden-entry marker', (

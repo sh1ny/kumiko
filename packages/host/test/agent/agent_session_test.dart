@@ -1,5 +1,8 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:typed_data';
+
+import 'package:host/src/agent/runtime_driver.dart';
 
 import 'package:host/src/agent/acp/acp_client.dart';
 import 'package:host/src/agent/agent_session.dart';
@@ -102,6 +105,134 @@ void main() {
     }
   }
 
+  test('content-free approval diagnostic measures redacted strings', () async {
+    final peer = AcpPeer();
+    final local = AgentSession(
+      sessionId: 'PRIVATE_SESSION',
+      client: peer.client,
+      onState: (_) {},
+      onPermissionRequested: (_) {},
+      onPermissionResolved: (_) {},
+      onStopResult: (_) {},
+      onTurnEnded: (_) {},
+      enqueueEvents: (_) {},
+      redact: (text) => text.replaceAll('PRIVATE_SECRET', '<redacted>'),
+    );
+    addTearDown(() async {
+      local.dispose();
+      await peer.dispose();
+    });
+    local.ready(nativeSessionId: 'PRIVATE_NATIVE');
+    local.acceptPrompt('fixture');
+    final result = local.client.onPermission!(
+      RuntimePermission(
+        'PRIVATE_REQUEST',
+        'PRIVATE_TURN',
+        'Command approval',
+        'PRIVATE_SECRET',
+        [RuntimeChoice('PRIVATE_SECRET${'x' * 300}', {}, 'allow_once')],
+        {'decision': 'cancel'},
+      ),
+    );
+    final decoder = AgentEventDecoder();
+    final text = (result! as Iterable<Uint8List>)
+        .expand(decoder.add)
+        .single
+        .text!;
+    decoder.close();
+    const marker = ' [display-v1 ';
+    final metrics = jsonDecode(
+      text.substring(text.indexOf(marker) + marker.length, text.length - 1),
+    ) as Json;
+    expect(metrics['previewBytes'], 10);
+    expect(metrics['maxNameBytes'], 310);
+    expect(text, isNot(contains('PRIVATE_')));
+  });
+  for (final mode in ['title', 'preview', 'names', 'count', 'encoded']) {
+    for (final child in [false, true]) {
+      test(
+        'content-free approval diagnostic $mode child=$child retains cancellation',
+        () async {
+          s.acceptPrompt('offline fixture');
+          final title = mode == 'title'
+              ? 'PRIVATE_TITLE_${'x' * 5000}'
+              : mode == 'count'
+              ? 'File change approval'
+              : mode == 'names'
+              ? 'Additional permissions'
+              : 'Command approval';
+          final preview = mode == 'preview'
+              ? 'PRIVATE_PREVIEW_${'p' * 17000}'
+              : mode == 'encoded'
+              ? '\u0001' * 10750
+              : 'PRIVATE_PREVIEW';
+          final choices = [
+            for (
+              var n = 0;
+              n <
+                  (mode == 'count'
+                      ? 17
+                      : mode == 'encoded'
+                      ? 16
+                      : 2);
+              n++
+            )
+              RuntimeChoice(
+                mode == 'names' ? 'PRIVATE_NAME_${'q' * 300}' : 'decline',
+                {'private': 'PRIVATE_VALUE'},
+                'reject_once',
+              ),
+          ];
+          final result = s.client.onPermission!(
+            RuntimePermission(
+              'PRIVATE_REQUEST',
+              'PRIVATE_TURN',
+              title,
+              preview,
+              choices,
+              {'decision': 'cancel'},
+              threadId: child ? 'PRIVATE_THREAD' : null,
+            ),
+          );
+          final decoder = AgentEventDecoder();
+          final text = (result! as Iterable<Uint8List>)
+              .expand(decoder.add)
+              .single
+              .text!;
+          decoder.close();
+          expect(text, isNot(contains('PRIVATE_')));
+          expect(utf8.encode(text).length, lessThan(1024));
+          const marker = ' [display-v1 ';
+          final start = text.indexOf(marker);
+          final metrics = jsonDecode(
+            text.substring(start + marker.length, text.length - 1),
+          ) as Json;
+          expect(metrics['isChild'], child);
+          expect(
+            metrics['category'],
+            mode == 'title'
+                ? 'other'
+                : mode == 'count'
+                ? 'file-change'
+                : mode == 'names'
+                ? 'additional-permissions'
+                : 'command',
+          );
+          expect(metrics['${mode == 'encoded' ? 'encoded' : mode}Loss'], true);
+          expect(metrics['previewBytes'], utf8.encode(preview).length);
+          expect(
+            metrics['maxNameBytes'],
+            utf8.encode(choices.first.label).length,
+          );
+          expect(metrics['optionCount'], choices.length);
+          expect(requests, isEmpty);
+          expect(s.pendingPermissionCount, 0);
+          await pumpAcp();
+          expect(p.writes.last['result'], {'decision': 'cancel'});
+        },
+      );
+    }
+  }
   test(
     'prompt acceptance does not await result; running then idle after enqueue',
     () async {

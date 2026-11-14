@@ -3,6 +3,7 @@ import 'package:host_protocol/host_protocol.dart';
 
 import '../terminal/profiles_dialog.dart';
 import 'agent_controller.dart';
+import 'native_question_form.dart';
 
 class AgentStatusChip extends StatelessWidget {
   const AgentStatusChip(this.label, {super.key, this.compact = false});
@@ -129,6 +130,11 @@ class _AgentPaneViewState extends State<AgentPaneView> {
               ],
             ),
           ),
+          if (link.delegatedLabel case final label?)
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 8),
+              child: Text(label, key: Key('agent-delegated-$id')),
+            ),
           if (link.toolsLabel case final label?)
             Padding(
               padding: const EdgeInsets.symmetric(horizontal: 8),
@@ -159,6 +165,26 @@ class _AgentPaneViewState extends State<AgentPaneView> {
                     ),
             ),
           ),
+          if (link.questions.isNotEmpty)
+            ConstrainedBox(
+              constraints: const BoxConstraints(maxHeight: 260),
+              child: SingleChildScrollView(
+                child: Column(
+                  children: [
+                    for (final question in link.questions.values)
+                      NativeQuestionForm(
+                        key: ObjectKey(question),
+                        question: question,
+                        submit: (answers) => widget.controller.answerQuestion(
+                          id,
+                          question,
+                          answers,
+                        ),
+                      ),
+                  ],
+                ),
+              ),
+            ),
           if (link.error != null || link.requiresAuthentication)
             Padding(
               padding: const EdgeInsets.symmetric(horizontal: 12),
@@ -167,8 +193,8 @@ class _AgentPaneViewState extends State<AgentPaneView> {
                 child: SingleChildScrollView(
                   child: SelectableText(
                     link.error == null
-                        ? agentAuthGuidance
-                        : '${link.requiresAuthentication ? '$agentAuthGuidance\n' : ''}${link.error}',
+                        ? link.authGuidance
+                        : '${link.requiresAuthentication ? '${link.authGuidance}\n' : ''}${link.error}',
                     style: TextStyle(
                       color: Theme.of(context).colorScheme.error,
                     ),
@@ -193,7 +219,10 @@ class _AgentPaneViewState extends State<AgentPaneView> {
                   if (link.canContinue)
                     FilledButton(
                       key: Key('agent-continue-$id'),
-                      onPressed: () => widget.controller.continueSession(id),
+                      onPressed: () => widget.controller.continueSession(
+                        id,
+                        chooseProfile: widget.chooseRuntimeProfile,
+                      ),
                       child: const Text('Continue'),
                     ),
                   if (link.canNewSession)
@@ -294,8 +323,10 @@ class _AgentPaneViewState extends State<AgentPaneView> {
                     autofocus: widget.focused,
                     minLines: 1,
                     maxLines: 5,
-                    decoration: const InputDecoration(
-                      hintText: 'Message Claude Code',
+                    decoration: InputDecoration(
+                      hintText: link.runtimeKind == 'codex'
+                          ? 'Message Codex'
+                          : 'Message Claude Code',
                       border: OutlineInputBorder(),
                     ),
                   );
@@ -309,6 +340,17 @@ class _AgentPaneViewState extends State<AgentPaneView> {
                             : null,
                         child: const Text('Send'),
                       ),
+                      if (link.runtimeKind == 'codex')
+                        OutlinedButton(
+                          key: Key('agent-steer-$id'),
+                          onPressed: link.canSteer
+                              ? () => widget.controller.steer(
+                                  id,
+                                  link.prompt.text,
+                                )
+                              : null,
+                          child: const Text('Steer'),
+                        ),
                       OutlinedButton(
                         key: Key('agent-stop-$id'),
                         onPressed: link.canStop
@@ -369,6 +411,12 @@ class _AgentPaneViewState extends State<AgentPaneView> {
     final permission = entry.permission;
     if (permission != null) return _permission(link, permission);
     final fields = entry.fields;
+    if (fields['parentThreadId'] != null) {
+      if (entry.kind != AgentEventKind.child) return const SizedBox.shrink();
+      return Text(
+        'Child ${fields['threadId']}: ${fields['status']}${entry.text.isEmpty ? '' : ': ${entry.text}'}',
+      );
+    }
     if (entry.kind == AgentEventKind.tool ||
         entry.kind == AgentEventKind.toolUpdate) {
       return Card(
@@ -464,7 +512,9 @@ class _AgentPaneViewState extends State<AgentPaneView> {
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             SelectableText(request.title),
-            if (request.preview != null) AgentPlainText(request.preview!),
+            // Literal text: the transcript fence renderer would drop and
+            // restyle parts of a command or native decision preview.
+            if (request.preview != null) SelectableText(request.preview!),
             Text(permission.label),
             if (request.truncated) const Text('truncated'),
             Wrap(

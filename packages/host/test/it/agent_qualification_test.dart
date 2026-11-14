@@ -11,6 +11,8 @@ import 'support/agent_support.dart';
 import 'support/harness.dart';
 import 'support/terminal_support.dart';
 import 'support/tool_support.dart';
+import 'support/codex_support.dart'
+    show NativeFixture, deltaEvent, terminalEvent;
 
 const _mib = 1024 * 1024;
 const _ackBound = Duration(milliseconds: 250);
@@ -62,6 +64,92 @@ void main() {
     await consumer.attach(credit: credit);
     return (consumer, report);
   }
+
+  test('Codex: Stop while Codex output is stalled', () async {
+    final f = NativeFixture(
+      profile,
+      work,
+      script: {
+        'turns': [
+          {
+            'actions': [
+              deltaEvent(List.filled(2000000, 'x').join()),
+              {'waitInterrupt': true},
+              terminalEvent('interrupted'),
+            ],
+          },
+        ],
+      },
+    );
+    await f.open();
+    final a = AgentPeer(f.desktop);
+    await a.start(f.workspace, runtime: 'native');
+    await a.attach(credit: false);
+    await a.prompt();
+    await a.wait(Method.agentState, where: (p) => p['turnId'] != null);
+    final watch = Stopwatch()..start();
+    await a.call(Method.agentStop);
+    watch.stop();
+    expect(watch.elapsed, lessThanOrEqualTo(_ackBound));
+    await a.close();
+  });
+  test('Codex: Stalled native input', () async {
+    final f = NativeFixture(
+      profile,
+      work,
+      script: {
+        'noReadAfterTurn': true,
+        'turns': [
+          {
+            'actions': [
+              for (var i = 0; i < 16; i++)
+                {
+                  'send': {
+                    'id': '$i-${List.filled(3990, 'r').join()}',
+                    'method': 'item/commandExecution/requestApproval',
+                    'params': {
+                      'threadId': r'$thread',
+                      'turnId': r'$turn',
+                      'itemId': 'item-$i',
+                      'startedAtMs': 1,
+                      'availableDecisions': ['accept', 'decline'],
+                    },
+                  },
+                },
+            ],
+          },
+        ],
+      },
+    );
+    await f.open();
+    final a = await f.start();
+    await a.prompt();
+    await eventually(() => a.of(Method.agentPermissionRequested).length == 16);
+    final state = a.of(Method.agentState).lastWhere((p) => p['turnId'] != null);
+    final text = List.filled(200000, 's').join();
+    RpcException? saturated;
+    for (var i = 0; i < 20; i++) {
+      try {
+        await a.call(Method.agentSteer, {
+          'sessionId': a.id,
+          'runId': state['runId'],
+          'expectedTurnId': state['turnId'],
+          'text': text,
+        });
+      } on RpcException catch (e) {
+        saturated = e;
+        break;
+      }
+    }
+    expect(saturated?.reason, ErrorCode.busy);
+    final before = a.of(Method.agentPermissionResolved).length;
+    final refusal = await rpcFailure(a.call(Method.agentStop));
+    expect(refusal.reason, ErrorCode.busy);
+    expect(a.of(Method.agentPermissionResolved).length, before);
+    expect(a.of(Method.agentState).last['state'], 'waitingApproval');
+    await a.close();
+    expect(LedgerView(profile).units(), isEmpty);
+  });
 
   test('saturating terminal A, stalled session B: Stop and permissionReply '
       'in C ack worst of 100 each <= 250 ms and C events keep flowing', () async {

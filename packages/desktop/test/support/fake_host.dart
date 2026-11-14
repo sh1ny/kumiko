@@ -549,9 +549,42 @@ class FakeHostLink implements HostLink {
     defaultId: 'runtime-1',
   );
   final Queue<Object> agentStartAnswers = Queue();
+  final questionSource =
+      StreamController<AgentQuestionRequestedParams>.broadcast(sync: true);
+  final questionResolvedSource =
+      StreamController<AgentQuestionResolvedParams>.broadcast(sync: true);
+  final agentSteers = <AgentSteerParams>[];
+  final questionAnswers = <AgentQuestionAnswerParams>[];
+  Completer<void>? steerGate;
+  Object? steerError;
+  Object? questionError;
+  Completer<void>? questionGate;
+  Object? permissionError;
+  @override
+  Stream<AgentQuestionRequestedParams> get agentQuestions =>
+      questionSource.stream;
+  @override
+  Stream<AgentQuestionResolvedParams> get agentQuestionResolutions =>
+      questionResolvedSource.stream;
+  @override
+  Future<void> steerAgent(AgentSteerParams params) async {
+    agentSteers.add(params);
+    await steerGate?.future;
+    if (steerError != null) throw steerError!;
+  }
+
+  @override
+  Future<void> answerAgentQuestion(AgentQuestionAnswerParams params) async {
+    questionAnswers.add(params);
+    await questionGate?.future;
+    if (questionError != null) throw questionError!;
+  }
+
+  final List<AgentContinueParams> agentContinues = [];
   final Queue<Object> agentContinueAnswers = Queue();
   Completer<void>? agentStartGate;
   final List<AgentStartParams> agentStarts = [];
+  List<String> startAgentCapabilities = const [];
   final List<AgentPromptParams> agentPrompts = [];
   final List<AgentPermissionReplyParams> agentReplies = [];
   final List<String> agentStops = [];
@@ -652,14 +685,20 @@ class FakeHostLink implements HostLink {
         sessionId: id,
         eventChannel: 100 + agentStarts.length,
         adapter: const AgentAdapter(name: 'scripted-acp', version: 'test-only'),
-        capabilities: const [],
+        capabilities: startAgentCapabilities,
       );
     });
   }
 
   @override
-  Future<AgentContinueResult> continueAgent(String id) async {
+  Future<AgentContinueResult> continueAgent(
+    String id, {
+    String? runtimeProfileId,
+  }) async {
     calls.add('agent/continue $id');
+    agentContinues.add(
+      AgentContinueParams(id, runtimeProfileId: runtimeProfileId),
+    );
     return _answer(
       agentContinueAnswers,
       null,
@@ -804,6 +843,7 @@ class FakeHostLink implements HostLink {
   Future<void> replyAgentPermission(AgentPermissionReplyParams params) async {
     calls.add('agent/permissionReply ${params.requestId}');
     agentReplies.add(params);
+    if (permissionError != null) throw permissionError!;
   }
 
   @override

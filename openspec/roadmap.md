@@ -9,7 +9,7 @@ Status is derived: a change is done when it is archived on main, and a milestone
 **Outcome:** The author can use Kumiko on Windows as the primary environment for agent work, source control, light editing and local review. Linux/macOS ports and their qualification follow later; existing cross-platform CI remains useful evidence, not a claim of supported daily use.
 
 **Exit criteria:**
-- Codex through ACP and OMP through native RPC stream replies, show tool activity, handle permissions and Stop, retain immutable targets, and truthfully expose save/resume support behind the shared session model. (agent: contract tests; user: real runtimes on Windows)
+- Codex through native App Server over stdio and OMP through native RPC stream replies, show tool activity, handle permissions and Stop, retain immutable targets, and truthfully expose save/resume support behind the shared session model. (agent: contract tests; user: real runtimes on Windows)
 - The Git panel follows the selected workspace, shows changes and diffs, and performs explicitly requested SCM actions with visible failures. Sessions history opens the correct saved conversation. (agent; user: Windows walk)
 - Files open in the lightweight editor; Save is explicit, clean files refresh, dirty files are protected from external changes, and recovery drafts survive reopen. (agent; user: Windows walk)
 - Quick-open, Open in, and local diff review target the correct checkout; a review revision request reaches the intended chat. (agent; user: Windows walk)
@@ -17,7 +17,7 @@ Status is derived: a change is done when it is archived on main, and a milestone
 - Main CI builds the Windows desktop with bundled host, the dependency audit passes, and the author completes an ordinary development task in Kumiko. (agent for CI/audit; user for daily use)
 
 **Changes** (in order; each about one PR):
-1. `codex-acp-session` - Add and qualify Codex ACP against the existing normalized session, permission, Stop, tool-delivery and saved-session contracts. Preserve Claude behaviour.
+1. `codex-app-server-session` - Add and qualify native Codex App Server over stdio against the shared session, permission, Stop, tool-delivery and saved-session contracts. Preserve Claude behaviour and child-thread attribution for future subagent viewing. Owner-approved replacement of the ACP plan, 2026-11-10.
 2. `omp-rpc-session` - Add and qualify OMP native RPC behind those contracts, with explicit capability differences. Prerequisite: change 1's shared contract checks.
 3. `workspace-git-and-session-history` - Right-side workspace-aware Git/SCM panel (D5), local diffs and Sessions history, preserving immutable session targets.
 4. `files-and-source-editor` - Files tree and source-first editor with explicit Save, external-change handling and local recovery drafts (D10).
@@ -38,6 +38,7 @@ Add solo projects, configurable tasks with arbitrary-depth subtasks, views, mile
 ## Tracked follow-up
 
 - [M1-F1: Windows terminal close latency](../docs/qualification/m1-close.md#m1-f1-windows-terminal-close-latency) - User-approved deferral at M1 close; investigate the recorded 359.3 ms acknowledgement against the unchanged 250 ms bound. This remains open and is not reported as passing.
+- M2-F1: Agent chat composer keys (owner request, 2026-11-13) - In every agent chat (Codex, Claude, OMP): Enter sends, Shift+Enter inserts a new line, and Up recalls the previous prompt when the composer is empty, otherwise moves the caret one line up. Not part of `codex-app-server-session`; take it at the start of change 2 (`omp-rpc-session`) or as a small change before it.
 
 ## Done
 

@@ -1,5 +1,9 @@
 import 'dart:async';
 import 'dart:io';
+import 'dart:convert';
+
+import 'package:path/path.dart' as p;
+
 import 'dart:isolate';
 
 import 'package:host_protocol/host_protocol.dart';
@@ -7,6 +11,7 @@ import 'package:host_protocol/host_protocol.dart';
 import 'executable_resolver.dart';
 
 const Duration adapterDetectionCap = Duration(seconds: 2);
+const String builtinCodexRuntimeId = 'builtin:codex';
 const String builtinClaudeRuntimeId = 'builtin:claude-code';
 const String adapterInstallReason =
     'Claude Code adapter not found. Install @agentclientprotocol/claude-agent-acp with npm and Node ≥ 22, or add a runtime profile.';
@@ -29,7 +34,8 @@ class AdapterDetectionConfig {
 }
 
 class AdapterDetectionResult {
-  const AdapterDetectionResult({this.profile, this.reason});
+  const AdapterDetectionResult({this.profile, this.reason, this.codex});
+  final RuntimeProfile? codex;
   final RuntimeProfile? profile;
   final String? reason;
 }
@@ -104,7 +110,14 @@ class AdapterDetector {
 }
 
 void _detectWorker((SendPort, AdapterDetectionConfig, AdapterProbe) input) {
-  input.$1.send(input.$3(input.$2));
+  final claude = input.$3(input.$2);
+  input.$1.send(
+    AdapterDetectionResult(
+      profile: claude.profile,
+      reason: claude.reason,
+      codex: detectCodex(input.$2),
+    ),
+  );
 }
 
 AdapterDetectionResult detectAdapter(AdapterDetectionConfig config) {
@@ -177,4 +190,190 @@ AdapterDetectionResult detectAdapter(AdapterDetectionConfig config) {
       reason: 'Adapter files unavailable: ${error.path}. $adapterInstallReason',
     );
   }
+}
+
+/// Whether [path] is npm's `codex` launcher script rather than a native
+/// executable. It is recognised from where its link resolves (a `.js` file in
+/// the `@openai/codex` package) and is never run or read.
+bool isNpmCodexLauncher(String path) {
+  try {
+    final target = p.split(File(path).resolveSymbolicLinksSync());
+    final package = target.lastIndexOf('node_modules');
+    return target.last.endsWith('.js') ||
+        (package >= 0 &&
+            package + 2 < target.length &&
+            target[package + 1] == '@openai' &&
+            target[package + 2] == 'codex');
+  } on FileSystemException {
+    return false;
+  }
+}
+
+/// File-only native lookup. Overrides replace all automatic roots, including npm.
+RuntimeProfile? detectCodex(AdapterDetectionConfig config) {
+  final windows = config.os == 'windows';
+  final paths =
+      config.pathDirs ?? runtimePathDirectories(config.os, config.environment);
+  final known =
+      config.wellKnownDirs ??
+      wellKnownRuntimeDirs(config.os, config.environment);
+  final resolver = ExecutableResolver(
+    os: config.os,
+    pathDirs: paths,
+    wellKnownDirs: known,
+    environment: config.environment,
+  );
+  RuntimeProfile? profile(String file, {Map<String, String> env = const {}}) {
+    try {
+      return RuntimeProfile(
+        id: builtinCodexRuntimeId,
+        name: 'Codex',
+        runtimeKind: 'codex',
+        executable: resolver.resolve(file),
+        args: const ['app-server'],
+        env: env,
+      );
+    } on RpcException {
+      return null;
+    }
+  }
+
+  for (final dir in [...paths, ...known]) {
+    if (!p.isAbsolute(dir)) continue;
+    final candidate = p.join(dir, windows ? 'codex.exe' : 'codex');
+    // npm's POSIX launcher runs through Node; its platform package is
+    // resolved below instead.
+    if (!windows && isNpmCodexLauncher(candidate)) continue;
+    final direct = profile(candidate);
+    if (direct != null) return direct;
+  }
+  // Resolve only package roots adjacent to known global npm shim/bin roots.
+  for (final dir in [...paths, ...known]) {
+    if (!p.isAbsolute(dir)) continue;
+    for (final root in [
+      p.join(dir, 'node_modules'),
+      if (!windows) p.normalize(p.join(dir, '..', 'lib', 'node_modules')),
+    ]) {
+      final package = p.join(root, '@openai', 'codex');
+      try {
+        final meta = jsonDecode(
+          File(p.join(package, 'package.json')).readAsStringSync(),
+        );
+        if (meta is! Map || meta['name'] != '@openai/codex') continue;
+        final deps = meta['optionalDependencies'];
+        if (deps is! Map) continue;
+        final os = windows
+            ? 'win32'
+            : config.os == 'macos'
+            ? 'darwin'
+            : 'linux';
+        // Only current installed platform packages named by package metadata.
+        for (final key in deps.keys.whereType<String>()) {
+          if (!key.startsWith('@openai/codex-')) continue;
+          // A global npm install nests the dependency beneath the package;
+          // a hoisted layout places it beside the package.
+          final installed = [
+            p.join(package, 'node_modules', key),
+            p.join(root, key),
+          ].where((dir) => File(p.join(dir, 'package.json')).existsSync());
+          if (installed.isEmpty) continue;
+          final platformDir = installed.first;
+          final dependency = File(p.join(platformDir, 'package.json'));
+          final declaration = deps[key];
+          if (declaration is! String) continue;
+          var expectedName = key;
+          String? expectedPackageVersion;
+          if (declaration.startsWith('npm:')) {
+            final separator = declaration.lastIndexOf('@');
+            if (separator <= 4) continue;
+            expectedName = declaration.substring(4, separator);
+            expectedPackageVersion = declaration.substring(separator + 1);
+            // npm installs the alias under `key`, while package metadata keeps
+            // the declared underlying package identity. Packaging versions are
+            // provenance only; --version still supplies native runtime identity.
+            if (expectedName != '@openai/codex' ||
+                expectedPackageVersion.isEmpty) {
+              continue;
+            }
+          }
+          final platform = jsonDecode(dependency.readAsStringSync());
+          if (platform is! Map ||
+              platform['name'] != expectedName ||
+              (expectedPackageVersion != null &&
+                  platform['version'] != expectedPackageVersion) ||
+              platform['os'] is! List ||
+              !(platform['os'] as List).contains(os)) {
+            continue;
+          }
+          final cpu = platform['cpu'];
+          final arch = Platform.version.contains('arm64') ? 'arm64' : 'x64';
+          if (cpu is! List || !cpu.contains(arch)) continue;
+          final target = windows
+              ? (arch == 'arm64'
+                    ? 'aarch64-pc-windows-msvc'
+                    : 'x86_64-pc-windows-msvc')
+              : config.os == 'macos'
+              ? (arch == 'arm64'
+                    ? 'aarch64-apple-darwin'
+                    : 'x86_64-apple-darwin')
+              : (arch == 'arm64'
+                    ? 'aarch64-unknown-linux-musl'
+                    : 'x86_64-unknown-linux-musl');
+          final found = profile(
+            p.join(
+              platformDir,
+              'vendor',
+              target,
+              'codex',
+              windows ? 'codex.exe' : 'codex',
+            ),
+            env: {
+              'CODEX_MANAGED_PACKAGE_ROOT': Directory(package)
+                  .resolveSymbolicLinksSync(),
+              'CODEX_MANAGED_BY_NPM': '1',
+              'CODEX_MANAGED_BY_BUN': '',
+              'CODEX_MANAGED_BY_PNPM': '',
+              'CODEX_MANAGED_BY_VITE_PLUS': '',
+            },
+          );
+          if (found != null) return found;
+        }
+      } on FileSystemException {
+        continue;
+      } on FormatException {
+        continue;
+      }
+    }
+  }
+  return null;
+}
+
+/// Host-private launch environment; detected profiles retain only compact
+/// validated provenance, never the inherited PATH in stored/profile DTOs.
+Map<String, String> nativeCodexLaunchEnvironment(
+  RuntimeProfile profile,
+  String executable, {
+  Map<String, String>? inherited,
+}) {
+  final env = {...(inherited ?? Platform.environment), ...profile.env};
+  if (profile.env['CODEX_MANAGED_PACKAGE_ROOT'] != null &&
+      profile.env['CODEX_MANAGED_BY_NPM'] == '1') {
+    for (final key in [
+      'CODEX_MANAGED_BY_BUN',
+      'CODEX_MANAGED_BY_PNPM',
+      'CODEX_MANAGED_BY_VITE_PLUS',
+    ]) {
+      env.remove(key);
+    }
+    final resources = p.join(p.dirname(p.dirname(executable)), 'path');
+    final explicitPath = profile.env.keys.any(
+      (key) => Platform.isWindows ? key.toUpperCase() == 'PATH' : key == 'PATH',
+    );
+    if (!explicitPath && Directory(resources).existsSync()) {
+      final previous = env['PATH'] ?? env['Path'] ?? '';
+      env.remove('Path');
+      env['PATH'] = '$resources${Platform.isWindows ? ';' : ':'}$previous';
+    }
+  }
+  return env;
 }

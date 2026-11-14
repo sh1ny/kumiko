@@ -208,6 +208,62 @@ class _PromptRig {
 }
 
 void main() {
+  test('Continue selected profile crosses SessionLink while absent field stays legacy', () async {
+    final toHost = _Pipe();
+    final toDesktop = _Pipe();
+    final received = <Json>[];
+    final host = Connection(
+      input: toHost.controller.stream,
+      output: toDesktop,
+      capabilities: const {Capability.agent},
+      onHello: (_, _) => const HelloInfo.ready('host-1'),
+      onRequest: (method, params) {
+        expect(method, Method.agentContinue);
+        received.add(params);
+        throw RpcException(
+          ErrorCode.resumeUnavailable,
+          'history remains unavailable',
+        );
+      },
+    );
+    final desktop = Connection(
+      input: toDesktop.controller.stream,
+      output: toHost,
+      capabilities: const {Capability.agent},
+    );
+    addTearDown(() async {
+      await desktop.close();
+      await host.close();
+    });
+    final hello = await desktop.hello();
+    final link = SessionLink(
+      _MemorySession(desktop, hello, const Stream.empty()),
+    );
+    await expectLater(
+      link.continueAgent('saved'),
+      throwsA(
+        isA<RpcException>().having(
+          (e) => e.reason,
+          'reason',
+          ErrorCode.resumeUnavailable,
+        ),
+      ),
+    );
+    await expectLater(
+      link.continueAgent('saved', runtimeProfileId: 'explicit profile'),
+      throwsA(
+        isA<RpcException>().having(
+          (e) => e.reason,
+          'reason',
+          ErrorCode.resumeUnavailable,
+        ),
+      ),
+    );
+    expect(received, [
+      {'sessionId': 'saved'},
+      {'sessionId': 'saved', 'runtimeProfileId': 'explicit profile'},
+    ]);
+  });
   test(
     'early new-start close failure stays terminal over the real wire',
     () async {

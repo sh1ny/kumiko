@@ -1,0 +1,81 @@
+{
+ "schema": 1,
+ "protocol": "codex-app-server",
+ "nativeVersion": "0.166.0",
+ "os": "windows",
+ "manifestSha256": "fb2c0359586bfeaea449faa5fe543879e3737c310e29d066bc3f2404346b2392",
+ "nativeExecutableSha256": "9d563ee4e0441ff9d59d612013e0460ddf8e5709735c2d9f6b98b7ef8ca4eb42",
+ "hostExecutableSha256": "e5222bfad6390a66d4ba3dfea8377196c1062467d571cc96e41f93b2134a561e",
+ "ownerApproved": true,
+ "claimedAt": "2026-11-11T22:03:00.775309Z",
+ "finishedAt": "2026-11-11T22:03:02.088218Z",
+ "commandExitCode": 1,
+ "manifestConsumed": true,
+ "automaticRetries": 0,
+ "approvalPolicyOverride": false,
+ "auditProfile": "large-native-home",
+ "nativeSelection": "changed-artifacts-v1",
+ "rawHelperObservations": {
+  "launch": "unverified",
+  "streaming": "unverified",
+  "tool activity": "unverified",
+  "command approval": "unverified",
+  "Stop": "unverified",
+  "close/descendant containment": "unverified",
+  "kumiko tool call": "unverified",
+  "auth-required": "unverified",
+  "recovery": "unverified",
+  "steering": "unverified",
+  "structured question": "unverified",
+  "child attribution": "unverified",
+  "baselinePreflight": {
+   "stage": "baseline-preflight",
+   "status": "INCOMPLETE",
+   "baselineComplete": false,
+   "baselineErrorCount": 8,
+   "baselineErrorCategories": {
+    "metadataLimit": 1,
+    "nonRegular": 7,
+    "metadataIo": 0,
+    "traversalIo": 0,
+    "baselineIncomplete": 0,
+    "removedEntry": 0,
+    "changedUnknownFile": 0,
+    "changedUnknownDirectory": 0,
+    "directoryUnstable": 0,
+    "protectedEntry": 0
+   },
+   "baselineIoErrorCategories": {
+    "sharingViolation": 0,
+    "lockViolation": 0,
+    "accessDenied": 0,
+    "other": 0
+   },
+   "providerWork": false,
+   "contentScan": false
+  },
+  "walkDiagnostics": {
+   "turnEnds": [],
+   "turnEndsTruncated": false,
+   "noticeFlags": {}
+  },
+  "textEvents": 0,
+  "firstTurnIncrementalEvents": 0,
+  "toolEvents": 0,
+  "canaryAudit": {
+   "complete": false,
+   "scanned": false,
+   "reason": "native baseline incomplete before provider work; no content scan"
+  }
+ },
+ "diagnosis": {
+  "baseline": "Baseline inventory incomplete: 1 metadataLimit error (the native home holds more than the unchanged 4096-entry admission bound) and 7 nonRegular errors (links, junctions or other non-regular entries, never followed). No I/O errors. The helper aborted before App Server startup as designed.",
+  "submittedRootPrompts": 0,
+  "cleanup": "Host disposed; no attempt-owned test-host or Codex processes remained.",
+  "additionalNativeContentReads": 0
+ },
+ "sectionResult": "INCOMPLETE",
+ "authenticationSignatureAdded": false,
+ "toolDeliveryFailureEntryAdded": false,
+ "interpretation": "Designed baseline-preflight abort with no provider cost and no content scan. This native home cannot complete changed-artifacts-v1 under the unchanged bounds: it exceeds 4096 entries and contains non-regular entries. A further attempt needs a different native home or a reviewed design change, plus fresh exact-manifest approval."
+}

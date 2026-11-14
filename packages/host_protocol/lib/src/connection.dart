@@ -67,7 +67,7 @@ class _Pending {
 }
 
 class _Inbound {
-  _Inbound(this.id, this._connection) {
+  _Inbound(this.id, this._connection, this.onRetainedBytesChanged) {
     // Synchronous, so each add reaches the consumer at once: a consumer that
     // pauses in its callback stops the loop in [pump] before more bytes are
     // handed over or credit is returned for bytes it has not taken.
@@ -75,12 +75,19 @@ class _Inbound {
       sync: true,
       onListen: pump,
       onResume: pump,
-      onCancel: () => _connection._dropInbound(id),
+      onCancel: () {
+        _queue.clear();
+        _retained = 0;
+        onRetainedBytesChanged?.call(0);
+        _connection._dropInbound(id);
+      },
     );
   }
 
   final int id;
   final Connection _connection;
+  final void Function(int bytes)? onRetainedBytesChanged;
+  int _retained = 0;
   late final StreamController<Uint8List> controller;
   final Queue<Uint8List> _queue = Queue();
 
@@ -99,8 +106,18 @@ class _Inbound {
     }
     outstanding -= payload.length;
     _queue.add(payload);
+    _retained += payload.length;
+    onRetainedBytesChanged?.call(_retained);
     pump();
   }
+
+  // The controller can retain deliveries during onListen or reentrancy, even
+  // after they leave _queue. Release ownership at the actual consumer boundary.
+  Stream<Uint8List> get stream => controller.stream.map((bytes) {
+    _retained -= bytes.length;
+    onRetainedBytesChanged?.call(_retained);
+    return bytes;
+  });
 
   /// Hands queued data to the consumer while it is listening and not paused,
   /// and tops the credit up once it has taken half the window. Bytes not yet
@@ -119,7 +136,11 @@ class _Inbound {
   }
 
   void close() {
+    for (final bytes in _queue) {
+      _retained -= bytes.length;
+    }
     _queue.clear();
+    onRetainedBytesChanged?.call(_retained);
     if (!controller.isClosed) unawaited(controller.close());
   }
 }
@@ -306,13 +327,20 @@ class Connection {
   /// once; with [grantInitial] false nothing is sent until [grantInitial] is
   /// called, so a peer can register first. Data is queued (at most the window)
   /// until the stream's listener takes it.
-  Stream<Uint8List> attachInbound(int id, {bool grantInitial = true}) {
+  /// [onRetainedBytesChanged] passively observes payload bytes retained in
+  /// both the channel queue and pending stream delivery. Ownership ends at
+  /// delivery or cancellation, or when close discards queued payloads.
+  Stream<Uint8List> attachInbound(
+    int id, {
+    bool grantInitial = true,
+    void Function(int bytes)? onRetainedBytesChanged,
+  }) {
     _claimSlot(id);
     _highestChannel = math.max(_highestChannel, id);
     _everOpened.add(id);
-    final inbound = _inbound[id] = _Inbound(id, this);
+    final inbound = _inbound[id] = _Inbound(id, this, onRetainedBytesChanged);
     if (grantInitial) _writer.sendCredit(id, channelWindow);
-    return inbound.controller.stream;
+    return inbound.stream;
   }
 
   /// Grants the full window on an inbound channel attached with

@@ -4,6 +4,7 @@ import 'agent/agent_service.dart';
 import 'agent/tools/tool_service.dart';
 import 'host_faults.dart';
 import 'host_options.dart';
+import 'terminal/terminal_service.dart';
 import 'unit_manager.dart';
 
 /// What a test build adds to the host (design D10). Only the test entry point
@@ -39,6 +40,7 @@ class HostServices {
     required this.connection,
     required this.agents,
     required this.tools,
+    required this.terminals,
   });
 
   final UnitManager units;
@@ -46,4 +48,5 @@ class HostServices {
   final Connection connection;
   final AgentService agents;
   final ToolService tools;
+  final TerminalService terminals;
 }

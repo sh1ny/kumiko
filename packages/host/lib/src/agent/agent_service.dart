@@ -6,6 +6,7 @@ import 'dart:math';
 import 'dart:typed_data';
 
 import 'package:host_protocol/host_protocol.dart';
+import 'package:path/path.dart' as p;
 import 'package:process_containment/process_containment.dart';
 import 'package:sqlite3/sqlite3.dart';
 
@@ -16,13 +17,23 @@ import '../unit_manager.dart';
 import '../workspace_service.dart';
 import '../workspace_resolver.dart';
 import 'acp/acp_client.dart';
+import 'codex/codex_auth_signal.dart';
+import 'codex/codex_client.dart';
+import 'codex/version_probe.dart';
+import 'codex/native_home_audit.dart';
+import 'tool_file_audit.dart';
+import 'runtime_driver.dart';
 import 'agent_session.dart';
+import 'adapter_detector.dart';
 import 'draft_store.dart';
 import 'executable_resolver.dart';
 import 'qualification.dart';
 import 'qualified_adapters.dart';
 import 'runtime_profile_service.dart';
+import 'tools/tool_endpoint.dart';
 import 'tools/tool_service.dart';
+import 'tool_secret_redaction.dart';
+import 'startup_diagnostics.dart';
 
 /// The captured execution target is never derived again from desktop focus or
 /// a mutable workspace row. Continue will compare this durable identity.
@@ -100,7 +111,21 @@ class _StderrRing {
 /// UnitManager removes its live handle. Failed cleanup retains this owner until
 /// containment is confirmed settled, not merely until its leader exits.
 class _AgentIO {
-  _AgentIO(this.launch) : client = AcpClient.pipes(launch.pipes!) {
+  _AgentIO(
+    this.launch, {
+    String? codexVersion,
+    List<(String, String, List<String>)> qualified = qualifiedAdapters,
+    Set<CodexAuthSignal> authSignals = const {},
+  }) : client = codexVersion == null
+           ? AcpRuntimeDriver(
+               AcpClient.pipes(launch.pipes!),
+               qualified: qualified,
+             )
+           : CodexRuntimeDriver(
+               CodexClient.pipes(launch.pipes!),
+               codexVersion,
+               authSignals: authSignals,
+             ) {
     errors = launch.pipes!.stderr.listen(
       stderr.add,
       onDone: () {
@@ -113,7 +138,7 @@ class _AgentIO {
     launch.unit.exitCode.then((value) => status = value).ignore();
   }
   final UnitLaunch launch;
-  final AcpClient client;
+  final RuntimeDriver client;
   final stderr = _StderrRing();
   final errorsDone = Completer<void>();
   late final StreamSubscription<Uint8List> errors;
@@ -131,6 +156,34 @@ class AgentEventRelay {
   final void Function(bool paused)? onPauseChanged;
   final Queue<Uint8List> _queue = Queue();
   int _bytes = 0;
+  int _reserved = 0;
+  int get reservedBytes => _reserved;
+  bool reserveEarly(int bytes) {
+    if (bytes < 0 || _bytes + _reserved + bytes > 1024 * 1024) return false;
+    _reserved += bytes;
+    return true;
+  }
+
+  void releaseEarly(int bytes) {
+    _reserved = max(0, _reserved - bytes);
+    if (_bytes + _reserved < 1024 * 1024) _wake();
+  }
+
+  Future<void> enqueueReserved(RuntimeDelivery delivery) async {
+    if (_closed || _sealed) {
+      delivery.release();
+      return;
+    }
+    delivery.release();
+    for (final line in delivery.lines) {
+      _queue.add(line);
+      _bytes += line.length;
+      _eventCount++;
+    }
+    _pump();
+    await _admit();
+  }
+
   int _offset = 0;
   ChannelWriter? _writer;
   Completer<void>? _space;
@@ -153,7 +206,7 @@ class AgentEventRelay {
   }
 
   Future<void> _admit() async {
-    while (!_closed && !_sealed && _bytes >= 1024 * 1024) {
+    while (!_closed && !_sealed && _bytes + _reserved >= 1024 * 1024) {
       _pause(true);
       await (_space ??= Completer<void>()).future;
     }
@@ -249,6 +302,7 @@ class _Agent {
     required this.record,
     required this.io,
     required this.reservation,
+    required this.runId,
     this.mode,
     this.grant,
     this.mcpServers = const [],
@@ -256,6 +310,7 @@ class _Agent {
   final AgentSessionRecord record;
   final _AgentIO io;
   final ChannelReservation reservation;
+  final String runId;
   final AgentContinueMode? mode;
 
   /// This run's tool grant, revoked when the run ends; null without an endpoint.
@@ -287,6 +342,7 @@ class _Agent {
 class AgentService {
   AgentService({
     required this.connection,
+    required this.profileDirectory,
     required this.units,
     required this.workspaces,
     required this.profiles,
@@ -300,6 +356,7 @@ class AgentService {
     drafts.onAvailable = _draftStoreReady;
   }
   final Connection connection;
+  final Directory profileDirectory;
   final UnitManager units;
   final WorkspaceService workspaces;
   final RuntimeProfileService profiles;
@@ -339,11 +396,7 @@ class AgentService {
   /// run's own grant is revoked before its diagnostics are built, and other
   /// revocations may meanwhile have evicted it from the recent ones.
   String _redact(String text, [ToolGrant? own]) {
-    var out = text;
-    for (final secret in _secretsFor(own)) {
-      out = out.replaceAll(secret, '<redacted>');
-    }
-    return out;
+    return redactToolSecrets(text, _secretsFor(own));
   }
 
   /// Every secret [_redact] removes: the run's own, live and kept revoked.
@@ -358,14 +411,205 @@ class AgentService {
     for (final entry in _agents.entries)
       entry.key: {
         'ending': entry.value.ending,
+        'hasGrant': entry.value.grant?.isLive ?? false,
         'paused': entry.value.relay.isPaused,
         'queuedBytes': entry.value.relay.queuedBytes,
+        'reservedBytes': entry.value.relay.reservedBytes,
         'channelQueuedBytes': entry.value.relay.channelQueuedBytes,
         'channelSentBytes': entry.value.relay.channelSentBytes,
         'largeLineOwned': entry.value.io.client.largeLineOwned,
         'largeLineWaiting': entry.value.io.client.largeLineWaiting,
       },
   };
+
+  /// Passive test-build diagnostic; the release host exposes no test method.
+  /// Only counts are returned, including when a canary deliberately fails.
+  Future<Json> auditToolFilesForTesting(
+    String sessionId,
+    List<String> roots,
+  ) async {
+    _toolAuditStarted = true;
+    final a = _agents[sessionId];
+    final secret = a?.grant?.secret;
+    if (a == null || secret == null || roots.isEmpty || roots.length > 4) {
+      throw RpcException(ErrorCode.invalidParams, 'invalid test secret scan');
+    }
+    final profileRoot = await profileDirectory.resolveSymbolicLinks();
+    final allowed = [
+      profileRoot,
+      await Directory(a.record.target.path).resolveSymbolicLinks(),
+    ];
+    final nativeAudit = _nativeHomeAudit;
+    // The native home is held in canonical form, so each root is compared
+    // in that form too (macOS reaches its temp folder through /var). A root
+    // that is itself a link is never resolved: the scan below refuses it.
+    Future<bool> isNativeHome(String root) async {
+      try {
+        if (await FileSystemEntity.type(root, followLinks: false) !=
+            FileSystemEntityType.directory) {
+          return false;
+        }
+        return p.equals(
+          await Directory(root).resolveSymbolicLinks(),
+          nativeAudit!.home,
+        );
+      } on FileSystemException {
+        return false;
+      }
+    }
+
+    var namesNativeHome = false;
+    if (nativeAudit != null) {
+      for (final root in roots) {
+        if (await isNativeHome(root)) namesNativeHome = true;
+      }
+    }
+    if (nativeAudit != null && namesNativeHome) {
+      final driver = a.io.client;
+      if (driver is! CodexRuntimeDriver || !a.ending) {
+        throw RpcException(
+          ErrorCode.invalidParams,
+          'native audit requires a closed native run',
+        );
+      }
+      final identity = await driver.client.initialize();
+      final actualHome = identity.codexHome == null
+          ? null
+          : await Directory(identity.codexHome!).resolveSymbolicLinks();
+      if (actualHome == null || !p.equals(actualHome, nativeAudit.home)) {
+        throw RpcException(
+          ErrorCode.invalidParams,
+          'native audit home differs from initialized run',
+        );
+      }
+      allowed.add(nativeAudit.home);
+    }
+    var errorCount = 0;
+    final rootCategories = <String, int>{'nonDirectory': 0, 'metadataIo': 0};
+    final rootIoErrors = AuditIoErrorCounts();
+    var includedNative = false;
+    final candidates = <String>[];
+    for (final root in roots) {
+      String canonical;
+      try {
+        if (await FileSystemEntity.type(root, followLinks: false) !=
+            FileSystemEntityType.directory) {
+          errorCount++;
+          rootCategories['nonDirectory'] = rootCategories['nonDirectory']! + 1;
+          continue;
+        }
+        canonical = await Directory(root).resolveSymbolicLinks();
+      } on FileSystemException catch (error) {
+        errorCount++;
+        rootCategories['metadataIo'] = rootCategories['metadataIo']! + 1;
+        rootIoErrors.record(error);
+        continue;
+      }
+      if (!allowed.any(
+        (base) => p.equals(base, canonical) || p.isWithin(base, canonical),
+      )) {
+        throw RpcException(
+          ErrorCode.invalidParams,
+          'test secret scan must stay in the run target or host profile',
+        );
+      }
+      if (nativeAudit != null && p.equals(canonical, nativeAudit.home)) {
+        includedNative = true;
+        final (files, errors) = await nativeAudit.changedFiles();
+        errorCount += errors;
+        candidates.addAll(files.map((file) => file.path));
+      } else {
+        candidates.add(canonical);
+      }
+    }
+    final result = await ToolFileAudit(budget: _toolAuditBudget).scan(
+      candidates,
+      secret,
+      // The host's own POSIX tool endpoint lives in the profile.
+      hostSockets: {
+        if (!Platform.isWindows) p.join(profileRoot, ToolEndpoint.socketName),
+      },
+    );
+    result['nativeSelection'] = _nativeSelection.wire;
+    result['errorCount'] = (result['errorCount']! as int) + errorCount;
+    result['complete'] = result['errorCount'] == 0;
+    result['rootErrorCategories'] = rootCategories;
+    result['rootIoErrorCategories'] = Map<String, int>.of(rootIoErrors.counts);
+    if (includedNative && nativeAudit != null) {
+      result['nativeErrorCategories'] = nativeAudit.errorCategories;
+      result['nativeBaselineErrorCategories'] =
+          nativeAudit.baselineErrorCategories;
+      result['nativeIoErrorCategories'] = nativeAudit.ioErrorCategories;
+      result['nativeBaselineIoErrorCategories'] =
+          nativeAudit.baselineIoErrorCategories;
+      result['nativeUnknownArtifactCategories'] =
+          nativeAudit.unknownArtifactCategories;
+      if (_nativeSelection != NativeSelection.legacy) {
+        result['nativeSelectionCounters'] = nativeAudit.selectionCounters;
+        result['nativeDetectorLimits'] = nativeAudit.detectorLimits;
+      }
+    }
+    return result;
+  }
+
+  NativeHomeAudit? _nativeHomeAudit;
+  AuditBudget _toolAuditBudget = AuditBudget.defaults;
+  NativeSelection _nativeSelection = NativeSelection.legacy;
+  bool _toolAuditPrepared = false;
+  bool _toolAuditStarted = false;
+  bool _toolAuditRunStarted = false;
+
+  /// The test entrypoint supplies one immutable opt-in home before any native
+  /// run. No production RPC reaches this diagnostic or accepts audit roots.
+  Future<Json> prepareNativeHomeAuditForTesting(
+    String home, {
+    String auditProfile = 'default',
+    String nativeSelection = 'legacy',
+  }) async {
+    final AuditBudget budget;
+    final NativeSelection selection;
+    try {
+      budget = AuditBudget.named(auditProfile);
+      selection = NativeSelection.named(nativeSelection);
+    } on FormatException {
+      throw RpcException(
+        ErrorCode.invalidParams,
+        'invalid audit profile or native selection',
+      );
+    }
+    if (_toolAuditPrepared ||
+        _toolAuditStarted ||
+        _toolAuditRunStarted ||
+        _nativeHomeAudit != null ||
+        _agents.isNotEmpty ||
+        units.live.isNotEmpty) {
+      throw RpcException(
+        ErrorCode.invalidParams,
+        'native audit preparation must precede runs',
+      );
+    }
+    _toolAuditPrepared = true;
+    _toolAuditBudget = budget;
+    _nativeSelection = selection;
+    final audit = _nativeHomeAudit = await NativeHomeAudit.prepare(
+      home,
+      selection: selection,
+    );
+    // Counters only: no names, paths or contents. An incomplete wider baseline
+    // stays bound (preparation is once-only), so no caller can fall back.
+    return {
+      ...budget.echo,
+      'nativeSelection': selection.wire,
+      'complete': audit.complete,
+      'baselineComplete': audit.complete,
+      'baselineErrorCount': audit.baselineErrorCount,
+      // Fixed category keys with integer counts, so an incomplete baseline
+      // can be diagnosed without names or paths.
+      'baselineErrorCategories': audit.baselineErrorCategories,
+      'baselineIoErrorCategories': audit.baselineIoErrorCategories,
+      'files': audit.before.length,
+    };
+  }
 
   String _newId() {
     final bytes = List<int>.generate(16, (_) => _random.nextInt(256));
@@ -400,6 +644,7 @@ class AgentService {
   }
 
   Future<AgentStartResult> start(AgentStartParams params) async {
+    _toolAuditRunStarted = true;
     _available();
     if (params.workspaceId.isEmpty) {
       throw RpcException(
@@ -450,6 +695,13 @@ class AgentService {
         'Runtime profile "${profileId ?? params.runtimeProfileId ?? 'default'}" is unavailable. Choose or add a runtime profile.',
       );
     }
+    if (params.runtimeKind != null &&
+        profile.runtimeKind != params.runtimeKind) {
+      throw RpcException(
+        ErrorCode.noRuntimeProfile,
+        'Choose a compatible ${params.runtimeKind} runtime profile.',
+      );
+    }
     final (a, adapter, claims) = await _open(target, profile);
     return AgentStartResult(
       sessionId: a.record.id,
@@ -460,10 +712,14 @@ class AgentService {
     );
   }
 
-  RpcException _resumeUnavailable(String reason, String message) =>
-      RpcException(ErrorCode.resumeUnavailable, message, {
-        'resumeReason': reason,
-      });
+  RpcException _resumeUnavailable(
+    String reason,
+    String message, {
+    AgentTools? tools,
+  }) => RpcException(ErrorCode.resumeUnavailable, message, {
+    'resumeReason': reason,
+    'tools': ?tools?.toJson(),
+  });
 
   AgentSessionRecord? _record(String id) {
     try {
@@ -569,7 +825,10 @@ class AgentService {
     }
   }
 
-  Future<AgentContinueResult> continueSession(AgentSessionParams params) async {
+  Future<AgentContinueResult> continueSession(
+    AgentContinueParams params,
+  ) async {
+    _toolAuditRunStarted = true;
     _available();
     final record = _record(params.sessionId);
     if (record == null) {
@@ -577,6 +836,9 @@ class AgentService {
         'unknown-record',
         'the saved session is unknown',
       );
+    }
+    if (record.runtimeKind == 'codex') {
+      _requireCodexPeer();
     }
     final previous = _agents[record.id];
     if (_continuing.contains(record.id) ||
@@ -594,10 +856,9 @@ class AgentService {
       await _checkContinueTarget(record.target);
       _available();
       if (previous != null) _forget(previous);
-      var profile = record.runtimeProfileId == null
-          ? null
-          : await profiles.find(record.runtimeProfileId!);
-      if (profile == null) {
+      final wanted = params.runtimeProfileId ?? record.runtimeProfileId;
+      var profile = wanted == null ? null : await profiles.find(wanted);
+      if (profile == null && params.runtimeProfileId == null) {
         final listed = await profiles.list();
         profile = listed.defaultId == null
             ? null
@@ -607,6 +868,12 @@ class AgentService {
         throw RpcException(
           ErrorCode.noRuntimeProfile,
           'The saved session runtime profile and current default are unavailable. Choose or add a runtime profile.',
+        );
+      }
+      if (profile.runtimeKind != record.runtimeKind) {
+        throw RpcException(
+          ErrorCode.noRuntimeProfile,
+          'Choose a compatible ${record.runtimeKind} runtime profile.',
         );
       }
       _available();
@@ -635,6 +902,9 @@ class AgentService {
     RuntimeProfile profile,
     String executable,
   ) {
+    if (profile.runtimeKind == 'codex') {
+      return nativeCodexLaunchEnvironment(profile, executable);
+    }
     if (profile.runtimeKind != 'claude-code') return profile.env;
     final windows = Platform.isWindows;
     final name = executable.substring(
@@ -665,14 +935,49 @@ class AgentService {
     RuntimeProfile profile, {
     AgentSessionRecord? saved,
   }) async {
+    if (profile.runtimeKind == 'codex') {
+      _requireCodexPeer();
+    }
+    if (!const ['claude-code', 'codex'].contains(profile.runtimeKind)) {
+      throw RpcException(
+        ErrorCode.invalidProfile,
+        'Unsupported runtime kind ${profile.runtimeKind}',
+      );
+    }
     // Profile detection may have awaited. Continue rechecks through the bounded
     // resolver; UnitManager verifies the captured identity before spawn for both.
     if (saved != null) await _checkContinueTarget(target);
     final executable = await _executables.resolve(profile.executable);
+    final executableFile = File(executable);
+    final identity = await executableFile.stat();
+    String? codexVersion;
+    if (profile.runtimeKind == 'codex') {
+      try {
+        codexVersion = await probeCodexVersion(
+          units,
+          profileDirectory,
+          executable,
+          options,
+          resolutionEnvironment: _launchEnvironment(profile, executable),
+        );
+      } on CodexProtocolException catch (e) {
+        throw RpcException(ErrorCode.adapterProtocol, e.message);
+      }
+      final again = await executableFile.stat();
+      if (again.size != identity.size ||
+          again.modified != identity.modified ||
+          await _executables.resolve(profile.executable) != executable) {
+        throw RpcException(
+          ErrorCode.adapterProtocol,
+          'Codex executable changed after version probe',
+        );
+      }
+    }
     _available();
     final reservation = connection.reserveChannels(1);
     _AgentIO? io;
     ToolGrant? grant;
+    String? toolsUnavailableReason;
     _Agent? live;
     var stage = 'spawn';
     try {
@@ -694,6 +999,12 @@ class AgentService {
             final a = live;
             if (a != null && _current(a)) a.session.toolsCalled();
           },
+          onConnectionLimit: profile.runtimeKind != 'codex'
+              ? null
+              : () {
+                  final a = live;
+                  if (a != null && _current(a)) _toolConnectionLimit(a);
+                },
         );
         _grants.add(grant);
       }
@@ -704,9 +1015,15 @@ class AgentService {
         argv: [executable, ...profile.args],
         workingDirectory: target.path,
         environment: _launchEnvironment(profile, executable),
+        inheritParentEnvironment: profile.runtimeKind != 'codex',
         pipes: true,
       );
-      io = _AgentIO(launch);
+      io = _AgentIO(
+        launch,
+        codexVersion: codexVersion,
+        qualified: qualifiedAdaptersOverride ?? qualifiedAdapters,
+        authSignals: options.codexAuthSignatures,
+      );
       _io.add(io);
       final mcpServers = <Json>[
         if (grant != null)
@@ -725,15 +1042,39 @@ class AgentService {
       stage = 'initialize';
       final initialization = await io.client.initialize();
       _available();
-      final claims = qualifyAdapter(
-        initialization,
-        qualified: qualifiedAdaptersOverride ?? qualifiedAdapters,
-      );
+      final claims = initialization.claims;
       final adapter = AgentAdapter(
-        name: initialization.adapterName,
-        version: initialization.adapterVersion ?? '',
+        name: initialization.name,
+        version: initialization.version,
       );
       grant?.setAdapter(adapter.name, adapter.version);
+      // A Codex version with a recorded delivery failure (such as a canary
+      // found in runtime-written files) never receives a secret again (ADR
+      // 0015 decision 8): revoke the unused grant; chat continues without
+      // tools. Claude ACP keeps its record advisory: an observed call wins.
+      final refused = grant == null || profile.runtimeKind != 'codex'
+          ? null
+          : _deliveryFailure(adapter);
+      if (refused != null) {
+        toolsUnavailableReason = refused;
+        _revoke(grant);
+        grant = null;
+        mcpServers.clear();
+      }
+      if (grant != null) {
+        stage = 'tools/config';
+        final unavailable = await io.client.prepareTools(
+          target.path,
+          mcpServers: mcpServers,
+        );
+        _available();
+        if (unavailable != null) {
+          toolsUnavailableReason = clampUtf8(_redact(unavailable, grant), 4096);
+          _revoke(grant);
+          grant = null;
+          mcpServers.clear();
+        }
+      }
       late final _Agent a;
       if (saved == null) {
         final startingIo = io;
@@ -763,6 +1104,7 @@ class AgentService {
               claims: claims,
               grant: grant,
               mcpServers: mcpServers,
+              toolsUnavailableReason: toolsUnavailableReason,
             );
             live = a;
           },
@@ -772,6 +1114,12 @@ class AgentService {
           throw _resumeUnavailable(
             claims.unavailableReason!,
             'Adapter ${adapter.name} version ${adapter.version} cannot continue this session: ${claims.unavailableReason}.',
+            tools: toolsUnavailableReason == null
+                ? _startTools(grant, adapter)
+                : AgentTools(
+                    AgentToolsStatus.unavailable,
+                    reason: toolsUnavailableReason,
+                  ),
           );
         }
         a = _registerNativeSession(
@@ -784,6 +1132,7 @@ class AgentService {
               : AgentContinueMode.resume,
           grant: grant,
           mcpServers: mcpServers,
+          toolsUnavailableReason: toolsUnavailableReason,
         );
         live = a;
       }
@@ -833,6 +1182,23 @@ class AgentService {
         }
         rethrow;
       }
+      final tail = _redact(io?.stderr.tail() ?? '', grant);
+      final status = io?.status;
+      if (error is CodexProtocolException) {
+        final message = _redact(error.message, grant);
+        throw RpcException(
+          ErrorCode.adapterProtocol,
+          clampUtf8(
+            '$message${status == null ? '' : ' (exit status $status)'}${tail.isEmpty ? '' : '\n$tail'}',
+            4096,
+          ),
+          {
+            'stage': stage,
+            'detail': clampUtf8(tail.isEmpty ? message : tail, 4096),
+            'status': ?status,
+          },
+        );
+      }
       if (error is AcpProtocolException) {
         throw RpcException(
           ErrorCode.adapterProtocol,
@@ -840,12 +1206,12 @@ class AgentService {
           {'stage': stage},
         );
       }
-      final tail = _redact(io?.stderr.tail() ?? '', grant);
-      final status = io?.status;
       final reason =
-          stage == 'session/new' &&
-              error is AcpRemoteException &&
-              error.isAuthenticationRequired
+          error is CodexRemoteException && error.isAuthenticationRequired
+          ? ErrorCode.authRequired
+          : stage == 'session/new' &&
+                error is AcpRemoteException &&
+                error.isAuthenticationRequired
           ? ErrorCode.authRequired
           : stage == 'initialize' && tail.startsWith('unit-exec:')
           ? status == 127
@@ -855,10 +1221,16 @@ class AgentService {
                 : ErrorCode.adapterStartFailed
           : ErrorCode.adapterStartFailed;
       final message = _redact(
-        error is AcpRemoteException ? error.message : error.toString(),
+        error is AcpRemoteException
+            ? error.message
+            : error is CodexRemoteException
+            ? error.message
+            : error.toString(),
         grant,
       );
       final nativeMessage = error is AcpRemoteException
+          ? clampUtf8(_redact(error.message, grant), 4096)
+          : error is CodexRemoteException
           ? clampUtf8(_redact(error.message, grant), 4096)
           : null;
       throw RpcException(
@@ -872,10 +1244,13 @@ class AgentService {
           'detail': tail.isEmpty ? clampUtf8(message, 4096) : tail,
           'status': ?status,
           if (error is AcpRemoteException) 'nativeCode': error.code,
+          if (error is CodexRemoteException) 'nativeCode': error.code,
           'nativeMessage': ?nativeMessage,
           if (error is AcpRemoteException &&
               (error.messageTruncated ||
                   nativeMessage != _redact(error.message, grant)))
+            'nativeMessageTruncated': true,
+          if (error is CodexRemoteException && error.messageTruncated)
             'nativeMessageTruncated': true,
         },
       );
@@ -890,28 +1265,43 @@ class AgentService {
     AgentContinueMode? mode,
     ToolGrant? grant,
     List<Json> mcpServers = const [],
+    String? toolsUnavailableReason,
   }) {
     final a = _Agent(
       record: record,
       io: io,
       reservation: reservation,
+      runId: _newId(),
       mode: mode,
       grant: grant,
       mcpServers: mcpServers,
     );
     _agents[record.id] = a;
-    grant?.bind(record.id);
+    // A saved Codex record is not a native binding until thread/resume and
+    // bounded history restoration succeed. Early bridge calls keep waiting.
+    if (record.runtimeKind != 'codex' || mode == null) grant?.bind(record.id);
     a.relay.onFailure = (error) => _fail(a, error);
     a.session = AgentSession(
       sessionId: record.id,
-      client: io.client,
+      driver: io.client,
+      runId: record.runtimeKind == 'codex' ? a.runId : null,
       claims: claims,
       nativeSessionId: record.nativeSessionId,
-      tools: _startTools(grant, record.adapter),
+      tools: toolsUnavailableReason != null
+          ? AgentTools(
+              AgentToolsStatus.unavailable,
+              reason: toolsUnavailableReason,
+            )
+          : _startTools(grant, record.adapter),
       toolsAuthenticated: grant?.everAuthenticated ?? false,
       redact: (text) => _redact(text, grant),
+      redactStreaming: (text) =>
+          redactToolSecrets(text, _secretsFor(grant), clippedBoundaries: false),
       secrets: () => _secretsFor(grant),
       enqueueEvents: a.relay.enqueue,
+      reserveEarly: a.relay.reserveEarly,
+      releaseEarly: a.relay.releaseEarly,
+      enqueueReserved: a.relay.enqueueReserved,
       onState: (p) {
         _notify(a, Method.agentState, p.toJson());
         if (p.state == AgentState.failed) {
@@ -923,6 +1313,10 @@ class AgentService {
           );
         }
       },
+      onQuestionRequested: (p) =>
+          _notify(a, Method.agentQuestionRequested, p.toJson()),
+      onQuestionResolved: (p) =>
+          _notify(a, Method.agentQuestionResolved, p.toJson()),
       onPermissionRequested: (p) =>
           _notify(a, Method.agentPermissionRequested, p.toJson()),
       onPermissionResolved: (p) =>
@@ -932,6 +1326,10 @@ class AgentService {
     );
     if (mode == null) {
       a.session.ready(nativeSessionId: record.nativeSessionId);
+    }
+    if (record.runtimeKind == 'codex' &&
+        grant?.connectionLimitReached == true) {
+      _toolConnectionLimit(a);
     }
     a.attachTimer = Timer(options.attachTimeout, () {
       if (!_current(a) || a.attached) return;
@@ -949,6 +1347,14 @@ class AgentService {
     return a;
   }
 
+  void _toolConnectionLimit(_Agent a) {
+    a.session
+        .notice(
+          'Kumiko child tools unavailable: bridge connection capacity reached.',
+        )
+        .ignore();
+  }
+
   /// The tools status a run starts with (design D6), seeded from what the
   /// grant already saw during `session/new`.
   AgentTools _startTools(ToolGrant? grant, AgentAdapter adapter) {
@@ -959,16 +1365,21 @@ class AgentService {
       );
     }
     if (grant.everCalled) return const AgentTools(AgentToolsStatus.connected);
+    if (_deliveryFailure(adapter) case final reason?) {
+      return AgentTools(AgentToolsStatus.unavailable, reason: reason);
+    }
+    return const AgentTools(AgentToolsStatus.notYetUsed);
+  }
+
+  /// The recorded tool delivery failure for exactly this adapter version.
+  String? _deliveryFailure(AgentAdapter adapter) {
     for (final (name, version, text)
         in toolDeliveryFailuresOverride ?? toolDeliveryFailures) {
       if (name == adapter.name && version == adapter.version) {
-        return AgentTools(
-          AgentToolsStatus.unavailable,
-          reason: 'for $name $version: $text',
-        );
+        return 'for $name $version: $text';
       }
     }
-    return const AgentTools(AgentToolsStatus.notYetUsed);
+    return null;
   }
 
   void _insert(AgentSessionRecord r) {
@@ -1074,6 +1485,7 @@ class AgentService {
         );
       }
       if (_current(a) && !a.ending) {
+        if (a.record.runtimeKind == 'codex') a.grant?.bind(a.record.id);
         a.session.ready(nativeSessionId: a.record.nativeSessionId);
         a.restoring = false;
       }
@@ -1102,8 +1514,9 @@ class AgentService {
       );
     }
     a.sending = true;
+    final int removed;
     try {
-      await drafts.commitSend(
+      removed = await drafts.commitSend(
         params.sessionId,
         revision,
         synced: params.draftSynced ?? false,
@@ -1111,9 +1524,20 @@ class AgentService {
     } finally {
       a.sending = false;
     }
-    _available();
-    final again = _require(params.sessionId);
-    again.session.acceptPrompt(params.text);
+    try {
+      _available();
+      final again = _require(params.sessionId);
+      again.session.acceptPrompt(params.text);
+    } on Object {
+      // Refused after its draft was removed (design D4), for example at full
+      // native input: put the text back unless a newer revision was saved.
+      try {
+        await drafts.restoreSend(params.sessionId, params.text, removed);
+      } on Object {
+        // The desktop keeps the text and saves it again.
+      }
+      rethrow;
+    }
   }
 
   Future<AgentDraftSaveResult> draftSave(AgentDraftSaveParams params) async {
@@ -1164,6 +1588,75 @@ class AgentService {
     'disabledReason': drafts.disabledReason,
     'pragmas': drafts.pragmas,
   };
+
+  void _requireCodexPeer() =>
+      requireCodexCapabilities(connection.negotiated?.capabilities ?? const {});
+
+  _Agent _extensionRun(String sessionId, String runId) {
+    _requireCodexPeer();
+    final a = _require(sessionId);
+    if (a.ending || a.runId != runId) {
+      throw RpcException(
+        ErrorCode.staleRun,
+        'the native run is no longer current',
+      );
+    }
+    return a;
+  }
+
+  Future<void> steer(AgentSteerParams params) async {
+    final a = _extensionRun(params.sessionId, params.runId);
+    a.session.checkCanSteer(params.expectedTurnId, params.text);
+    if (a.sending) {
+      throw RpcException(
+        ErrorCode.turnRunning,
+        'another input is being admitted',
+      );
+    }
+    final delivery = a.session.prepareSteer(params.expectedTurnId, params.text);
+    int? removed;
+    try {
+      if (params.draftRevision != null) {
+        a.sending = true;
+        try {
+          removed = await drafts.commitSend(
+            params.sessionId,
+            params.draftRevision!,
+            synced: params.draftSynced ?? false,
+          );
+        } finally {
+          a.sending = false;
+        }
+      }
+      final current = _extensionRun(params.sessionId, params.runId);
+      final revision = removed;
+      current.session.acceptSteer(
+        params.expectedTurnId,
+        params.text,
+        delivery,
+        restoreDraft: revision == null
+            ? null
+            : () => drafts.restoreSend(params.sessionId, params.text, revision),
+      );
+    } on Object {
+      delivery.release();
+      if (removed != null) {
+        // Refused after its draft was removed (design D4): put the text back
+        // unless a newer revision was saved meanwhile.
+        try {
+          await drafts.restoreSend(params.sessionId, params.text, removed);
+        } on Object {
+          // The desktop keeps the text and saves it again.
+        }
+      }
+      rethrow;
+    }
+  }
+
+  void questionAnswer(AgentQuestionAnswerParams params) {
+    final a = _extensionRun(params.sessionId, params.runId);
+    a.session.questionAnswer(params);
+  }
 
   void stop(AgentSessionParams params) {
     final a = _require(params.sessionId);
@@ -1379,6 +1872,11 @@ class AgentService {
       if (a.closeRequested) a.session.ended();
       a.session.dispose();
       a.relay.seal();
+      final protocolMessage = error is AcpProtocolException
+          ? error.message
+          : error is CodexProtocolException
+          ? error.message
+          : null;
       final exited = a.exitNotification = AgentExitedParams(
         sessionId: a.record.id,
         reason: a.closeRequested
@@ -1388,7 +1886,7 @@ class AgentService {
         status: a.io.status,
         error: restoring
             ? ErrorCode.resumeUnavailable
-            : error is AcpProtocolException
+            : protocolMessage != null
             ? ErrorCode.adapterProtocol
             : 'adapter-exited',
         resumeReason: restoring
@@ -1408,8 +1906,8 @@ class AgentService {
                       ),
                       4096,
                     )
-            : error is AcpProtocolException
-            ? _redact(error.message, a.grant)
+            : protocolMessage != null
+            ? _redact(protocolMessage, a.grant)
             : null,
       );
       _notify(a, Method.agentExited, exited.toJson());
@@ -1425,10 +1923,13 @@ class AgentService {
     await io.client.close();
     // Settlement precedes this operation. Drain stderr through EOF before
     // capturing a start-error tail; close() also unblocks paused stdout.
-    await io.errorsDone.future.timeout(
-      options.postExitReadDeadline,
-      onTimeout: () {},
+    final observedStatus = await drainStartupDiagnostics(
+      stderrDone: io.errorsDone.future,
+      exitCode: io.launch.unit.exitCode,
+      budget: options.postExitReadDeadline,
+      knownStatus: io.status,
     );
+    io.status = observedStatus ?? io.status;
     await io.launch.pipes!.close();
     await io.errors.cancel();
     _io.remove(io);

@@ -137,6 +137,153 @@ Future<void> _tap(WidgetTester tester, String k) async {
 }
 
 void main() {
+  uiTest('Codex: Quit with idle work', (tester) async {
+    final env = await _env(
+      tester,
+      capabilities: {
+        ..._capabilities,
+        Capability.codex,
+        Capability.agentExtensionsV1,
+      },
+    );
+    final link = await _agent(env, tester);
+    link.runtimeKind = 'codex';
+    env.host.agentStateSource.add(
+      AgentStateParams.fromJson({
+        'sessionId': link.sessionId,
+        'seq': 8,
+        'state': 'idle',
+        'runId': 'run',
+        'delegated': {
+          'activeChildren': 0,
+          'waitingRequests': 0,
+          'incomplete': false,
+        },
+      }),
+    );
+    await flush(tester);
+    final request = await _quit(env, tester);
+    expect(request.answer, AppExitResponse.exit);
+    expect(_dialog(), findsNothing);
+  });
+  uiTest('Codex: Item finishes while the dialog is open', (tester) async {
+    final env = await _env(
+      tester,
+      capabilities: {
+        ..._capabilities,
+        Capability.codex,
+        Capability.agentExtensionsV1,
+      },
+    );
+    final link = await _agent(env, tester);
+    link.runtimeKind = 'codex';
+    final terminal = await _terminal(env, tester);
+    env.host.activities[_terminalIdOf(env, terminal)] = TerminalActivity(
+      terminalId: _terminalIdOf(env, terminal),
+      state: TerminalActivityState.busy,
+      programs: ['vim'],
+    );
+    env.host.agentStateSource.add(
+      AgentStateParams.fromJson({
+        'sessionId': link.sessionId,
+        'seq': 8,
+        'state': 'running',
+        'runId': 'run',
+        'delegated': {
+          'activeChildren': 0,
+          'waitingRequests': 0,
+          'incomplete': false,
+        },
+      }),
+    );
+    await flush(tester);
+    await _quit(env, tester);
+    expect(_item(link.paneId), findsOneWidget);
+    env.host.agentStateSource.add(
+      AgentStateParams.fromJson({
+        'sessionId': link.sessionId,
+        'seq': 9,
+        'state': 'idle',
+        'runId': 'run',
+        'delegated': {
+          'activeChildren': 0,
+          'waitingRequests': 0,
+          'incomplete': false,
+        },
+      }),
+    );
+    await flush(tester);
+    expect(_item(link.paneId), findsNothing);
+    expect(_item(terminal), findsOneWidget);
+    expect(env.host.agentCloses, isEmpty);
+    await _tap(tester, 'exit-cancel');
+  });
+  for (final name in [
+    'Quit with idle root and active child',
+    'Root finishes before child',
+  ]) {
+    uiTest('Codex: $name', (tester) async {
+      final env = await _env(
+        tester,
+        capabilities: {
+          ..._capabilities,
+          Capability.codex,
+          Capability.agentExtensionsV1,
+        },
+      );
+      final link = await _agent(env, tester);
+      link.runtimeKind = 'codex';
+      env.host.agentStateSource.add(
+        AgentStateParams.fromJson({
+          'sessionId': link.sessionId,
+          'seq': 8,
+          'state': name == 'Root finishes before child' ? 'running' : 'idle',
+          'runId': 'run',
+          'delegated': {
+            'activeChildren': 1,
+            'waitingRequests': 0,
+            'incomplete': false,
+          },
+        }),
+      );
+      await flush(tester);
+      final request = await _quit(env, tester);
+      expect(_dialog(), findsOneWidget);
+      expect(request.answer, isNull);
+      expect(find.textContaining('Delegated'), findsWidgets);
+      env.host.agentStateSource.add(
+        AgentStateParams.fromJson({
+          'sessionId': link.sessionId,
+          'seq': 9,
+          'state': 'idle',
+          'runId': 'run',
+          'delegated': {
+            'activeChildren': 1,
+            'waitingRequests': 0,
+            'incomplete': false,
+          },
+        }),
+      );
+      await flush(tester);
+      expect(_item(link.paneId), findsOneWidget);
+      env.host.agentStateSource.add(
+        AgentStateParams.fromJson({
+          'sessionId': link.sessionId,
+          'seq': 10,
+          'state': 'idle',
+          'runId': 'run',
+          'delegated': {
+            'activeChildren': 0,
+            'waitingRequests': 0,
+            'incomplete': false,
+          },
+        }),
+      );
+      await flush(tester);
+      expect(_item(link.paneId), findsNothing);
+      expect(request.answer, AppExitResponse.exit);
+    });
+  }
   group('app exit', () {
     uiTest(
       'quit with idle agent, idle terminal and stored draft exits without a '
