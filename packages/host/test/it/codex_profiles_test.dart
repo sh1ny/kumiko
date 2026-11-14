@@ -515,6 +515,68 @@ void main() {
     );
     expect(found.env['CODEX_MANAGED_BY_NPM'], '1');
   }, skip: Platform.isWindows);
+  for (final nested in [false, true]) {
+    test('Codex: an npm platform package ${nested ? 'nested under' : 'beside'} '
+        '@openai/codex is found', () {
+      final windows = Platform.isWindows;
+      final prefix = Directory(joinPath(work.path, 'prefix'))..createSync();
+      final bin = windows
+          ? prefix
+          : (Directory(joinPath(prefix.path, 'bin'))..createSync());
+      final modules = joinPath(
+        prefix.path,
+        windows ? 'node_modules' : 'lib/node_modules',
+      );
+      final main = Directory(joinPath(modules, '@openai/codex'))
+        ..createSync(recursive: true);
+      final arch = Platform.version.contains('arm64') ? 'arm64' : 'x64';
+      final os = windows
+          ? 'win32'
+          : Platform.isMacOS
+          ? 'darwin'
+          : 'linux';
+      final key = '@openai/codex-$os-$arch';
+      File(joinPath(main.path, 'package.json')).writeAsStringSync(
+        '{"name":"@openai/codex","optionalDependencies":{"$key":"npm:@openai/codex@0.166.0-$os-$arch"}}',
+      );
+      // A global npm install places the dependency beneath the package.
+      final platform = Directory(
+        nested
+            ? joinPath(main.path, 'node_modules/$key')
+            : joinPath(modules, key),
+      )..createSync(recursive: true);
+      File(joinPath(platform.path, 'package.json')).writeAsStringSync(
+        '{"name":"@openai/codex","version":"0.166.0-$os-$arch","os":["$os"],"cpu":["$arch"]}',
+      );
+      final machine = arch == 'arm64' ? 'aarch64' : 'x86_64';
+      final target = windows
+          ? '$machine-pc-windows-msvc'
+          : Platform.isMacOS
+          ? '$machine-apple-darwin'
+          : '$machine-unknown-linux-musl';
+      final binary = File(
+        joinPath(
+          platform.path,
+          'vendor/$target/codex/${windows ? 'codex.exe' : 'codex'}',
+        ),
+      )..createSync(recursive: true);
+      if (!windows) chmodPath(binary.path, 0x1c0);
+      final found = detectCodex(
+        AdapterDetectionConfig(
+          os: Platform.operatingSystem,
+          pathDirs: [bin.path],
+          wellKnownDirs: const [],
+          environment: const {},
+        ),
+      );
+      expect(found, isNotNull);
+      expect(
+        File(found!.executable).resolveSymbolicLinksSync(),
+        binary.resolveSymbolicLinksSync(),
+      );
+      expect(found.env['CODEX_MANAGED_BY_NPM'], '1');
+    });
+  }
   test('Codex: Codex added beside existing Claude default', () async {
     final f = NativeFixture(profile, work);
     await f.open();

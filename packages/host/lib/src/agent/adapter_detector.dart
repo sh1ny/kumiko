@@ -269,10 +269,16 @@ RuntimeProfile? detectCodex(AdapterDetectionConfig config) {
             : 'linux';
         // Only current installed platform packages named by package metadata.
         for (final key in deps.keys.whereType<String>()) {
-          final dependency = File(p.join(root, key, 'package.json'));
-          if (!key.startsWith('@openai/codex-') || !dependency.existsSync()) {
-            continue;
-          }
+          if (!key.startsWith('@openai/codex-')) continue;
+          // A global npm install nests the dependency beneath the package;
+          // a hoisted layout places it beside the package.
+          final installed = [
+            p.join(package, 'node_modules', key),
+            p.join(root, key),
+          ].where((dir) => File(p.join(dir, 'package.json')).existsSync());
+          if (installed.isEmpty) continue;
+          final platformDir = installed.first;
+          final dependency = File(p.join(platformDir, 'package.json'));
           final declaration = deps[key];
           if (declaration is! String) continue;
           var expectedName = key;
@@ -315,8 +321,7 @@ RuntimeProfile? detectCodex(AdapterDetectionConfig config) {
                     : 'x86_64-unknown-linux-musl');
           final found = profile(
             p.join(
-              root,
-              key,
+              platformDir,
               'vendor',
               target,
               'codex',
