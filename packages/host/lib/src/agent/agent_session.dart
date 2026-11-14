@@ -757,7 +757,8 @@ class AgentSession {
           fail(error);
           return;
         }
-        if (error is! CodexRemoteException) {
+        if (error is! CodexRemoteException &&
+            !(error is CodexOptionalUnsupported && error.rejected)) {
           // A lost or timed-out outcome may still have been applied.
           notice(
             'Steering outcome unavailable or unknown: ${_redact(error.toString())}',

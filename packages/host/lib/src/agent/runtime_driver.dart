@@ -2226,7 +2226,11 @@ class CodexRuntimeDriver extends RuntimeDriver {
         .catchError((Object error) {
           if (error is CodexRemoteException && error.code == -32601) {
             _steeringUnavailable = true;
-            throw CodexOptionalUnsupported('steering', error.message);
+            throw CodexOptionalUnsupported(
+              'steering',
+              error.message,
+              rejected: true,
+            );
           }
           throw error;
         });

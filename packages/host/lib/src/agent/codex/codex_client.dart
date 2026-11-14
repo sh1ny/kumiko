@@ -16,8 +16,11 @@ class CodexProtocolException implements Exception {
 }
 
 class CodexOptionalUnsupported implements Exception {
-  CodexOptionalUnsupported(this.feature, this.reason);
+  CodexOptionalUnsupported(this.feature, this.reason, {this.rejected = false});
   final String feature;
+
+  /// The native runtime definitely refused the request (it was not applied).
+  final bool rejected;
   final String reason;
   @override
   String toString() => '$feature unavailable: $reason';
