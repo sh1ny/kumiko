@@ -102,8 +102,17 @@ class ToolFileAudit {
   final AuditIo io;
   final AuditBudget budget;
   static const chunkBytes = 1024 * 1024;
-  Future<Map<String, Object?>> scan(List<String> paths, String secret) async {
+
+  /// [hostSockets] names the host's own endpoint sockets: one found at
+  /// exactly that path is counted in `hostSockets`, never opened. Any other
+  /// non-regular entry still leaves the scan incomplete.
+  Future<Map<String, Object?>> scan(
+    List<String> paths,
+    String secret, {
+    Set<String> hostSockets = const {},
+  }) async {
     var errors = 0, files = 0, matched = 0, scanned = 0, read = 0, charged = 0;
+    var sockets = 0;
     var leaves = 0;
     final categories = <String, int>{
       for (final key in [
@@ -173,6 +182,11 @@ class ToolFileAudit {
         }
         if (++leaves > 4096) {
           fail('metadataAdmission');
+          return;
+        }
+        if (before.$1 == FileSystemEntityType.unixDomainSock &&
+            hostSockets.contains(path)) {
+          sockets++;
           return;
         }
         if (before.$1 != FileSystemEntityType.file || before.$2 < 0) {
@@ -276,6 +290,7 @@ class ToolFileAudit {
       'errorCategories': categories,
       'ioErrorCategories': Map<String, int>.of(ioErrors.counts),
       'scannedFiles': files,
+      'hostSockets': sockets,
       'matchedFiles': matched,
       'scannedBytes': scanned,
       'readBytes': read,

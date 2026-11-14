@@ -30,6 +30,7 @@ import 'executable_resolver.dart';
 import 'qualification.dart';
 import 'qualified_adapters.dart';
 import 'runtime_profile_service.dart';
+import 'tools/tool_endpoint.dart';
 import 'tools/tool_service.dart';
 import 'tool_secret_redaction.dart';
 import 'startup_diagnostics.dart';
@@ -433,8 +434,9 @@ class AgentService {
     if (a == null || secret == null || roots.isEmpty || roots.length > 4) {
       throw RpcException(ErrorCode.invalidParams, 'invalid test secret scan');
     }
+    final profileRoot = await profileDirectory.resolveSymbolicLinks();
     final allowed = [
-      await profileDirectory.resolveSymbolicLinks(),
+      profileRoot,
       await Directory(a.record.target.path).resolveSymbolicLinks(),
     ];
     final nativeAudit = _nativeHomeAudit;
@@ -497,8 +499,14 @@ class AgentService {
         candidates.add(canonical);
       }
     }
-    final result = await ToolFileAudit(budget: _toolAuditBudget)
-        .scan(candidates, secret);
+    final result = await ToolFileAudit(budget: _toolAuditBudget).scan(
+      candidates,
+      secret,
+      // The host's own POSIX tool endpoint lives in the profile.
+      hostSockets: {
+        if (!Platform.isWindows) p.join(profileRoot, ToolEndpoint.socketName),
+      },
+    );
     result['nativeSelection'] = _nativeSelection.wire;
     result['errorCount'] = (result['errorCount']! as int) + errorCount;
     result['complete'] = result['errorCount'] == 0;

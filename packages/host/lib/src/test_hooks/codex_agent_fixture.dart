@@ -169,6 +169,12 @@ Future<int> runCodexFixture(List<String> args) async {
           // account it without opening a read handle. Nonempty read failures
           // remain incomplete scans.
           final before = await entity.stat();
+          // A Unix-domain socket (the host's tools.sock on POSIX) is listed
+          // as a file but holds no bytes that could contain the secret.
+          if (before.type == FileSystemEntityType.unixDomainSock) {
+            scannedFiles++;
+            continue;
+          }
           if (before.type == FileSystemEntityType.file && before.size == 0) {
             final after = await entity.stat();
             if (after.type == FileSystemEntityType.file &&

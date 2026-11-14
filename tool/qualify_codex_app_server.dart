@@ -1266,8 +1266,12 @@ Future<String> _buildHost() async {
 }
 
 Future<void> _dryRun(String executable) async {
-  final owned = await Directory.systemTemp.createTemp(
-    'kumiko_codex_qualification_',
+  // The host compares scan roots with canonical paths, so the fixture's
+  // folder is canonical too (macOS /var is a link, Windows temp may use an
+  // 8.3 short name).
+  final owned = Directory(
+    await (await Directory.systemTemp.createTemp('kumiko_codex_qualification_'))
+        .resolveSymbolicLinks(),
   );
   _WalkHost? host;
   try {
@@ -1372,7 +1376,8 @@ Future<void> _dryRun(String executable) async {
     });
     final audit = stats['secretAudit']! as Json;
     if (audit['complete'] != true || audit['matchedFiles'] != 0) {
-      throw StateError('fixture audit incomplete');
+      // The audit result holds only counts and categories.
+      throw StateError('fixture audit incomplete: ${jsonEncode(audit)}');
     }
     stdout.writeln('FIXTURE ONLY: shared native path; no provider evidence');
     stdout.writeln(

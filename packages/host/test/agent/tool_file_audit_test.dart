@@ -125,6 +125,57 @@ void invariant(Map<String, Object?> r, {int bound = 32 * chunk}) {
 }
 
 void main() {
+  test(
+    'Codex audit diagnostics: only the host endpoint socket is accounted',
+    () async {
+      final io = FakeIo(
+        {
+          'profile': FakeFile(0, kind: FileSystemEntityType.directory),
+          'profile/tools.sock': FakeFile(
+            0,
+            kind: FileSystemEntityType.unixDomainSock,
+          ),
+          'profile/other.sock': FakeFile(
+            0,
+            kind: FileSystemEntityType.unixDomainSock,
+          ),
+          'profile/note': FakeFile(4),
+        },
+        tree: {
+          'profile': [
+            'profile/tools.sock',
+            'profile/other.sock',
+            'profile/note',
+          ],
+        },
+      );
+      final result = await ToolFileAudit(io: io)
+          .scan(['profile'], canary, hostSockets: {'profile/tools.sock'});
+      expect(result['hostSockets'], 1);
+      expect((result['errorCategories']! as Map)['nonRegular'], 1);
+      expect(result['complete'], false);
+      expect(io.files['profile/tools.sock']!.opens, 0);
+      final alone = FakeIo(
+        {
+          'profile': FakeFile(0, kind: FileSystemEntityType.directory),
+          'profile/tools.sock': FakeFile(
+            0,
+            kind: FileSystemEntityType.unixDomainSock,
+          ),
+        },
+        tree: {
+          'profile': ['profile/tools.sock'],
+        },
+      );
+      final clean = await ToolFileAudit(io: alone)
+          .scan(['profile'], canary, hostSockets: {'profile/tools.sock'});
+      expect(clean['complete'], true);
+      expect(clean['hostSockets'], 1);
+      final unlisted = await ToolFileAudit(io: alone).scan(['profile'], canary);
+      expect(unlisted['complete'], false);
+      expect(unlisted['hostSockets'], 0);
+    },
+  );
   test('Codex audit budget: each request is at most one MiB', () async {
     final io = FakeIo({'a': FakeFile(2 * chunk)});
     final r = await ToolFileAudit(io: io).scan(['a'], canary);

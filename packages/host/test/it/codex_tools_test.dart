@@ -852,8 +852,17 @@ void main() {
         // Already gone.
       }
     });
-    Directory(Platform.isWindows ? '\\\\?\\$deepPath' : deepPath)
-        .createSync(recursive: true);
+    if (Platform.isWindows) {
+      Directory(Platform.isWindows ? '\\\\?\\$deepPath' : deepPath)
+          .createSync(recursive: true);
+    } else {
+      // POSIX limits a path to 4096 (Linux) or 1024 (macOS) bytes, so an
+      // unreadable directory leaves the baseline incomplete instead.
+      final locked = Directory(p.join(home.path, 'PRIVATE_locked'))
+        ..createSync();
+      addTearDown(() => Process.runSync('chmod', ['700', locked.path]));
+      expect(Process.runSync('chmod', ['000', locked.path]).exitCode, 0);
+    }
     final fixture = NativeFixture(profile, work);
     await fixture.open(env: {'KUMIKO_TEST_CODEX_AUDIT_HOME': home.path});
     final echo = await fixture.desktop.connection.request(
@@ -987,8 +996,17 @@ void main() {
         // Already gone.
       }
     });
-    Directory(Platform.isWindows ? '\\\\?\\$deepPath' : deepPath)
-        .createSync(recursive: true);
+    if (Platform.isWindows) {
+      Directory(Platform.isWindows ? '\\\\?\\$deepPath' : deepPath)
+          .createSync(recursive: true);
+    } else {
+      // POSIX limits a path to 4096 (Linux) or 1024 (macOS) bytes, so an
+      // unreadable directory leaves the baseline incomplete instead.
+      final locked = Directory(p.join(home.path, 'PRIVATE_locked'))
+        ..createSync();
+      addTearDown(() => Process.runSync('chmod', ['700', locked.path]));
+      expect(Process.runSync('chmod', ['000', locked.path]).exitCode, 0);
+    }
     final fixture = NativeFixture(profile, work);
     await fixture.open(env: {'KUMIKO_TEST_CODEX_AUDIT_HOME': home.path});
     final echo = await fixture.desktop.connection.request(
