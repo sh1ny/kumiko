@@ -160,8 +160,7 @@ Every delta scenario is mapped below.
   Then:
   - add the `omp` field to `AdapterDetectionResult`;
   - add the `builtin:omp` profile with arguments `--mode rpc` (`runtime_profile_service.dart`);
-  - make the empty-store default order Claude, Codex, OMP;
-  - replace the inline kind allowlist with `supportedRuntimeKinds`.
+  - make the empty-store default order Claude, Codex, OMP. Leave the launch allowlist unchanged until the OMP driver and its gates are wired in group 7.
 
   Verify: the discovery cases in both files pass, and `runtime_profiles_test.dart` and `codex_profiles_test.dart` stay green. Flip the discovery rows green except *Only a private copy exists*, which also requires the launch assertion in group 7.
 
@@ -196,6 +195,7 @@ Every delta scenario is mapped below.
   4. call `onCreated`.
 
   In `agent_service.dart`:
+  - adopt `supportedRuntimeKinds` for the launch allowlist alongside the OMP driver and gates;
   - check the OMP peer gate before the probe;
   - run the probe, then re-check the executable;
   - mint no grant for `omp`, and report tools unavailable with the reason;
