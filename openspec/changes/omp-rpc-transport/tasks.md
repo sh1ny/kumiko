@@ -148,7 +148,7 @@ Every delta scenario is mapped below.
 
 - [ ] 5.1 Write failing tests:
   - in `adapter_detector_test.dart`: *OMP installed by its installer*, *Only a shim exists* and *Only a private copy exists*, using fixture directories only and executing nothing;
-  - in `packages/host/test/it/omp_profiles_test.dart`: *OMP argv profile*, *OMP is the only detected runtime*, *Only a shim exists*, *Only a private copy exists* and *Profile override does not leak*.
+  - in `packages/host/test/it/omp_profiles_test.dart`: *OMP is the only detected runtime* and the profile-list checks for *Only a shim exists* and *Only a private copy exists*, without starting any adapter. Group 7 adds the explicit-profile launch assertion for the private copy.
 
   Confirm they fail.
 - [ ] 5.2 Implement `detectOmp` in `adapter_detector.dart`, running in the same isolate under the 2 s cap:
@@ -162,7 +162,7 @@ Every delta scenario is mapped below.
   - make the empty-store default order Claude, Codex, OMP;
   - replace the inline kind allowlist with `supportedRuntimeKinds`.
 
-  Verify: both test files pass, and `runtime_profiles_test.dart` and `codex_profiles_test.dart` stay green.
+  Verify: the discovery cases in both files pass, and `runtime_profiles_test.dart` and `codex_profiles_test.dart` stay green. Flip the discovery rows green except *Only a private copy exists*, which also requires the launch assertion in group 7.
 
 ## 6. Scripted OMP fixture and test hooks
 
@@ -185,6 +185,7 @@ Every delta scenario is mapped below.
   - *OMP run without tool delivery*;
   - *Compatible peers* and *Older desktop*;
   - *User-configured provider*: a canary environment value appears in no record, start result, state or event.
+  - In `omp_profiles_test.dart`: *OMP argv profile*, *Profile override does not leak*, and the explicit custom profile launch assertion for *Only a private copy exists*.
 
   Also write the readiness and identity unit tests in `omp_driver_test.dart`. Confirm they fail.
 - [ ] 7.2 Implement `OmpRuntimeDriver` `initialize` and `newSession`, in this order:
@@ -202,7 +203,7 @@ Every delta scenario is mapped below.
   - map `OmpProtocolException` to `adapterProtocol` with the stage and stderr tail;
   - save the adapter as `omp-rpc`.
 
-  Verify: the group 7 rows pass in `mise exec -- dart test test/it/omp_test.dart test/agent/omp_driver_test.dart`; flip them green.
+  Verify: the group 7 rows pass in `test/it/omp_test.dart`, `test/it/omp_profiles_test.dart` and `test/agent/omp_driver_test.dart`; flip them green, including *Only a private copy exists* after both files pass.
 
 ## 8. Turns: admission, streaming and errors
 
