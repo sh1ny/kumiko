@@ -24,7 +24,7 @@ flowchart LR
         H --> S[(Local SQLite store<br/>ADR 0003)]
         H -- "ACP stdio JSON-RPC" --> CC[Claude Code ACP adapter]
         H -- "native stdio JSON-RPC (ADR 0015)" --> CX[Codex App Server root and child threads]
-        H -. later .-> OMP[OMP native RPC]
+        H -- "private stdio NDJSON v1 (ADR 0016)" --> OMP[OMP native RPC]
         H -- "PTY bytes" --> SH[Shells and TUIs]
         CC -- "MCP stdio" --> B[mcp-bridge]
         CX -- "isolated per-run MCP when proven safe" --> B
@@ -40,8 +40,8 @@ flowchart LR
 |---|---|---|---|
 | Desktop (`desktop`) | Workbench UI, input, terminal emulation/rendering, close/exit confirmations | In-memory view state and terminal scrollback only | Host via ADR 0002; team server later via ADR 0007 |
 | Execution host (`host`) | Spawns and owns runtimes, adapters, PTYs and the tool service; sole local-store writer; terminates all children when the desktop goes | Live process table, session records, local store | Desktop (ADR 0002); runtimes (ACP/RPC); PTYs; bridge endpoint (ADR 0005) |
-| Runtime adapters (in host) | Map each runtime onto the session model, with qualified capabilities | Per-session protocol state | ACP for Claude; native App Server for Codex; OMP RPC later (ADR 0004, ADR 0015) |
-| Agent adapter unit (one per live session) | Run one adapter and its tool descendants in containment; no shared multi-session adapter process | Host `AgentService` / `AgentSession` own the unit, shared runtime state, permissions, event relay and stderr ring; `UnitManager` owns containment and ledger settlement | ACP v1 or native Codex App Server over piped stdio; desktop via one per-session event channel plus capability-gated control (ADR 0012) |
+| Runtime adapters (in host) | Map each runtime onto the session model, with capabilities justified by its runtime contract | Per-session protocol state | ACP for Claude; native App Server for Codex; native RPC for OMP (ADR 0004, ADR 0015, ADR 0016) |
+| Agent adapter unit (one per live session) | Run one adapter and its tool descendants in containment; no shared multi-session adapter process | Host `AgentService` / `AgentSession` own the unit, shared runtime state, permissions, event relay and stderr ring; `UnitManager` owns containment and ledger settlement | ACP v1, native Codex App Server or native OMP RPC over piped stdio; desktop via one per-session event channel plus capability-gated control (ADR 0012, ADR 0016) |
 | Tool service and `mcp-bridge` | Expose authorized Kumiko operations to agent sessions | Session-secret map (one grant per live session run), per-run Kumiko tools status inputs, per-role tool catalog | MCP stdio to the runtime; per-user local endpoint to the host: owner-only named pipe or `tools.sock`, secret handshake, then the built-in MCP subset (ADR 0005, ADR 0013) |
 | Local store | Durable local state | SQLite files: the main store, and the separate draft store `drafts.sqlite` owned by one host draft worker isolate (ADR 0014) | Host only, under the profile lock (ADR 0003, ADR 0014) |
 | `domain` package | Pure rules shared by local and team paths | None | Library |
@@ -58,7 +58,7 @@ flowchart LR
 | Built-in shell profiles | Host `ProfileService` | One host run | Detected again at every host start | Host memory |
 | Pane-to-terminal link | Desktop `TerminalController` | While the pane and desktop live, through moves; dropped with the pane on a user close or a clean exit (status 0, complete output) | Lost on reopen, so the pane shows *ended, not restored* | Desktop memory |
 | Workspace cleanup state (*cleanup unresolved* flag and reasons) | Host holding the profile lock | Until a retried reconciliation cleans it or the user confirms | Checked before every launch against the workspace | Local store |
-| Session record (`agent_session`: target identity/path, runtime kind/profile, creating adapter name/version, native id, timestamps) | Host `AgentService` | Inserted only after ACP `session/new` or Codex `thread/start` succeeds; retained through close and profile deletion; history deletion is M2 | Immutable; Continue rechecks target identity and capabilities against its own initialized adapter without rewriting the record | Local store (store v5) |
+| Session record (`agent_session`: target identity/path, runtime kind/profile, creating adapter name/version, native id, timestamps) | Host `AgentService` | Inserted only after ACP `session/new`, Codex `thread/start`, or OMP readiness and `get_state` identity validation succeed; retained through close and profile deletion; history deletion is M2 | Immutable; where supported, Continue rechecks target identity and capabilities against its own initialized adapter without rewriting the record | Local store (store v5) |
 | User runtime profiles (argv, environment, runtime kind; no `cwd`) and `default_runtime` | Host `RuntimeProfileService` | Until removed or changed | Never rebuilt; a missing selected default stays unavailable rather than being silently replaced | Local store (`runtime_profile`, `setting`, store v5) |
 | Built-in runtime profile | Host `RuntimeProfileService` | One host run | Detected at host start with a 2 s overall off-isolate deadline; read-only and memory-only | Host memory |
 | Live agent state, sequence and pending permissions | Host `AgentSession` | Live session lifetime | Lost with the host; desktop mirrors sequenced control states and shows *Stopped or unknown* on host loss | Host memory |
@@ -124,10 +124,33 @@ tool activity, approval, Stop, close/descendants, Kumiko call and auth-required;
 optional recovery/steering/questions/child observations remain separate. Missing
 evidence does not disable compatible versions. Claude qualification stays unchanged.
 
+### Native OMP contract (ADR 0016)
+
+One contained process serves one root `omp` session over private v1 NDJSON.
+Both peers require `agent` and `omp`. OMP 18.20.1 or newer enters through a
+contained version probe and executable recheck. Its ready frame must offer v1;
+delta events and `get_state` precede saving the `omp-rpc` identity. This is the
+reviewed transport contract, not evidence of real-runtime qualification.
+
+Prompt admission commits user input; the native prompt result settles the turn.
+Stop uses `abort` without killing the process. Close aborts a running turn,
+ends input, drains output and gives the leader up to 2 s to exit before
+containment settlement. Interactive requests are declined; OMP's own approval
+mode is unchanged. Continue, steering and Kumiko tool delivery are unavailable.
+
+| OMP resource | Bound | At limit/failure |
+|---|---|---|
+| Version probe | Contained; 4 KiB output, 5 s | Refuse start and settle before session spawn |
+| Waiting commands | 32/session; 60 s startup commands, 10 s abort | Busy before writing; deadlines retire commands |
+| Issued-id high-water mark | One integer/session | Drop late replies to issued IDs; fail on never-issued IDs |
+| Events before admission | 64 entries or 256 KiB | Fail the session with a protocol reason |
+| Open-message delta flags | 64 messages, 256 flagged indexes/message, 4 KiB encoded/message ID | Release on `message_end`; overflow fails without eviction |
+| Decline and notify notices | 8 per turn or idle period, plus one overflow notice | Continue declining without more notices |
+
 ### Shared contracts
 
 - **Desktop-host protocol:** defined in the `host_protocol` package, versioned with a `hello` handshake and capability set (ADR 0002). Both sides use the generated or shared types only.
-- **Runtime protocols:** ACP v1 (stdio, newline-delimited JSON-RPC; `session/new`, and `session/load` or `session/resume` only when both advertised and qualified for the exact adapter name/version); native Codex App Server stdio JSON-RPC (minimum 0.166.0, no exact-version allowlist); OMP RPC later. Shared agent control uses `Capability.agent`; additive Codex controls require their negotiated capability gates. Raw ACP/native JSON-RPC never crosses to the desktop (ADR 0004, ADR 0012, ADR 0015).
+- **Runtime protocols:** ACP v1 (stdio newline-delimited JSON-RPC; load/resume only when advertised and qualified for the exact adapter name/version); native Codex App Server stdio JSON-RPC (minimum 0.166.0); native OMP RPC v1 stdio NDJSON (minimum 18.20.1). Neither native path has an exact-version allowlist. Shared control uses `Capability.agent`; Codex controls and OMP start require their negotiated capability gates. Raw runtime frames never cross to the desktop (ADR 0004, ADR 0012, ADR 0015, ADR 0016).
 - **Runtime qualification evidence:** [`docs/qualification/`](../docs/qualification/) holds real per-version, per-OS observations independently of archived change artifacts. `qualified_adapters.dart` and `tool/check_qualification.dart` keep claims tied to this evidence; fake-agent tests prove Kumiko behaviour, not real-adapter qualification. Claude agent ACP 0.99.1 currently claims load and resume from confirmed Windows observations; Linux/macOS user items remain unproven, permitting only provisional ACCEPTED across platforms. The Windows-only M1 close is an explicit scope decision, not an upgrade of this qualification evidence.
 - **Kumiko tools:** MCP tool schemas are owned by the host tool service and versioned with it. Authorization is per call against the session's role (ADR 0005). The endpoint, bridge handshake, MCP subset, per-role catalog, tools status semantics and the `kumiko tool call` qualification item with `toolDeliveryFailures` are defined in ADR 0013.
 - **Local store schema:** a version table in each database, with forward migrations run by the host (ADR 0003).
@@ -223,6 +246,7 @@ Lists accepted ADRs, plus proposed ones marked as such.
 | [0013](../docs/adr/0013-kumiko-tool-endpoint-bridge-and-catalog.md) | Refines 0005: owner-only named pipe (SDDL, cancellable overlapped I/O) or `tools.sock` (0600); secret handshake line with 5 s / 512 B bounds; built-in MCP subset served by the host with the bridge as a byte relay; per-role catalog (`coding -> kumiko_session_info`) checked per call; four-state tools status in sequenced agent state; `kumiko tool call` evidence item and `toolDeliveryFailures` checker rule (additive amendment of 0012 decision 7) | - |
 | [0014](../docs/adr/0014-app-exit-decisions-terminal-activity-and-local-drafts.md) | Desktop exit coordinator owns the quit decision (per-item Stop, bulk, Cancel; host told only `app/quit`); terminal busy = unit holds a process besides its shell, read on demand with an expected leader image fixed before spawn, with stated close-race, script and escapee limits; per-session revision-guarded drafts removed before dispatch; separate host-owned `drafts.sqlite` (DELETE journal, `synchronous=EXTRA`, `secure_delete`) on a bounded worker isolate with an exclusive reset; `host_instance.exit_kind` and a previous-exit snapshot taken before reconciliation. Amends 0003 (single-store wording) and 0008 (WAL rule) for drafts only | - |
 | [0015](../docs/adr/0015-native-codex-app-server-and-child-identity.md) | Accepted 2026-11-10: native Dart Codex driver; one contained App Server/root; minimum 0.166.0 without allowlist; native controls/history; isolated root MCP and attributed child activity | 0004 Codex ACP choice only; 0012 Codex exact-version gating only; refines 0005 decision 2 and 0013 decisions 7/8/12; amends 0014 decision 1 for active children. All unaffected decisions, including Claude qualification, immutable authority, drafts and terminals remain in force. |
+| [0016](../docs/adr/0016-native-omp-rpc-transport.md) | Native OMP v1 NDJSON; contained 18.20.1 minimum-version probe; `omp` peer gate and `omp-rpc` saved identity; decline interactive requests and omit Kumiko tool delivery | 0004 decision 2 and 0012 decisions 5–7 for OMP admission only; 0005 decision 2 and 0013 decisions 7, 8 and 12 for OMP tool delivery only |
 
-ADR 0004 and 0012 remain in force for their unchanged scope; their Codex-only
-departures are indexed in ADR 0015 above. Accepted ADR files are not rewritten.
+ADR 0004 and 0012 remain in force for their unchanged scope; the native-runtime
+exceptions are indexed in ADR 0015 and ADR 0016. Accepted ADR files are not rewritten.

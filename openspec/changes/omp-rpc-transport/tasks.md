@@ -85,7 +85,7 @@ Every delta scenario is mapped below.
 
 ## 1. ADR and architecture record
 
-- [ ] 1.1 Write `docs/adr/0016-native-omp-rpc-transport.md` (Status, Date, Supersedes, Context, Decision, Consequences). It records:
+- [x] 1.1 Write `docs/adr/0016-native-omp-rpc-transport.md` (Status, Date, Supersedes, Context, Decision, Consequences). It records:
   - the v1 NDJSON wire;
   - the probe and minimum-version admission at 18.20.1;
   - fail-closed declines until approvals are mapped;
@@ -94,7 +94,7 @@ Every delta scenario is mapped below.
   - the explicit OMP-only amendments to ADR 0004 decision 2, ADR 0012's qualification wording, and ADR 0005/0013's per-run tool entry (design, ADRs section).
 
   Verify: the file exists and names each amended clause.
-- [ ] 1.2 Update `openspec/architecture.md`:
+- [x] 1.2 Update `openspec/architecture.md`:
   - the runtime adapters and agent adapter unit rows;
   - the runtime protocols line;
   - an OMP node in the component diagram;
