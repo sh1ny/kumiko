@@ -1,0 +1,198 @@
+import 'dart:async';
+import 'dart:convert';
+import 'dart:typed_data';
+
+import 'package:host_protocol/host_protocol.dart';
+
+import '../native_io.dart';
+import '../runtime_transport.dart';
+
+class OmpProtocolException implements Exception {
+  OmpProtocolException(String message) : message = clampUtf8(message, 4096);
+
+  final String message;
+
+  @override
+  String toString() => 'OMP protocol: $message';
+}
+
+class OmpRemoteException implements Exception {
+  OmpRemoteException(String message, Object? code)
+    : message = clampUtf8(message, 4096),
+      code = code is String ? clampUtf8(code, 4096) : code;
+
+  final String message;
+  final Object? code;
+
+  @override
+  String toString() => 'OMP error${code == null ? '' : ' $code'}: $message';
+}
+
+/// Private v1 NDJSON transport. The driver owns the protocol's session and
+/// event payloads; this client owns only framing, command admission and replies.
+class OmpClient implements RuntimeTransport {
+  OmpClient({
+    required Stream<List<int>> input,
+    required Future<void> Function(List<int>) write,
+    LargeLinePermit? largeLinePermit,
+  }) {
+    _writer = NativeWriteAdmission(write, _fail, _closedError);
+    _reader = NativeLineReader(
+      input: input,
+      permit: largeLinePermit ?? LargeLinePermit.shared,
+      normalize: _decode,
+      consume: _consume,
+      protocolError: OmpProtocolException.new,
+      onEof: () => _fail(OmpProtocolException('native output closed')),
+      onError: _fail,
+    )..start();
+  }
+
+  late final NativeLineReader _reader;
+  late final NativeWriteAdmission _writer;
+  final _pending = <String, _Pending>{};
+  final _done = Completer<void>();
+  int _issued = 0;
+  Object? _failure;
+
+  /// When installed by the driver, reduce event payloads before releasing the
+  /// large-line permit and awaiting bounded consumption.
+  Object? Function(Json frame)? normalizeNotification;
+
+  @override
+  FutureOr<void> Function(Object value)? consumeNotification;
+  @override
+  void Function(Object error)? onFailure;
+  @override
+  Object? get failure => _failure;
+  @override
+  bool get isClosed => _done.isCompleted;
+  @override
+  Future<void> get done => _done.future;
+
+  Object _closedError() => _failure ?? OmpProtocolException('transport closed');
+
+  Future<Object?> request(String type, [Json fields = const {}]) =>
+      command(type, fields: fields);
+
+  Future<Object?> command(
+    String type, {
+    Json fields = const {},
+    Duration timeout = const Duration(seconds: 60),
+    void Function(String id)? onIssued,
+  }) {
+    try {
+      if (isClosed) throw _closedError();
+      if (_pending.length >= 32) {
+        throw RpcException('busy', '32 OMP commands pending');
+      }
+      final next = _issued + 1;
+      final id = 'k$next';
+      final bytes = _encode({...fields, 'type': type, 'id': id});
+      final result = Completer<Object?>();
+      _writer
+          .admit(
+            bytes,
+            beforeWrite: () {
+              onIssued?.call(id);
+              _issued = next;
+              final timer = Timer(timeout, () {
+                final expired = _pending.remove(id);
+                expired?.result.completeError(
+                  TimeoutException('OMP $type timed out', timeout),
+                );
+              });
+              _pending[id] = _Pending(result, timer);
+            },
+          )
+          .ignore();
+      return result.future;
+    } on Object catch (error, stack) {
+      return Future.error(error, stack);
+    }
+  }
+
+  /// Write an uncorrelated frame such as an extension UI reply.
+  Future<void> send(Json frame) =>
+      Future.sync(() => _writer.admit(_encode(frame)));
+
+  static List<int> _encode(Json frame) => utf8.encode('${jsonEncode(frame)}\n');
+
+  Object? _decode(Uint8List bytes) {
+    final frame = jsonDecode(utf8.decode(bytes));
+    if (frame is! Json || frame['type'] is! String || frame['type'] == '') {
+      throw OmpProtocolException('expected a typed JSON object');
+    }
+    if (frame['type'] != 'response') {
+      final normalize = normalizeNotification;
+      return normalize == null ? frame : normalize(frame);
+    }
+    final id = frame['id'];
+    if (id is! String) throw OmpProtocolException('invalid response id');
+    final pending = _pending[id];
+    if (pending == null) {
+      final n = id.length > 1 && id.length <= 20 && id.startsWith('k')
+          ? int.tryParse(id.substring(1), radix: 10)
+          : null;
+      if (n != null && n > 0 && n <= _issued && id == 'k$n') return null;
+      throw OmpProtocolException('response id was never issued');
+    }
+    final success = frame['success'];
+    final error = frame['error'];
+    final code = frame['code'];
+    if (success is! bool ||
+        (!success &&
+            (error is! String ||
+                (code != null && code is! String && code is! int)))) {
+      throw OmpProtocolException('invalid response envelope');
+    }
+    _pending.remove(id);
+    pending.timer.cancel();
+    if (success) {
+      pending.result.complete(frame['data']);
+    } else {
+      pending.result.completeError(OmpRemoteException(error! as String, code));
+    }
+    return null;
+  }
+
+  Future<void> _consume(Object value) async => consumeNotification?.call(value);
+
+  void _fail(Object error) {
+    if (isClosed) return;
+    final failure = _failure = error is OmpProtocolException
+        ? error
+        : OmpProtocolException(
+            error is FormatException
+                ? 'malformed native JSON or UTF-8'
+                : '$error',
+          );
+    _close();
+    onFailure?.call(failure);
+  }
+
+  void _close() {
+    if (isClosed) return;
+    _done.complete();
+    _reader.close();
+    _writer.close();
+    for (final pending in _pending.values) {
+      pending.timer.cancel();
+      pending.result.completeError(_closedError());
+    }
+    _pending.clear();
+  }
+
+  @override
+  Future<void> close() {
+    _close();
+    return done;
+  }
+}
+
+class _Pending {
+  _Pending(this.result, this.timer);
+
+  final Completer<Object?> result;
+  final Timer timer;
+}

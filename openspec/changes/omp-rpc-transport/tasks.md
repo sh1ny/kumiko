@@ -129,7 +129,7 @@ Every delta scenario is mapped below.
 
 ## 4. OMP RPC client
 
-- [ ] 4.1 Add the in-memory test peer `packages/host/test/agent/support/omp_peer.dart`, modelled on `codex_peer.dart`. Write failing tests in `omp_client_test.dart` for:
+- [x] 4.1 Add the in-memory test peer `packages/host/test/agent/support/omp_peer.dart`, modelled on `codex_peer.dart`. Write failing tests in `omp_client_test.dart` for:
   - `k<n>` ids;
   - the response/event split;
   - the 32-command cap answered `busy` before any write;
@@ -141,7 +141,7 @@ Every delta scenario is mapped below.
   - the shared 16 MiB line limit and the 1 MiB write admission.
 
   Confirm they fail.
-- [ ] 4.2 Implement `packages/host/lib/src/agent/omp/omp_client.dart` on `NativeLineReader`, `NativeWriteAdmission` and `LargeLinePermit`, with the issued-id high-water mark (design D1).
+- [x] 4.2 Implement `packages/host/lib/src/agent/omp/omp_client.dart` on `NativeLineReader`, `NativeWriteAdmission` and `LargeLinePermit`, with the issued-id high-water mark (design D1).
 
   Verify: `mise exec -- dart test test/agent/omp_client_test.dart` in `packages/host` passes.
 
