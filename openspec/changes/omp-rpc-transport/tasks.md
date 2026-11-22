@@ -175,7 +175,7 @@ Every delta scenario is mapped below.
 
   Verify: a smoke test in `omp_test.dart` starts the fixture and reads its report.
 
-## 7. Start path: gates, launch, readiness and identity
+## 7. OMP runtime driver and host lifecycle
 
 - [ ] 7.1 Write failing integration tests in `omp_test.dart`:
   - *Start native OMP*, *Readiness never arrives* and *Unsupported protocol version*;
@@ -188,7 +188,7 @@ Every delta scenario is mapped below.
   - In `omp_profiles_test.dart`: *OMP argv profile*, *Profile override does not leak*, and the explicit custom profile launch assertion for *Only a private copy exists*.
 
   Also write the readiness and identity unit tests in `omp_driver_test.dart`. Confirm they fail.
-- [ ] 7.2 Implement `OmpRuntimeDriver` `initialize` and `newSession`, in this order:
+- [ ] 7.2 Implement startup in `OmpRuntimeDriver` (`initialize` and `newSession`), in this order:
   1. require `ready` with protocol 1;
   2. send `set_event_filter` with delta updates;
   3. read `get_state` and require `sessionId` ≤ 4 KiB;
@@ -204,43 +204,39 @@ Every delta scenario is mapped below.
   - map `OmpProtocolException` to `adapterProtocol` with the stage and stderr tail;
   - save the adapter as `omp-rpc`.
 
-  Verify: the group 7 rows pass in `test/it/omp_test.dart`, `test/it/omp_profiles_test.dart` and `test/agent/omp_driver_test.dart`; flip them green, including *Only a private copy exists* after both files pass.
+  Verify the startup rows in `test/it/omp_test.dart`, `test/it/omp_profiles_test.dart` and `test/agent/omp_driver_test.dart` in the same green run as 7.4 and 7.6. Flip them green, including *Only a private copy exists* after both files pass.
 
-## 8. Turns: admission, streaming and errors
-
-- [ ] 8.1 Write failing tests:
+- [ ] 7.3 Write failing turn, streaming and error tests:
   - *Admission precedes output*, *Handled without the agent*, *Admission refused* and *Transport breaks after admission*;
   - *Streamed reply*, *Thinking and text interleave*, *Too many open messages* and *Unknown event*;
   - *Provider error* and *Oversized error text*;
   - driver tests for a `prompt_result` that arrives before the prompt response, and for pre-admission staging overflow at 64 entries or 256 KiB.
 
   Confirm they fail.
-- [ ] 8.2 Implement `prompt` (design D3, D4):
+- [ ] 7.4 Implement `prompt` (design D3, D4):
   - register the turn and handle admission, including `agentInvoked:false`;
   - complete the turn from `prompt_result`;
   - stage early events under the Codex bounds;
   - map deltas with per-message flags released at `message_end`, enforcing the 64-message, 256-index and 4 KiB limits;
   - map notices, with bounded and redacted error text.
 
-  Verify: the group 8 rows pass; flip them green.
+  Verify the turn rows in the group 7 green run; flip them green.
 
-## 9. Stop, declines, notices, Continue refusal and close
-
-- [ ] 9.1 Write failing tests:
+- [ ] 7.5 Write failing Stop, interactive request, Continue and close tests:
   - *Abort succeeds*, *Turn finished first*, *Abort acknowledged after its deadline* and *Abort not confirmed*. The last two include an acknowledgement after `prompt_result`, one after the deadline, and one after more than 32 later commands;
   - *Tool approval requested*, *Open URL request* and *Request after the turn*, plus the 8-notice cap;
   - *Tool activity in a turn* and *Continue on a saved OMP session*;
   - *Orderly close* and *OMP does not exit*.
 
   Confirm they fail.
-- [ ] 9.2 Implement:
+- [ ] 7.6 Implement Stop, interactive request, Continue and close behavior:
   - `cancel` and `cancelWithPermissions` sending `abort`, with `activeNativeTurns` and `onNativeTurnEnded` so that AgentSession's native Stop settles unchanged;
   - the fail-closed `extension_ui_response` declines (design D5): clamped, redacted and escaped titles, the notice cap, and Failed when a decline cannot be written;
   - the tool-count notice (design D6);
   - the Continue refusal before any probe or spawn;
   - the close order (design D8): abort, close stdin, keep draining, 2 s grace, then `units.end`.
 
-  Verify: the group 9 rows pass; flip them green.
+  Verify the remaining group 7 rows and flip them green. Run all three red steps before wiring the driver into the launch path. Commit the group atomically so no intermediate commit launches OMP with a partial lifecycle.
 
 ## 10. Desktop
 
