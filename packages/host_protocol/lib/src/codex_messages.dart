@@ -16,6 +16,15 @@ void requireCodexCapabilities(Set<String> capabilities) {
   }
 }
 
+/// A native OMP start requires both capabilities in the negotiated set.
+void requireOmpCapabilities(Set<String> capabilities) {
+  for (final needed in const [Capability.agent, Capability.omp]) {
+    if (!capabilities.contains(needed)) {
+      throw RpcException(ErrorCode.methodNotAvailable, 'OMP requires $needed');
+    }
+  }
+}
+
 String _codexId(Json json, String key) {
   final value = _req<String>(json, key);
   if (value.isEmpty || jsonStringContentBytes(value) > 4096) {

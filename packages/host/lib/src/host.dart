@@ -112,6 +112,7 @@ class Host {
         Capability.terminal,
         Capability.agent,
         Capability.codex,
+        Capability.omp,
         Capability.agentExtensionsV1,
         if (options.advertiseLifecycle) Capability.lifecycle,
         ...?extension?.capabilities,

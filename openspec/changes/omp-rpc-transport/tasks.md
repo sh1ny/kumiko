@@ -104,13 +104,13 @@ Every delta scenario is mapped below.
 
 ## 2. Protocol capability and shared runtime kinds
 
-- [ ] 2.1 Write failing tests in `packages/host_protocol/test/omp_capability_test.dart`:
+- [x] 2.1 Write failing tests in `packages/host_protocol/test/omp_capability_test.dart`:
   - `Capability.omp` round-trips through `hello`;
   - `supportedRuntimeKinds` is `claude-code`, `codex`, `omp`;
   - the OMP gate helper refuses without `agent` and `omp`, naming the missing capability.
 
   Confirm they fail for the missing symbols.
-- [ ] 2.2 Add `Capability.omp`, `supportedRuntimeKinds` and the OMP gate helper next to `requireCodexCapabilities`. Advertise `omp` from the host (`host.dart`) and the desktop (`main.dart`).
+- [x] 2.2 Add `Capability.omp`, `supportedRuntimeKinds` and the OMP gate helper next to `requireCodexCapabilities`. Advertise `omp` from the host (`host.dart`) and the desktop (`main.dart`).
 
   Verify: `mise exec -- dart test test/omp_capability_test.dart` in `packages/host_protocol` passes, and `mise run test:host_protocol` is green.
 
