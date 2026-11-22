@@ -24,7 +24,7 @@ Every delta scenario is mapped below.
 | agent-runtimes: One runtime profile is the default | Codex added beside existing Claude default | packages/host/test/it/codex_profiles_test.dart | Codex: Codex added beside existing Claude default | green |
 | agent-runtimes: One runtime profile is the default | Fresh Claude recovery with Codex default | packages/host/test/it/codex_profiles_test.dart; packages/desktop/test/codex_agent_test.dart | Codex: incompatible default filters launcher and fresh recovery claude-code; Codex: Fresh Claude recovery with Codex default | green |
 | agent-runtimes: One runtime profile is the default | Codex launcher with incompatible default | packages/host/test/it/codex_profiles_test.dart; packages/desktop/test/codex_agent_test.dart | Codex: incompatible default filters launcher and fresh recovery codex; Codex: Codex launcher with incompatible default | green |
-| agent-runtimes: One runtime profile is the default | OMP is the only detected runtime | packages/host/test/it/omp_profiles_test.dart | OMP: OMP is the only detected runtime | red |
+| agent-runtimes: One runtime profile is the default | OMP is the only detected runtime | packages/host/test/it/omp_profiles_test.dart | OMP: OMP is the only detected runtime | green |
 | agent-runtimes: Runtime capabilities are claimed only from evidence | Qualified version | packages/host/test/agent/qualification_test.dart; packages/host/test/it/agent_continue_test.dart | listed (name, version) advertising loadSession claims load; Continue with load: replay start, replayed user agent tool events, replay end then idle; no prompt sent | green |
 | agent-runtimes: Runtime capabilities are claimed only from evidence | Unqualified version | packages/host/test/it/agent_continue_test.dart | same exact unlisted fixture without override is not-qualified; records remain known and read-only | green |
 | agent-runtimes: Runtime capabilities are claimed only from evidence | Unqualified version in a new session | packages/host/test/agent/qualification_test.dart; packages/host/test/it/agent_test.dart | unlisted version claims the baseline only; unlisted version claims the baseline only; start names the version without load or resume | green |
@@ -32,8 +32,8 @@ Every delta scenario is mapped below.
 | agent-runtimes: Runtime capabilities are claimed only from evidence | Adapter speaks another protocol version | packages/host/test/it/agent_test.dart | fixture answering protocolVersion 2 fails the start with unsupported ACP protocol version and leaves no process | green |
 | agent-runtimes: Runtime capabilities are claimed only from evidence | Codex follows minimum-version compatibility | packages/host/test/it/codex_profiles_test.dart | Codex: Codex follows minimum-version compatibility | green |
 | agent-runtimes: Runtime capabilities are claimed only from evidence | OMP follows minimum-version compatibility | packages/host/test/it/omp_test.dart | OMP: OMP follows minimum-version compatibility | red |
-| agent-runtimes: Native OMP detection never borrows another application's private installation | OMP installed by its installer | packages/host/test/agent/adapter_detector_test.dart | OMP: OMP installed by its installer | red |
-| agent-runtimes: Native OMP detection never borrows another application's private installation | Only a shim exists | packages/host/test/agent/adapter_detector_test.dart; packages/host/test/it/omp_profiles_test.dart | OMP: Only a shim exists | red |
+| agent-runtimes: Native OMP detection never borrows another application's private installation | OMP installed by its installer | packages/host/test/agent/adapter_detector_test.dart | OMP: OMP installed by its installer | green |
+| agent-runtimes: Native OMP detection never borrows another application's private installation | Only a shim exists | packages/host/test/agent/adapter_detector_test.dart; packages/host/test/it/omp_profiles_test.dart | OMP: Only a shim exists | green |
 | agent-runtimes: Native OMP detection never borrows another application's private installation | Only a private copy exists | packages/host/test/agent/adapter_detector_test.dart; packages/host/test/it/omp_profiles_test.dart | OMP: Only a private copy exists | red |
 | agent-tool-access: Each live session run receives a Kumiko MCP entry | New session gets the entry | packages/host/test/it/agent_tools_test.dart | session/new carries one kumiko entry with the bridge command and no workspace file changes | green |
 | agent-tool-access: Each live session run receives a Kumiko MCP entry | Continue gets a new entry | packages/host/test/it/agent_tools_test.dart | load and resume carry a kumiko entry with a fresh secret | green |
@@ -147,12 +147,12 @@ Every delta scenario is mapped below.
 
 ## 5. Detection and built-in profile
 
-- [ ] 5.1 Write failing tests:
+- [x] 5.1 Write failing tests:
   - in `adapter_detector_test.dart`: *OMP installed by its installer*, *Only a shim exists* and *Only a private copy exists*, using fixture directories only and executing nothing;
   - in `packages/host/test/it/omp_profiles_test.dart`: *OMP is the only detected runtime* and the profile-list checks for *Only a shim exists* and *Only a private copy exists*, without starting any adapter. Group 7 adds the explicit-profile launch assertion for the private copy.
 
   Confirm they fail.
-- [ ] 5.2 Implement `detectOmp` in `adapter_detector.dart`, running in the same isolate under the 2 s cap:
+- [x] 5.2 Implement `detectOmp` in `adapter_detector.dart`, running in the same isolate under the 2 s cap:
   - Windows: `omp.exe` on PATH and in `%LOCALAPPDATA%\omp`;
   - POSIX: `omp` on PATH and in the existing well-known directories;
   - never execute `.cmd` or `.ps1`.

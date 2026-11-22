@@ -109,6 +109,7 @@ class RuntimeProfileService {
       () => [
         if (detection.profile != null) detection.profile!,
         if (detection.codex != null) detection.codex!,
+        if (detection.omp != null) detection.omp!,
         ..._users(),
       ],
     );
@@ -140,6 +141,7 @@ class RuntimeProfileService {
     final detection = await _detected;
     if (detection.profile?.id == id) return detection.profile;
     if (detection.codex?.id == id) return detection.codex;
+    if (detection.omp?.id == id) return detection.omp;
     return _read(() {
       for (final profile in _users()) {
         if (profile.id == id) return profile;
