@@ -166,7 +166,7 @@ Every delta scenario is mapped below.
 
 ## 6. Scripted OMP fixture and test hooks
 
-- [ ] 6.1 Add `packages/host/lib/src/test_hooks/omp_agent_fixture.dart`, dispatched from `fixtures.dart` as `--test-fixture omp-agent`. The fixture:
+- [x] 6.1 Add `packages/host/lib/src/test_hooks/omp_agent_fixture.dart`, dispatched from `fixtures.dart` as `--test-fixture omp-agent`. The fixture:
   - answers `--version` with a scripted `omp/<v>` line;
   - plays a JSON script of frames, including `ready`, responses, `message_update` deltas, `prompt_result`, `extension_ui_request`, tool events, and malformed or out-of-order frames;
   - reports its received commands, argv, cwd and environment canaries to a jsonl file.
