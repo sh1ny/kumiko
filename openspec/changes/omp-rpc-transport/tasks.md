@@ -116,13 +116,14 @@ Every delta scenario is mapped below.
 
 ## 3. Shared native version probe
 
-- [ ] 3.1 Write failing tests in `packages/host/test/agent/version_probe_test.dart` for `probeNativeVersion` with the OMP parser:
+- [x] 3.1 Write failing tests in `packages/host/test/agent/version_probe_test.dart` for `probeNativeVersion` with the OMP parser:
   - `omp/18.20.1` is accepted;
   - `omp/18.20.0` is refused, naming both versions;
   - empty output, multi-line output, output over 4 KiB, a non-zero exit and a timeout are each refused with their reason.
 
   These cover the rows *Supported version*, *Version too old* and *Probe fails*. Confirm they fail.
-- [ ] 3.2 Extract the launch, settle, output-cap and timeout logic of `probeCodexVersion` into `probeNativeVersion(..., parse, environment)`, keeping Codex's parse, allowlist and 0.166.0 minimum unchanged. Add the OMP parser, the 18.20.1 minimum and the OMP environment allowlist (design D2).
+- [x] 3.2 Extract the launch, settle, output-cap and timeout logic of `probeCodexVersion` into `probeNativeVersion(..., parse, environment)`, keeping Codex's parse, allowlist and 0.166.0 minimum unchanged. Add the OMP parser, the 18.20.1 minimum and the OMP environment allowlist (design D2).
+  Run the probe tests through the contained integration-test host on every OS. Bring forward the OMP probe-args option (`host_options.dart`, `test_hooks.dart`) and add a test-only probe request that runs the shared probe with the OMP parser. Reuse the existing scripted probe fixture here; group 6 still owns the OMP agent fixture.
 
   Verify: `version_probe_test.dart` passes, and the Codex probe tests in `packages/host/test/it/codex_profiles_test.dart` and `codex_test.dart` pass unchanged.
 
@@ -171,7 +172,7 @@ Every delta scenario is mapped below.
   - plays a JSON script of frames, including `ready`, responses, `message_update` deltas, `prompt_result`, `extension_ui_request`, tool events, and malformed or out-of-order frames;
   - reports its received commands, argv, cwd and environment canaries to a jsonl file.
 
-  Add an OMP probe-args test option (`host_options.dart`, `test_hooks.dart`) and `packages/host/test/it/support/omp_support.dart`, modelled on `codex_support.dart`.
+  Reuse the OMP probe-args test option from group 3 and add `packages/host/test/it/support/omp_support.dart`, modelled on `codex_support.dart`.
 
   Verify: a smoke test in `omp_test.dart` starts the fixture and reads its report.
 

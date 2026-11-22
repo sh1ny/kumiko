@@ -35,6 +35,7 @@ class HostOptions {
     this.draftOpenHold = Duration.zero,
     this.advertiseLifecycle = true,
     this.codexProbeArgs,
+    this.ompProbeArgs,
     // Keep the existing public named override while storing its nullable sentinel.
     Set<CodexAuthSignal>? codexAuthSignatures,
     // ignore: prefer_initializing_formals
@@ -116,6 +117,7 @@ class HostOptions {
   /// Test entry-point only: overrides probe argv, never executable or containment.
   /// Release does not read candidate environment variables.
   final List<String>? codexProbeArgs;
+  final List<String>? ompProbeArgs;
 
   final Set<CodexAuthSignal>? _codexAuthSignatures;
 

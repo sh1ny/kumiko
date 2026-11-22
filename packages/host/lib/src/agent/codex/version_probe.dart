@@ -1,9 +1,8 @@
-import 'dart:async';
 import 'dart:io';
-import 'dart:convert';
 
 import '../../unit_manager.dart';
 import '../../host_options.dart';
+import '../native_version_probe.dart';
 import 'codex_client.dart';
 
 /// Exact native identity grammar; prereleases do not become stable by stripping.
@@ -63,79 +62,21 @@ Future<String> probeCodexVersion(
     ])
       if (source[key] case final String value) key: value,
   };
-  final launch = await units.launch(
-    target: profile.path,
-    kind: 'agent',
-    argv: [
-      executable,
-      ...?options.codexProbeArgs,
-      if (options.codexProbeArgs == null) '--version',
-    ],
-    workingDirectory: profile.path,
-    environment: environment,
-    inheritParentEnvironment: false,
-    pipes: true,
-  );
-  final output = <int>[];
-  var combinedBytes = 0;
-  final failure = Completer<void>();
-  void add(List<int> bytes, {bool identityOutput = true}) {
-    combinedBytes += bytes.length;
-    if (combinedBytes > 4096) {
-      if (!failure.isCompleted) {
-        failure.completeError(
-          CodexProtocolException('Codex version probe exceeds 4 KiB'),
-        );
-      }
-    } else if (identityOutput) {
-      output.addAll(bytes);
-    }
-  }
-
-  final outDone = Completer<void>();
-  final errDone = Completer<void>();
-  final out = launch.pipes!.stdout.listen(
-    add,
-    onDone: outDone.complete,
-    onError: (Object e) {
-      if (!failure.isCompleted) failure.completeError(e);
-    },
-  );
-  final err = launch.pipes!.stderr.listen(
-    (bytes) => add(bytes, identityOutput: false),
-    onDone: errDone.complete,
-    onError: (Object e) {
-      if (!failure.isCompleted) failure.completeError(e);
-    },
-  );
   try {
-    final status =
-        await Future.any([launch.unit.exitCode, failure.future.then((_) => 0)])
-            .timeout(
-              const Duration(seconds: 5),
-              onTimeout: () =>
-                  throw CodexProtocolException('Codex version probe timed out'),
-            );
-    if (status != 0) {
-      throw CodexProtocolException('Codex version probe exited $status');
-    }
-    // Exit precedes pipe EOF on Windows; settle then join bounded streams below.
-    if (units.live.containsKey(launch.id)) {
-      final result = await units.end(launch.id).timeout(options.settleDeadline);
-      if (!result.cleaned) {
-        throw CodexProtocolException('Codex version probe cleanup unresolved');
-      }
-    }
-    await Future.wait([outDone.future, errDone.future])
-        .timeout(options.postExitReadDeadline);
-    if (failure.isCompleted) await failure.future;
-    return parseCodexVersion(utf8.decode(output, allowMalformed: true));
-  } finally {
-    if (units.live.containsKey(launch.id)) {
-      await units.end(launch.id).timeout(options.settleDeadline);
-    }
-    await out.cancel();
-    await err.cancel();
-    await launch.pipes!.close();
+    return await probeNativeVersion(
+      units,
+      profile,
+      [
+        executable,
+        ...?options.codexProbeArgs,
+        if (options.codexProbeArgs == null) '--version',
+      ],
+      options,
+      runtimeName: 'Codex',
+      parse: parseCodexVersion,
+      environment: environment,
+    );
+  } on NativeVersionProbeException catch (error) {
+    throw CodexProtocolException(error.message);
   }
 }
