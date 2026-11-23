@@ -223,6 +223,28 @@ void main() {
       // Measured at the desktop, request to acknowledgement: the host's own
       // timer starts only once it dispatches the save.
       expect(worst, lessThanOrEqualTo(HostOptions.defaultDraftDeadline));
+      // Hold one commit open: A's output must keep arriving while it waits,
+      // not only between commits.
+      await d.setFault(TestFault.draftCommitHangs);
+      var settled = false;
+      final held = settledSave(
+        d,
+        a.id,
+        'held under output',
+        21,
+      ).whenComplete(() => settled = true);
+      await eventually(
+        () async => (await drafts.stats())['pending'] == 1,
+        reason: 'the held commit never started',
+      );
+      final whileHeld = bytes;
+      await eventually(
+        () => bytes > whileHeld,
+        reason: 'A stopped while a commit was held',
+      );
+      expect(settled, isFalse, reason: 'the commit was not held');
+      await d.setFault(TestFault.draftCommitHangs, enabled: false);
+      expect(await held, 21);
       await b.close();
       await a.close();
       await d.closeTerminal(terminal.id);
