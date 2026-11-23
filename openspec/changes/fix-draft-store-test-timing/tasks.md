@@ -50,7 +50,7 @@ The design has no Assumptions entries, so no verify task precedes the work.
 
 ## 6. AGENTS.md
 
-- [ ] 6.1 Read #28's body through fenced `gh` as KintsugiBot, then add a `## Tests that run in Windows CI` section after `## Commands` in `AGENTS.md` with #28's introduction, its ten rules verbatim and its closing line, and remove the "Timing rows in the host suite can fail under a loaded machine… Re-run them alone…" bullet (D11). Verify: the ten rules match #28 word for word (diff against the fetched body), and `grep -n "Re-run them alone" AGENTS.md` finds nothing.
+- [x] 6.1 Read #28's body through fenced `gh` as KintsugiBot, then add a `## Tests that run in Windows CI` section after `## Commands` in `AGENTS.md` with #28's introduction, its ten rules verbatim and its closing line, and remove the "Timing rows in the host suite can fail under a loaded machine… Re-run them alone…" bullet (D11). Verify: the ten rules match #28 word for word (diff against the fetched body), and `grep -n "Re-run them alone" AGENTS.md` finds nothing.
 
 ## 7. Integration checks
 
