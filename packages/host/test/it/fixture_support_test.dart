@@ -222,6 +222,7 @@ void main() {
     Future<(OpenTerminal, File)> flooding() async {
       final d = await Desktop.start(
         profile,
+        helloTimeout: const Duration(minutes: 2),
         environment: {
           'TERM_FIXTURE_HOST': testHostExecutable(),
           'KUMIKO_TEST_RESOLVE_TIMEOUT_MS': '120000',
@@ -247,7 +248,7 @@ void main() {
     });
 
     test('without the gate file it never writes GATED;', () async {
-      final (t, gate) = await flooding();
+      final (t, _) = await flooding();
       await t.send('flood ${total ~/ 8} gate');
       await t.waitForText('FLOODED:', within: const Duration(minutes: 2));
       expect(markers(t), 0);

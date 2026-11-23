@@ -581,6 +581,14 @@ void main() {
       expect(await s.save('a', 'x', 1), 1);
     });
 
+    test('disposal clears an acknowledged gate', () async {
+      final s = open(holdOpen: true);
+      await eventually(() => s.openHeld, reason: 'the gate was not reached');
+      s.dispose();
+      expect(s.openHeld, isFalse);
+      expect(s.releaseOpen(), isFalse, reason: 'no worker is left to release');
+    });
+
     test('after a reset the successor opens ungated and the reset needs no '
         'release', () async {
       file.writeAsStringSync('this is not a database ' * 40);

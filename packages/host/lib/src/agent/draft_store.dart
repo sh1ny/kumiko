@@ -293,6 +293,7 @@ class DraftStore {
     _pending.clear();
     _timedOut = 0;
     _heldOp = null;
+    _openGate = false;
     for (final op in ops) {
       op.timer?.cancel();
       if (!op.completer.isCompleted) op.completer.completeError(error);

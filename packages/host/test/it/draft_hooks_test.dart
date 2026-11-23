@@ -31,6 +31,7 @@ void main() {
     final d = await Desktop.start(
       profile,
       capabilities: {...testCapabilities, Capability.agent},
+      helloTimeout: _guard,
       environment: {
         'KUMIKO_TEST_RUNTIME_PATH': '',
         'KUMIKO_TEST_SHELL_PATH': '',

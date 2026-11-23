@@ -129,6 +129,7 @@ void main() {
       capabilities: {...testCapabilities, Capability.agent, ...capabilities},
       quitTimeout: quitTimeout,
       jobDrainTimeout: jobDrainTimeout,
+      helloTimeout: _guard,
       environment: {
         'KUMIKO_TEST_RUNTIME_PATH': '',
         'KUMIKO_TEST_SHELL_PATH': '',
@@ -186,7 +187,11 @@ void main() {
     });
 
     test('draft methods need the agent capability on both sides', () async {
-      final d = await Desktop.start(profile, environment: draftSuiteEnv);
+      final d = await Desktop.start(
+        profile,
+        environment: draftSuiteEnv,
+        helloTimeout: _guard,
+      );
       addTearDown(d.dispose);
       await d.waitState(within: _guard);
       final drafts = Drafts(d);
