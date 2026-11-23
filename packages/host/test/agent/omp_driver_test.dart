@@ -117,6 +117,18 @@ void main() {
     await ended;
     expect(events, isEmpty);
     expect(driver.activeNativeTurns, isEmpty);
+    final (nextAdmission, nextTerminal) = driver.admitPrompt('next', (_) {});
+    peer.send({
+      'type': 'prompt_result',
+      'id': 'k3',
+      'agentInvoked': false,
+      'status': 'error',
+      'error': {'message': 'refused', 'retryable': false},
+    });
+    peer.result('k4', {'agentInvoked': false});
+    await nextAdmission;
+    expect((await nextTerminal).stopReason, 'completed');
+    expect(peer.client.isClosed, isFalse);
   });
 
   test('OMP: Streamed reply uses final text only for unseen blocks', () async {
@@ -152,14 +164,17 @@ void main() {
       'type': 'prompt_result',
       'id': 'k3',
       'status': 'error',
-      'error': '401 invalid api key',
+      'error': {
+        'message': '401 invalid api key',
+        'code': 'invalid_api_key',
+        'retryable': false,
+      },
     });
     await admission;
     final result = await terminal;
-    expect(
-      (result.error! as OmpRemoteException).message,
-      '401 invalid api key',
-    );
+    final error = result.error! as OmpRemoteException;
+    expect(error.message, '401 invalid api key');
+    expect(error.code, 'invalid_api_key');
     expect(peer.client.isClosed, isFalse);
   });
 

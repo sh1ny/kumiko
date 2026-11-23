@@ -156,6 +156,17 @@ void main() {
     expect(result.omp?.args, ['--mode', 'rpc']);
   });
 
+  test('OMP: macOS finds the installer directory without PATH', () {
+    final exe = file(p.join(root.path, '.local', 'bin', 'omp'));
+    final profile = detectOmp(
+      AdapterDetectionConfig(
+        os: 'macos',
+        environment: {'HOME': root.path, 'PATH': ''},
+      ),
+    );
+    expect(profile?.executable, exe);
+  }, skip: Platform.isWindows ? 'Requires the POSIX executable check' : null);
+
   test('OMP: Only a shim exists', () {
     file(p.join(root.path, 'omp.cmd'));
     file(p.join(root.path, 'omp.ps1'));

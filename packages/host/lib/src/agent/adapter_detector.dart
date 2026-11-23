@@ -363,6 +363,7 @@ RuntimeProfile? detectOmp(AdapterDetectionConfig config) {
   final paths =
       config.pathDirs ?? runtimePathDirectories(config.os, config.environment);
   final localAppData = config.environment['LOCALAPPDATA'];
+  final home = config.environment['HOME'];
   final known =
       config.wellKnownDirs ??
       (windows
@@ -370,7 +371,11 @@ RuntimeProfile? detectOmp(AdapterDetectionConfig config) {
               if (localAppData != null && p.isAbsolute(localAppData))
                 p.join(localAppData, 'omp'),
             ]
-          : wellKnownRuntimeDirs(config.os, config.environment));
+          : [
+              ...wellKnownRuntimeDirs(config.os, config.environment),
+              if (config.os == 'macos' && home != null && p.isAbsolute(home))
+                p.join(home, '.local', 'bin'),
+            ]);
   for (final dirs in [paths, known]) {
     for (final dir in dirs) {
       if (!p.isAbsolute(dir)) continue;

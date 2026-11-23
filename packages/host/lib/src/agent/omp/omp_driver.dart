@@ -1,5 +1,4 @@
 import 'dart:async';
-import 'dart:convert';
 import 'dart:typed_data';
 
 import 'package:host_protocol/host_protocol.dart';
@@ -30,6 +29,7 @@ class OmpRuntimeDriver extends RuntimeDriver {
   final String version;
   final _ready = Completer<void>();
   final _messages = <String, Set<int>>{};
+  final _refusedPromptIds = <String>{};
   Future<RuntimeIdentity>? _initializing;
   String? _session;
   _Turn? _turn;
@@ -177,10 +177,19 @@ class OmpRuntimeDriver extends RuntimeDriver {
             if (!turn.accepted && identical(_turn, turn)) {
               _turn = null;
               _messages.clear();
-              if (turn.id != null) {
+              final id = turn.id;
+              if (id != null) {
+                // Some pre-dispatch errors also get a terminal frame on the
+                // next wire turn. A plain admission refusal may have none.
+                if (error is OmpRemoteException && turn.earlyEnd == null) {
+                  if (_refusedPromptIds.length == 64) {
+                    _refusedPromptIds.remove(_refusedPromptIds.first);
+                  }
+                  _refusedPromptIds.add(id);
+                }
                 onNativeTurnEnded?.call(
                   _session!,
-                  turn.id!,
+                  id,
                   RuntimeTurnResult('error', error: error),
                 );
               }
@@ -240,21 +249,24 @@ class OmpRuntimeDriver extends RuntimeDriver {
       return _interaction(frame, turn, lines);
     }
     if (type == 'prompt_result') {
+      final id = frame['id'];
+      if (id is String &&
+          frame['agentInvoked'] == false &&
+          frame['status'] == 'error' &&
+          _refusedPromptIds.remove(id)) {
+        _promptError(frame['error']);
+        return null;
+      }
       if (turn == null ||
           turn.id == null ||
-          frame['id'] != turn.id ||
+          id != turn.id ||
           turn.earlyEnd != null) {
         throw OmpProtocolException('unexpected OMP prompt result');
       }
-      final message = frame['error'];
       final result = switch (frame['status']) {
         'completed' => const RuntimeTurnResult('completed'),
         'aborted' => const RuntimeTurnResult('cancelled', isCancelled: true),
-        'error' when message is String => RuntimeTurnResult(
-          'error',
-          error: OmpRemoteException(message, null),
-          truncated: utf8.encode(message).length > 4096,
-        ),
+        'error' => _promptError(frame['error']),
         _ => throw OmpProtocolException('invalid OMP prompt result'),
       };
       if (!turn.accepted) {
@@ -283,6 +295,21 @@ class OmpRuntimeDriver extends RuntimeDriver {
       _message(frame, type as String, turn, lines);
     }
     return _delivery(lines);
+  }
+
+  static RuntimeTurnResult _promptError(Object? payload) {
+    final message = payload is Json ? payload['message'] : payload;
+    final code = payload is Json ? payload['code'] : null;
+    if (message is! String ||
+        (code != null && code is! String && code is! int)) {
+      throw OmpProtocolException('invalid OMP prompt result');
+    }
+    final error = OmpRemoteException(message, code);
+    return RuntimeTurnResult(
+      'error',
+      error: error,
+      truncated: error.message != message,
+    );
   }
 
   Object? _interaction(Json frame, _Turn? turn, List<Uint8List> lines) {
