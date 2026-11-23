@@ -324,9 +324,11 @@ class _AgentPaneViewState extends State<AgentPaneView> {
                     minLines: 1,
                     maxLines: 5,
                     decoration: InputDecoration(
-                      hintText: link.runtimeKind == 'codex'
-                          ? 'Message Codex'
-                          : 'Message Claude Code',
+                      hintText: switch (link.runtimeKind) {
+                        'codex' => 'Message Codex',
+                        'omp' => 'Message OMP',
+                        _ => 'Message Claude Code',
+                      },
                       border: OutlineInputBorder(),
                     ),
                   );

@@ -788,15 +788,28 @@ class WorkbenchController extends ChangeNotifier {
     return null;
   }
 
+  String? get ompUnavailableReason {
+    final reason = agentsUnavailableReason;
+    if (reason != null) return reason;
+    try {
+      requireOmpCapabilities(_link!.hello.capabilities);
+    } on RpcException catch (e) {
+      return e.message;
+    }
+    return null;
+  }
+
   Future<AgentLaunch> launchAgent({
     String? profileId,
     bool choose = false,
     String? workspaceId,
     String runtimeKind = 'claude-code',
   }) async {
-    final reason = runtimeKind == 'codex'
-        ? codexUnavailableReason
-        : agentsUnavailableReason;
+    final reason = switch (runtimeKind) {
+      'codex' => codexUnavailableReason,
+      'omp' => ompUnavailableReason,
+      _ => agentsUnavailableReason,
+    };
     final link = _link;
     final target = workspaceId ?? _layout?.selectedWorkspace;
     if (reason != null || link == null || _layout == null) {

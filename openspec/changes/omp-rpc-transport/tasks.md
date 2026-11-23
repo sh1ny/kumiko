@@ -48,7 +48,7 @@ Every delta scenario is mapped below.
 | agent-tool-access: Each live session run receives a Kumiko MCP entry | OMP run without tool delivery | packages/host/test/it/omp_test.dart | OMP: OMP run without tool delivery | green |
 | desktop-host-protocol: OMP sessions require a compatible peer | Compatible peers | packages/host/test/it/omp_test.dart | OMP: Compatible peers | green |
 | desktop-host-protocol: OMP sessions require a compatible peer | Older desktop | packages/host/test/it/omp_test.dart | OMP: Older desktop | green |
-| desktop-host-protocol: OMP sessions require a compatible peer | Older host | packages/desktop/test/omp_agent_test.dart | OMP: Older host | red |
+| desktop-host-protocol: OMP sessions require a compatible peer | Older host | packages/desktop/test/omp_agent_test.dart | OMP: Older host | green |
 | omp-sessions: OMP uses its native RPC connection | Start native OMP | packages/host/test/it/omp_test.dart | OMP: Start native OMP | green |
 | omp-sessions: OMP uses its native RPC connection | Readiness never arrives | packages/host/test/it/omp_test.dart; packages/host/test/agent/omp_driver_test.dart | OMP: Readiness never arrives | green |
 | omp-sessions: OMP uses its native RPC connection | Unsupported protocol version | packages/host/test/it/omp_test.dart | OMP: Unsupported protocol version | green |
@@ -77,7 +77,7 @@ Every delta scenario is mapped below.
 | omp-sessions: OMP interactive requests are declined until supported | Open URL request | packages/host/test/agent/omp_driver_test.dart | OMP: Open URL request | green |
 | omp-sessions: OMP interactive requests are declined until supported | Request after the turn | packages/host/test/agent/omp_driver_test.dart | OMP: Request after the turn | green |
 | omp-sessions: OMP features not yet supported are visibly unavailable | Tool activity in a turn | packages/host/test/agent/omp_driver_test.dart | OMP: Tool activity in a turn | green |
-| omp-sessions: OMP features not yet supported are visibly unavailable | Continue on a saved OMP session | packages/host/test/it/omp_test.dart; packages/desktop/test/omp_agent_test.dart | OMP: Continue on a saved OMP session | red |
+| omp-sessions: OMP features not yet supported are visibly unavailable | Continue on a saved OMP session | packages/host/test/it/omp_test.dart; packages/desktop/test/omp_agent_test.dart | OMP: Continue on a saved OMP session | green |
 | omp-sessions: Closing an OMP session ends its input before cleanup | Orderly close | packages/host/test/it/omp_test.dart | OMP: Orderly close | green |
 | omp-sessions: Closing an OMP session ends its input before cleanup | OMP does not exit | packages/host/test/it/omp_test.dart | OMP: OMP does not exit | green |
 | omp-sessions: OMP configuration and sign-in stay native | User-configured provider | packages/host/test/it/omp_test.dart | OMP: User-configured provider | green |
@@ -244,7 +244,7 @@ Every delta scenario is mapped below.
 
 ## 10. Desktop
 
-- [ ] 10.1 Write failing widget tests in `packages/desktop/test/omp_agent_test.dart`, using `FakeHostLink`:
+- [x] 10.1 Write failing widget tests in `packages/desktop/test/omp_agent_test.dart`, using `FakeHostLink`:
   - the OMP launch items are enabled when the host advertises `omp`;
   - *Older host*: they are disabled, naming the missing capability;
   - the profile-dialog kind "OMP native RPC";
@@ -254,7 +254,7 @@ Every delta scenario is mapped below.
   - *Continue on a saved OMP session* shows the host's refusal reason.
 
   Confirm they fail.
-- [ ] 10.2 Implement:
+- [x] 10.2 Implement:
   - the `#omp` and `#omp-profile` launch items, with an unavailable reason (`workbench_page.dart`, `workbench_controller.dart`);
   - the kind entry and help text, with `supportedRuntimeKinds` as the dialog allowlist (`runtime_profiles_dialog.dart`);
   - the hint and auth guidance (`agent_pane_view.dart`, `agent_controller.dart`).

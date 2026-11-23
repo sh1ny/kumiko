@@ -62,14 +62,17 @@ Future<void> _configureMissingRuntime(
   String? message, {
   String runtimeKind = 'claude-code',
 }) async {
+  final install = switch (runtimeKind) {
+    'codex' => 'Install Codex CLI or add an argv profile for your installed Codex executable.',
+    'omp' => 'Install the native OMP executable or add an argv profile for your installed OMP executable.',
+    _ => runtimeInstallMessage,
+  };
   final add = await showDialog<bool>(
     context: context,
     builder: (context) => AlertDialog(
       key: const Key('no-runtime-profile-prompt'),
       title: const Text('No runtime profile'),
-      content: Text(
-        '${runtimeKind == 'codex' ? 'Install Codex CLI or add an argv profile for your installed Codex executable.' : runtimeInstallMessage}${message == null ? '' : '\n$message'}',
-      ),
+      content: Text('$install${message == null ? '' : '\n$message'}'),
       actions: [
         TextButton(
           onPressed: () => Navigator.of(context).pop(false),
@@ -169,7 +172,11 @@ Future<void> launchAgentFlow(
         context: context,
         builder: (context) => AlertDialog(
           title: Text(
-            '${runtimeKind == 'codex' ? 'Codex' : 'Claude Code'} needs a workspace',
+            '${switch (runtimeKind) {
+              'codex' => 'Codex',
+              'omp' => 'OMP',
+              _ => 'Claude Code',
+            }} needs a workspace',
           ),
           content: const Text(
             'Open or select a folder first. No agent has been started.',
@@ -224,8 +231,7 @@ class _RuntimeProfilesDialogState extends State<RuntimeProfilesDialog> {
   final _env = TextEditingController();
   String? _editing;
   String _runtimeKind = 'claude-code';
-  bool get _supportedKind =>
-      _runtimeKind == 'claude-code' || _runtimeKind == 'codex';
+  bool get _supportedKind => supportedRuntimeKinds.contains(_runtimeKind);
   List<String>? _keptArgs;
   Map<String, String>? _keptEnv;
   List<String> _issues = const [];
@@ -446,6 +452,10 @@ class _RuntimeProfilesDialogState extends State<RuntimeProfilesDialog> {
                       value: 'codex',
                       child: Text('Codex native App Server'),
                     ),
+                    const DropdownMenuItem(
+                      value: 'omp',
+                      child: Text('OMP native RPC'),
+                    ),
                   ],
                   onChanged: _busy || !_supportedKind
                       ? null
@@ -454,9 +464,12 @@ class _RuntimeProfilesDialogState extends State<RuntimeProfilesDialog> {
                 SelectableText(
                   !_supportedKind
                       ? 'This runtime kind is not supported by this desktop. The stored profile is preserved read-only.'
-                      : _runtimeKind == 'codex'
-                      ? 'Codex 0.166.0 or newer. Use an absolute native executable and app-server as an argument. Sign in through Codex in a terminal.'
-                      : 'Example: ${runtimeProfileExample(defaultTargetPlatform)}',
+                      : switch (_runtimeKind) {
+                          'codex' => 'Codex 0.166.0 or newer. Use an absolute native executable and app-server as an argument. Sign in through Codex in a terminal.',
+                          'omp' => 'OMP 18.20.1 or newer. Use an absolute native executable with --mode and rpc as separate arguments. Run omp in a terminal to set up sign-in and models.',
+                          _ =>
+                            'Example: ${runtimeProfileExample(defaultTargetPlatform)}',
+                        },
                 ),
                 _field('name', 'Name', _name),
                 _field('executable', 'Executable', _executable),

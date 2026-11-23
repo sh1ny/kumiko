@@ -660,6 +660,7 @@ class _TabStrip extends StatelessWidget {
     final selected = layout.selectedWorkspace;
     final reason = controller.terminalsUnavailableReason;
     final suffix = reason == null ? '' : ' ($reason)';
+    final ompUnavailable = controller.ompUnavailableReason;
     return Material(
       color: Theme.of(context).colorScheme.surfaceContainerLow,
       child: SizedBox(
@@ -708,6 +709,15 @@ class _TabStrip extends StatelessWidget {
                       context,
                       controller,
                       runtimeKind: 'codex',
+                      choose: true,
+                    );
+                  case '#omp':
+                    launchAgentFlow(context, controller, runtimeKind: 'omp');
+                  case '#omp-profile':
+                    launchAgentFlow(
+                      context,
+                      controller,
+                      runtimeKind: 'omp',
                       choose: true,
                     );
                   case _runtimeProfilesValue:
@@ -774,6 +784,22 @@ class _TabStrip extends StatelessWidget {
                       controller.codexUnavailableReason == null,
                   child: const Text('Codex with runtime profile...'),
                 ),
+                for (final (value, label) in const [
+                  ('omp', 'OMP'),
+                  ('omp-profile', 'OMP with runtime profile...'),
+                ])
+                  PopupMenuItem<String>(
+                    key: Key('launch-$value'),
+                    value: '#$value',
+                    enabled: selected != null && ompUnavailable == null,
+                    child: Text(
+                      ompUnavailable != null
+                          ? '$label ($ompUnavailable)'
+                          : selected == null
+                          ? '$label (needs a workspace)'
+                          : label,
+                    ),
+                  ),
                 PopupMenuItem<String>(
                   key: const Key('runtime-profiles'),
                   value: _runtimeProfilesValue,
