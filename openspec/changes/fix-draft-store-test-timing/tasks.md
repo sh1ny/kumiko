@@ -12,8 +12,8 @@ The design has no Assumptions entries, so no verify task precedes the work.
 
 ## 1. ADR 0017
 
-- [ ] 1.1 Write `docs/adr/0017-tests-never-gate-on-elapsed-time.md` ("Tests never gate on elapsed time"), in the form of the existing ADRs. It records rules 1, 3, 4 and 7 of #28 as a project decision and carries C8: no test fails on elapsed time; a measurement is printed as `measured:` and checked by the later qualification slice; the draft fsync median and its 100 ms threshold for reopening ADR 0014 decision 12 are the example; this amends ADR 0014's Consequences sentence that the test "fails above a 100 ms median". Leave ADR 0014 itself unchanged. Verify: the file exists, and it holds C8's text and the amendment.
-- [ ] 1.2 Add ADR 0017 to the ADR index in `openspec/architecture.md`, with the index row naming its amendment of ADR 0014, as the index does for other amending ADRs. Verify: the row is present and links to the new file.
+- [x] 1.1 Write `docs/adr/0017-tests-never-gate-on-elapsed-time.md` ("Tests never gate on elapsed time"), in the form of the existing ADRs. It records rules 1, 3, 4 and 7 of #28 as a project decision and carries C8: no test fails on elapsed time; a measurement is printed as `measured:` and checked by the later qualification slice; the draft fsync median and its 100 ms threshold for reopening ADR 0014 decision 12 are the example; this amends ADR 0014's Consequences sentence that the test "fails above a 100 ms median". Leave ADR 0014 itself unchanged. Verify: the file exists, and it holds C8's text and the amendment.
+- [x] 1.2 Add ADR 0017 to the ADR index in `openspec/architecture.md`, with the index row naming its amendment of ADR 0014, as the index does for other amending ADRs. Verify: the row is present and links to the new file.
 
 ## 2. DraftStore: timer factory, stage acknowledgements, explicit expiry, open gate
 
