@@ -332,7 +332,7 @@ void main() {
         within: _guard,
         reason: 'session B never paused for want of credit',
       );
-      await terminal.send('flood ${1 << 40} ${gate.path}');
+      await terminal.send('flood ${1 << 40} flood.gate');
       await eventually(
         () => bytes >= 8 * 1024 * 1024,
         within: _guard,

@@ -222,10 +222,14 @@ void main() {
     Future<(OpenTerminal, File)> flooding() async {
       final d = await Desktop.start(
         profile,
-        environment: {'TERM_FIXTURE_HOST': testHostExecutable()},
+        environment: {
+          'TERM_FIXTURE_HOST': testHostExecutable(),
+          'KUMIKO_TEST_RESOLVE_TIMEOUT_MS': '120000',
+          'KUMIKO_TEST_ATTACH_TIMEOUT_MS': '120000',
+        },
       );
       addTearDown(d.dispose);
-      await d.waitState();
+      await d.waitState(within: const Duration(minutes: 2));
       await d.saveFixtureProfile(cwd: work.path);
       final t = await d.openTerminal('fixture');
       await t.waitForText('READY;', within: const Duration(minutes: 2));
@@ -235,7 +239,7 @@ void main() {
     test('the gate file makes it write GATED; exactly once', () async {
       final (t, gate) = await flooding();
       t.pause();
-      await t.send('flood $total ${gate.path}');
+      await t.send('flood $total gate');
       gate.writeAsStringSync('go');
       t.resume();
       await t.waitForText('FLOODED:', within: const Duration(minutes: 2));
@@ -244,7 +248,7 @@ void main() {
 
     test('without the gate file it never writes GATED;', () async {
       final (t, gate) = await flooding();
-      await t.send('flood ${total ~/ 8} ${gate.path}');
+      await t.send('flood ${total ~/ 8} gate');
       await t.waitForText('FLOODED:', within: const Duration(minutes: 2));
       expect(markers(t), 0);
     });

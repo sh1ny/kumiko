@@ -76,9 +76,11 @@ class Drafts {
 Future<void> killHost(Desktop d) async {
   final pid = d.session.pid;
   final started = processStartTime(pid);
+  // Without an identity there is no exit barrier: the loss alone does not
+  // prove the old host released the profile (AGENTS.md, rule 5).
+  if (started == null) fail('could not read the start time of host $pid');
   Process.killPid(pid, ProcessSignal.sigkill);
   await d.session.lost.timeout(_killGuard);
-  if (started == null) return; // gone before it could be read
   await eventually(
     () => !isProcessAlive(pid, started),
     within: _killGuard,

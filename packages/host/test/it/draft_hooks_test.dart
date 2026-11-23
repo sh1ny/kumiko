@@ -34,11 +34,13 @@ void main() {
       environment: {
         'KUMIKO_TEST_RUNTIME_PATH': '',
         'KUMIKO_TEST_SHELL_PATH': '',
+        'KUMIKO_TEST_RESOLVE_TIMEOUT_MS': '120000',
+        'KUMIKO_TEST_ATTACH_TIMEOUT_MS': '120000',
         ...env,
       },
     );
     addTearDown(d.dispose);
-    await d.waitState();
+    await d.waitState(within: _guard);
     return d;
   }
 
@@ -93,6 +95,7 @@ void main() {
     );
     await eventually(
       () async => (await call(d, 'test/draft.stats'))['heldCommit'] != null,
+      within: _guard,
       reason: 'the commit never reached the hold',
     );
     expect(await call(d, 'test/draft.expire'), {'expired': 1});
@@ -106,6 +109,7 @@ void main() {
     await d.setFault(TestFault.draftCommitHangs, enabled: false);
     await eventually(
       () async => (await call(d, 'test/draft.stats'))['heldCommit'] == null,
+      within: _guard,
       reason: 'the released commit never answered',
     );
   });
@@ -114,6 +118,7 @@ void main() {
     final d = await desktop(env: {'KUMIKO_TEST_DRAFT_OPEN_HELD': '1'});
     await eventually(
       () async => (await call(d, 'test/draft.stats'))['openHeld'] == true,
+      within: _guard,
       reason: 'the worker never reported its open gate',
     );
     expect(await call(d, 'test/draft.releaseOpen'), {'released': true});
@@ -121,7 +126,11 @@ void main() {
     expect(await call(d, 'test/draft.releaseOpen'), {'released': false});
     await eventually(
       () async => (await call(d, 'test/draft.stats'))['phase'] == 'available',
+      within: _guard,
       reason: 'the store never opened after the release',
     );
   });
 }
+
+/// A hang guard, not a bound under test (AGENTS.md, rule 4).
+const Duration _guard = Duration(minutes: 2);
