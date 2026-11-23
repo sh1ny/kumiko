@@ -261,7 +261,7 @@ Tool calls SHALL travel only between bridge and host over the tool endpoint. Sat
 - **THEN** `app/previousExit` fails with `method-not-available`, no previous-exit notice is shown, and quitting still closes the connection and ends every unit
 
 ### Requirement: Activity and draft requests are bounded
-`terminal/activity` SHALL name at most 64 terminals and be answered within the activity deadline; ids past the bound SHALL be refused `invalid-params`. A draft's encoded JSON string contents, UTF-8 and escaping counted, SHALL be at most 256 KiB, so a draft always fits a control message; a larger `agent/draftSave` SHALL be refused `draft-too-large`, and one past the total draft bound `draft-cap`. Both SHALL stay answered within the control-latency bound under saturated output. Source: ADR 0002.
+`terminal/activity` SHALL name at most 64 terminals and be answered within the activity deadline; ids past the bound SHALL be refused `invalid-params`. A draft's encoded JSON string contents, UTF-8 and escaping counted, SHALL be at most 256 KiB, so a draft always fits a control message; a larger `agent/draftSave` SHALL be refused `draft-too-large`, and one past the total draft bound `draft-cap`. Under saturated output `terminal/activity` SHALL stay answered within the control-latency bound, and an `agent/draftSave`, whose answer waits for a durable commit, within the draft deadline. Control responsiveness under saturated output stays qualified by Stop and permission replies under "Agent control stays responsive under saturated output", which the draft deadline does not relax. Source: ADR 0002, ADR 0014, issue #25.
 
 #### Scenario: Too many terminals
 - **WHEN** the desktop sends `terminal/activity` naming 65 terminals
@@ -277,7 +277,7 @@ Tool calls SHALL travel only between bridge and host over the tool endpoint. Sat
 
 #### Scenario: Draft save under saturated output
 - **WHEN** terminal A streams output continuously, session B's event channel has no credit, and the desktop saves session C's draft
-- **THEN** the save is acknowledged within the control-latency bound
+- **THEN** the save is acknowledged with its revision within the draft deadline, and terminal A's output keeps arriving while it commits
 
 ### Requirement: Draft storage never delays control or cleanup
 A stalled or failed draft store SHALL NOT delay reconciliation, Stop, permission replies or desktop-loss cleanup. A draft operation past the draft deadline, or arriving while the store is not responding or full, SHALL fail `draft-unavailable`. A `stale-revision` refusal SHALL carry the stored revision. The host SHALL send `agent/draftStoreReady` whenever the store becomes available again. Source: ADR 0002, D7.
