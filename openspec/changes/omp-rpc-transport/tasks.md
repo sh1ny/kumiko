@@ -263,9 +263,9 @@ Every delta scenario is mapped below.
 
 ## 11. Integration checks
 
-- [ ] 11.1 Re-run the tests of every green test-map row, then run `mise run check`, `mise run test:host` and `mise run test`; all pass. The timing rows named in AGENTS.md are re-run alone before being treated as failures.
-- [ ] 11.2 Run `mise run audit`. The dependency audit and the qualification record check pass, with no new dependency.
-- [ ] 11.3 Run `openspec validate omp-rpc-transport --strict`, and confirm that every test-map row is green.
+- [x] 11.1 Re-run the tests of every green test-map row, then run `mise run check`, `mise run test:host` and `mise run test`; all pass. The timing rows named in AGENTS.md are re-run alone before being treated as failures.
+- [x] 11.2 Run `mise run audit`. The dependency audit and the qualification record check pass, with no new dependency.
+- [x] 11.3 Run `openspec validate omp-rpc-transport --strict`, and confirm that every test-map row is green.
 
 ## Workflow follow-up
 
