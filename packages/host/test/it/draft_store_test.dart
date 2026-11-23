@@ -655,7 +655,7 @@ void main() {
         within: const Duration(seconds: 30),
         reason: 'the store never became available',
       );
-      expect((await Drafts(d).save(ids.single, 'now stored', 1)).revision, 1);
+      expect(await settledSave(d, ids.single, 'now stored', 1), 1);
     });
 
     test(
