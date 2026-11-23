@@ -68,6 +68,51 @@ class Drafts {
       (await desktop.connection.request('test/draft.stats'))! as Json;
 }
 
+/// Saves a draft that the test needs stored, waiting out a slow commit.
+///
+/// A host started with a shortened draft deadline
+/// (`KUMIKO_TEST_DRAFT_DEADLINE_MS`) applies it to every draft operation, not
+/// only to the one a test holds. On a loaded machine an ordinary commit can
+/// outlive it and be refused `draft-unavailable` (issue #25). Precondition
+/// and follow-up calls of such a test go through this helper or
+/// [settledLoad]; the operation under test still asserts its refusal with
+/// [refusal]. On `draft-unavailable` this waits for `agent/draftStoreReady`
+/// (the late commit returned), accepts the save if it landed, and otherwise
+/// saves once more. Any other refusal, a second refusal, or a store that never
+/// answers again fails the test.
+Future<int> settledSave(Desktop d, String id, String text, int revision) async {
+  final ready = d.draftStoreReady;
+  try {
+    return (await Drafts(d).save(id, text, revision)).revision;
+  } on RpcException catch (e) {
+    if (e.reason != ErrorCode.draftUnavailable) rethrow;
+  }
+  await _answersAgain(d, ready);
+  final stored = await settledLoad(d, id);
+  if (stored.revision == revision &&
+      stored.text == (text.isEmpty ? null : text)) {
+    return revision;
+  }
+  return (await Drafts(d).save(id, text, revision)).revision;
+}
+
+/// Loads a draft, waiting out a slow operation as [settledSave] does.
+Future<AgentDraftLoadResult> settledLoad(Desktop d, String id) async {
+  final ready = d.draftStoreReady;
+  try {
+    return await Drafts(d).load(id);
+  } on RpcException catch (e) {
+    if (e.reason != ErrorCode.draftUnavailable) rethrow;
+  }
+  await _answersAgain(d, ready);
+  return Drafts(d).load(id);
+}
+
+Future<void> _answersAgain(Desktop d, int ready) => eventually(
+  () => d.draftStoreReady > ready,
+  reason: 'the draft store never answered again',
+);
+
 /// The [RpcException] [call] fails with; fails the test if it succeeds.
 Future<RpcException> refusal(Future<Object?> call) async {
   try {

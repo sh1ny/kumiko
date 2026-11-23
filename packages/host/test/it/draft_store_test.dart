@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
 
+import 'package:host/src/host_options.dart' show HostOptions;
 import 'package:host_protocol/host_protocol.dart';
 import 'package:process_containment/process_containment.dart';
 import 'package:test/test.dart';
@@ -122,19 +123,22 @@ void main() {
       final drafts = Drafts(d);
       final full = 'a' * maxDraftBytes;
       final fits = maxStoredDraftBytes ~/ maxDraftBytes;
+      // The fill and the follow-up reads are not under test: a slow commit
+      // on a loaded runner is waited out (issue #25). The refusal is strict.
+      await storeReady(d);
       for (var i = 0; i < fits; i++) {
-        expect((await drafts.save(ids[i], full, 1)).revision, 1);
+        expect(await settledSave(d, ids[i], full, 1), 1);
       }
       final e = await refusal(drafts.save(ids[fits], 'a', 1));
       expect(e.reason, ErrorCode.draftCap);
-      expect((await drafts.load(ids[fits])).text, isNull);
+      expect((await settledLoad(d, ids[fits])).text, isNull);
       expect(
-        (await drafts.load(ids[0])).text,
+        (await settledLoad(d, ids[0])).text,
         full,
         reason: 'others unchanged',
       );
       // Replacing a draft with one of the same size is not an increase.
-      expect((await drafts.save(ids[0], full, 2)).revision, 2);
+      expect(await settledSave(d, ids[0], full, 2), 2);
     }, timeout: const Timeout(Duration(minutes: 3)));
 
     test('stale-revision reply carries the stored revision', () async {
@@ -149,76 +153,107 @@ void main() {
       expect(draftRow(profile, a.id)['text'], 'stored text');
     });
 
-    test(
-      'draft save acked within control latency under saturated output',
-      () async {
-        final (d, a, _) = await session(id: 'saver');
-        await d.saveFixtureProfile(cwd: work.path);
-        var ready = false;
-        var bytes = 0;
-        var tail = '';
-        final terminal = await d.openTerminal(
-          'fixture',
-          onData: (data) {
-            tail += latin1.decode(data);
-            if (!ready) {
-              ready = tail.contains('READY;');
-            } else {
-              bytes += data.length;
-            }
-            if (tail.length > 128) tail = tail.substring(tail.length - 128);
-          },
+    // The acknowledgement waits for a durable commit (three syncs), so it is
+    // bounded by the draft deadline, not the control-latency bound: control
+    // under saturation is qualified by Stop and permission replies (change
+    // fix-draft-save-latency-bound, issue #25). A save past the deadline is
+    // refused draft-unavailable and fails this test.
+    test('draft save acknowledged within the draft deadline under saturated '
+        'output', () async {
+      final (d, a, _) = await session(id: 'saver');
+      await d.saveFixtureProfile(cwd: work.path);
+      var ready = false;
+      var bytes = 0;
+      var tail = '';
+      final terminal = await d.openTerminal(
+        'fixture',
+        onData: (data) {
+          tail += latin1.decode(data);
+          if (!ready) {
+            ready = tail.contains('READY;');
+          } else {
+            bytes += data.length;
+          }
+          if (tail.length > 128) tail = tail.substring(tail.length - 128);
+        },
+      );
+      await eventually(() => ready, reason: 'terminal A did not initialize');
+      // Session B has no credit: its events back up and stay unsent.
+      final workspace = (await d.listWorkspaces()).workspaces.single;
+      final stalledReport = await saveAgentFixture(
+        d,
+        work,
+        id: 'stalled',
+        script: {
+          'blockedWriteAfterMs': 100,
+          'prompt': [
+            {
+              'flood': {'count': 4096, 'update': textUpdate('b' * 16384)},
+            },
+          ],
+        },
+      );
+      final b = AgentPeer(d);
+      await b.start(workspace.id, runtime: 'stalled');
+      await b.attach(credit: false);
+      await b.prompt();
+      await waitFixture(stalledReport, (p) => p['blockedWrite'] == true);
+      await terminal.send('flood ${1 << 40}');
+      await eventually(
+        () => bytes >= 8 * 1024 * 1024,
+        within: const Duration(seconds: 60),
+        reason: 'terminal A did not saturate',
+      );
+      final drafts = Drafts(d);
+      var worst = Duration.zero;
+      final before = bytes;
+      for (var i = 1; i <= 20; i++) {
+        final clock = Stopwatch()..start();
+        expect(
+          (await drafts.save(a.id, 'draft number $i ' * 100, i)).revision,
+          i,
         );
-        await eventually(() => ready, reason: 'terminal A did not initialize');
-        // Session B has no credit: its events back up and stay unsent.
-        final workspace = (await d.listWorkspaces()).workspaces.single;
-        final stalledReport = await saveAgentFixture(
-          d,
-          work,
-          id: 'stalled',
-          script: {
-            'blockedWriteAfterMs': 100,
-            'prompt': [
-              {
-                'flood': {'count': 4096, 'update': textUpdate('b' * 16384)},
-              },
-            ],
-          },
-        );
-        final b = AgentPeer(d);
-        await b.start(workspace.id, runtime: 'stalled');
-        await b.attach(credit: false);
-        await b.prompt();
-        await waitFixture(stalledReport, (p) => p['blockedWrite'] == true);
-        await terminal.send('flood ${1 << 40}');
-        await eventually(
-          () => bytes >= 8 * 1024 * 1024,
-          within: const Duration(seconds: 60),
-          reason: 'terminal A did not saturate',
-        );
-        final drafts = Drafts(d);
-        var worst = Duration.zero;
-        final before = bytes;
-        for (var i = 1; i <= 20; i++) {
-          final clock = Stopwatch()..start();
-          await drafts.save(a.id, 'draft number $i ' * 100, i);
-          if (clock.elapsed > worst) worst = clock.elapsed;
-        }
-        expect(bytes, greaterThan(before), reason: 'A kept flowing');
-        // ignore: avoid_print
-        print(
-          'measured: draft save under saturated output worst of 20 '
-          '${worst.inMicroseconds / 1000} ms on ${Platform.operatingSystem}',
-        );
-        expect(worst, lessThanOrEqualTo(_ackBound));
-        await b.close();
-        await a.close();
-        await d.closeTerminal(terminal.id);
-        await terminal.waitExited(within: const Duration(seconds: 35));
-        await terminal.subscription.cancel();
-      },
-      timeout: const Timeout(Duration(minutes: 5)),
-    );
+        if (clock.elapsed > worst) worst = clock.elapsed;
+      }
+      expect(bytes, greaterThan(before), reason: 'A kept flowing');
+      final stored = await drafts.load(a.id);
+      expect((stored.text, stored.revision), ('draft number 20 ' * 100, 20));
+      // ignore: avoid_print
+      print(
+        'measured: draft save under saturated output worst of 20 '
+        '${worst.inMicroseconds / 1000} ms on ${Platform.operatingSystem}',
+      );
+      // Measured at the desktop, request to acknowledgement: the host's own
+      // timer starts only once it dispatches the save.
+      expect(worst, lessThanOrEqualTo(HostOptions.defaultDraftDeadline));
+      // Hold one commit open: A's output must keep arriving while it waits,
+      // not only between commits.
+      await d.setFault(TestFault.draftCommitHangs);
+      var settled = false;
+      final held = settledSave(
+        d,
+        a.id,
+        'held under output',
+        21,
+      ).whenComplete(() => settled = true);
+      await eventually(
+        () async => (await drafts.stats())['pending'] == 1,
+        reason: 'the held commit never started',
+      );
+      final whileHeld = bytes;
+      await eventually(
+        () => bytes > whileHeld,
+        reason: 'A stopped while a commit was held',
+      );
+      expect(settled, isFalse, reason: 'the commit was not held');
+      await d.setFault(TestFault.draftCommitHangs, enabled: false);
+      expect(await held, 21);
+      await b.close();
+      await a.close();
+      await d.closeTerminal(terminal.id);
+      await terminal.waitExited(within: const Duration(seconds: 35));
+      await terminal.subscription.cancel();
+    }, timeout: const Timeout(Duration(minutes: 5)));
   });
 
   group('durability', () {
@@ -474,7 +509,8 @@ void main() {
       () async {
         final (d, a, report) = await session(env: quick);
         final drafts = Drafts(d);
-        await drafts.save(a.id, 'held send', 1);
+        await storeReady(d);
+        await settledSave(d, a.id, 'held send', 1);
         final ready = d.draftStoreReady;
         await d.setFault(TestFault.draftCommitHangs);
         final clock = Stopwatch()..start();
@@ -499,9 +535,9 @@ void main() {
         );
         // The removal committed late; the desktop stores the composer again
         // above r.
-        final late = await drafts.load(a.id);
+        final late = await settledLoad(d, a.id);
         expect((late.text, late.revision), (null, 1));
-        expect((await drafts.save(a.id, 'held send', 2)).revision, 2);
+        expect(await settledSave(d, a.id, 'held send', 2), 2);
       },
     );
 
@@ -619,7 +655,7 @@ void main() {
         within: const Duration(seconds: 30),
         reason: 'the store never became available',
       );
-      expect((await Drafts(d).save(ids.single, 'now stored', 1)).revision, 1);
+      expect(await settledSave(d, ids.single, 'now stored', 1), 1);
     });
 
     test(
@@ -737,7 +773,8 @@ void main() {
       () async {
         final (d, a, _) = await session(env: quick);
         final drafts = Drafts(d);
-        await drafts.save(a.id, 'before', 1);
+        await storeReady(d);
+        await settledSave(d, a.id, 'before', 1);
         final ready = d.draftStoreReady;
         await d.setFault(TestFault.draftCommitHangs);
         expect(
@@ -760,10 +797,31 @@ void main() {
         );
         expect((await drafts.stats())['notResponding'], isFalse);
         // The held save did commit once it returned; the next one is above it.
-        expect((await drafts.load(a.id)).text, 'held');
-        expect((await drafts.save(a.id, 'after', 3)).revision, 3);
+        expect((await settledLoad(d, a.id)).text, 'held');
+        expect(await settledSave(d, a.id, 'after', 3), 3);
       },
     );
+
+    test('a save that outlives the shortened deadline is waited out', () async {
+      final (d, a, _) = await session(env: quick);
+      await storeReady(d);
+      await d.setFault(TestFault.draftCommitHangs);
+      final outcome = settledSave(
+        d,
+        a.id,
+        'slow commit',
+        1,
+      ).then<Object>((r) => r, onError: (Object e) => e);
+      // The host's deadline fires first, then the commit is let go.
+      await eventually(
+        () async => (await Drafts(d).stats())['notResponding'] == true,
+        reason: 'the held save never missed its deadline',
+      );
+      await d.setFault(TestFault.draftCommitHangs, enabled: false);
+      expect(await outcome, 1);
+      final loaded = await settledLoad(d, a.id);
+      expect((loaded.text, loaded.revision), ('slow commit', 1));
+    });
   });
 
   group('reset', () {
