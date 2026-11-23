@@ -123,19 +123,22 @@ void main() {
       final drafts = Drafts(d);
       final full = 'a' * maxDraftBytes;
       final fits = maxStoredDraftBytes ~/ maxDraftBytes;
+      // The fill and the follow-up reads are not under test: a slow commit
+      // on a loaded runner is waited out (issue #25). The refusal is strict.
+      await storeReady(d);
       for (var i = 0; i < fits; i++) {
-        expect((await drafts.save(ids[i], full, 1)).revision, 1);
+        expect(await settledSave(d, ids[i], full, 1), 1);
       }
       final e = await refusal(drafts.save(ids[fits], 'a', 1));
       expect(e.reason, ErrorCode.draftCap);
-      expect((await drafts.load(ids[fits])).text, isNull);
+      expect((await settledLoad(d, ids[fits])).text, isNull);
       expect(
-        (await drafts.load(ids[0])).text,
+        (await settledLoad(d, ids[0])).text,
         full,
         reason: 'others unchanged',
       );
       // Replacing a draft with one of the same size is not an increase.
-      expect((await drafts.save(ids[0], full, 2)).revision, 2);
+      expect(await settledSave(d, ids[0], full, 2), 2);
     }, timeout: const Timeout(Duration(minutes: 3)));
 
     test('stale-revision reply carries the stored revision', () async {
