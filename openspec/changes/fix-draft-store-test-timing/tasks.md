@@ -28,8 +28,8 @@ The design has no Assumptions entries, so no verify task precedes the work.
 
 ## 3. Test hooks and the test host
 
-- [ ] 3.1 Add the failing hook tests: `test/draft.expire` returns `{expired: n}`; `test/draft.releaseOpen` returns `{released: bool}`; `test/draft.stats` reports `heldCommit` and `openHeld`; and `packages/host/test/it/release_contract_test.dart` lists `test/draft.expire` and `test/draft.releaseOpen` among the methods the release host refuses (D3, D4). Verify: they fail before the hooks exist.
-- [ ] 3.2 Implement the hooks in `packages/host/lib/src/test_hooks/test_hooks.dart`; in `TestHostExtension.fromEnvironment`, read `KUMIKO_TEST_DRAFT_OPEN_HELD=1` into `draftOpenHeld` (dropping `KUMIKO_TEST_DRAFT_OPEN_HOLD_MS`) and default a missing `KUMIKO_TEST_DRAFT_DEADLINE_MS` to 2 min (D7). Write C3 as the `TestHostExtension.fromEnvironment` doc comment. Verify: the 3.1 tests pass, and `grep -rn DRAFT_OPEN_HOLD_MS packages` finds nothing.
+- [x] 3.1 Add the failing hook tests: `test/draft.expire` returns `{expired: n}`; `test/draft.releaseOpen` returns `{released: bool}`; `test/draft.stats` reports `heldCommit` and `openHeld`; and `packages/host/test/it/release_contract_test.dart` lists `test/draft.expire` and `test/draft.releaseOpen` among the methods the release host refuses (D3, D4). Verify: they fail before the hooks exist.
+- [x] 3.2 Implement the hooks in `packages/host/lib/src/test_hooks/test_hooks.dart`; in `TestHostExtension.fromEnvironment`, read `KUMIKO_TEST_DRAFT_OPEN_HELD=1` into `draftOpenHeld` (dropping `KUMIKO_TEST_DRAFT_OPEN_HOLD_MS`) and default a missing `KUMIKO_TEST_DRAFT_DEADLINE_MS` to 2 min (D7). Write C3 as the `TestHostExtension.fromEnvironment` doc comment. Verify: the 3.1 tests pass, and `grep -rn DRAFT_OPEN_HOLD_MS packages` finds nothing.
 
 ## 4. Fixtures and harness
 
