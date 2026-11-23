@@ -8,6 +8,7 @@ import 'package:host_protocol/host_protocol.dart';
 import 'package:sqlite3/sqlite3.dart' as sql;
 
 import '../host_faults.dart';
+import '../host_options.dart';
 
 /// Where the draft store is in its life (app-exit-and-reopen design D4).
 enum DraftPhase {
@@ -41,12 +42,17 @@ class DraftLoad {
 /// deadline every operation fails at once until the stuck one returns.
 /// Nothing here awaits the worker on the control isolate's path except the
 /// operation the caller asked for, and that call is bounded by the deadline.
+///
+/// Every deadline timer is created through the injected timer factory, and
+/// the default deadline is [HostOptions.defaultDraftDeadline], so the store
+/// and the release host share one authoritative value.
 class DraftStore {
   DraftStore({
     required this.file,
     required this.faults,
-    this.deadline = const Duration(seconds: 5),
-    this.openHold = Duration.zero,
+    this.deadline = HostOptions.defaultDraftDeadline,
+    this.holdOpen = false,
+    this.timerFactory = Timer.new,
     this.onAvailable,
     this.log,
   });
@@ -58,8 +64,11 @@ class DraftStore {
   final HostFaults faults;
   final Duration deadline;
 
-  /// Extra wait before the worker opens the file (tests only).
-  final Duration openHold;
+  /// Creates the deadline timer of every operation (a fake in tests).
+  final Timer Function(Duration, void Function()) timerFactory;
+
+  /// Gates the first worker's open until [releaseOpen] (tests only).
+  final bool holdOpen;
 
   /// Called when the store (re)opens or answers again after a stall.
   void Function()? onAvailable;
@@ -76,6 +85,8 @@ class DraftStore {
   int _timedOut = 0;
   bool _disposed = false;
   bool _started = false;
+  int? _heldOp;
+  bool _openGate = false;
 
   _Worker? _worker;
   final _pending = <int, _Op>{};
@@ -86,6 +97,14 @@ class DraftStore {
   int get workersSpawned => _workersSpawned;
   String? get disabledReason => _disabledReason;
   Map<String, Object?> get pragmas => _pragmas;
+
+  /// The id of the commit the worker holds (tests only), or null: it reached
+  /// the hold and has not answered yet.
+  int? get heldCommit => _heldOp;
+
+  /// Whether the first worker reported its open gate and has not been
+  /// released (tests only).
+  bool get openHeld => _openGate;
 
   /// Starts the worker. The host calls this after reconciliation has started,
   /// so the open never delays it.
@@ -170,6 +189,38 @@ class DraftStore {
     _worker?.post({'release': true});
   }
 
+  /// Lets the first worker open its file (tests only).
+  ///
+  /// One-shot: false before the worker acknowledged the gate, true once while
+  /// the gate is acknowledged and unreleased, false after that, and always
+  /// false on an ungated successor (a reset's worker opens without a gate).
+  bool releaseOpen() {
+    if (!_openGate) return false;
+    _openGate = false;
+    _worker?.post({'releaseOpen': true});
+    return true;
+  }
+
+  /// Fails every pending operation that has not timed out yet, as its
+  /// deadline would, and returns how many it expired (tests only).
+  ///
+  /// It runs the timer's own [_expire] body. An expired op keeps its pending
+  /// slot until its late reply or [_failAll] (worker failure or disposal)
+  /// retires it, and is never expired twice. A held commit stays held: expiry
+  /// fails only the caller, so a test expires before it releases. The `held`,
+  /// `openHeld` and `releaseOpen` messages exist only for test faults and the
+  /// first-generation open gate.
+  int expirePending() {
+    var expired = 0;
+    for (final op in _pending.values.toList()) {
+      if (op.timedOut || op.completer.isCompleted) continue;
+      op.timer?.cancel();
+      _expire(op);
+      expired++;
+    }
+    return expired;
+  }
+
   /// Ends the worker without waiting for it.
   void dispose() {
     if (_disposed) return;
@@ -214,17 +265,9 @@ class DraftStore {
       return Future.error(_unavailable('too many draft operations pending'));
     }
     final id = _nextOp++;
-    final op = _Op(worker.generation);
+    final op = _Op(worker.generation, kind);
     _pending[id] = op;
-    op.timer = Timer(deadline, () {
-      if (op.completer.isCompleted) return;
-      op.timedOut = true;
-      _timedOut++;
-      log?.call('draft-deadline', code: kind);
-      op.completer.completeError(
-        _unavailable('the draft store did not answer in time'),
-      );
-    });
+    op.timer = timerFactory(deadline, () => _expire(op));
     worker.post({
       'op': id,
       'kind': kind,
@@ -235,10 +278,21 @@ class DraftStore {
     return op.completer.future;
   }
 
+  void _expire(_Op op) {
+    if (op.completer.isCompleted) return;
+    op.timedOut = true;
+    _timedOut++;
+    log?.call('draft-deadline', code: op.kind);
+    op.completer.completeError(
+      _unavailable('the draft store did not answer in time'),
+    );
+  }
+
   void _failAll(RpcException error) {
     final ops = _pending.values.toList();
     _pending.clear();
     _timedOut = 0;
+    _heldOp = null;
     for (final op in ops) {
       op.timer?.cancel();
       if (!op.completer.isCompleted) op.completer.completeError(error);
@@ -248,6 +302,7 @@ class DraftStore {
   void _onReply(_Worker worker, List<Object?> message) {
     if (worker.generation != _worker?.generation) return;
     final id = message[1]! as int;
+    if (_heldOp == id) _heldOp = null;
     final op = _pending.remove(id);
     if (op == null) return;
     op.timer?.cancel();
@@ -272,6 +327,9 @@ class DraftStore {
 
   // --- worker lifecycle -------------------------------------------------
 
+  /// Starts the next worker generation. Only the first generation is gated
+  /// at its open, and every spawn restarts the release count, so the host's
+  /// hold index and the new worker's own count start from the same origin.
   Future<void> _spawn() async {
     final generation = (_worker?.generation ?? 0) + 1;
     _phase = _phase == DraftPhase.resetting
@@ -280,10 +338,13 @@ class DraftStore {
     final opened = Completer<void>();
     final worker = _Worker(generation, opened);
     _worker = worker;
+    _heldOp = null;
+    _openGate = false;
+    _releases = 0;
     _workersSpawned++;
     try {
       await worker.spawn(
-        _Init(file.path, openHold),
+        _Init(file.path, holdOpen && generation == 1),
         onMessage: (message) => _onWorkerMessage(worker, message),
         onGone: () => _onWorkerGone(worker),
       );
@@ -297,7 +358,10 @@ class DraftStore {
   void _onWorkerMessage(_Worker worker, Object? message) {
     if (worker.generation != _worker?.generation || message is! List) return;
     switch (message[0]) {
+      case 'openHeld':
+        _openGate = true;
       case 'opened':
+        _openGate = false;
         _pragmas = Map<String, Object?>.from(message[1]! as Map);
         _disabledReason = null;
         _phase = DraftPhase.available;
@@ -307,6 +371,9 @@ class DraftStore {
         if (!notResponding) onAvailable?.call();
       case 'disabled':
         _setDisabled(worker, message[1]! as String);
+      case 'held':
+        final id = message[1]! as int;
+        if (_pending.containsKey(id)) _heldOp = id;
       case 'ok' || 'err':
         _onReply(worker, message);
     }
@@ -315,6 +382,7 @@ class DraftStore {
   void _setDisabled(_Worker worker, String reason) {
     if (worker.generation != _worker?.generation) return;
     _phase = DraftPhase.disabled;
+    _openGate = false;
     _disabledReason = reason;
     log?.call('draft-disabled');
     _failAll(_unavailable('drafts are disabled: $reason'));
@@ -366,17 +434,18 @@ class DraftStore {
 }
 
 class _Op {
-  _Op(this.generation);
+  _Op(this.generation, this.kind);
   final int generation;
+  final String kind;
   final completer = Completer<Object?>();
   Timer? timer;
   bool timedOut = false;
 }
 
 class _Init {
-  const _Init(this.path, this.openHold);
+  const _Init(this.path, this.gated);
   final String path;
-  final Duration openHold;
+  final bool gated;
 }
 
 /// The host's handle on one worker isolate.
@@ -417,7 +486,7 @@ class _Worker {
     _errors.listen((_) {});
     _isolate = await Isolate.spawn<List<Object?>>(
       _workerMain,
-      [_from.sendPort, init.path, init.openHold.inMilliseconds],
+      [_from.sendPort, init.path, init.gated],
       onExit: _exit.sendPort,
       onError: _errors.sendPort,
       errorsAreFatal: true,
@@ -460,19 +529,19 @@ const _schemaVersion = 1;
 void _workerMain(List<Object?> init) {
   final host = init[0]! as SendPort;
   final path = init[1]! as String;
-  final hold = Duration(milliseconds: init[2]! as int);
+  final gated = init[2]! as bool;
   final commands = ReceivePort();
   host.send(commands.sendPort);
-  final worker = _DraftWorker(host, path, hold);
+  final worker = _DraftWorker(host, path, gated);
   commands.listen(worker.onMessage);
   unawaited(worker.run());
 }
 
 class _DraftWorker {
-  _DraftWorker(this.host, this.path, this.hold);
+  _DraftWorker(this.host, this.path, this.gated);
   final SendPort host;
   final String path;
-  final Duration hold;
+  final bool gated;
 
   sql.Database? _db;
   final _queue = Queue<Map<Object?, Object?>>();
@@ -481,6 +550,7 @@ class _DraftWorker {
   bool _exitRequested = false;
   int _released = 0;
   Completer<void> _releaseSignal = Completer<void>();
+  final _openGate = Completer<void>();
 
   void onMessage(Object? message) {
     if (message is! Map) return;
@@ -489,6 +559,10 @@ class _DraftWorker {
       final signal = _releaseSignal;
       _releaseSignal = Completer<void>();
       signal.complete();
+      return;
+    }
+    if (message['releaseOpen'] == true) {
+      if (!_openGate.isCompleted) _openGate.complete();
       return;
     }
     if (message['exit'] == true) {
@@ -512,7 +586,10 @@ class _DraftWorker {
 
   Future<void> run() async {
     try {
-      if (hold > Duration.zero) await Future<void>.delayed(hold);
+      if (gated) {
+        host.send(['openHeld']);
+        await _openGate.future;
+      }
       final pragmas = _openFile();
       if (pragmas == null) {
         _open.complete(false);
@@ -648,6 +725,7 @@ class _DraftWorker {
     try {
       final result = change();
       final hold = m['hold']! as int;
+      if (hold >= 0 && _released <= hold) host.send(['held', m['op']]);
       while (hold >= 0 && _released <= hold) {
         await _releaseSignal.future;
       }

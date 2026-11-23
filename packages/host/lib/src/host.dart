@@ -328,7 +328,7 @@ class Host {
       file: File('${profile.path}${Platform.pathSeparator}drafts.sqlite'),
       faults: faults,
       deadline: options.draftDeadline,
-      openHold: options.draftOpenHold,
+      holdOpen: options.draftOpenHeld,
       log: (op, {code}) => log.event(op, code: code),
     );
     faults.onDraftRelease = drafts.releaseHeld;
