@@ -232,6 +232,7 @@ class RuntimeProfileService {
     _write(() {
       if (detection.profile?.id != params.id &&
           detection.codex?.id != params.id &&
+          detection.omp?.id != params.id &&
           !_exists(params.id)) {
         throw _unknown(params.id);
       }

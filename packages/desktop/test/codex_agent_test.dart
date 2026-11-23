@@ -853,9 +853,16 @@ void main() {
     expect(host.agentStarts, isEmpty);
     expect(key('pick-runtime-native'), findsOneWidget);
     expect(key('pick-runtime-claude'), findsNothing);
+    expect(
+      find.text(
+        'The default profile is for another runtime. Choose a Codex profile below.',
+      ),
+      findsOneWidget,
+    );
     await tester.tap(key('pick-runtime-native'));
     await flush(tester);
     expect(host.agentStarts.single.runtimeKind, 'codex');
+    expect(find.text('Codex · A'), findsWidgets);
   });
   uiTest('Codex: Fresh Claude recovery with Codex default', (tester) async {
     final host = nativeHost();

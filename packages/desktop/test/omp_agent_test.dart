@@ -94,6 +94,7 @@ void main() {
     final composer = tester.widget<TextField>(key('agent-prompt-$pane'));
     expect(composer.decoration!.hintText, 'Message OMP');
     expect(key('agent-steer-$pane'), findsNothing);
+    expect(find.text('OMP · A'), findsWidgets);
   });
 
   uiTest('OMP: Sign-in and model guidance stays native', (tester) async {

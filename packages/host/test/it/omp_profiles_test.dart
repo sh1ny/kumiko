@@ -77,6 +77,24 @@ void main() {
     expect(LedgerView(profile).units(), isEmpty);
   });
 
+  test('OMP: detected built-in can be selected as the default', () async {
+    executable(bin.path, 'codex');
+    executable(bin.path, 'omp');
+    final desktop = await start();
+    expect((await list(desktop)).defaultId, 'builtin:codex');
+
+    await desktop.connection.request(
+      Method.runtimeSetDefault,
+      const RuntimeSetDefaultParams('builtin:omp'),
+    );
+    await desktop.session.quit();
+    await desktop.restart();
+    await desktop.waitState();
+    final current = await list(desktop);
+    expect(current.defaultId, 'builtin:omp');
+    expect(current.defaultAvailable, isTrue);
+  });
+
   test('OMP: Only a shim exists', () async {
     File(p.join(bin.path, 'omp.cmd')).createSync();
     File(p.join(bin.path, 'omp.ps1')).createSync();
