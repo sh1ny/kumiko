@@ -36,8 +36,8 @@
 
 ## 3. Integration
 
-- [ ] 3.1 `mise run check` passes (format, analyze, fast tests).
-- [ ] 3.2 `mise run test:host` passes. Re-run any of the AGENTS.md timing rows alone before treating its failure as real.
+- [x] 3.1 `mise run check` passes (format, analyze, fast tests).
+- [x] 3.2 `mise run test:host` passes. Re-run any of the AGENTS.md timing rows alone before treating its failure as real.
 
 ## Workflow follow-up
 
