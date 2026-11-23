@@ -31,7 +31,7 @@ The host SHALL run one Kumiko tool service for its lifetime. Its only listening 
 
 ### Requirement: Each live session run receives a Kumiko MCP entry
 
-When the host creates or continues a session while its tool endpoint is available, it SHALL pass exactly one stdio MCP server entry named `kumiko` through the runtime-specific session configuration: ACP session requests or native Codex per-run App Server configuration. The entry's command SHALL be the bundled host executable in `mcp-bridge` mode. Kumiko SHALL NOT write or change any repository file or runtime configuration to deliver it. Source: ADR 0005 decisions 2 and 6; D14, D15.
+When the host creates or continues a session while its tool endpoint is available, it SHALL pass exactly one stdio MCP server entry named `kumiko` through the runtime-specific session configuration: ACP session requests or native Codex per-run App Server configuration. OMP runs SHALL receive no entry until OMP delivery is implemented, SHALL report Kumiko tools unavailable with that reason and SHALL keep no grant. The entry's command SHALL be the bundled host executable in `mcp-bridge` mode. Kumiko SHALL NOT write or change any repository file or runtime configuration to deliver it. Source: ADR 0005 decisions 2 and 6; D14, D15.
 
 #### Scenario: New session gets the entry
 
@@ -90,6 +90,12 @@ When the host creates or continues a session while its tool endpoint is availabl
 #### Scenario: Child bridge connection cap
 - **WHEN** more child bridges than the per-grant bound authenticate
 - **THEN** extra connections are refused busy, the root shows child tools unavailable and no other session's tools change
+
+#### Scenario: OMP run without tool delivery
+
+- **WHEN** the user starts an OMP session while the tool endpoint is available
+
+- **THEN** OMP receives no kumiko entry, no workspace or OMP configuration file is created or changed, the session shows Kumiko tools *unavailable* with the reason that delivery to OMP is not supported yet, and no grant for that run remains
 
 ### Requirement: Tool connections are authenticated by a per-run session secret
 Each live session run SHALL get a fresh random secret of at least 256 bits. It SHALL be passed only through the MCP entry's environment, never stored, logged, sent to the desktop or written to a repository file. The secret SHALL map to exactly one live session run, and SHALL be revoked when that run's adapter exits, the session is closed, or the host exits. A connection SHALL present its secret before any MCP message is processed. Source: ADR 0005 decision 3.
