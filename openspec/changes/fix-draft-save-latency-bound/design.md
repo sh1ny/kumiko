@@ -38,7 +38,7 @@ See proposal.md for the failures and the CI evidence.
 
 ### D2: Test calls that must succeed wait out a slow commit instead of failing on it
 
-- **Choice:** Add two helpers to `test/it/support/draft_support.dart`, used only for the precondition and follow-up calls of tests that run with a shortened deadline:
+- **Choice:** Add two helpers to `test/it/support/draft_support.dart`, used only for the precondition and follow-up calls of tests that run with a shortened deadline, and of the draft-cap test, whose 128 fill saves of 256 KiB each run under the default deadline and missed it once on a Windows runner (PR #27 CI):
   - `settledSave`: on `draft-unavailable`, wait until `agent/draftStoreReady` has arrived after the call, then load. If the save landed late, accept it; otherwise save again.
   - `settledLoad`: the same wait, then load again.
   
@@ -56,7 +56,7 @@ See proposal.md for the failures and the CI evidence.
 | S2 | Held-commit flake in the same change | Yes | Separate change | low | no | agent |
 | S3 | `terminal/activity` bound | Unchanged | Relax both | low | no | agent |
 | D1 | Saturated-output test assertion | Every save succeeds, stored row matches, A flows, including during a held commit; desktop-measured worst ≤ draft deadline; keep the `measured:` print | Host refusal as the only deadline check; move the disk | low | yes | user |
-| D2 | Shortened-deadline precondition calls | `settledSave`/`settledLoad` wait for `draftStoreReady`; `storeReady` before the first save | Longer test deadline; per-fault host deadline | low | no | agent |
+| D2 | Precondition calls of shortened-deadline and draft-cap tests | `settledSave`/`settledLoad` wait for `draftStoreReady`; `storeReady` before the first save | Longer test deadline; per-fault host deadline | low | no | agent |
 
 ## Assumptions
 
