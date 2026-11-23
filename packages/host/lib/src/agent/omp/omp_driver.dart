@@ -320,6 +320,7 @@ class OmpRuntimeDriver extends RuntimeDriver {
       'input',
       'editor',
       'ask',
+      'form',
     }.contains(method);
     if (!interactive && method != 'notify') return null;
     if (interactive) {

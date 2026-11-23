@@ -332,6 +332,25 @@ void main() {
     expect(peer.writes, hasLength(2));
   });
 
+  test('OMP: unsupported HTML form is cancelled without echoing it', () async {
+    await readySession();
+    final events = <String>[];
+    recordOutput(events);
+    peer.send({
+      'type': 'extension_ui_request',
+      'id': 'form1',
+      'method': 'form',
+      'html': '<form><label>Private prompt text</label></form>',
+    });
+    await Future<void>(() {});
+    expect(peer.writes.skip(2), [
+      {'type': 'extension_ui_response', 'id': 'form1', 'cancelled': true},
+    ]);
+    expect(events, [
+      'notice:OMP asked: form — not supported in Kumiko yet; declined',
+    ]);
+  });
+
   test(
     'OMP: Request after the turn is declined and notices are bounded',
     () async {
