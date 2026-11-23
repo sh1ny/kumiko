@@ -75,7 +75,7 @@ The chat SHALL commit a prompt only after OMP admits it. The admission response 
 #### Scenario: Admission precedes output
 
 - **WHEN** OMP admits a prompt and streams reply events before its prompt result
-- **THEN** the session stays Running until the prompt result arrives, then becomes Idle
+- **THEN** the user prompt is shown once before any reply text or thinking, and the session stays Running until the prompt result arrives, then becomes Idle
 
 #### Scenario: Handled without the agent
 
@@ -85,7 +85,7 @@ The chat SHALL commit a prompt only after OMP admits it. The admission response 
 #### Scenario: Admission refused
 
 - **WHEN** OMP answers the prompt with a failure, or the bounded write queue cannot admit it
-- **THEN** Send is refused with the reason, the session stays Idle, the composer keeps its text and no user event is shown
+- **THEN** Send is refused with the reason, the session does not publish Running, the composer keeps its text and no user event or staged reply is shown; the removed draft is restored unless a newer revision was saved
 
 #### Scenario: Transport breaks after admission
 

@@ -96,18 +96,44 @@ Approvals default to yolo in OMP. Project `.omp`, `.claude` and MCP configuratio
 - **Rejected:** Negotiating protocol v2 for 64 MiB chunked frames. In v1, OMP itself caps frames at 1 MiB and elides oversized event fields, and the turn needs nothing larger. v2 can come with history restore in change 4 if it needs it.
 - **Reversal cost:** low. The minimum is a constant. Lowering it needs only the older version's contract to be read.
 
-### D3: The native turn path is reused; the prompt is committed on OMP's admission response
+### D3: OMP prompt admission is explicit at the shared session boundary
 
-- **Choice:** `prompt` follows the Codex native path.
-  1. Register the turn.
-  2. Write `{type:"prompt", id, message}` through admission.
-  3. Resolve admission from the `response`. Success with `data.agentInvoked:false` ends the turn at once.
-  4. Otherwise complete the turn from the `prompt_result` whose `id` matches the prompt:
-     - `completed` → end turn;
-     - `aborted` → cancelled;
-     - `error` → error, with the message bounded and redacted.
+- **Choice:** Only OMP defers accepting the desktop Send until the runtime
+  acknowledges admission. Claude and Codex keep their existing Send path.
+  1. Use the existing revision-guarded draft removal before dispatch. The host
+     reserves one Send from that removal through admission so concurrent Sends
+     cannot race it. No storage or admission failure may dispatch the prompt
+     twice.
+  2. Register an internal admitting turn before writing
+     `{type:"prompt", id, message}`. Keep published state Idle and suppress
+     desktop Stop during admission. Reject concurrent Sends, even when they
+     carry no draft revision. A direct host Stop and Close can still address
+     the registered turn. Do not enqueue the user event yet.
+  3. In the driver's successful response handler, invoke the session's
+     synchronous acceptance callback before returning to the line reader. The
+     callback enqueues the user event exactly once, publishes Running for an
+     agent turn unless Stop or Close already owns the state, and commits Send
+     success. The driver may release staged output only after the callback
+     returns, before consuming another frame. This handoff does not await
+     transcript credit. Success with `data.agentInvoked:false` completes
+     locally after the handoff; otherwise the matching `prompt_result` settles
+     the turn (`completed`, `aborted`, or `error`). Bound and redact errors.
+  4. The synchronous acceptance handoff is the sole Send commit point.
+     Before it, definite rejection (including local admission busy) fails Send
+     without showing a user event; admission timeout (60 s) or transport loss
+     also fails the run. In either case, restore the removed draft through
+     the existing revision guard, keep the composer text, and never resend
+     automatically. After the commit point the service returns success
+     without re-checking session liveness or restoring the draft, even if a
+     later frame immediately fails the run or Close removes it.
 
-  `turnId` reports the prompt id. `onNativeTurnEnded(sessionId, promptId, result)` fires so AgentSession's native Stop settlement works unchanged. Events between the write and the admission response are staged under the Codex staging bounds (64 entries or 256 KiB; overflow fails the run). They are released after admission, so the user event always precedes the reply.
+  The runtime driver supplies separate admission and terminal results. The
+  session owns when the user event is enqueued; the service awaits the admission
+  result inside its existing draft error path. Stage early turn output under
+  the existing 64-entry/256 KiB bounds, including any early terminal result;
+  overflow fails the run. Discard staged turn output on refusal. The driver
+  reports the registered id in `activeNativeTurns` and fires
+  `onNativeTurnEnded(sessionId, promptId, result)`; Stop settlement stays shared.
 - **Rejected:** Ending the turn on `agent_end` or `session_settled`. OMP documents that `agent_end` with `yielded:false` continues the run, and that `session_settled` covers background work beyond the prompt. `prompt_result` is the single per-prompt terminal.
 - **Reversal cost:** low.
 
@@ -212,9 +238,10 @@ flowchart LR
 ```mermaid
 stateDiagram-v2
   [*] --> Idle
-  Idle --> Admitting: prompt written
-  Admitting --> Idle: response failure / agentInvoked=false
-  Admitting --> Running: response success
+  Idle --> Admitting: prompt written (published Idle)
+  Admitting --> Idle: refused or local completion
+  Admitting --> Running: synchronous acceptance commits agent turn
+  Admitting --> Stopping: direct Stop sends abort
   Running --> Stopping: Stop → abort
   Running --> Idle: prompt_result completed|error
   Stopping --> Idle: prompt_result (aborted→Stopped, completed→Finished first, error→Ended with error)
@@ -272,9 +299,9 @@ sequenceDiagram
 | Queue / buffer / cache / transfer | Bound | At the bound | Timeout | At 10x / 100x |
 |---|---|---|---|---|
 | OMP stdout line | Shared 16 MiB line limit and the large-line permit above 1 MiB (OMP v1 itself emits ≤ 1 MiB) | Line over 16 MiB: session Failed *adapter message too large* | n/a | Unchanged; v1 caps frames upstream |
-| Waiting commands | 32 per session | New command refused `busy` before writing | Control 60 s (start), 10 s (abort) | Bounded |
+| Waiting commands | 32 per session | New command refused `busy` before writing | 60 s (start and prompt admission), 10 s (abort) | Bounded |
 | Writes to OMP stdin | Shared 1 MiB write admission | Prompt refused busy with composer kept; decline write → Failed | n/a | Bounded |
-| Events before admission | 64 entries or 256 KiB (Codex staging bound) | Session Failed with a protocol reason | Ends with admission | Bounded |
+| Events before prompt commit | 64 entries or 256 KiB (Codex staging bound) | Session Failed with a protocol reason | Ends when synchronous session acceptance returns or Send is refused | Bounded |
 | Decline/notify notices | 8 per turn or idle period, plus one overflow notice | Further requests declined silently in the chat, still answered | n/a | Bounded |
 | Open-message delta flags | ≤ 64 open messages × ≤ 256 content indexes; `messageId` ≤ 4 KiB encoded (≤ 256 KiB of ids) | Session Failed with an OMP protocol reason | n/a | Released at each `message_end`, so long tool loops stay at their open-message count |
 | Issued-id high-water mark | One integer per client | n/a (counter cannot overflow a 64-bit int in practice) | n/a | Constant |
@@ -284,11 +311,11 @@ sequenceDiagram
 
 ## Flow & State Gaps (FULL)
 
-- **`prompt_result` before the prompt response.** OMP may answer `prompt` out of order. A `prompt_result` for the registered prompt id that arrives before its response is held. When the success response arrives it applies at once. If the response is a failure, it is dropped. Any other `prompt_result` id fails the session.
+- **`prompt_result` before the prompt response.** Hold a result for the registered prompt id until the session's synchronous acceptance callback enqueues the user event. Deliver staged turn output before applying the result. Drop it on refusal. Any other `prompt_result` id fails the session.
 - **Events before `ready`.** `available_commands_update`, `extension_error`, `notice` and `config_*` frames are ignored before `ready`. A `response` before `ready` fails the start.
-- **Stop during admission.** AgentSession's `stop` (`agent_session.dart:1276-1310`) addresses `activeNativeTurns`. The driver reports the registered prompt as active from the moment it is written, so Stop writes `abort` after the prompt. OMP handles both in order.
-  - If admission then succeeds, the run's `prompt_result` settles Stop.
-  - If admission fails, or reports `agentInvoked:false`, the turn ends at once. Stop settles as *Finished before Stop*, or as *Turn ended with an error after Stop* when admission failed.
+- **Stop during admission.** The desktop does not offer Stop while admission is pending. A direct host Stop with a registered `activeNativeTurns` id sends `abort` after the prompt and publishes Stopping; a direct Stop before registration returns `notRunning`. Close remains available.
+  - After acceptance, `prompt_result` settles Stop without regressing Stopping to Running.
+  - A local completion or definite refusal settles a pending Stop as *Finished before Stop* or *Turn ended with an error after Stop*, respectively, without publishing Running. An ambiguous failure fails the session.
 - **Stop and the result race.** If the result arrives before the abort's response, AgentSession settles from the result. The abort command then waits for its response or its deadline as usual, and then retires. An abort response that arrives after its 10 s deadline is dropped as a previously issued id (D1), however late it arrives, and the session stays Stopping until `prompt_result`. Fixture tests cover three cases:
   - acknowledgement after `prompt_result`;
   - acknowledgement after the deadline;

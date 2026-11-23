@@ -2,14 +2,15 @@
 
 ## Metadata
 
-- **Round:** 3
-- **Prior round:** round 2 REVISE, Moderate 1 open
-- **Reviewer:** cross-model CLI (codex, Orca worker)
-- **Reviewed:** proposal.md, design.md and all four capability specs in openspec/changes/omp-rpc-transport; main agent-runtimes, agent-sessions, agent-tool-access, desktop-host-protocol and codex-sessions specs; openspec/architecture.md and roadmap.md; ADRs 0002, 0004, 0005, 0012, 0013 and 0015; host agent runtime_driver.dart, agent_session.dart, agent_service.dart, native_io.dart, codex/codex_client.dart, codex/version_probe.dart, adapter_detector.dart and runtime_profile_service.dart; host_protocol messages.dart and agent_events.dart; desktop agent_controller.dart, workbench_page.dart, runtime_profiles_dialog.dart and agent_transcript.dart; installed dart-add-unit-test and flutter-add-widget-test skills. `openspec context --json` resolved the local root with no referenced stores or unresolved references. External OMP wire documentation was not supplied; this review assesses the stated contract against repository evidence, not real-runtime compatibility.
-
-- **Round 2 scope:** Re-checked only Required Changes 1-3 and Suggestion 1 against edited design.md and specs/omp-sessions/spec.md and the author rebuttals; no implementation verification or wider review performed.
-
-- **Round 3 scope:** Re-checked only the remaining Moderate 1 / round 2 Required Change 1 against design.md D1, Resource Bounds, Flow & State Gaps and the matching omp-sessions spec scenarios and author rebuttal; earlier accepted findings remain accepted.
+- **Change:** omp-rpc-transport (FULL tier, repo-local OpenSpec root)
+- **Round:** 4 follow-up, re-checking the round 4 Required Changes only
+- **Prior round:** round 4 APPROVE_WITH_CHANGES, with Moderate 1-3 open (`20261123T005045118313Z.md`)
+- **Reviewer:** Claude (Opus 5.5), Orca worker task_e09df375226d, read-only
+- **Re-checked:**
+  - amended design.md: D3, the Turn state diagram, the Resource Bounds table, and the Flow & State Gaps entries "`prompt_result` before the prompt response" and "Stop during admission";
+  - tasks.md 7.3 and 7.4;
+  - specs/omp-sessions/spec.md, the requirement "OMP prompt admission and completion are distinct" with its four scenarios.
+- **Not re-checked:** findings from rounds 1-3 and the round 4 suggestions, except where an edit touches them. No code was run, and no code or artifacts were edited.
 
 ## Findings
 
@@ -19,58 +20,48 @@ None.
 
 ### Moderate
 
-1. **A late abort acknowledgement can turn an unconfirmed Stop into a killed session.** Design D1 and State & Ownership remove command correlation on deadline; Failure & Visibility and the malformed-frame scenario require every response with no waiting command to fail the session and terminate its unit. But Flow & State Gaps says a late abort response is ignored, and the Stop spec requires a late abort to remain Stopping without termination. Concrete sequence: abort k3 times out at ten seconds, its pending entry is removed, then its success response arrives before prompt_result. The general response rule now kills the process instead of permitting the late terminal result. The existing Codex client explicitly tolerates unmatched responses (codex_client.dart around line 346), so sharing framing does not supply the necessary policy. Specify how issued-but-expired abort IDs remain distinguishable from truly unsolicited IDs, with bounded retention, and how a turn result preceding the abort acknowledgement retires correlation. Cover both orderings in fixture tests.
+1. **Round 4 Moderate 1 (synchronous acceptance before output): resolved.**
+   - D3 step 3 now has the driver's success-response handler call the session's synchronous acceptance callback "before returning to the line reader".
+   - The callback enqueues the user event exactly once. Staged output may be released "only after the callback returns, before consuming another frame".
+   - The Resource Bounds row was renamed "Events before prompt commit" and now ends "when synchronous session acceptance returns or Send is refused".
+   - Flow & State Gaps holds an early `prompt_result` until acceptance, and delivers staged output before applying it.
+   - The resulting relay order (`user`, staged output, then the terminal result) works with the session's single `_events` chain (`agent_session.dart:555-590`).
+   - Task 7.3 adds the one-chunk test: acceptance, delta and terminal result, asserting exactly one user event before the reply and the turn end.
+   - The spec scenario *Admission precedes output* now asserts that the prompt is shown once before any reply text or thinking.
 
-   **Round 2 re-check: not resolved.** D1 and the Retired command ids row explicitly fail a response after its ID falls out of the 32-entry FIFO. A delayed abort acknowledgement can therefore still kill a healthy session: let its prompt_result settle the turn, let that abort expire, complete enough subsequent turns with expired aborts to evict its ID, then deliver its acknowledgement. Neither the design nor the spec bounds how late an acknowledgement may arrive. The revised Stop scenario promises no termination after the deadline without this exception, and the malformed-frame scenario now speaks of never-issued IDs while D1 also kills formerly issued IDs. The window fixes the immediate race but preserves the original failure after eviction. Distinguish previously issued IDs permanently with bounded state (for example, validate the generated monotonic ID range using an issued high-water mark), or supply another bounded policy that never turns an issued late abort acknowledgement into a protocol failure; add an eviction-boundary fixture.
+2. **Round 4 Moderate 2 (sole Send commit point): resolved.**
+   - D3 step 4 makes the synchronous handoff "the sole Send commit point". After it, the service "returns success without re-checking session liveness or restoring the draft, even if a later frame immediately fails the run or Close removes it". Before it, every failure, including a timeout or transport loss, restores the draft under the revision guard and never resends.
+   - The 60 s prompt admission deadline is now named in D3 and in the Waiting commands row. This also settles round 4 Suggestion 1.
+   - Task 7.3 adds the case of acceptance immediately followed by transport failure: Send still succeeds and the draft is not restored.
 
-   **Round 3 re-check: resolved.** D1 now classifies a non-waiting response using the generated per-client k<n> range and one issued high-water mark, rather than an evicting ID window. Previously issued abort acknowledgements remain harmless regardless of intervening command count or elapsed time, while never-issued IDs still fail. The resource row records constant-size ownership, Flow & State Gaps requires all three race fixtures including delivery after more than 32 subsequent commands, and the malformed-frame and late-abort spec scenarios match that policy. This resolves the remaining design finding; fixture execution belongs to implementation.
-
-2. **The delta-deduplication map has no actual memory bound.** D4 retains flags for each messageId/contentIndex until turn end, while Resource Bounds justifies this using transcript bounds. Those bounds belong to the desktop: agent_transcript.dart retains at most 2,000 entries/8 MiB and evicts old content; they neither limit the number of messages in a live native turn nor evict driver keys. The host's bounded event relay likewise limits queued bytes, not cumulative identities. An extended tool loop emitting many short assistant blocks can therefore grow the driver map indefinitely while the desktop continuously drains and evicts. Define a key-count and encoded-identity-byte limit, release completed-message state where contract-safe, and specify a visible overflow policy that preserves the no-duplicate guarantee. Test more identities than the limit during one turn while output is consumed.
-
-   **Round 2 re-check: resolved.** D4 now releases flags at message_end, limits open messages to 64, content indexes to 256 per message and encoded message IDs to 4 KiB, and fails visibly instead of evicting flags. The resource row and Too many open messages scenario make the host-side overflow behavior assertable independently of desktop eviction.
-
-3. **The promised provider-key secrecy is not implemented by the cited redaction path.** The OMP configuration spec requires an inherited provider key to appear in no desktop message, record or log, while D8 inherits the environment and D3/D5 use existing redaction. AgentService._secretsFor (around lines 404-410) supplies only current/recent Kumiko grant secrets to redactToolSecrets; OMP deliberately has no grant. Thus an OMP notice, error, approval title or startup stderr tail echoing an inherited provider credential is forwarded with that credential intact. This is a concrete gap in the new provider-key scenario, independent of later MCP delivery. Define the host-private source of known OMP credential values and a bounded redaction policy across streamed chunks, notices, errors and stderr, without publishing the values; alternatively explicitly narrow the spec to a guarantee the design can enforce. Include a synthetic provider-key canary in fixture output and verify the agreed guarantee across those paths.
-
-   **Round 2 re-check: resolved by narrowing the guarantee.** D8 explicitly limits the promise to Kumiko not copying the inherited environment into its outputs and acknowledges that runtime-emitted text receives only existing grant-secret redaction. The revised requirement and non-echoed provider-key canary scenario test that narrower, enforceable promise. This acceptance does not claim provider-key echoes are redacted.
+3. **Round 4 Moderate 3 (published Idle vs direct Stop/Close): resolved.**
+   - **Admission state.** D3 step 2 registers an internal admitting turn and keeps the published state Idle. The desktop offers no Stop during admission, which is consistent with `canStop` at `agent_controller.dart:256-262`. Concurrent Sends are rejected even when they carry no draft revision, which closes the retry gap at `agent_service.dart:1505-1509`.
+   - **Direct Stop and Close.** A direct host Stop and Close still address the registered turn.
+   - **Diagram.** The Turn state diagram adds "Admitting → Stopping: direct Stop sends abort".
+   - **Flow & State Gaps.** "Stop during admission" now covers:
+     - a Stop before registration, which returns `notRunning`;
+     - acceptance after a Stop, which settles from `prompt_result` without falling back to Running;
+     - a local completion or a refusal after a Stop, which settle as *Finished before Stop* or *Turn ended with an error after Stop* without publishing Running;
+     - an ambiguous failure, which fails the session.
+   - **Spec.** *Admission refused* now says "does not publish Running", which replaces the conflicting "stays Idle".
+   - **Tasks.** Task 7.3 checks that the desktop-facing state stays Idle during admission, that a direct Stop can abort after registration, and that Claude and Codex still acknowledge Send before their runtime responds. That last check also covers round 4 Suggestion 3.
 
 ### Suggestions
 
-1. **Make ADR supersession explicit.** The planned ADR 0016 should explicitly amend ADR 0004 decision 2 and the applicable ADR 0012 qualification wording for OMP minimum-version compatibility, plus ADR 0005/0013's universal tool-entry language for the temporary no-entry/no-grant behavior. ADR 0015's exceptions are expressly Codex-only. Listing the new choices without identifying the amended clauses leaves contradictory in-force instructions for later OMP work.
-
-   **Round 2 re-check: resolved.** The ADR section explicitly names the OMP-only amendments to ADR 0004 decision 2, ADR 0012 qualification wording and ADR 0005/0013 per-run tool-entry rules for ADR 0016 to record during apply.
+1. **A leftover sentence in D3 contradicts step 4.** The paragraph after the D3 steps still says "the service awaits the admission result inside its existing draft error path". That existing path's catch-all would restore the draft on a post-await exception (`agent_service.dart:1528-1540`). Step 4 is explicit and takes precedence, but rewording the sentence to "awaits the admission result; only pre-commit failures enter the draft-restore path" would stop an implementer from reusing the old catch-all unchanged. This is a wording fix, not blocking.
 
 ## Verdict
 
 VERDICT: APPROVE_WITH_CHANGES
 
+All three round 4 Required Changes are resolved in design.md, tasks.md and the omp-sessions spec. The amended D3 is consistent with the diagram, the resource bounds, Flow & State Gaps and the accepted round 1-3 decisions. Only one optional wording suggestion remains.
+
 ## Required Changes
 
-All three round 1 Required Changes have been applied and re-checked by the reviewer. Moderate 1 was resolved in round 3; Moderate 2, Moderate 3 and Suggestion 1 were accepted in round 2. No open items remain.
+All three round 4 Required Changes were applied and re-checked; none remain open.
+
+1. Staging now ends on a synchronous session acceptance that runs before the next frame is read, and there is a one-chunk ordering test. Resolved.
+2. The synchronous handoff is now the sole Send commit point, with no draft restore after it, and there is an acceptance-then-failure test. Resolved.
+3. The published state during admission is Idle, with no desktop Stop. Direct host Stop and Close are specified and aligned across D3, the diagram, Flow & State Gaps and *Admission refused*. Resolved.
 
 CHANGES_APPLIED: yes
-
-## Rebuttals
-
-Author, round 1; reviewer responses from round 2:
-
-- Moderate 1 / Required Change 1: author reports fixed; **reviewer objection:** the 32-ID FIFO still fails legitimate late acknowledgements after eviction; see the round 2 note above.
-  - design.md D1 adds a retired-id window: the 32 most recent retired command ids, FIFO. Late responses to retired ids are dropped; only ids that were never issued or have fallen out of the window fail.
-  - Flow & State Gaps "Stop and the result race" covers both orders and names the fixture tests.
-  - Resource Bounds gains a "Retired command ids" row.
-  - omp-sessions spec: the "Malformed frame after start" scenario is reworded, and a new scenario "Abort acknowledged after its deadline" is added.
-- Moderate 2 / Required Change 2: fixed; **accepted by reviewer**.
-  - design.md D4 releases a message's flags at `message_end`, with bounds of ≤ 64 open messages, ≤ 256 content indexes and `messageId` ≤ 4 KiB. Overflow fails the session instead of evicting, which preserves the no-duplicate guarantee.
-  - The Resource Bounds row is replaced.
-  - omp-sessions spec gains the scenario "Too many open messages".
-- Moderate 3 / Required Change 3: fixed by narrowing the guarantee to what can be enforced; **accepted by reviewer**.
-  - design.md D8 adds "Secret scope": Kumiko never copies the inherited environment into records, logs or desktop messages. OMP's own output text is shown as OMP wrote it, after the existing redaction, as for Claude. Per-value redaction of inherited variables is deliberately not built.
-  - omp-sessions requirement "OMP configuration and sign-in stay native" is reworded accordingly. Its "User-configured provider" scenario now uses a canary that OMP receives but does not echo.
-- Suggestion 1: adopted; **accepted by reviewer**. design.md ADRs now says ADR 0016 amends, for OMP only, ADR 0004 decision 2, ADR 0012's qualification wording, and ADR 0005/0013's per-run tool entry.
-
-Author, round 2:
-
-- Moderate 1 / Required Change 1 (round 2): fixed; **accepted by reviewer in round 3**.
-  - design.md D1 replaces the 32-id FIFO with an issued high-water mark, one integer per client. A response for any `k<n>` with `n` at or below the highest issued counter is dropped harmlessly however late it arrives. Only ids never issued, or malformed ones, fail.
-  - The Resource Bounds row is replaced with "Issued-id high-water mark".
-  - Flow & State Gaps requires a fixture that delivers the old acknowledgement after more than 32 later commands have been issued and settled.
-  - omp-sessions spec: "Malformed frame after start" now reads "a response whose id Kumiko never issued", and "Abort acknowledged after its deadline" covers delivery after many later commands.

@@ -211,10 +211,14 @@ Every delta scenario is mapped below.
   - *Streamed reply*, *Thinking and text interleave*, *Too many open messages* and *Unknown event*;
   - *Provider error* and *Oversized error text*;
   - driver tests for a `prompt_result` that arrives before the prompt response, and for pre-admission staging overflow at 64 entries or 256 KiB.
+  - exercise the shared admission and draft boundary: no user event before native acceptance, definite refusal restores the matching draft without overwriting a newer revision, a concurrent Send cannot dispatch, and accepted text is never restored on later turn failure.
+  - deliver acceptance, delta and terminal result in one stdout chunk and assert exactly one user event before reply and turn end; deliver acceptance immediately followed by transport failure and assert Send still succeeds and the draft is not restored;
+  - verify the desktop-facing state stays Idle during admission, a direct Stop can abort after registration, and Claude/Codex still acknowledge Send before their runtime response.
 
   Confirm they fail.
 - [ ] 7.4 Implement `prompt` (design D3, D4):
   - register the turn and handle admission, including `agentInvoked:false`;
+  - add the OMP-specific admission result at the `AgentSession` / `AgentService` boundary (D3); hold the Send reservation through admission, and leave Claude and Codex Send behavior unchanged;
   - complete the turn from `prompt_result`;
   - stage early events under the Codex bounds;
   - map deltas with per-message flags released at `message_end`, enforcing the 64-message, 256-index and 4 KiB limits;
