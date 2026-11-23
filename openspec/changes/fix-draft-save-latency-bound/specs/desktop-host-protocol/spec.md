@@ -3,7 +3,7 @@
 ## MODIFIED Requirements
 
 ### Requirement: Activity and draft requests are bounded
-`terminal/activity` SHALL name at most 64 terminals and be answered within the activity deadline; ids past the bound SHALL be refused `invalid-params`. A draft's encoded JSON string contents, UTF-8 and escaping counted, SHALL be at most 256 KiB, so a draft always fits a control message; a larger `agent/draftSave` SHALL be refused `draft-too-large`, and one past the total draft bound `draft-cap`. Under saturated output `terminal/activity` SHALL stay answered within the control-latency bound, and an `agent/draftSave`, whose answer waits for a durable commit, within the draft deadline. Source: ADR 0002, ADR 0014, issue #25.
+`terminal/activity` SHALL name at most 64 terminals and be answered within the activity deadline; ids past the bound SHALL be refused `invalid-params`. A draft's encoded JSON string contents, UTF-8 and escaping counted, SHALL be at most 256 KiB, so a draft always fits a control message; a larger `agent/draftSave` SHALL be refused `draft-too-large`, and one past the total draft bound `draft-cap`. Under saturated output `terminal/activity` SHALL stay answered within the control-latency bound, and an `agent/draftSave`, whose answer waits for a durable commit, within the draft deadline. Control responsiveness under saturated output stays qualified by Stop and permission replies under "Agent control stays responsive under saturated output", which the draft deadline does not relax. Source: ADR 0002, ADR 0014, issue #25.
 
 #### Scenario: Too many terminals
 - **WHEN** the desktop sends `terminal/activity` naming 65 terminals
