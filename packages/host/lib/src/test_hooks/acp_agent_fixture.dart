@@ -427,6 +427,11 @@ Future<int> runAcpAgentScript({
       return;
     }
     if (id == null) return;
+    // Every prompt is reported, before the scripted error and the busy check
+    // can refuse it, so a test can tell a refused prompt from one never sent.
+    if (method == 'session/prompt') {
+      report({'promptReceived': params['prompt']});
+    }
     final errors = script['errors'];
     final error = errors is Json ? errors[method] : null;
     if (error is Json) {

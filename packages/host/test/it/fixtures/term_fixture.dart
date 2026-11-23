@@ -234,21 +234,30 @@ Future<void> _command(String text) async {
       await Future<void>.delayed(const Duration(seconds: 1));
       exit(0);
     case 'flood':
-      // `flood N`: N bytes of numbered lines, as fast as the terminal takes
-      // them. Every line is `L<8 digits>` plus padding and CR LF, so a reader
-      // can check that none is missing whatever the terminal adds around it.
-      await _flood(int.parse(arg));
+      // `flood N [gate]`: N bytes of numbered lines, as fast as the terminal
+      // takes them. Every line is `L<8 digits>` plus padding and CR LF, so a
+      // reader can check that none is missing whatever the terminal adds
+      // around it. With a gate path, after each batch it checks whether that
+      // file exists and, the first time it does, writes `GATED;` once and
+      // keeps flooding: a reader that sees the marker knows the output it
+      // reads now was written after the gate was created.
+      final space = arg.indexOf(' ');
+      await _flood(
+        int.parse(space < 0 ? arg : arg.substring(0, space)),
+        gate: space < 0 ? null : arg.substring(space + 1),
+      );
     default:
       _out('fixture: ${parts.first}: command not found;');
   }
   await stdout.flush();
 }
 
-Future<void> _flood(int bytes, {bool done = true}) async {
+Future<void> _flood(int bytes, {bool done = true, String? gate}) async {
   const lineLength = 64;
   final pad = 'x' * (lineLength - 11);
   var written = 0;
   var seq = 0;
+  var gated = false;
   final buffer = StringBuffer();
   while (written < bytes) {
     buffer.clear();
@@ -259,6 +268,11 @@ Future<void> _flood(int bytes, {bool done = true}) async {
     }
     stdout.write(buffer.toString());
     await stdout.flush();
+    if (!gated && gate != null && File(gate).existsSync()) {
+      gated = true;
+      stdout.write('GATED;');
+      await stdout.flush();
+    }
   }
   if (done) stdout.write('FLOODED:${min(seq, 1 << 30)};');
 }

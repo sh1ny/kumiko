@@ -203,10 +203,12 @@ class Desktop {
     Set<String> capabilities = testCapabilities,
     String? executable,
     Duration quitTimeout = defaultQuitTimeout,
+    Duration jobDrainTimeout = defaultJobDrainTimeout,
   }) => HostLauncher(
     executable: executable ?? testHostExecutable(),
     profileDir: profile.path,
     quitTimeout: quitTimeout,
+    jobDrainTimeout: jobDrainTimeout,
     capabilities: capabilities,
     environment: environment,
   );
@@ -216,12 +218,14 @@ class Desktop {
     Map<String, String>? environment,
     Set<String> capabilities = testCapabilities,
     Duration quitTimeout = defaultQuitTimeout,
+    Duration jobDrainTimeout = defaultJobDrainTimeout,
   }) async {
     final launcher = newLauncher(
       profile,
       environment: environment,
       capabilities: capabilities,
       quitTimeout: quitTimeout,
+      jobDrainTimeout: jobDrainTimeout,
     );
     final session = await launcher.start();
     return Desktop._(launcher, session, profile).._listen();

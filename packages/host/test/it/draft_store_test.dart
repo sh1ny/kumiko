@@ -34,8 +34,6 @@ void main() {
     await deleteTree(profile);
   });
 
-  const quick = {'KUMIKO_TEST_DRAFT_DEADLINE_MS': '1000'};
-
   Future<Desktop> desktop({
     Map<String, String> env = const {},
     Set<String> capabilities = const {},
@@ -74,12 +72,6 @@ void main() {
     () async => (await Drafts(d).stats())['phase'] == 'available',
     reason: 'the draft store never opened',
   );
-
-  /// Ends the host as a crash would, then waits for it to be gone.
-  Future<void> killHost(Desktop d) async {
-    Process.killPid(d.session.pid, ProcessSignal.sigkill);
-    await d.session.lost.timeout(hostLossBound * 3);
-  }
 
   group('bounds and refusals', () {
     test('draftSave for unknown session refused unknown-session', () async {
@@ -123,22 +115,20 @@ void main() {
       final drafts = Drafts(d);
       final full = 'a' * maxDraftBytes;
       final fits = maxStoredDraftBytes ~/ maxDraftBytes;
-      // The fill and the follow-up reads are not under test: a slow commit
-      // on a loaded runner is waited out (issue #25). The refusal is strict.
       await storeReady(d);
       for (var i = 0; i < fits; i++) {
-        expect(await settledSave(d, ids[i], full, 1), 1);
+        expect((await drafts.save(ids[i], full, 1)).revision, 1);
       }
       final e = await refusal(drafts.save(ids[fits], 'a', 1));
       expect(e.reason, ErrorCode.draftCap);
-      expect((await settledLoad(d, ids[fits])).text, isNull);
+      expect((await drafts.load(ids[fits])).text, isNull);
       expect(
-        (await settledLoad(d, ids[0])).text,
+        (await drafts.load(ids[0])).text,
         full,
         reason: 'others unchanged',
       );
       // Replacing a draft with one of the same size is not an increase.
-      expect(await settledSave(d, ids[0], full, 2), 2);
+      expect((await drafts.save(ids[0], full, 2)).revision, 2);
     }, timeout: const Timeout(Duration(minutes: 3)));
 
     test('stale-revision reply carries the stored revision', () async {
@@ -230,12 +220,9 @@ void main() {
       // not only between commits.
       await d.setFault(TestFault.draftCommitHangs);
       var settled = false;
-      final held = settledSave(
-        d,
-        a.id,
-        'held under output',
-        21,
-      ).whenComplete(() => settled = true);
+      final held = drafts
+          .save(a.id, 'held under output', 21)
+          .whenComplete(() => settled = true);
       await eventually(
         () async => (await drafts.stats())['pending'] == 1,
         reason: 'the held commit never started',
@@ -247,7 +234,7 @@ void main() {
       );
       expect(settled, isFalse, reason: 'the commit was not held');
       await d.setFault(TestFault.draftCommitHangs, enabled: false);
-      expect(await held, 21);
+      expect((await held).revision, 21);
       await b.close();
       await a.close();
       await d.closeTerminal(terminal.id);
@@ -507,10 +494,11 @@ void main() {
     test(
       'held commit refuses send draft-unavailable within the deadline',
       () async {
-        final (d, a, report) = await session(env: quick);
+        // group 5: needs the short deadline of the fake timer.
+        final (d, a, report) = await session();
         final drafts = Drafts(d);
         await storeReady(d);
-        await settledSave(d, a.id, 'held send', 1);
+        await drafts.save(a.id, 'held send', 1);
         final ready = d.draftStoreReady;
         await d.setFault(TestFault.draftCommitHangs);
         final clock = Stopwatch()..start();
@@ -535,9 +523,9 @@ void main() {
         );
         // The removal committed late; the desktop stores the composer again
         // above r.
-        final late = await settledLoad(d, a.id);
+        final late = await drafts.load(a.id);
         expect((late.text, late.revision), (null, 1));
-        expect(await settledSave(d, a.id, 'held send', 2), 2);
+        expect((await drafts.save(a.id, 'held send', 2)).revision, 2);
       },
     );
 
@@ -623,7 +611,7 @@ void main() {
       final other = Directory(joinPath(work.path, 'other'))..createSync();
       final d = await desktop(
         env: {
-          'KUMIKO_TEST_DRAFT_DEADLINE_MS': '800',
+          // group 5: the refusal below needs a short deadline (fake timer).
           'KUMIKO_TEST_DRAFT_OPEN_HOLD_MS': '4000',
         },
       );
@@ -655,13 +643,14 @@ void main() {
         within: const Duration(seconds: 30),
         reason: 'the store never became available',
       );
-      expect(await settledSave(d, ids.single, 'now stored', 1), 1);
+      expect((await Drafts(d).save(ids.single, 'now stored', 1)).revision, 1);
     });
 
     test(
       'held commit: Stop and permission reply within control latency',
       () async {
-        final d = await desktop(env: quick);
+        // group 5: needs the short deadline of the fake timer.
+        final d = await desktop();
         final w = await d.openWorkspace(work.path);
         final saverReport = await saveAgentFixture(d, work, id: 'saver');
         final saver = AgentPeer(d);
@@ -740,7 +729,8 @@ void main() {
     test(
       'held commit: desktop kill ends every unit within the bound',
       () async {
-        final (d, a, _) = await session(env: quick);
+        // group 5: needs the short deadline of the fake timer.
+        final (d, a, _) = await session();
         final target = Directory(joinPath(work.path, 'units'))..createSync();
         await d.launch(target, TestFixture.tree);
         final tree = await waitReports(target, 3);
@@ -771,10 +761,11 @@ void main() {
     test(
       'released commit clears not responding and sends draftStoreReady',
       () async {
-        final (d, a, _) = await session(env: quick);
+        // group 5: needs the short deadline of the fake timer.
+        final (d, a, _) = await session();
         final drafts = Drafts(d);
         await storeReady(d);
-        await settledSave(d, a.id, 'before', 1);
+        await drafts.save(a.id, 'before', 1);
         final ready = d.draftStoreReady;
         await d.setFault(TestFault.draftCommitHangs);
         expect(
@@ -797,31 +788,10 @@ void main() {
         );
         expect((await drafts.stats())['notResponding'], isFalse);
         // The held save did commit once it returned; the next one is above it.
-        expect((await settledLoad(d, a.id)).text, 'held');
-        expect(await settledSave(d, a.id, 'after', 3), 3);
+        expect((await drafts.load(a.id)).text, 'held');
+        expect((await drafts.save(a.id, 'after', 3)).revision, 3);
       },
     );
-
-    test('a save that outlives the shortened deadline is waited out', () async {
-      final (d, a, _) = await session(env: quick);
-      await storeReady(d);
-      await d.setFault(TestFault.draftCommitHangs);
-      final outcome = settledSave(
-        d,
-        a.id,
-        'slow commit',
-        1,
-      ).then<Object>((r) => r, onError: (Object e) => e);
-      // The host's deadline fires first, then the commit is let go.
-      await eventually(
-        () async => (await Drafts(d).stats())['notResponding'] == true,
-        reason: 'the held save never missed its deadline',
-      );
-      await d.setFault(TestFault.draftCommitHangs, enabled: false);
-      expect(await outcome, 1);
-      final loaded = await settledLoad(d, a.id);
-      expect((loaded.text, loaded.revision), ('slow commit', 1));
-    });
   });
 
   group('reset', () {

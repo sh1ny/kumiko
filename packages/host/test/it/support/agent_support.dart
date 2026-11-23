@@ -162,3 +162,27 @@ Future<Json> waitFixture(File report, bool Function(Json) test) async {
 
 Matcher rpcCode(String reason) =>
     throwsA(isA<RpcException>().having((e) => e.reason, 'reason', reason));
+
+/// The text of every prompt the fixture adapter of [report] received, in
+/// order, from its `promptReceived` reports (written for every
+/// `session/prompt`, even one the fixture then refuses). The payload of each
+/// must be exactly one `{type: text, text: ...}` block; anything else fails
+/// the test.
+List<String> promptTexts(File report) {
+  final texts = <String>[];
+  for (final entry in fixtureReports(report)) {
+    if (!entry.containsKey('promptReceived')) continue;
+    final payload = entry['promptReceived'];
+    if (payload is! List || payload.length != 1) {
+      fail('a prompt is not exactly one block: ${jsonEncode(payload)}');
+    }
+    final block = payload.single;
+    if (block is! Map || block['type'] != 'text' || block['text'] is! String) {
+      fail(
+        'a prompt block is not {type: text, text: ...}: ${jsonEncode(block)}',
+      );
+    }
+    texts.add(block['text'] as String);
+  }
+  return texts;
+}

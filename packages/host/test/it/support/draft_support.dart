@@ -2,6 +2,7 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:host_protocol/host_protocol.dart';
+import 'package:process_containment/process_containment.dart';
 import 'package:sqlite3/sqlite3.dart' as sql;
 import 'package:test/test.dart';
 
@@ -68,50 +69,24 @@ class Drafts {
       (await desktop.connection.request('test/draft.stats'))! as Json;
 }
 
-/// Saves a draft that the test needs stored, waiting out a slow commit.
-///
-/// A host started with a shortened draft deadline
-/// (`KUMIKO_TEST_DRAFT_DEADLINE_MS`) applies it to every draft operation, not
-/// only to the one a test holds. On a loaded machine an ordinary commit can
-/// outlive it and be refused `draft-unavailable` (issue #25). Precondition
-/// and follow-up calls of such a test go through this helper or
-/// [settledLoad]; the operation under test still asserts its refusal with
-/// [refusal]. On `draft-unavailable` this waits for `agent/draftStoreReady`
-/// (the late commit returned), accepts the save if it landed, and otherwise
-/// saves once more. Any other refusal, a second refusal, or a store that never
-/// answers again fails the test.
-Future<int> settledSave(Desktop d, String id, String text, int revision) async {
-  final ready = d.draftStoreReady;
-  try {
-    return (await Drafts(d).save(id, text, revision)).revision;
-  } on RpcException catch (e) {
-    if (e.reason != ErrorCode.draftUnavailable) rethrow;
-  }
-  await _answersAgain(d, ready);
-  final stored = await settledLoad(d, id);
-  if (stored.revision == revision &&
-      stored.text == (text.isEmpty ? null : text)) {
-    return revision;
-  }
-  return (await Drafts(d).save(id, text, revision)).revision;
+/// Ends the host of [d] as a crash would, then waits until it is gone: the
+/// session reports the loss, and the process identity (PID and start time,
+/// captured before the kill) no longer runs. Both waits are hang guards, not
+/// product bounds.
+Future<void> killHost(Desktop d) async {
+  final pid = d.session.pid;
+  final started = processStartTime(pid);
+  Process.killPid(pid, ProcessSignal.sigkill);
+  await d.session.lost.timeout(_killGuard);
+  if (started == null) return; // gone before it could be read
+  await eventually(
+    () => !isProcessAlive(pid, started),
+    within: _killGuard,
+    reason: 'the killed host (pid $pid) is still running',
+  );
 }
 
-/// Loads a draft, waiting out a slow operation as [settledSave] does.
-Future<AgentDraftLoadResult> settledLoad(Desktop d, String id) async {
-  final ready = d.draftStoreReady;
-  try {
-    return await Drafts(d).load(id);
-  } on RpcException catch (e) {
-    if (e.reason != ErrorCode.draftUnavailable) rethrow;
-  }
-  await _answersAgain(d, ready);
-  return Drafts(d).load(id);
-}
-
-Future<void> _answersAgain(Desktop d, int ready) => eventually(
-  () => d.draftStoreReady > ready,
-  reason: 'the draft store never answered again',
-);
+const Duration _killGuard = Duration(seconds: 60);
 
 /// The [RpcException] [call] fails with; fails the test if it succeeds.
 Future<RpcException> refusal(Future<Object?> call) async {
@@ -201,3 +176,39 @@ List<Object?> receivedPrompts(File report) => [
   for (final p in fixtureReports(report))
     if (p.containsKey('prompt')) p['prompt'],
 ];
+
+/// Latches once [marker] has appeared in a byte stream received in chunks, even
+/// when it is split across any number of them. It keeps the last
+/// `marker.length - 1` bytes of everything received so far and joins them to
+/// each new chunk.
+class MarkerLatch {
+  MarkerLatch(String marker) : _marker = latin1.encode(marker);
+
+  final List<int> _marker;
+  List<int> _carry = const [];
+  bool _seen = false;
+
+  /// Whether the marker has been seen; set once, never cleared.
+  bool get seen => _seen;
+
+  /// Takes the next chunk of the stream.
+  void add(List<int> chunk) {
+    if (_seen) return;
+    final joined = [..._carry, ...chunk];
+    for (var i = 0; i + _marker.length <= joined.length; i++) {
+      var j = 0;
+      while (j < _marker.length && joined[i + j] == _marker[j]) {
+        j++;
+      }
+      if (j == _marker.length) {
+        _seen = true;
+        _carry = const [];
+        return;
+      }
+    }
+    final keep = _marker.length - 1;
+    _carry = joined.length <= keep
+        ? joined
+        : joined.sublist(joined.length - keep);
+  }
+}
