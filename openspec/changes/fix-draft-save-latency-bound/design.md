@@ -30,8 +30,8 @@ See proposal.md for the failures and the CI evidence.
 
 ### D1: The saturated-output row asserts success within the draft deadline and keeps the measurement
 
-- **Choice:** Every one of the 20 saves must return its revision; a save past the draft deadline fails with `draft-unavailable` and so fails the test. The stored row must hold the last text and revision, and terminal A must keep flowing. Remove the `≤ 250 ms` expectation. Keep the `measured:` print unchanged.
-- **Rejected:** Asserting `worst ≤ draft deadline` with an explicit expect. It adds nothing, because the host already refuses any save past its deadline. Moving the Windows test profile to the runner's other disk loses for the reasons in proposal S1.
+- **Choice:** Every one of the 20 saves must return its revision; a save past the draft deadline fails with `draft-unavailable` and so fails the test. The stored row must hold the last text and revision, and terminal A must keep flowing. Remove the `≤ 250 ms` expectation. Keep the `measured:` print unchanged. Also assert the worst time, measured at the desktop from request to acknowledgement, against the default draft deadline: the host's own timer starts only once it dispatches the save, so the end-to-end check covers the queueing before it. Then hold one commit open (`draftCommitHangs`) and require A's output to keep arriving while the save is still unanswered, so "keeps arriving while it commits" is checked during a commit, not only between commits.
+- **Rejected:** Relying on the host's own refusal alone for the deadline: its timer misses time spent before dispatch (pre-ship review round 1). Moving the Windows test profile to the runner's other disk loses for the reasons in proposal S1.
 - **Reversal cost:** low
 - **Important:** yes. It carries the contract change in proposal S1 (binds future changes).
 - **Chosen by:** user (proposal S1)
@@ -55,7 +55,7 @@ See proposal.md for the failures and the CI evidence.
 | S1 | Draft save bound under saturated output | Draft deadline, not control latency | Keep 250 ms and move the CI disk; known-flake note; per-platform bound; subtract commit time | low | yes | user |
 | S2 | Held-commit flake in the same change | Yes | Separate change | low | no | agent |
 | S3 | `terminal/activity` bound | Unchanged | Relax both | low | no | agent |
-| D1 | Saturated-output test assertion | Every save succeeds, stored row matches, A flows; keep the `measured:` print | Explicit `≤ deadline` check; move the disk | low | yes | user |
+| D1 | Saturated-output test assertion | Every save succeeds, stored row matches, A flows, including during a held commit; desktop-measured worst ≤ draft deadline; keep the `measured:` print | Host refusal as the only deadline check; move the disk | low | yes | user |
 | D2 | Shortened-deadline precondition calls | `settledSave`/`settledLoad` wait for `draftStoreReady`; `storeReady` before the first save | Longer test deadline; per-fault host deadline | low | no | agent |
 
 ## Assumptions
