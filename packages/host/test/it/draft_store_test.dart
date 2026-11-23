@@ -480,7 +480,8 @@ void main() {
       () async {
         final (d, a, report) = await session(env: quick);
         final drafts = Drafts(d);
-        await drafts.save(a.id, 'held send', 1);
+        await storeReady(d);
+        await settledSave(d, a.id, 'held send', 1);
         final ready = d.draftStoreReady;
         await d.setFault(TestFault.draftCommitHangs);
         final clock = Stopwatch()..start();
@@ -505,9 +506,9 @@ void main() {
         );
         // The removal committed late; the desktop stores the composer again
         // above r.
-        final late = await drafts.load(a.id);
+        final late = await settledLoad(d, a.id);
         expect((late.text, late.revision), (null, 1));
-        expect((await drafts.save(a.id, 'held send', 2)).revision, 2);
+        expect(await settledSave(d, a.id, 'held send', 2), 2);
       },
     );
 
@@ -743,7 +744,8 @@ void main() {
       () async {
         final (d, a, _) = await session(env: quick);
         final drafts = Drafts(d);
-        await drafts.save(a.id, 'before', 1);
+        await storeReady(d);
+        await settledSave(d, a.id, 'before', 1);
         final ready = d.draftStoreReady;
         await d.setFault(TestFault.draftCommitHangs);
         expect(
@@ -766,10 +768,28 @@ void main() {
         );
         expect((await drafts.stats())['notResponding'], isFalse);
         // The held save did commit once it returned; the next one is above it.
-        expect((await drafts.load(a.id)).text, 'held');
-        expect((await drafts.save(a.id, 'after', 3)).revision, 3);
+        expect((await settledLoad(d, a.id)).text, 'held');
+        expect(await settledSave(d, a.id, 'after', 3), 3);
       },
     );
+
+    test('a save that outlives the shortened deadline is waited out', () async {
+      final (d, a, _) = await session(env: quick);
+      await storeReady(d);
+      await d.setFault(TestFault.draftCommitHangs);
+      final outcome = settledSave(
+        d,
+        a.id,
+        'slow commit',
+        1,
+      ).then<Object>((r) => r, onError: (Object e) => e);
+      // Past the 1000 ms deadline, then the commit is let go.
+      await Future<void>.delayed(const Duration(milliseconds: 1500));
+      await d.setFault(TestFault.draftCommitHangs, enabled: false);
+      expect(await outcome, 1);
+      final loaded = await Drafts(d).load(a.id);
+      expect((loaded.text, loaded.revision), ('slow commit', 1));
+    });
   });
 
   group('reset', () {
