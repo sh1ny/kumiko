@@ -18,7 +18,7 @@ Every delta scenario is mapped below.
 | agent-runtimes: A runtime profile is an argv launch description for an ACP adapter | Override does not leak | packages/host/test/it/runtime_profiles_test.dart | profile env override reaches only its own sessions, not a terminal or another profile's session | green |
 | agent-runtimes: A runtime profile is an argv launch description for an ACP adapter | Codex argv profile | packages/host/test/it/codex_profiles_test.dart | Codex: Codex argv profile | green |
 | agent-runtimes: A runtime profile is an argv launch description for an ACP adapter | Unsupported runtime kind | packages/host/test/it/codex_profiles_test.dart | Codex: Unsupported runtime kind | green |
-| agent-runtimes: A runtime profile is an argv launch description for an ACP adapter | OMP argv profile | packages/host/test/it/omp_profiles_test.dart | OMP: OMP argv profile | red |
+| agent-runtimes: A runtime profile is an argv launch description for an ACP adapter | OMP argv profile | packages/host/test/it/omp_profiles_test.dart | OMP: OMP argv profile | green |
 | agent-runtimes: One runtime profile is the default | First start with the adapter installed | packages/host/test/it/runtime_profiles_test.dart | with no stored default the detected built-in is the default | green |
 | agent-runtimes: One runtime profile is the default | Default profile removed from PATH | packages/host/test/it/runtime_profiles_test.dart; packages/desktop/test/agent_test.dart | stored built-in default not detected reports defaultAvailable false with the reason; focused agent UI unavailable default asks to choose or add without silent fallback | green |
 | agent-runtimes: One runtime profile is the default | Codex added beside existing Claude default | packages/host/test/it/codex_profiles_test.dart | Codex: Codex added beside existing Claude default | green |
@@ -31,10 +31,10 @@ Every delta scenario is mapped below.
 | agent-runtimes: Runtime capabilities are claimed only from evidence | Advertised feature missing | packages/host/test/it/agent_continue_test.dart | qualified fixture version advertising neither load nor resume answers not-advertised | green |
 | agent-runtimes: Runtime capabilities are claimed only from evidence | Adapter speaks another protocol version | packages/host/test/it/agent_test.dart | fixture answering protocolVersion 2 fails the start with unsupported ACP protocol version and leaves no process | green |
 | agent-runtimes: Runtime capabilities are claimed only from evidence | Codex follows minimum-version compatibility | packages/host/test/it/codex_profiles_test.dart | Codex: Codex follows minimum-version compatibility | green |
-| agent-runtimes: Runtime capabilities are claimed only from evidence | OMP follows minimum-version compatibility | packages/host/test/it/omp_test.dart | OMP: OMP follows minimum-version compatibility | red |
+| agent-runtimes: Runtime capabilities are claimed only from evidence | OMP follows minimum-version compatibility | packages/host/test/it/omp_test.dart | OMP: OMP follows minimum-version compatibility | green |
 | agent-runtimes: Native OMP detection never borrows another application's private installation | OMP installed by its installer | packages/host/test/agent/adapter_detector_test.dart | OMP: OMP installed by its installer | green |
 | agent-runtimes: Native OMP detection never borrows another application's private installation | Only a shim exists | packages/host/test/agent/adapter_detector_test.dart; packages/host/test/it/omp_profiles_test.dart | OMP: Only a shim exists | green |
-| agent-runtimes: Native OMP detection never borrows another application's private installation | Only a private copy exists | packages/host/test/agent/adapter_detector_test.dart; packages/host/test/it/omp_profiles_test.dart | OMP: Only a private copy exists | red |
+| agent-runtimes: Native OMP detection never borrows another application's private installation | Only a private copy exists | packages/host/test/agent/adapter_detector_test.dart; packages/host/test/it/omp_profiles_test.dart | OMP: Only a private copy exists | green |
 | agent-tool-access: Each live session run receives a Kumiko MCP entry | New session gets the entry | packages/host/test/it/agent_tools_test.dart | session/new carries one kumiko entry with the bridge command and no workspace file changes | green |
 | agent-tool-access: Each live session run receives a Kumiko MCP entry | Continue gets a new entry | packages/host/test/it/agent_tools_test.dart | load and resume carry a kumiko entry with a fresh secret | green |
 | agent-tool-access: Each live session run receives a Kumiko MCP entry | Endpoint unavailable | packages/host/test/it/agent_tools_test.dart | endpoint down sends empty mcpServers and status unavailable | green |
@@ -45,43 +45,43 @@ Every delta scenario is mapped below.
 | agent-tool-access: Each live session run receives a Kumiko MCP entry | Unrelated commands cannot read bridge secret | packages/host/test/it/codex_tools_test.dart; packages/host/test/agent/tool_file_audit_test.dart; packages/host/test/it/release_contract_test.dart; tool/test/qualify_codex_app_server_test.dart | Codex: Unrelated commands cannot read bridge secret; Codex audit budget:; Codex audit manifest: | green |
 | agent-tool-access: Each live session run receives a Kumiko MCP entry | User already defines kumiko MCP | packages/host/test/it/codex_tools_test.dart | Codex: User already defines kumiko MCP | green |
 | agent-tool-access: Each live session run receives a Kumiko MCP entry | Child bridge connection cap | packages/host/test/it/codex_tools_test.dart | Codex: Child bridge connection cap | green |
-| agent-tool-access: Each live session run receives a Kumiko MCP entry | OMP run without tool delivery | packages/host/test/it/omp_test.dart | OMP: OMP run without tool delivery | red |
-| desktop-host-protocol: OMP sessions require a compatible peer | Compatible peers | packages/host/test/it/omp_test.dart | OMP: Compatible peers | red |
-| desktop-host-protocol: OMP sessions require a compatible peer | Older desktop | packages/host/test/it/omp_test.dart | OMP: Older desktop | red |
+| agent-tool-access: Each live session run receives a Kumiko MCP entry | OMP run without tool delivery | packages/host/test/it/omp_test.dart | OMP: OMP run without tool delivery | green |
+| desktop-host-protocol: OMP sessions require a compatible peer | Compatible peers | packages/host/test/it/omp_test.dart | OMP: Compatible peers | green |
+| desktop-host-protocol: OMP sessions require a compatible peer | Older desktop | packages/host/test/it/omp_test.dart | OMP: Older desktop | green |
 | desktop-host-protocol: OMP sessions require a compatible peer | Older host | packages/desktop/test/omp_agent_test.dart | OMP: Older host | red |
-| omp-sessions: OMP uses its native RPC connection | Start native OMP | packages/host/test/it/omp_test.dart | OMP: Start native OMP | red |
-| omp-sessions: OMP uses its native RPC connection | Readiness never arrives | packages/host/test/it/omp_test.dart; packages/host/test/agent/omp_driver_test.dart | OMP: Readiness never arrives | red |
-| omp-sessions: OMP uses its native RPC connection | Unsupported protocol version | packages/host/test/it/omp_test.dart | OMP: Unsupported protocol version | red |
-| omp-sessions: OMP uses its native RPC connection | Malformed frame after start | packages/host/test/agent/omp_client_test.dart; packages/host/test/it/omp_test.dart | OMP: Malformed frame after start | red |
-| omp-sessions: OMP versions below the minimum are refused before spawn | Supported version | packages/host/test/agent/version_probe_test.dart; packages/host/test/it/omp_test.dart | OMP: Supported version | red |
-| omp-sessions: OMP versions below the minimum are refused before spawn | Version too old | packages/host/test/agent/version_probe_test.dart; packages/host/test/it/omp_test.dart | OMP: Version too old | red |
-| omp-sessions: OMP versions below the minimum are refused before spawn | Probe fails | packages/host/test/agent/version_probe_test.dart; packages/host/test/it/omp_test.dart | OMP: Probe fails | red |
-| omp-sessions: OMP versions below the minimum are refused before spawn | Executable replaced after the probe | packages/host/test/it/omp_test.dart | OMP: Executable replaced after the probe | red |
-| omp-sessions: An OMP session records its native identity | Identity stored | packages/host/test/it/omp_test.dart | OMP: Identity stored | red |
-| omp-sessions: An OMP session records its native identity | Identity missing | packages/host/test/agent/omp_driver_test.dart; packages/host/test/it/omp_test.dart | OMP: Identity missing | red |
-| omp-sessions: OMP prompt admission and completion are distinct | Admission precedes output | packages/host/test/agent/omp_driver_test.dart; packages/host/test/it/omp_test.dart | OMP: Admission precedes output | red |
-| omp-sessions: OMP prompt admission and completion are distinct | Handled without the agent | packages/host/test/agent/omp_driver_test.dart | OMP: Handled without the agent | red |
-| omp-sessions: OMP prompt admission and completion are distinct | Admission refused | packages/host/test/agent/omp_driver_test.dart; packages/host/test/it/omp_test.dart | OMP: Admission refused | red |
-| omp-sessions: OMP prompt admission and completion are distinct | Transport breaks after admission | packages/host/test/it/omp_test.dart | OMP: Transport breaks after admission | red |
-| omp-sessions: OMP replies and thinking stream in order | Streamed reply | packages/host/test/agent/omp_driver_test.dart; packages/host/test/it/omp_test.dart | OMP: Streamed reply | red |
-| omp-sessions: OMP replies and thinking stream in order | Thinking and text interleave | packages/host/test/agent/omp_driver_test.dart | OMP: Thinking and text interleave | red |
-| omp-sessions: OMP replies and thinking stream in order | Too many open messages | packages/host/test/agent/omp_driver_test.dart | OMP: Too many open messages | red |
-| omp-sessions: OMP replies and thinking stream in order | Unknown event | packages/host/test/agent/omp_driver_test.dart | OMP: Unknown event | red |
-| omp-sessions: OMP turn errors are shown as OMP reports them | Provider error | packages/host/test/agent/omp_driver_test.dart; packages/host/test/it/omp_test.dart | OMP: Provider error | red |
-| omp-sessions: OMP turn errors are shown as OMP reports them | Oversized error text | packages/host/test/agent/omp_driver_test.dart | OMP: Oversized error text | red |
-| omp-sessions: OMP Stop uses native abort without process termination | Abort succeeds | packages/host/test/it/omp_test.dart | OMP: Abort succeeds | red |
-| omp-sessions: OMP Stop uses native abort without process termination | Turn finished first | packages/host/test/it/omp_test.dart | OMP: Turn finished first | red |
-| omp-sessions: OMP Stop uses native abort without process termination | Abort acknowledged after its deadline | packages/host/test/agent/omp_client_test.dart; packages/host/test/it/omp_test.dart | OMP: Abort acknowledged after its deadline | red |
-| omp-sessions: OMP Stop uses native abort without process termination | Abort not confirmed | packages/host/test/it/omp_test.dart | OMP: Abort not confirmed | red |
-| omp-sessions: OMP interactive requests are declined until supported | Tool approval requested | packages/host/test/agent/omp_driver_test.dart; packages/host/test/it/omp_test.dart | OMP: Tool approval requested | red |
-| omp-sessions: OMP interactive requests are declined until supported | Open URL request | packages/host/test/agent/omp_driver_test.dart | OMP: Open URL request | red |
-| omp-sessions: OMP interactive requests are declined until supported | Request after the turn | packages/host/test/agent/omp_driver_test.dart | OMP: Request after the turn | red |
-| omp-sessions: OMP features not yet supported are visibly unavailable | Tool activity in a turn | packages/host/test/agent/omp_driver_test.dart | OMP: Tool activity in a turn | red |
+| omp-sessions: OMP uses its native RPC connection | Start native OMP | packages/host/test/it/omp_test.dart | OMP: Start native OMP | green |
+| omp-sessions: OMP uses its native RPC connection | Readiness never arrives | packages/host/test/it/omp_test.dart; packages/host/test/agent/omp_driver_test.dart | OMP: Readiness never arrives | green |
+| omp-sessions: OMP uses its native RPC connection | Unsupported protocol version | packages/host/test/it/omp_test.dart | OMP: Unsupported protocol version | green |
+| omp-sessions: OMP uses its native RPC connection | Malformed frame after start | packages/host/test/agent/omp_client_test.dart; packages/host/test/it/omp_test.dart | OMP: Malformed frame after start | green |
+| omp-sessions: OMP versions below the minimum are refused before spawn | Supported version | packages/host/test/agent/version_probe_test.dart; packages/host/test/it/omp_test.dart | OMP: Supported version | green |
+| omp-sessions: OMP versions below the minimum are refused before spawn | Version too old | packages/host/test/agent/version_probe_test.dart; packages/host/test/it/omp_test.dart | OMP: Version too old | green |
+| omp-sessions: OMP versions below the minimum are refused before spawn | Probe fails | packages/host/test/agent/version_probe_test.dart; packages/host/test/it/omp_test.dart | OMP: Probe fails | green |
+| omp-sessions: OMP versions below the minimum are refused before spawn | Executable replaced after the probe | packages/host/test/it/omp_test.dart | OMP: Executable replaced after the probe | green |
+| omp-sessions: An OMP session records its native identity | Identity stored | packages/host/test/it/omp_test.dart | OMP: Identity stored | green |
+| omp-sessions: An OMP session records its native identity | Identity missing | packages/host/test/agent/omp_driver_test.dart; packages/host/test/it/omp_test.dart | OMP: Identity missing | green |
+| omp-sessions: OMP prompt admission and completion are distinct | Admission precedes output | packages/host/test/agent/omp_driver_test.dart; packages/host/test/it/omp_test.dart | OMP: Admission precedes output | green |
+| omp-sessions: OMP prompt admission and completion are distinct | Handled without the agent | packages/host/test/agent/omp_driver_test.dart | OMP: Handled without the agent | green |
+| omp-sessions: OMP prompt admission and completion are distinct | Admission refused | packages/host/test/agent/omp_driver_test.dart; packages/host/test/it/omp_test.dart | OMP: Admission refused | green |
+| omp-sessions: OMP prompt admission and completion are distinct | Transport breaks after admission | packages/host/test/it/omp_test.dart | OMP: Transport breaks after admission | green |
+| omp-sessions: OMP replies and thinking stream in order | Streamed reply | packages/host/test/agent/omp_driver_test.dart; packages/host/test/it/omp_test.dart | OMP: Streamed reply | green |
+| omp-sessions: OMP replies and thinking stream in order | Thinking and text interleave | packages/host/test/agent/omp_driver_test.dart | OMP: Thinking and text interleave | green |
+| omp-sessions: OMP replies and thinking stream in order | Too many open messages | packages/host/test/agent/omp_driver_test.dart | OMP: Too many open messages | green |
+| omp-sessions: OMP replies and thinking stream in order | Unknown event | packages/host/test/agent/omp_driver_test.dart | OMP: Unknown event | green |
+| omp-sessions: OMP turn errors are shown as OMP reports them | Provider error | packages/host/test/agent/omp_driver_test.dart; packages/host/test/it/omp_test.dart | OMP: Provider error | green |
+| omp-sessions: OMP turn errors are shown as OMP reports them | Oversized error text | packages/host/test/agent/omp_driver_test.dart | OMP: Oversized error text | green |
+| omp-sessions: OMP Stop uses native abort without process termination | Abort succeeds | packages/host/test/it/omp_test.dart | OMP: Abort succeeds | green |
+| omp-sessions: OMP Stop uses native abort without process termination | Turn finished first | packages/host/test/it/omp_test.dart | OMP: Turn finished first | green |
+| omp-sessions: OMP Stop uses native abort without process termination | Abort acknowledged after its deadline | packages/host/test/agent/omp_client_test.dart; packages/host/test/it/omp_test.dart | OMP: Abort acknowledged after its deadline | green |
+| omp-sessions: OMP Stop uses native abort without process termination | Abort not confirmed | packages/host/test/it/omp_test.dart | OMP: Abort not confirmed | green |
+| omp-sessions: OMP interactive requests are declined until supported | Tool approval requested | packages/host/test/agent/omp_driver_test.dart; packages/host/test/it/omp_test.dart | OMP: Tool approval requested | green |
+| omp-sessions: OMP interactive requests are declined until supported | Open URL request | packages/host/test/agent/omp_driver_test.dart | OMP: Open URL request | green |
+| omp-sessions: OMP interactive requests are declined until supported | Request after the turn | packages/host/test/agent/omp_driver_test.dart | OMP: Request after the turn | green |
+| omp-sessions: OMP features not yet supported are visibly unavailable | Tool activity in a turn | packages/host/test/agent/omp_driver_test.dart | OMP: Tool activity in a turn | green |
 | omp-sessions: OMP features not yet supported are visibly unavailable | Continue on a saved OMP session | packages/host/test/it/omp_test.dart; packages/desktop/test/omp_agent_test.dart | OMP: Continue on a saved OMP session | red |
-| omp-sessions: Closing an OMP session ends its input before cleanup | Orderly close | packages/host/test/it/omp_test.dart | OMP: Orderly close | red |
-| omp-sessions: Closing an OMP session ends its input before cleanup | OMP does not exit | packages/host/test/it/omp_test.dart | OMP: OMP does not exit | red |
-| omp-sessions: OMP configuration and sign-in stay native | User-configured provider | packages/host/test/it/omp_test.dart | OMP: User-configured provider | red |
-| omp-sessions: OMP configuration and sign-in stay native | Profile override does not leak | packages/host/test/it/omp_profiles_test.dart | OMP: Profile override does not leak | red |
+| omp-sessions: Closing an OMP session ends its input before cleanup | Orderly close | packages/host/test/it/omp_test.dart | OMP: Orderly close | green |
+| omp-sessions: Closing an OMP session ends its input before cleanup | OMP does not exit | packages/host/test/it/omp_test.dart | OMP: OMP does not exit | green |
+| omp-sessions: OMP configuration and sign-in stay native | User-configured provider | packages/host/test/it/omp_test.dart | OMP: User-configured provider | green |
+| omp-sessions: OMP configuration and sign-in stay native | Profile override does not leak | packages/host/test/it/omp_profiles_test.dart | OMP: Profile override does not leak | green |
 
 ## 1. ADR and architecture record
 
@@ -177,7 +177,7 @@ Every delta scenario is mapped below.
 
 ## 7. OMP runtime driver and host lifecycle
 
-- [ ] 7.1 Write failing integration tests in `omp_test.dart`:
+- [x] 7.1 Write failing integration tests in `omp_test.dart`:
   - *Start native OMP*, *Readiness never arrives* and *Unsupported protocol version*;
   - *Supported version*, *Version too old*, *Probe fails* and *Executable replaced after the probe*;
   - *Identity stored* and *Identity missing*;
@@ -188,7 +188,7 @@ Every delta scenario is mapped below.
   - In `omp_profiles_test.dart`: *OMP argv profile*, *Profile override does not leak*, and the explicit custom profile launch assertion for *Only a private copy exists*.
 
   Also write the readiness and identity unit tests in `omp_driver_test.dart`. Confirm they fail.
-- [ ] 7.2 Implement startup in `OmpRuntimeDriver` (`initialize` and `newSession`), in this order:
+- [x] 7.2 Implement startup in `OmpRuntimeDriver` (`initialize` and `newSession`), in this order:
   1. require `ready` with protocol 1;
   2. send `set_event_filter` with delta updates;
   3. read `get_state` and require `sessionId` ≤ 4 KiB;
@@ -206,7 +206,7 @@ Every delta scenario is mapped below.
 
   Verify the startup rows in `test/it/omp_test.dart`, `test/it/omp_profiles_test.dart` and `test/agent/omp_driver_test.dart` in the same green run as 7.4 and 7.6. Flip them green, including *Only a private copy exists* after both files pass.
 
-- [ ] 7.3 Write failing turn, streaming and error tests:
+- [x] 7.3 Write failing turn, streaming and error tests:
   - *Admission precedes output*, *Handled without the agent*, *Admission refused* and *Transport breaks after admission*;
   - *Streamed reply*, *Thinking and text interleave*, *Too many open messages* and *Unknown event*;
   - *Provider error* and *Oversized error text*;
@@ -216,7 +216,7 @@ Every delta scenario is mapped below.
   - verify the desktop-facing state stays Idle during admission, a direct Stop can abort after registration, and Claude/Codex still acknowledge Send before their runtime response.
 
   Confirm they fail.
-- [ ] 7.4 Implement `prompt` (design D3, D4):
+- [x] 7.4 Implement `prompt` (design D3, D4):
   - register the turn and handle admission, including `agentInvoked:false`;
   - add the OMP-specific admission result at the `AgentSession` / `AgentService` boundary (D3); hold the Send reservation through admission, and leave Claude and Codex Send behavior unchanged;
   - complete the turn from `prompt_result`;
@@ -226,14 +226,14 @@ Every delta scenario is mapped below.
 
   Verify the turn rows in the group 7 green run; flip them green.
 
-- [ ] 7.5 Write failing Stop, interactive request, Continue and close tests:
+- [x] 7.5 Write failing Stop, interactive request, Continue and close tests:
   - *Abort succeeds*, *Turn finished first*, *Abort acknowledged after its deadline* and *Abort not confirmed*. The last two include an acknowledgement after `prompt_result`, one after the deadline, and one after more than 32 later commands;
   - *Tool approval requested*, *Open URL request* and *Request after the turn*, plus the 8-notice cap;
   - *Tool activity in a turn* and *Continue on a saved OMP session*;
   - *Orderly close* and *OMP does not exit*.
 
   Confirm they fail.
-- [ ] 7.6 Implement Stop, interactive request, Continue and close behavior:
+- [x] 7.6 Implement Stop, interactive request, Continue and close behavior:
   - `cancel` and `cancelWithPermissions` sending `abort`, with `activeNativeTurns` and `onNativeTurnEnded` so that AgentSession's native Stop settles unchanged;
   - the fail-closed `extension_ui_response` declines (design D5): clamped, redacted and escaped titles, the notice cap, and Failed when a decline cannot be written;
   - the tool-count notice (design D6);

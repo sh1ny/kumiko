@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:host_protocol/host_protocol.dart';
@@ -6,6 +7,8 @@ import 'package:process_containment/process_containment.dart';
 import 'package:test/test.dart';
 
 import 'support/harness.dart';
+import 'support/omp_support.dart' show OmpFixture;
+import 'support/terminal_support.dart';
 
 void main() {
   setUpAll(buildTestHost);
@@ -84,9 +87,83 @@ void main() {
   });
 
   test('OMP: Only a private copy exists', () async {
-    executable(p.join(bin.path, 'Tern', 'private'), 'omp');
-    final result = await list(await start());
-    expect(result.profiles, isEmpty);
+    final private = Directory(p.join(bin.path, 'Tern', 'private'));
+    final privateBin = Directory(p.join(private.path, 'bin'))
+      ..createSync(recursive: true);
+    final source = File(testHostExecutable());
+    final copy = source.copySync(
+      p.join(privateBin.path, Platform.isWindows ? 'omp.exe' : 'omp'),
+    );
+    if (!Platform.isWindows) chmodPath(copy.path, 0x1c0);
+    final sourceLib = Directory(p.join(source.parent.parent.path, 'lib'));
+    final targetLib = Directory(p.join(private.path, 'lib'))..createSync();
+    for (final asset in sourceLib.listSync().whereType<File>()) {
+      asset.copySync(p.join(targetLib.path, p.basename(asset.path)));
+    }
+    final fixture = OmpFixture(profile, bin);
+    await fixture.open(
+      environment: {'KUMIKO_TEST_RUNTIME_PATH': bin.path},
+      executable: copy.path,
+    );
+    final result = await list(fixture.desktop);
+    expect(result.profiles.map((profile) => profile.id), ['scripted-omp']);
+    final peer = await fixture.start();
+    expect(peer.started.adapter.name, 'omp-rpc');
+    await peer.close();
     expect(LedgerView(profile).units(), isEmpty);
+  });
+
+  test('OMP: OMP argv profile', () async {
+    final fixture = OmpFixture(profile, bin);
+    await fixture.open();
+    await fixture.start();
+    expect(
+      fixture.reports.singleWhere((r) => r['launch'] == 'root')['argv'],
+      fixture.argv,
+    );
+  });
+
+  test('OMP: Profile override does not leak', () async {
+    final fixture = OmpFixture(profile, bin);
+    await fixture.open(
+      profileEnvironment: {'OMP_PROFILE_CANARY': 'first-profile-only'},
+    );
+    await fixture.start();
+    await fixture.desktop.connection.request(
+      Method.runtimeSave,
+      RuntimeSaveParams(
+        RuntimeProfile(
+          id: 'second-omp',
+          name: 'Second OMP',
+          runtimeKind: 'omp',
+          executable: testHostExecutable(),
+          args: fixture.argv,
+        ),
+      ),
+    );
+    await fixture.desktop.connection.request(
+      Method.agentStart,
+      AgentStartParams(
+        workspaceId: fixture.workspace,
+        runtimeProfileId: 'second-omp',
+      ),
+    );
+    final reports = fixture.reports.where((r) => r['launch'] == 'root');
+    expect(reports.map((r) => r['profileCanary']), [
+      'first-profile-only',
+      null,
+    ]);
+    const key = 'OMP_PROFILE_CANARY';
+    final desktop = fixture.desktop;
+    await desktop.saveFixtureProfile(cwd: bin.path);
+    final terminal = await desktop.openTerminal('fixture');
+    await terminal.waitForText('READY;');
+    await terminal.send('env $key');
+    final response = RegExp('ENV:$key=([^;]*);');
+    await eventually(() => response.hasMatch(terminal.text));
+    final value = response.firstMatch(terminal.text)!.group(1)!;
+    expect(utf8.decode(base64.decode(value)), '-');
+    await terminal.close();
+    await terminal.waitExited();
   });
 }

@@ -80,6 +80,7 @@ class OmpClient implements RuntimeTransport {
     Json fields = const {},
     Duration timeout = const Duration(seconds: 60),
     void Function(String id)? onIssued,
+    Object? Function(Object? data)? onSuccess,
   }) {
     try {
       if (isClosed) throw _closedError();
@@ -102,7 +103,7 @@ class OmpClient implements RuntimeTransport {
                   TimeoutException('OMP $type timed out', timeout),
                 );
               });
-              _pending[id] = _Pending(result, timer);
+              _pending[id] = _Pending(result, timer, onSuccess);
             },
           )
           .ignore();
@@ -149,7 +150,15 @@ class OmpClient implements RuntimeTransport {
     _pending.remove(id);
     pending.timer.cancel();
     if (success) {
-      pending.result.complete(frame['data']);
+      try {
+        final data = frame['data'];
+        final delivery = pending.onSuccess?.call(data);
+        pending.result.complete(data);
+        return delivery;
+      } on Object catch (error, stack) {
+        pending.result.completeError(error, stack);
+        rethrow;
+      }
     } else {
       pending.result.completeError(OmpRemoteException(error! as String, code));
     }
@@ -183,6 +192,11 @@ class OmpClient implements RuntimeTransport {
     _pending.clear();
   }
 
+  bool get largeLineOwned => _reader.largeLineOwned;
+  bool get largeLineWaiting => _reader.largeLineWaiting;
+
+  void fail(Object error) => _fail(error);
+
   @override
   Future<void> close() {
     _close();
@@ -191,8 +205,9 @@ class OmpClient implements RuntimeTransport {
 }
 
 class _Pending {
-  _Pending(this.result, this.timer);
+  _Pending(this.result, this.timer, this.onSuccess);
 
   final Completer<Object?> result;
   final Timer timer;
+  final Object? Function(Object? data)? onSuccess;
 }
