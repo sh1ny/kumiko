@@ -7,19 +7,19 @@
 | desktop-host-protocol → Activity and draft requests are bounded | Too many terminals | packages/host/test/it/terminal_activity_test.dart | 65 ids refused invalid-params without a table read | green |
 | desktop-host-protocol → Activity and draft requests are bounded | Oversized draft | packages/host_protocol/test/agent_messages_test.dart | draft one byte past 256 KiB encoded refused draft-too-large | green |
 | desktop-host-protocol → Activity and draft requests are bounded | Unknown session | packages/host/test/it/draft_store_test.dart | bounds and refusals draftSave for unknown session refused unknown-session | green |
-| desktop-host-protocol → Activity and draft requests are bounded | Draft save under saturated output | packages/host/test/it/draft_store_test.dart | bounds and refusals draft save acknowledged within the draft deadline under saturated output | red |
+| desktop-host-protocol → Activity and draft requests are bounded | Draft save under saturated output | packages/host/test/it/draft_store_test.dart | bounds and refusals draft save acknowledged within the draft deadline under saturated output | green |
 
 ## 1. Draft save under saturated output (S1, D1)
 
-- [ ] 1.1 Re-run the unchanged rows to confirm they still pass: `mise exec -- dart test test/it/terminal_activity_test.dart -N "65 ids refused"` and `mise exec -- dart test test/it/draft_store_test.dart -N "unknown-session"` in `packages/host`, and `mise exec -- dart test test/agent_messages_test.dart -N "draft-too-large"` in `packages/host_protocol`. All three pass.
-- [ ] 1.2 In `draft_store_test.dart`, rename the row to "draft save acknowledged within the draft deadline under saturated output" and rewrite its assertions per design D1:
+- [x] 1.1 Re-run the unchanged rows to confirm they still pass: `mise exec -- dart test test/it/terminal_activity_test.dart -N "65 ids refused"` and `mise exec -- dart test test/it/draft_store_test.dart -N "unknown-session"` in `packages/host`, and `mise exec -- dart test test/agent_messages_test.dart -N "draft-too-large"` in `packages/host_protocol`. All three pass.
+- [x] 1.2 In `draft_store_test.dart`, rename the row to "draft save acknowledged within the draft deadline under saturated output" and rewrite its assertions per design D1:
   - each of the 20 saves returns its revision;
   - the stored row then holds the last text at revision 20;
   - terminal A kept flowing;
   - no `≤ 250 ms` expectation, and the `measured:` line printed unchanged.
   
   Verify: run that test alone, and it passes. Flip its Test map row to green.
-- [ ] 1.3 C1: confirm the fact is at its destination, `specs/desktop-host-protocol/spec.md` → Requirement "Activity and draft requests are bounded" in this change. Verify: `openspec validate fix-draft-save-latency-bound --strict` passes.
+- [x] 1.3 C1: confirm the fact is at its destination, `specs/desktop-host-protocol/spec.md` → Requirement "Activity and draft requests are bounded" in this change. Verify: `openspec validate fix-draft-save-latency-bound --strict` passes.
 
 ## 2. Shortened-deadline tests wait out a slow commit (S2, D2)
 

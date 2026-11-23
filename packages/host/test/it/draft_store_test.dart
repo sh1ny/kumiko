@@ -149,76 +149,82 @@ void main() {
       expect(draftRow(profile, a.id)['text'], 'stored text');
     });
 
-    test(
-      'draft save acked within control latency under saturated output',
-      () async {
-        final (d, a, _) = await session(id: 'saver');
-        await d.saveFixtureProfile(cwd: work.path);
-        var ready = false;
-        var bytes = 0;
-        var tail = '';
-        final terminal = await d.openTerminal(
-          'fixture',
-          onData: (data) {
-            tail += latin1.decode(data);
-            if (!ready) {
-              ready = tail.contains('READY;');
-            } else {
-              bytes += data.length;
-            }
-            if (tail.length > 128) tail = tail.substring(tail.length - 128);
-          },
+    // The acknowledgement waits for a durable commit (three syncs), so it is
+    // bounded by the draft deadline, not the control-latency bound: control
+    // under saturation is qualified by Stop and permission replies (change
+    // fix-draft-save-latency-bound, issue #25). A save past the deadline is
+    // refused draft-unavailable and fails this test.
+    test('draft save acknowledged within the draft deadline under saturated '
+        'output', () async {
+      final (d, a, _) = await session(id: 'saver');
+      await d.saveFixtureProfile(cwd: work.path);
+      var ready = false;
+      var bytes = 0;
+      var tail = '';
+      final terminal = await d.openTerminal(
+        'fixture',
+        onData: (data) {
+          tail += latin1.decode(data);
+          if (!ready) {
+            ready = tail.contains('READY;');
+          } else {
+            bytes += data.length;
+          }
+          if (tail.length > 128) tail = tail.substring(tail.length - 128);
+        },
+      );
+      await eventually(() => ready, reason: 'terminal A did not initialize');
+      // Session B has no credit: its events back up and stay unsent.
+      final workspace = (await d.listWorkspaces()).workspaces.single;
+      final stalledReport = await saveAgentFixture(
+        d,
+        work,
+        id: 'stalled',
+        script: {
+          'blockedWriteAfterMs': 100,
+          'prompt': [
+            {
+              'flood': {'count': 4096, 'update': textUpdate('b' * 16384)},
+            },
+          ],
+        },
+      );
+      final b = AgentPeer(d);
+      await b.start(workspace.id, runtime: 'stalled');
+      await b.attach(credit: false);
+      await b.prompt();
+      await waitFixture(stalledReport, (p) => p['blockedWrite'] == true);
+      await terminal.send('flood ${1 << 40}');
+      await eventually(
+        () => bytes >= 8 * 1024 * 1024,
+        within: const Duration(seconds: 60),
+        reason: 'terminal A did not saturate',
+      );
+      final drafts = Drafts(d);
+      var worst = Duration.zero;
+      final before = bytes;
+      for (var i = 1; i <= 20; i++) {
+        final clock = Stopwatch()..start();
+        expect(
+          (await drafts.save(a.id, 'draft number $i ' * 100, i)).revision,
+          i,
         );
-        await eventually(() => ready, reason: 'terminal A did not initialize');
-        // Session B has no credit: its events back up and stay unsent.
-        final workspace = (await d.listWorkspaces()).workspaces.single;
-        final stalledReport = await saveAgentFixture(
-          d,
-          work,
-          id: 'stalled',
-          script: {
-            'blockedWriteAfterMs': 100,
-            'prompt': [
-              {
-                'flood': {'count': 4096, 'update': textUpdate('b' * 16384)},
-              },
-            ],
-          },
-        );
-        final b = AgentPeer(d);
-        await b.start(workspace.id, runtime: 'stalled');
-        await b.attach(credit: false);
-        await b.prompt();
-        await waitFixture(stalledReport, (p) => p['blockedWrite'] == true);
-        await terminal.send('flood ${1 << 40}');
-        await eventually(
-          () => bytes >= 8 * 1024 * 1024,
-          within: const Duration(seconds: 60),
-          reason: 'terminal A did not saturate',
-        );
-        final drafts = Drafts(d);
-        var worst = Duration.zero;
-        final before = bytes;
-        for (var i = 1; i <= 20; i++) {
-          final clock = Stopwatch()..start();
-          await drafts.save(a.id, 'draft number $i ' * 100, i);
-          if (clock.elapsed > worst) worst = clock.elapsed;
-        }
-        expect(bytes, greaterThan(before), reason: 'A kept flowing');
-        // ignore: avoid_print
-        print(
-          'measured: draft save under saturated output worst of 20 '
-          '${worst.inMicroseconds / 1000} ms on ${Platform.operatingSystem}',
-        );
-        expect(worst, lessThanOrEqualTo(_ackBound));
-        await b.close();
-        await a.close();
-        await d.closeTerminal(terminal.id);
-        await terminal.waitExited(within: const Duration(seconds: 35));
-        await terminal.subscription.cancel();
-      },
-      timeout: const Timeout(Duration(minutes: 5)),
-    );
+        if (clock.elapsed > worst) worst = clock.elapsed;
+      }
+      expect(bytes, greaterThan(before), reason: 'A kept flowing');
+      final stored = await drafts.load(a.id);
+      expect((stored.text, stored.revision), ('draft number 20 ' * 100, 20));
+      // ignore: avoid_print
+      print(
+        'measured: draft save under saturated output worst of 20 '
+        '${worst.inMicroseconds / 1000} ms on ${Platform.operatingSystem}',
+      );
+      await b.close();
+      await a.close();
+      await d.closeTerminal(terminal.id);
+      await terminal.waitExited(within: const Duration(seconds: 35));
+      await terminal.subscription.cancel();
+    }, timeout: const Timeout(Duration(minutes: 5)));
   });
 
   group('durability', () {
