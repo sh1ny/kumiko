@@ -54,7 +54,7 @@ The design has no Assumptions entries, so no verify task precedes the work.
 
 ## 7. Integration checks
 
-- [ ] 7.1 Run `mise run check` and `mise run test:host` after the gaming check; with exit 1, rely on the PR's CI, which runs the same suites. Verify: both pass, or the PR's CI is green on Windows, Linux and macOS.
+- [x] 7.1 Run `mise run check` and `mise run test:host` after the gaming check; with exit 1, rely on the PR's CI, which runs the same suites. Verify: both pass, or the PR's CI is green on Windows, Linux and macOS.
 
 ## Workflow follow-up
 
