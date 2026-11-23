@@ -89,11 +89,15 @@ abstract final class Capability {
   static const String terminal = 'terminal';
   static const String agent = 'agent';
   static const String codex = 'codex';
+  static const String omp = 'omp';
   static const String agentExtensionsV1 = 'agent-extensions-v1';
 
   /// `app/quit` and `app/previousExit` (app-exit-and-reopen D1, D5).
   static const String lifecycle = 'lifecycle';
 }
+
+/// Runtime kinds supported by the host and desktop profile editor.
+const supportedRuntimeKinds = ['claude-code', 'codex', 'omp'];
 
 /// The capability a method needs; methods not listed need none.
 const Map<String, String> methodCapability = {

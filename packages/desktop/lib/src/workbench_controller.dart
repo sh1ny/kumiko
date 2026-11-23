@@ -707,6 +707,12 @@ class WorkbenchController extends ChangeNotifier {
     for (final p in _layout?.tab(tabId)?.panes ?? const <PaneNode>[]) p.id,
   ];
 
+  static String _runtimeLabel(Object? kind) => switch (kind) {
+    'codex' => 'Codex',
+    'omp' => 'OMP',
+    _ => 'Claude Code',
+  };
+
   /// The title a pane shows (and a close warning names).
   String paneTitle(PaneNode pane) {
     final kind = viewKindOf(pane.kind);
@@ -716,12 +722,15 @@ class WorkbenchController extends ChangeNotifier {
           terminals.linkOf(pane.id)?.profileName ?? pane.state['profileName'];
       return name is String ? '${kind.label} · $name' : kind.label;
     }
+    final label = kind.id == agentChatKind
+        ? _runtimeLabel(
+            agents.linkOf(pane.id)?.runtimeKind ?? pane.state['runtimeKind'],
+          )
+        : kind.label;
     final workspace = pane.workspace == null
         ? null
         : this.workspace(pane.workspace!);
-    return workspace == null
-        ? kind.label
-        : '${kind.label} · ${workspace.label}';
+    return workspace == null ? label : '$label · ${workspace.label}';
   }
 
   /// A tab is titled by its focused pane.
@@ -788,15 +797,28 @@ class WorkbenchController extends ChangeNotifier {
     return null;
   }
 
+  String? get ompUnavailableReason {
+    final reason = agentsUnavailableReason;
+    if (reason != null) return reason;
+    try {
+      requireOmpCapabilities(_link!.hello.capabilities);
+    } on RpcException catch (e) {
+      return e.message;
+    }
+    return null;
+  }
+
   Future<AgentLaunch> launchAgent({
     String? profileId,
     bool choose = false,
     String? workspaceId,
     String runtimeKind = 'claude-code',
   }) async {
-    final reason = runtimeKind == 'codex'
-        ? codexUnavailableReason
-        : agentsUnavailableReason;
+    final reason = switch (runtimeKind) {
+      'codex' => codexUnavailableReason,
+      'omp' => ompUnavailableReason,
+      _ => agentsUnavailableReason,
+    };
     final link = _link;
     final target = workspaceId ?? _layout?.selectedWorkspace;
     if (reason != null || link == null || _layout == null) {
@@ -827,7 +849,12 @@ class WorkbenchController extends ChangeNotifier {
       return AgentLaunch(
         AgentLaunchKind.chooseProfile,
         profiles: compatible,
-        message: choose ? null : list.defaultReason ?? 'The default runtime profile is unavailable. Choose or add a profile.',
+        message: choose
+            ? null
+            : profileId == null && list.defaultAvailable
+            ? 'The default profile is for another runtime. Choose a ${_runtimeLabel(runtimeKind)} profile below.'
+            : list.defaultReason ??
+                  'Choose an available runtime profile below.',
         workspaceId: target,
       );
     }

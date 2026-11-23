@@ -2358,7 +2358,7 @@ void main() {
           key('launch-agent-chat'),
         );
         expect(entry.enabled, isFalse);
-        expect(find.textContaining('does not support agents'), findsOneWidget);
+        expect((entry.child as Text).data, contains('does not support agents'));
         await tester.tap(key('launch-terminal'));
         await flush(tester);
         expect(rig.terminalPanes, hasLength(1));

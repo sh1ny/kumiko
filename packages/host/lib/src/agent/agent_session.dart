@@ -8,6 +8,8 @@ import 'package:host_protocol/host_protocol.dart';
 import 'acp/acp_client.dart';
 import 'codex/codex_client.dart';
 import 'normalizer.dart';
+import 'omp/omp_client.dart';
+import 'omp/omp_driver.dart';
 import 'qualification.dart';
 import 'runtime_driver.dart';
 
@@ -189,7 +191,7 @@ class AgentSession {
       state: _state,
       tools: _tools,
       runId: runId,
-      turnId: client.turnId,
+      turnId: runId == null ? null : client.turnId,
       delegated: _delegated,
     ),
   );
@@ -309,8 +311,9 @@ class AgentSession {
     }
   }
 
-  void acceptPrompt(String text) {
+  Future<void>? acceptPrompt(String text) {
     checkCanPrompt(text);
+    if (client case final OmpRuntimeDriver omp) return _admitOmp(omp, text);
     final completion = client.prompt(_nativeSessionId!, text);
     final turn = ++_turn;
     _hasTurn = true;
@@ -326,6 +329,37 @@ class AgentSession {
               _finish(turn, null, error),
         )
         .ignore();
+    return null;
+  }
+
+  Future<void> _admitOmp(OmpRuntimeDriver omp, String text) async {
+    final turn = ++_turn;
+    _hasTurn = true;
+    _stopped = false;
+    _notConfirmed = false;
+    var accepted = false;
+    try {
+      final (admission, completion) = omp.admitPrompt(text, (invoked) {
+        _enqueue(encodeAgentEvent(AgentEvent.text(AgentEventKind.user, text)))
+            .ignore();
+        accepted = true;
+        if (invoked && !_terminal && !_stopped) _set(AgentState.running);
+      });
+      completion
+          .then<void>(
+            (result) => _finish(turn, result, null),
+            onError: (Object error, StackTrace stack) {
+              if (accepted) return _finish(turn, null, error);
+            },
+          )
+          .ignore();
+      await admission;
+    } on Object catch (error) {
+      if (accepted) return;
+      if (turn == _turn) _hasTurn = false;
+      if (error is RpcException) rethrow;
+      throw RpcException('adapter-error', _message(error));
+    }
   }
 
   Object? _nativeUpdate(RuntimeUpdate update) {
@@ -556,7 +590,7 @@ class AgentSession {
           value.release();
           return;
         }
-        if (enqueueReserved != null) {
+        if (enqueueReserved != null && client is! OmpRuntimeDriver) {
           await enqueueReserved!(value);
         } else {
           value.release();
@@ -658,6 +692,8 @@ class AgentSession {
         ? clampUtf8(_redact(error.message), 4096)
         : error is CodexRemoteException
         ? clampUtf8(_redact(error.message), 4096)
+        : error is OmpRemoteException
+        ? clampUtf8(_redact(error.message), 4096)
         : null;
     onTurnEnded(
       AgentTurnEndedParams(
@@ -681,7 +717,8 @@ class AgentSession {
             error is AcpRemoteException &&
                 (error.messageTruncated ||
                     nativeMessage != _redact(error.message)) ||
-            error is CodexRemoteException && error.messageTruncated,
+            error is CodexRemoteException && error.messageTruncated ||
+            error is OmpRemoteException && (result?.truncated ?? false),
       ),
     );
     if (client.acp != null || !_stopped) _set(AgentState.idle);
@@ -693,6 +730,8 @@ class AgentSession {
       error is AcpRemoteException
           ? error.message
           : error is CodexRemoteException
+          ? error.message
+          : error is OmpRemoteException
           ? error.message
           : error.toString(),
     ),

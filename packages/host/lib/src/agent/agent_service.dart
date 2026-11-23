@@ -27,6 +27,10 @@ import 'agent_session.dart';
 import 'adapter_detector.dart';
 import 'draft_store.dart';
 import 'executable_resolver.dart';
+import 'native_version_probe.dart';
+import 'omp/omp_client.dart';
+import 'omp/omp_driver.dart';
+import 'omp/version_probe.dart';
 import 'qualification.dart';
 import 'qualified_adapters.dart';
 import 'runtime_profile_service.dart';
@@ -114,9 +118,18 @@ class _AgentIO {
   _AgentIO(
     this.launch, {
     String? codexVersion,
+    String? ompVersion,
     List<(String, String, List<String>)> qualified = qualifiedAdapters,
     Set<CodexAuthSignal> authSignals = const {},
-  }) : client = codexVersion == null
+  }) : client = ompVersion != null
+           ? OmpRuntimeDriver(
+               OmpClient(
+                 input: launch.pipes!.stdout,
+                 write: launch.pipes!.stdin.write,
+               ),
+               ompVersion,
+             )
+           : codexVersion == null
            ? AcpRuntimeDriver(
                AcpClient.pipes(launch.pipes!),
                qualified: qualified,
@@ -837,6 +850,12 @@ class AgentService {
         'the saved session is unknown',
       );
     }
+    if (record.runtimeKind == 'omp') {
+      throw RpcException(
+        ErrorCode.methodNotAvailable,
+        OmpRuntimeDriver.continueUnavailable,
+      );
+    }
     if (record.runtimeKind == 'codex') {
       _requireCodexPeer();
     }
@@ -938,7 +957,9 @@ class AgentService {
     if (profile.runtimeKind == 'codex') {
       _requireCodexPeer();
     }
-    if (!const ['claude-code', 'codex'].contains(profile.runtimeKind)) {
+    final omp = profile.runtimeKind == 'omp';
+    if (omp) requireOmpCapabilities(connection.negotiated!.capabilities);
+    if (!supportedRuntimeKinds.contains(profile.runtimeKind)) {
       throw RpcException(
         ErrorCode.invalidProfile,
         'Unsupported runtime kind ${profile.runtimeKind}',
@@ -951,6 +972,34 @@ class AgentService {
     final executableFile = File(executable);
     final identity = await executableFile.stat();
     String? codexVersion;
+    String? ompVersion;
+    if (omp) {
+      try {
+        ompVersion = await probeNativeVersion(
+          units,
+          profileDirectory,
+          [
+            executable,
+            ...(options.ompProbeArgs ?? const ['--version']),
+          ],
+          options,
+          runtimeName: 'OMP',
+          parse: parseOmpVersion,
+          environment: ompProbeEnvironment(Platform.environment),
+        );
+      } on NativeVersionProbeException catch (error) {
+        throw RpcException(ErrorCode.adapterProtocol, error.message);
+      }
+      final again = await executableFile.stat();
+      if (again.size != identity.size ||
+          again.modified != identity.modified ||
+          await _executables.resolve(profile.executable) != executable) {
+        throw RpcException(
+          ErrorCode.adapterProtocol,
+          'OMP executable changed after version probe',
+        );
+      }
+    }
     if (profile.runtimeKind == 'codex') {
       try {
         codexVersion = await probeCodexVersion(
@@ -985,7 +1034,9 @@ class AgentService {
       // `session/new` can authenticate and wait for the record. Without an
       // endpoint the adapter gets no `kumiko` entry at all.
       final endpoint = tools.endpoint;
-      if (endpoint != null) {
+      if (omp) {
+        toolsUnavailableReason = 'Kumiko tools are not delivered to OMP yet';
+      } else if (endpoint != null) {
         grant = tools.register(
           target: target.path,
           role: ToolRole.coding,
@@ -1021,6 +1072,7 @@ class AgentService {
       io = _AgentIO(
         launch,
         codexVersion: codexVersion,
+        ompVersion: ompVersion,
         qualified: qualifiedAdaptersOverride ?? qualifiedAdapters,
         authSignals: options.codexAuthSignatures,
       );
@@ -1040,6 +1092,11 @@ class AgentService {
       ];
       _available();
       stage = 'initialize';
+      if (io.client case final OmpRuntimeDriver driver) {
+        stage = 'ready';
+        await driver.waitReady();
+        stage = 'session';
+      }
       final initialization = await io.client.initialize();
       _available();
       final claims = initialization.claims;
@@ -1078,7 +1135,7 @@ class AgentService {
       late final _Agent a;
       if (saved == null) {
         final startingIo = io;
-        stage = 'session/new';
+        stage = omp ? 'session' : 'session/new';
         await io.client.newSession(
           target.path,
           mcpServers: mcpServers,
@@ -1184,8 +1241,13 @@ class AgentService {
       }
       final tail = _redact(io?.stderr.tail() ?? '', grant);
       final status = io?.status;
-      if (error is CodexProtocolException) {
-        final message = _redact(error.message, grant);
+      if (error is CodexProtocolException || error is OmpProtocolException) {
+        final message = _redact(
+          error is OmpProtocolException
+              ? '$stage: ${error.message}'
+              : (error as CodexProtocolException).message,
+          grant,
+        );
         throw RpcException(
           ErrorCode.adapterProtocol,
           clampUtf8(
@@ -1504,7 +1566,11 @@ class AgentService {
     a.session.checkCanPrompt(params.text);
     final revision = params.draftRevision;
     if (revision == null) {
-      a.session.acceptPrompt(params.text);
+      if (a.sending && a.io.client is OmpRuntimeDriver) {
+        throw RpcException(ErrorCode.turnRunning, 'OMP Send is pending');
+      }
+      final admission = a.session.acceptPrompt(params.text);
+      if (admission != null) await admission;
       return;
     }
     if (a.sending) {
@@ -1527,7 +1593,8 @@ class AgentService {
     try {
       _available();
       final again = _require(params.sessionId);
-      again.session.acceptPrompt(params.text);
+      final admission = again.session.acceptPrompt(params.text);
+      if (admission != null) await admission;
     } on Object {
       // Refused after its draft was removed (design D4), for example at full
       // native input: put the text back unless a newer revision was saved.
@@ -1712,7 +1779,26 @@ class AgentService {
     unawaited(
       Future<void>(() async {
         if (!_current(a)) return;
-        if (running && !attachTimeout) {
+        final driver = a.io.client;
+        if (driver is OmpRuntimeDriver) {
+          driver.draining = true;
+          final pending = driver.pendingTurn;
+          if (pending != null && !attachTimeout) {
+            try {
+              await pending.timeout(const Duration(seconds: 2));
+            } on Object {
+              // Close still owns stdin and containment.
+            }
+          }
+          try {
+            const grace = Duration(seconds: 2);
+            final clock = Stopwatch()..start();
+            await a.io.launch.pipes!.stdin.close().timeout(grace);
+            await a.io.launch.unit.exitCode.timeout(grace - clock.elapsed);
+          } on Object {
+            // The unit is still settled below even when EOF is not enough.
+          }
+        } else if (running && !attachTimeout) {
           await Future<void>.delayed(const Duration(seconds: 2));
         }
         if (!_current(a)) return;
@@ -1875,6 +1961,8 @@ class AgentService {
       final protocolMessage = error is AcpProtocolException
           ? error.message
           : error is CodexProtocolException
+          ? error.message
+          : error is OmpProtocolException
           ? error.message
           : null;
       final exited = a.exitNotification = AgentExitedParams(

@@ -7,12 +7,14 @@ import 'package:path/path.dart' as p;
 import 'dart:isolate';
 
 import 'package:host_protocol/host_protocol.dart';
+import 'package:process_containment/process_containment.dart';
 
 import 'executable_resolver.dart';
 
 const Duration adapterDetectionCap = Duration(seconds: 2);
 const String builtinCodexRuntimeId = 'builtin:codex';
 const String builtinClaudeRuntimeId = 'builtin:claude-code';
+const String builtinOmpRuntimeId = 'builtin:omp';
 const String adapterInstallReason =
     'Claude Code adapter not found. Install @agentclientprotocol/claude-agent-acp with npm and Node ≥ 22, or add a runtime profile.';
 
@@ -34,8 +36,14 @@ class AdapterDetectionConfig {
 }
 
 class AdapterDetectionResult {
-  const AdapterDetectionResult({this.profile, this.reason, this.codex});
+  const AdapterDetectionResult({
+    this.profile,
+    this.reason,
+    this.codex,
+    this.omp,
+  });
   final RuntimeProfile? codex;
+  final RuntimeProfile? omp;
   final RuntimeProfile? profile;
   final String? reason;
 }
@@ -116,6 +124,7 @@ void _detectWorker((SendPort, AdapterDetectionConfig, AdapterProbe) input) {
       profile: claude.profile,
       reason: claude.reason,
       codex: detectCodex(input.$2),
+      omp: detectOmp(input.$2),
     ),
   );
 }
@@ -343,6 +352,45 @@ RuntimeProfile? detectCodex(AdapterDetectionConfig config) {
       } on FormatException {
         continue;
       }
+    }
+  }
+  return null;
+}
+
+/// Look up OMP on PATH and only in its platform's permitted install roots.
+RuntimeProfile? detectOmp(AdapterDetectionConfig config) {
+  final windows = config.os == 'windows';
+  final paths =
+      config.pathDirs ?? runtimePathDirectories(config.os, config.environment);
+  final localAppData = config.environment['LOCALAPPDATA'];
+  final home = config.environment['HOME'];
+  final known =
+      config.wellKnownDirs ??
+      (windows
+          ? [
+              if (localAppData != null && p.isAbsolute(localAppData))
+                p.join(localAppData, 'omp'),
+            ]
+          : [
+              ...wellKnownRuntimeDirs(config.os, config.environment),
+              if (config.os == 'macos' && home != null && p.isAbsolute(home))
+                p.join(home, '.local', 'bin'),
+            ]);
+  for (final dirs in [paths, known]) {
+    for (final dir in dirs) {
+      if (!p.isAbsolute(dir)) continue;
+      final candidate = p.join(dir, windows ? 'omp.exe' : 'omp');
+      if (FileSystemEntity.typeSync(candidate) != FileSystemEntityType.file ||
+          (!windows && !canExecutePath(candidate))) {
+        continue;
+      }
+      return RuntimeProfile(
+        id: builtinOmpRuntimeId,
+        name: 'OMP',
+        runtimeKind: 'omp',
+        executable: candidate,
+        args: const ['--mode', 'rpc'],
+      );
     }
   }
   return null;

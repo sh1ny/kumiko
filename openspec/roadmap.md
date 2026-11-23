@@ -18,11 +18,14 @@ Status is derived: a change is done when it is archived on main, and a milestone
 
 **Changes** (in order; each about one PR):
 1. `codex-app-server-session` - Add and qualify native Codex App Server over stdio against the shared session, permission, Stop, tool-delivery and saved-session contracts. Preserve Claude behaviour and child-thread attribution for future subagent viewing. Owner-approved replacement of the ACP plan, 2026-11-10.
-2. `omp-rpc-session` - Add and qualify OMP native RPC behind those contracts, with explicit capability differences. Prerequisite: change 1's shared contract checks.
-3. `workspace-git-and-session-history` - Right-side workspace-aware Git/SCM panel (D5), local diffs and Sessions history, preserving immutable session targets.
-4. `files-and-source-editor` - Files tree and source-first editor with explicit Save, external-change handling and local recovery drafts (D10).
-5. `quick-open-and-review-to-chat` - Quick-open, Open in, and local diff review feeding revision requests to the intended conversation (D16-D19). Prerequisites: changes 3 and 4.
-6. `personal-read-only-agent` - Personal chat role with host-enforced operation checks, including runtime built-ins (D54); qualify enforcement or expose the role as unavailable for each adapter. Prerequisites: changes 1 and 2.
+2. `omp-rpc-transport` - Add OMP native RPC as a runtime family behind the shared contracts: the bounded RPC client, exact-version probe and pre-spawn gates, and a usable root session with start, prompt, streamed replies and Stop. Prerequisite: change 1's shared contract checks. (Owner-agreed split of `omp-rpc-session`, 2026-11-14, to keep each change one reviewable PR.)
+3. `omp-rpc-permissions-and-tools` - OMP permission requests, tool activity and Kumiko tool delivery, with explicit capability differences. Prerequisite: change 2.
+4. `omp-rpc-history-and-children` - OMP save/resume and history restore where supported, child activity, and truthful close/quit. Prerequisite: change 2.
+5. `omp-rpc-qualification` - Owner-approved real-runtime Windows qualification of the OMP path, exact-version evidence and recorded capability differences. Prerequisites: changes 2-4.
+6. `workspace-git-and-session-history` - Right-side workspace-aware Git/SCM panel (D5), local diffs and Sessions history, preserving immutable session targets.
+7. `files-and-source-editor` - Files tree and source-first editor with explicit Save, external-change handling and local recovery drafts (D10).
+8. `quick-open-and-review-to-chat` - Quick-open, Open in, and local diff review feeding revision requests to the intended conversation (D16-D19). Prerequisites: changes 6 and 7.
+9. `personal-read-only-agent` - Personal chat role with host-enforced operation checks, including runtime built-ins (D54); qualify enforcement or expose the role as unavailable for each adapter. Prerequisites: changes 1 and 5.
 
 ## Next: M3 - Local planning and documents
 

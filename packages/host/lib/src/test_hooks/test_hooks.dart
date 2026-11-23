@@ -9,6 +9,8 @@ import 'package:host_protocol/host_protocol.dart';
 import '../agent/tools/tool_service.dart';
 import '../agent/codex/codex_auth_signal.dart';
 import '../agent/codex/version_probe.dart';
+import '../agent/native_version_probe.dart';
+import '../agent/omp/version_probe.dart';
 import '../host_extension.dart';
 import '../host_faults.dart';
 import '../host_options.dart';
@@ -93,6 +95,10 @@ class TestHostExtension implements HostExtension {
         codexProbeArgs: env['KUMIKO_TEST_CODEX_PROBE_ARGS'] == null
             ? null
             : (jsonDecode(env['KUMIKO_TEST_CODEX_PROBE_ARGS']!) as List)
+                  .cast<String>(),
+        ompProbeArgs: env['KUMIKO_TEST_OMP_PROBE_ARGS'] == null
+            ? null
+            : (jsonDecode(env['KUMIKO_TEST_OMP_PROBE_ARGS']!) as List)
                   .cast<String>(),
         runtimeSearchPath: runtimePath == null
             ? null
@@ -200,6 +206,27 @@ class TestHostExtension implements HostExtension {
             options,
           ),
         };
+      case 'test/omp.probe':
+        EmptyParams.fromJson(params);
+        final args = options.ompProbeArgs;
+        if (args == null) {
+          throw RpcException(ErrorCode.methodNotAvailable, method);
+        }
+        try {
+          return {
+            'version': await probeNativeVersion(
+              host.units,
+              host.agents.profileDirectory,
+              [Platform.resolvedExecutable, ...args],
+              options,
+              runtimeName: 'OMP',
+              parse: parseOmpVersion,
+              environment: ompProbeEnvironment(Platform.environment),
+            ),
+          };
+        } on NativeVersionProbeException catch (error) {
+          throw RpcException(ErrorCode.adapterProtocol, error.message);
+        }
       case Method.testUnitLaunch:
         final p = TestUnitLaunchParams.fromJson(params);
         final launched = await host.units.launch(

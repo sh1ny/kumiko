@@ -81,9 +81,11 @@ class AgentLink {
       steeringUnavailable == null &&
       !streamFailed;
 
-  String get authGuidance => runtimeKind == 'codex'
-      ? 'Codex is not signed in. Run codex in a terminal and sign in natively, then Retry.'
-      : agentAuthGuidance;
+  String get authGuidance => switch (runtimeKind) {
+    'codex' => 'Codex is not signed in. Run codex in a terminal and sign in natively, then Retry.',
+    'omp' => 'OMP sign-in and models are managed by OMP; run `omp` in a terminal to set them up',
+    _ => agentAuthGuidance,
+  };
   String? sessionId;
   String? runtimeProfileId;
   AgentAdapter? adapter;
@@ -682,7 +684,8 @@ class AgentController extends ChangeNotifier implements ViewCloser {
       // Priority control may overtake the canonical turn/notice data. Keep
       // action metadata here; only the ordered channel appends the outcome.
       if (event.error == ErrorCode.authRequired) link.errorCode = event.error;
-      if (link.runtimeKind == 'codex' && event.nativeMessage != null) {
+      if (event.nativeMessage != null &&
+          (link.runtimeKind == 'codex' || link.runtimeKind == 'omp')) {
         link.error =
             '${event.nativeCode == null ? '' : '${event.nativeCode}: '}${event.nativeMessage}${event.nativeMessageTruncated ? ' [truncated]' : ''}';
       }

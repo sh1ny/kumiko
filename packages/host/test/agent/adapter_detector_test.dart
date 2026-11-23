@@ -1,6 +1,7 @@
 import 'dart:io';
 
 import 'package:host/src/agent/adapter_detector.dart';
+import 'package:path/path.dart' as p;
 import 'package:process_containment/process_containment.dart';
 import 'package:test/test.dart';
 
@@ -142,4 +143,46 @@ void main() {
       expect(clock.elapsed, lessThan(const Duration(milliseconds: 2600)));
     },
   );
+
+  test('OMP: OMP installed by its installer', () async {
+    final exe = file(p.join(root.path, 'omp', 'omp.exe'));
+    final result = await AdapterDetector(
+      AdapterDetectionConfig(
+        os: 'windows',
+        environment: {'LOCALAPPDATA': root.path, 'PATH': ''},
+      ),
+    ).detect();
+    expect(result.omp?.executable, exe);
+    expect(result.omp?.args, ['--mode', 'rpc']);
+  });
+
+  test('OMP: macOS finds the installer directory without PATH', () {
+    final exe = file(p.join(root.path, '.local', 'bin', 'omp'));
+    final profile = detectOmp(
+      AdapterDetectionConfig(
+        os: 'macos',
+        environment: {'HOME': root.path, 'PATH': ''},
+      ),
+    );
+    expect(profile?.executable, exe);
+  }, skip: Platform.isWindows ? 'Requires the POSIX executable check' : null);
+
+  test('OMP: Only a shim exists', () {
+    file(p.join(root.path, 'omp.cmd'));
+    file(p.join(root.path, 'omp.ps1'));
+    expect(detectOmp(config(os: 'windows')), isNull);
+  });
+
+  test('OMP: Only a private copy exists', () {
+    file(p.join(root.path, 'Tern', 'private', 'omp.exe'));
+    expect(
+      detectOmp(
+        AdapterDetectionConfig(
+          os: 'windows',
+          environment: {'LOCALAPPDATA': root.path, 'PATH': root.path},
+        ),
+      ),
+      isNull,
+    );
+  });
 }

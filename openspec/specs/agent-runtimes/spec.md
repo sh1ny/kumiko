@@ -8,7 +8,7 @@ Describes how Kumiko launches a user's installed coding-agent runtime adapter fr
 
 ### Requirement: A runtime profile is an argv launch description for an ACP adapter
 
-A runtime profile SHALL hold a name, a runtime kind (`claude-code` or `codex`), an executable, an argument list and environment overrides. The host SHALL start the adapter from that executable and list without assembling or parsing a command string, and SHALL apply the overrides only to sessions that use the profile. The runtime kind SHALL select Claude ACP or native Codex App Server explicitly; existing profiles SHALL retain their meaning. Source: D6 amended by owner decision 2026-11-10, D20.
+A runtime profile SHALL hold a name, a runtime kind (`claude-code`, `codex` or `omp`), an executable, an argument list and environment overrides. The host SHALL start the adapter from that executable and list without assembling or parsing a command string, and SHALL apply the overrides only to sessions that use the profile. The runtime kind SHALL select Claude ACP, native Codex App Server or native OMP RPC explicitly; existing profiles SHALL retain their meaning. Source: D6 amended by owner decision 2026-11-10, D20; ADR 0004 for OMP.
 
 #### Scenario: Launch from an npx profile
 
@@ -39,6 +39,12 @@ A runtime profile SHALL hold a name, a runtime kind (`claude-code` or `codex`), 
 - **WHEN** a profile names an unsupported runtime kind
 
 - **THEN** start is refused with that kind named, without launching it as Claude
+
+#### Scenario: OMP argv profile
+
+- **WHEN** an OMP profile specifies an absolute executable and the arguments `--mode rpc`
+
+- **THEN** OMP receives exactly those arguments, unchanged and in order, over private stdio without an ACP wrapper, and Kumiko appends no argument
 
 ### Requirement: An installed adapter is detected as a built-in profile
 
@@ -104,7 +110,7 @@ The user SHALL be able to add, edit and remove their own runtime profiles. The h
 
 ### Requirement: One runtime profile is the default
 
-Exactly one runtime profile SHALL be the default when any exists. When no default is stored, Claude SHALL be preferred if detected, otherwise Codex. Existing defaults SHALL not change when another runtime is detected. Launch, fresh recovery and Continue SHALL select only a compatible runtime kind. A default that names a missing profile SHALL be reported unavailable, and no other profile SHALL be substituted silently.
+Exactly one runtime profile SHALL be the default when any exists. When no default is stored, Claude SHALL be preferred if detected, otherwise Codex, otherwise OMP. Existing defaults SHALL not change when another runtime is detected. Launch, fresh recovery and Continue SHALL select only a compatible runtime kind. A default that names a missing profile SHALL be reported unavailable, and no other profile SHALL be substituted silently.
 
 #### Scenario: First start with the adapter installed
 
@@ -135,6 +141,12 @@ Exactly one runtime profile SHALL be the default when any exists. When no defaul
 - **WHEN** the Codex launcher has only an incompatible global default
 
 - **THEN** it asks for a compatible Codex profile and starts nothing until one is explicitly selected
+
+#### Scenario: OMP is the only detected runtime
+
+- **WHEN** the host starts with no stored default and only a built-in OMP profile is detected
+
+- **THEN** the OMP profile becomes the default, and a later detected Claude or Codex does not replace it
 
 ### Requirement: An unusable adapter executable is reported, never substituted
 Starting a session whose profile executable is missing, not executable, or a Windows batch file (`.cmd`, `.bat`) SHALL fail with a reason naming the executable, and SHALL NOT start another adapter. An adapter that exits before answering `initialize` SHALL fail the start with its exit status and the last lines of its error output.
@@ -199,6 +211,12 @@ For each Claude ACP session the host SHALL record the adapter name and version r
 
 - **THEN** native features use their supported contract and observed responses, not Claude's ACP advertisement or exact-version gate
 
+#### Scenario: OMP follows minimum-version compatibility
+
+- **WHEN** OMP at or above the minimum version starts without an exact-version evidence row
+
+- **THEN** the run claims prompt, streamed replies and Stop from the native contract, and reports Continue, steering, permissions and Kumiko tools unavailable with the reason that this Kumiko version does not support them for OMP
+
 ### Requirement: Kumiko tool delivery is qualified per adapter version
 Real qualification of an adapter version SHALL record a `kumiko tool call` item per OS: an authenticated `kumiko_session_info` call that succeeded, or the failure observed. The qualification checker SHALL require that item for every listed Claude adapter version and every recorded Codex evidence section. A version whose tool delivery was observed to fail SHALL be listed with that failure, and sessions on that exact version SHALL report it. Source: ADR 0005 qualification in M1; ADR 0012 decisions 5 to 7.
 
@@ -251,3 +269,25 @@ The host SHALL offer an available installed Codex executable as a read-only buil
 - **WHEN** Codex exists only in Tern's private package directory
 
 - **THEN** Kumiko does not silently bind to it, but accepts an explicit compatible argv profile
+
+### Requirement: Native OMP detection never borrows another application's private installation
+
+The host SHALL offer an installed native OMP executable found on PATH or in the official installer's directory as a read-only built-in profile with the arguments `--mode rpc`. It SHALL NOT execute Windows batch or PowerShell shims to find it. Another application's private package directory SHALL NOT be an automatic discovery root. Explicit custom profiles SHALL remain supported. Source: D20, ADR 0004.
+
+#### Scenario: OMP installed by its installer
+
+- **WHEN** `omp.exe` exists in the official installer's directory on Windows and no other OMP is on PATH
+
+- **THEN** the launcher offers an OMP built-in profile using that absolute executable and the arguments `--mode rpc`
+
+#### Scenario: Only a shim exists
+
+- **WHEN** discovery finds only `omp.cmd` or `omp.ps1` and no native executable
+
+- **THEN** OMP is shown unavailable with explicit profile guidance, and no shell or script is run
+
+#### Scenario: Only a private copy exists
+
+- **WHEN** OMP exists only in another application's private package directory that is not on PATH
+
+- **THEN** Kumiko does not offer it as a built-in profile, but accepts an explicit argv profile that names it
