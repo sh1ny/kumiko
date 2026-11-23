@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
 
+import 'package:host/src/host_options.dart' show HostOptions;
 import 'package:host_protocol/host_protocol.dart';
 import 'package:process_containment/process_containment.dart';
 import 'package:test/test.dart';
@@ -219,6 +220,9 @@ void main() {
         'measured: draft save under saturated output worst of 20 '
         '${worst.inMicroseconds / 1000} ms on ${Platform.operatingSystem}',
       );
+      // Measured at the desktop, request to acknowledgement: the host's own
+      // timer starts only once it dispatches the save.
+      expect(worst, lessThanOrEqualTo(HostOptions.defaultDraftDeadline));
       await b.close();
       await a.close();
       await d.closeTerminal(terminal.id);
@@ -783,11 +787,14 @@ void main() {
         'slow commit',
         1,
       ).then<Object>((r) => r, onError: (Object e) => e);
-      // Past the 1000 ms deadline, then the commit is let go.
-      await Future<void>.delayed(const Duration(milliseconds: 1500));
+      // The host's deadline fires first, then the commit is let go.
+      await eventually(
+        () async => (await Drafts(d).stats())['notResponding'] == true,
+        reason: 'the held save never missed its deadline',
+      );
       await d.setFault(TestFault.draftCommitHangs, enabled: false);
       expect(await outcome, 1);
-      final loaded = await Drafts(d).load(a.id);
+      final loaded = await settledLoad(d, a.id);
       expect((loaded.text, loaded.revision), ('slow commit', 1));
     });
   });
