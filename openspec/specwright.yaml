@@ -52,6 +52,12 @@ review:
 #   group - one commit per task group, with a Specwright-Task trailer per task
 commit_granularity: group
 
+# How far you are kept in the loop while a change is planned:
+#   autonomous - the agent decides; a decision summary shows at the end (the default)
+#   important  - important decisions are put to you with options and a recommendation
+#   all        - every decision is put to you
+decision_making: autonomous
+
 project:
   # Project-level files used by specwright-roadmap. Point these at existing
   # documents instead of duplicating them.
