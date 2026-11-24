@@ -109,13 +109,26 @@ class AgentPeer {
   /// Closes the session and waits for its `closed` exit. Closing can take
   /// the host's own stop and kill budgets, so the wait is a hang guard, not a
   /// bound (AGENTS.md, rule 4).
+  ///
+  /// The host answers a close with either an exit or `agent/closeFailed`.
+  /// Whichever arrives first after the close decides, and any answer other
+  /// than a `closed` exit fails at once with its parameters (rule 6), so a
+  /// failed close is reported as itself rather than as an expired guard.
   Future<void> close() async {
+    final exitsBefore = of(Method.agentExited).length;
+    final failuresBefore = of(Method.agentCloseFailed).length;
     await call(Method.agentClose);
-    await wait(
-      Method.agentExited,
-      where: (p) => p['reason'] == 'closed',
+    await eventually(
+      () =>
+          of(Method.agentExited).length > exitsBefore ||
+          of(Method.agentCloseFailed).length > failuresBefore,
       within: const Duration(minutes: 2),
+      reason: 'no agent/exited or agent/closeFailed for $id after close',
     );
+    final failures = of(Method.agentCloseFailed).skip(failuresBefore);
+    if (failures.isNotEmpty) fail('close of $id failed: ${failures.first}');
+    final exit = of(Method.agentExited)[exitsBefore];
+    if (exit['reason'] != 'closed') fail('close of $id exited with $exit');
   }
 }
 
