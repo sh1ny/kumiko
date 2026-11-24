@@ -313,10 +313,11 @@ int _probe(int pid) => posixKill(pid, 0);
 /// on the PTY path. If the hook, the snapshot or the probe throws, the spawn
 /// closes the master, releases the stdio and rethrows; it sends no signal,
 /// since nothing has identified the pid as the unit's. The status wrapper
-/// runs after the identity is classified, and a throw from it, or from
-/// listening to or cancelling the stream it returns, is a `status-read`
-/// failure that carries [SpawnFailed.unconfirmedPid] when the identity was
-/// unconfirmed.
+/// runs after the identity is classified: a throw from it, or from
+/// listening to the stream it returns, is a `status-read` failure that
+/// carries [SpawnFailed.unconfirmedPid] when the identity was unconfirmed.
+/// A throw from cancelling it during the failure cleanup is ignored and
+/// leaves the classified failure, and its stage, as they were (C10).
 Future<PosixUnit> spawnPosixUnit({
   required String shimExecutable,
   List<String> shimArgs = const [],
