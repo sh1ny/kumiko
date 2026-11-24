@@ -7,6 +7,17 @@ import 'host_faults.dart';
 import 'host_log.dart';
 import 'ledger.dart';
 
+/// The reason a failed spawn's row carries when the unit's identity was not
+/// confirmed, followed by the pid (#18, design D5). Diagnostic only: the pid
+/// is never the row's recorded leader.
+const String spawnIdentityUnconfirmedPrefix = 'spawn-identity-unconfirmed:';
+
+/// Whether [row] is an unconfirmed spawn's, whose reason retry and restart
+/// keep and only the user's confirmation clears.
+bool isUnconfirmedSpawn(UnitRow row) =>
+    row.pid == null &&
+    (row.reason?.startsWith(spawnIdentityUnconfirmedPrefix) ?? false);
+
 /// A unit this host instance started and still holds a handle to.
 class LiveUnit {
   LiveUnit(this.unit);
@@ -44,12 +55,17 @@ class Settler {
     required this.ledger,
     required this.log,
     required this.faults,
+    this.killWait,
     ProcessTable? table,
   }) : _table = table ?? (Platform.isWindows ? null : PosixProcessTable());
 
   final Ledger ledger;
   final HostLog log;
   final HostFaults faults;
+
+  /// The wait after a live POSIX unit's last signal; null keeps the
+  /// unit's default.
+  final Duration? killWait;
   final ProcessTable? _table;
 
   /// Terminates and scans for [rows], without writing the ledger. [live]
@@ -72,6 +88,7 @@ class Settler {
     MarkerScanResult? scan;
     final table = _table;
     if (table != null && rows.isNotEmpty) {
+      if (faults.takeScanThrows()) throw StateError('injected scan failure');
       scan = await runMarkerScan(
         table: faults.killFails ? _NoKillTable(table) : table,
         markers: {for (final r in rows) r.containmentId},
@@ -95,6 +112,8 @@ class Settler {
   Future<String?> scanFailedSpawn(UnitRow row) async {
     final table = _table;
     if (table == null) return null;
+    await faults.waitForSpawnScanRelease();
+    if (faults.takeScanThrows()) throw StateError('injected scan failure');
     final scan = await runMarkerScan(
       table: faults.killFails ? _NoKillTable(table) : table,
       markers: {row.containmentId},
@@ -139,7 +158,11 @@ class Settler {
         }
       }
       if (faults.killFails) return _faultedTerminate(live);
-      final result = await live.unit.terminate();
+      final unit = live.unit;
+      final wait = killWait;
+      final result = unit is PosixUnit && wait != null
+          ? await unit.terminate(killWait: wait)
+          : await unit.terminate();
       return result.terminated ? null : result.reason;
     }
     final pid = row.pid;
@@ -155,6 +178,9 @@ class Settler {
     }
     // POSIX: a pending entry without a pid is unresolved whatever the scan
     // finds (ADR 0001); the scan still ends anything carrying its marker.
+    // An unconfirmed spawn's row keeps its reason, and so its pid, for the
+    // user's confirmation (design D5).
+    if (isUnconfirmedSpawn(row)) return row.reason;
     if (pid == null || started == null) return 'pending-without-pid';
     return _terminateRecorded(pid, started);
   }

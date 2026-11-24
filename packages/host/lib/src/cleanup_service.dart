@@ -67,7 +67,10 @@ class CleanupService {
       settler.apply(rows, outcomes);
     } on Object catch (e) {
       for (final row in rows) {
-        if (ledger.unit(row.containmentId) != null) {
+        final current = ledger.unit(row.containmentId);
+        // An unconfirmed spawn keeps its reason and pid for the user
+        // (design D5).
+        if (current != null && !isUnconfirmedSpawn(current)) {
           ledger.markUnresolved(row.containmentId, 'reconcile-failed: $e');
         }
       }

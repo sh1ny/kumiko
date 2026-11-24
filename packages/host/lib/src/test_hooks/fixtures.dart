@@ -19,8 +19,9 @@ const String fixtureReportPrefix = 'kumiko-fixture-';
 const String fixtureReportSuffix = '.out';
 
 /// Runs a `--test-fixture` mode (design D10): `tree`, `escaper`, `sleeper`,
-/// `stubborn` run as units; `lock-holder <profile>` holds the profile lock and
-/// writes nothing. [args] are the mode and its arguments.
+/// `stubborn` run as units; `reportedExit` reports itself and exits 0 (#18);
+/// `lock-holder <profile>` holds the profile lock and writes nothing. [args]
+/// are the mode and its arguments.
 Future<int> runTestFixture(List<String> args) async {
   if (args.isEmpty) {
     stderr.writeln('usage: --test-fixture <mode> [args]');
@@ -48,6 +49,9 @@ Future<int> runTestFixture(List<String> args) async {
       await _startEscaped('escapee');
     case 'escapee' || 'sleeper':
       _report(args.first);
+    case 'reportedExit':
+      _report('reportedExit');
+      return 0;
     case 'stubborn':
       if (!Platform.isWindows) ProcessSignal.sigterm.watch().listen((_) {});
       _report('stubborn');

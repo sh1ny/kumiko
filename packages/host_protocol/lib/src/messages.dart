@@ -1450,7 +1450,15 @@ class TerminalCloseFailed {
 
 // --- test/* (test builds only) -------------------------------------------
 
-enum TestFixture { tree, escaper, sleeper, stubborn }
+enum TestFixture {
+  tree,
+  escaper,
+  sleeper,
+  stubborn,
+
+  /// Writes its pid report and exits 0 at once (#18).
+  reportedExit,
+}
 
 /// Bounds of `terminal/activity` (app-exit-and-reopen design D2, ADR 0014):
 /// terminals per request, names per terminal and bytes per name.
@@ -1599,6 +1607,13 @@ enum TestFault {
   /// output (the relay fidelity check).
   ptyScriptedOutput,
   runningWriteFails,
+
+  /// The settlement scan of a failed spawn waits at its start until the
+  /// fault is turned off (#18).
+  spawnScanHangs,
+
+  /// The next marker scan of the settler throws (#18).
+  scanThrows,
   terminateHangs,
 }
 

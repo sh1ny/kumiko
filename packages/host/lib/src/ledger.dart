@@ -170,6 +170,11 @@ class Ledger {
     );
   });
 
+  /// Records the spawned unit's leader. On POSIX [startedAt] may be -1
+  /// (`startTimeNotRead`): the leader exited before its start time could be
+  /// read and is known to be gone, so rows may hold
+  /// `process_started_at = '-1'`. A change to the start-time encoding must
+  /// keep reading it as "the leader is gone" (#18, constraint C6).
   void markRunning(String containmentId, int pid, int startedAt) => _guard(() {
     _store.execute(
       "UPDATE unit SET state = 'running', pid = ?, process_started_at = ?, "

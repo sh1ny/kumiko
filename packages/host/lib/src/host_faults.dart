@@ -29,6 +29,11 @@ final List<Uint8List> scriptedPtyOutput = [
 /// Faults a test build can inject (`test/fault.set`). A release host has no
 /// way to set one, so every flag stays off.
 class HostFaults {
+  /// [initial] faults are on from the start (`KUMIKO_TEST_FAULTS`).
+  HostFaults([Iterable<TestFault> initial = const []]) {
+    _active.addAll(initial);
+  }
+
   final Set<TestFault> _active = {};
 
   bool get pendingWriteFails => _active.contains(TestFault.pendingWriteFails);
@@ -70,6 +75,19 @@ class HostFaults {
     if (!terminateHangs) return Future<void>.value();
     return (_terminationRelease ??= Completer<void>()).future;
   }
+
+  /// The marker scan of a failed spawn waits at its start while enabled.
+  bool get spawnScanHangs => _active.contains(TestFault.spawnScanHangs);
+  Completer<void>? _spawnScanRelease;
+
+  Future<void> waitForSpawnScanRelease() {
+    if (!spawnScanHangs) return Future<void>.value();
+    return (_spawnScanRelease ??= Completer<void>()).future;
+  }
+
+  /// Whether the marker scan about to run throws. It takes the fault: only
+  /// the next scan throws.
+  bool takeScanThrows() => _active.remove(TestFault.scanThrows);
 
   /// Writing a profile or the default profile fails.
   bool get profileWriteFails => _active.contains(TestFault.profileWriteFails);
@@ -170,6 +188,10 @@ class HostFaults {
       if (fault == TestFault.runningWriteFails) {
         _runningWriteFailureRelease?.complete();
         _runningWriteFailureRelease = null;
+      }
+      if (fault == TestFault.spawnScanHangs) {
+        _spawnScanRelease?.complete();
+        _spawnScanRelease = null;
       }
       if (fault == TestFault.identityReadFails) {
         _identityFailureRelease?.complete();
