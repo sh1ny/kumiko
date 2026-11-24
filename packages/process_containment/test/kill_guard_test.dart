@@ -202,6 +202,18 @@ void main() {
       }
     });
 
+    test('killpg ESRCH: matching zero start times confirm nothing', () {
+      // A recorded 0 and a live 0 are both the macOS placeholder: equal, but
+      // no evidence that the pid is still the leader.
+      final s = _Script(
+        snapshots: [running(0), running(0)],
+        killpg: [esrch],
+        kill: [0],
+      );
+      expect(s.run(pid, 0, term, fallback: true), KillOutcome.failed);
+      expect(s.sentSignals, [term]);
+    });
+
     test('killpg ESRCH: a gone or replaced leader gets no direct signal', () {
       final gone = _Script(
         snapshots: [running(recorded)],
