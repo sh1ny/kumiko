@@ -293,8 +293,9 @@ int _probe(int pid) => posixKill(pid, 0);
 /// and stderr (a stream already listened to is cancelled by its listener),
 /// and on the PTY path it cancels the status subscription and closes the
 /// master, before it throws and without waiting for an unsignalled process
-/// to exit. A status stream that throws on listen or cancel, or a
-/// termination that throws, does not skip this cleanup or replace the
+/// to exit. The status cancellation is not awaited. A status stream that
+/// throws on listen or cancel, or whose cancel never completes, and a
+/// termination that throws, neither skip this cleanup nor replace the
 /// classified error, so an unconfirmed spawn's error still carries its pid
 /// (design D3, C10). Whether the unit's row is
 /// deleted or left unresolved is the host's settlement.
@@ -456,11 +457,9 @@ Future<PosixUnit> spawnPosixUnit({
   // handles are released and the master closed even if a cancellation or
   // the termination throws, and the classified error below still wins.
   try {
-    try {
-      await subscription?.cancel();
-    } on Object {
-      // The status stream is abandoned either way.
-    }
+    // Not awaited: a cancellation that waits (or throws) must neither hold
+    // the handles below nor delay the classified error.
+    unawaited(subscription?.cancel().then((_) {}, onError: (Object _) {}));
     unawaited(stderr?.cancel().then((_) {}, onError: (Object _) {}));
     _abandonStdio(process);
     switch (identity) {

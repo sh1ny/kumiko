@@ -268,8 +268,17 @@ void main() {
 
     Future<void> reaped(Process process) => process.exitCode.timeout(hangGuard);
 
-    Stream<List<int>> readError(Stream<List<int>> _) =>
-        Stream.error(const OSError('injected status read error', 5));
+    /// A status read error followed at once by end of file: a synchronous
+    /// controller delivers both while `listen` runs, before the spawn can
+    /// cancel, so its done handler must tolerate a completed read.
+    Stream<List<int>> readError(Stream<List<int>> _) {
+      final c = StreamController<List<int>>(sync: true);
+      c.onListen = () {
+        c.addError(const OSError('injected status read error', 5));
+        unawaited(c.close());
+      };
+      return c.stream;
+    }
 
     /// A unit that ignores SIGHUP (kept across `exec`) and then writes
     /// [ready]: once that file exists it runs its program on the PTY, and
@@ -446,6 +455,41 @@ void main() {
               'unconfirmedPid',
               processes.single.pid,
             ),
+      );
+    });
+
+    test('a status stream whose cancel never completes still reports the '
+        'unconfirmed pid', () async {
+      Stream<List<int>> cancelHangs(Stream<List<int>> _) {
+        late final StreamController<List<int>> c;
+        c = StreamController<List<int>>(
+          onListen: () =>
+              c.addError(const OSError('injected status read error', 5)),
+          onCancel: () => Completer<void>().future,
+        );
+        return c.stream;
+      }
+
+      Object? error;
+      try {
+        // The group's hang guard ends the test if the spawn waits on it.
+        await spawn(
+          ['/bin/sh', '-c', 'exec sleep 600'],
+          snapshot: (_) => null,
+          probe: (_) => 0,
+          status: cancelHangs,
+        );
+      } on Object catch (e) {
+        error = e;
+      }
+
+      expect(
+        error,
+        isA<SpawnFailed>().having(
+          (e) => e.unconfirmedPid,
+          'unconfirmedPid',
+          processes.single.pid,
+        ),
       );
     });
 

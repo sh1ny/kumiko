@@ -175,6 +175,16 @@ void main() {
     final row = onlyRow();
     expect(row['state'], 'unresolved');
     expect(row['unresolved_reason'], matches(unconfirmedReason));
+    // The scan ran and threw, and its error was logged, not reported.
+    await eventually(
+      () => readHostLog(profile).any(
+        (event) =>
+            event['op'] == 'failed-spawn-scan-error' &&
+            event['unit'] == row['containment_id'],
+      ),
+      within: const Duration(minutes: 2),
+      reason: 'no failed-spawn-scan-error event for the unit',
+    );
     expect(
       await desktop.launchRefusal(root, TestFixture.sleeper),
       ErrorCode.cleanupUnresolved,
