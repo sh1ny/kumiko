@@ -270,6 +270,31 @@ void main() {
     Stream<List<int>> readError(Stream<List<int>> _) =>
         Stream.error(const OSError('injected status read error', 5));
 
+    /// A unit that ignores SIGHUP (kept across `exec`) and then writes
+    /// [ready]: once that file exists it runs its program on the PTY, and
+    /// closing the master cannot end it.
+    List<String> hangupProof(File ready) => [
+      '/bin/sh',
+      '-c',
+      'trap "" HUP; : > "\$1"; exec sleep 600',
+      'sh',
+      ready.path,
+    ];
+
+    /// The status read error, raised only after [ready] exists. A poll for
+    /// the file the unit writes, failing loudly at the hang guard.
+    Stream<List<int>> Function(Stream<List<int>>) readErrorAfter(File ready) =>
+        (_) async* {
+          final deadline = DateTime.now().add(hangGuard);
+          while (!ready.existsSync()) {
+            if (DateTime.now().isAfter(deadline)) {
+              fail('the unit never wrote ${ready.path}');
+            }
+            await Future<void>.delayed(const Duration(milliseconds: 20));
+          }
+          throw const OSError('injected status read error', 5);
+        };
+
     bool runs(int pid) {
       final s = PosixProcessTable().snapshot(pid);
       return s != null && !s.zombie;
@@ -340,12 +365,13 @@ void main() {
 
     test('an unconfirmed read under a status read error carries the pid and '
         'sends no signal', () async {
+      final ready = File(p.join(tmp.path, 'ready${counter++}'));
       await expectLater(
         spawn(
-          ['/bin/sh', '-c', 'exec sleep 600'],
+          hangupProof(ready),
           snapshot: (_) => null,
           probe: (_) => 0,
-          status: readError,
+          status: readErrorAfter(ready),
         ),
         throwsA(
           isA<SpawnFailed>().having((e) => e.stage, 'stage', 'status-read'),
@@ -355,6 +381,34 @@ void main() {
 
       expect(runs(process.pid), isTrue, reason: 'not signalled');
     });
+
+    test(
+      'a throwing injected read is rethrown and nothing is signalled',
+      () async {
+        final ready = File(p.join(tmp.path, 'ready${counter++}'));
+        final readFailure = StateError('injected read failure');
+        await expectLater(
+          spawn(
+            hangupProof(ready),
+            // Waits until the unit runs its program and ignores SIGHUP, so
+            // only a signal from the spawn could end it.
+            before: (_) async {
+              final deadline = DateTime.now().add(hangGuard);
+              while (!ready.existsSync()) {
+                if (DateTime.now().isAfter(deadline)) {
+                  fail('the unit never wrote ${ready.path}');
+                }
+                await Future<void>.delayed(const Duration(milliseconds: 20));
+              }
+            },
+            snapshot: (_) => throw readFailure,
+          ),
+          throwsA(same(readFailure)),
+        );
+
+        expect(runs(processes.single.pid), isTrue, reason: 'not signalled');
+      },
+    );
 
     test('the status-read failure names the unconfirmed pid', () async {
       Object? error;

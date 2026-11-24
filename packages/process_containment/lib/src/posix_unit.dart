@@ -248,8 +248,10 @@ int _probe(int pid) => posixKill(pid, 0);
 /// - the snapshot finds no process and `kill(pid, 0)` answers `ESRCH`: the
 ///   unit already exited and was reaped, and is returned with
 ///   [startTimeNotRead] unless something else failed. Only this positive
-///   evidence of absence returns such a unit; `kill` and `errno` are bound
-///   before `Process.start`, so the probe's errno is its own;
+///   evidence of absence returns such a unit. The probe is a leaf FFI call
+///   (`isLeaf: true`), and `kill` and `errno` are bound before
+///   `Process.start`, so no Dart code runs between the call and the errno
+///   read and the errno is the probe's own;
 /// - the read is refused: the spawn kills the process and throws
 ///   [StateError], as before;
 /// - the snapshot finds no process but the probe does not prove the pid
@@ -268,23 +270,29 @@ int _probe(int pid) => posixKill(pid, 0);
 /// With [pty] the unit runs on a new pseudo-terminal (design D2): the host
 /// opens the master, sizes it, and the shim opens the slave as the unit's
 /// controlling terminal and stdio. The future completes only after the shim's
-/// status pipe reached end of file with nothing written, that is after
-/// `execve` succeeded; the master is then in [PosixUnit.pty]
+/// status pipe reached end of file with nothing written. That empty end of
+/// file is the handshake outcome the spawn treats as success; it is not
+/// proof that `execve` ran (see below). The master is then in
+/// [PosixUnit.pty]
 /// ([PtyHandles.readHandle]), and the unit's `Process.stdout` has been
 /// consumed. The outcome order is: no answer within 5 s
 /// (`status-timeout`), a read error on the pipe (`status-read`), a reported
 /// setup or `execve` failure, then a readable or proved-gone success, else the
 /// refused or unconfirmed error. Each [SpawnFailed] carries
-/// [SpawnFailed.unconfirmedPid] when the identity was unconfirmed. A shim that
-/// exits before `execve` without writing a report (empty status, #33) still
-/// reads as a started program, now also when it was reaped before the read.
+/// [SpawnFailed.unconfirmedPid] when the identity was unconfirmed. Three
+/// cases stay distinct: a non-empty status (a reported setup or `execve`
+/// failure) fails; a read error on the pipe fails (`status-read`); a shim
+/// that exits before `execve` without writing a report, for any reason
+/// (empty status, #33), is indistinguishable from a started program and is
+/// treated as one, now also when it was reaped before the read.
 ///
 /// [SpawnFailed], [SpawnIdentityUnconfirmed] and [StateError] describe the
 /// spawn's own cleanup: it ends the process it could identify, kills a
 /// process whose read was refused, and signals nothing else. It cancels the
-/// status subscription, closes the master and the unclaimed stdio before it
-/// throws, without waiting for an unsignalled process to exit. Whether the
-/// unit's row is deleted or left unresolved is the host's settlement.
+/// status subscription, closes the master, closes stdin and stops reading
+/// stdout and stderr before it throws, without waiting for an unsignalled
+/// process to exit. Whether the unit's row is deleted or left unresolved is
+/// the host's settlement.
 ///
 /// With [pipes], the existing Process pipes are handed to the caller in
 /// [PosixUnit.pipes], without reading stdout as shim status. Exec failures
@@ -292,10 +300,12 @@ int _probe(int pid) => posixKill(pid, 0);
 /// exclusive; plain units retain their existing Process stdio behavior.
 ///
 /// Test-only parameters: [beforeStartTimeReadForTesting] runs between
-/// `Process.start` and the read (a test awaits the exit there; if it throws,
-/// the process is killed and the error rethrown); [snapshotForTesting] and
-/// [probeForTesting] replace the read and the `kill(pid, 0)` probe;
-/// [statusStreamForTesting] wraps the status stream on the PTY path.
+/// `Process.start` and the read (a test awaits the exit there);
+/// [snapshotForTesting] and [probeForTesting] replace the read and the
+/// `kill(pid, 0)` probe; [statusStreamForTesting] wraps the status stream
+/// on the PTY path. If one of them throws, the spawn closes the master and
+/// releases the stdio and rethrows; it sends no signal, since nothing has
+/// identified the pid as the unit's.
 Future<PosixUnit> spawnPosixUnit({
   required String shimExecutable,
   List<String> shimArgs = const [],
@@ -341,20 +351,24 @@ Future<PosixUnit> spawnPosixUnit({
     master?.close();
     rethrow;
   }
-  if (beforeStartTimeReadForTesting != null) {
-    try {
-      await beforeStartTimeReadForTesting(process);
-    } catch (_) {
-      process.kill(ProcessSignal.sigkill);
-      master?.close();
-      rethrow;
-    }
+  final _Identity identity;
+  final Stream<List<int>> statusStream;
+  try {
+    await beforeStartTimeReadForTesting?.call(process);
+    identity = _readIdentity(
+      process.pid,
+      snapshotForTesting ?? _readSnapshot,
+      probeForTesting ?? _probe,
+    );
+    statusStream = master == null
+        ? process.stdout
+        : statusStreamForTesting?.call(process.stdout) ?? process.stdout;
+  } catch (_) {
+    // Nothing identified the pid as the unit's: release, never signal.
+    _abandonStdio(process);
+    master?.close();
+    rethrow;
   }
-  final identity = _readIdentity(
-    process.pid,
-    snapshotForTesting ?? _readSnapshot,
-    probeForTesting ?? _probe,
-  );
   if (master == null) {
     switch (identity) {
       case _Read(:final startTime):
@@ -390,8 +404,6 @@ Future<PosixUnit> spawnPosixUnit({
   final status = BytesBuilder();
   final eof = Completer<void>();
   Object? readError;
-  final statusStream =
-      statusStreamForTesting?.call(process.stdout) ?? process.stdout;
   final subscription = statusStream.listen(
     status.add,
     onDone: () {
@@ -402,7 +414,8 @@ Future<PosixUnit> spawnPosixUnit({
       if (!eof.isCompleted) eof.complete();
     },
   );
-  unawaited(process.stderr.drain<void>().then((_) {}, onError: (Object _) {}));
+  // Discarded while the unit runs; released at once if the spawn fails.
+  final stderr = process.stderr.listen(null, onError: (Object _) {});
   unawaited(process.stdin.close().then((_) {}, onError: (Object _) {}));
   var timedOut = false;
   await eof.future.timeout(_statusTimeout, onTimeout: () => timedOut = true);
@@ -426,6 +439,7 @@ Future<PosixUnit> spawnPosixUnit({
 
   // Failed: settle what the spawn can identify before reporting.
   await subscription.cancel();
+  unawaited(stderr.cancel());
   switch (identity) {
     case _Read(:final startTime):
       await PosixUnit._(process, startTime, containmentId).terminate();
@@ -463,8 +477,13 @@ Future<PosixUnit> spawnPosixUnit({
 /// it, so no host-side handle waits on a process nobody owns (design D3).
 void _abandonStdio(Process process) {
   unawaited(process.stdin.close().then((_) {}, onError: (Object _) {}));
-  unawaited(process.stdout.listen(null).cancel());
-  unawaited(process.stderr.listen(null).cancel());
+  for (final output in [process.stdout, process.stderr]) {
+    try {
+      unawaited(output.listen(null, onError: (Object _) {}).cancel());
+    } on StateError {
+      // Already listened to: its listener owns it.
+    }
+  }
 }
 
 const Duration _statusTimeout = Duration(seconds: 5);
