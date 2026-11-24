@@ -230,6 +230,30 @@ final _SysctlDart _sysctl = libc.lookupFunction<_SysctlNative, _SysctlDart>(
   'sysctl',
 );
 
+/// The snapshot the macOS short read gives once the full read was refused.
+///
+/// A zombie is reported as a zombie whoever owns it: it is not running, and
+/// every caller skips it or reads it as exited before comparing start times.
+/// A zombie has no credentials, so the full read can refuse it even for one
+/// of our own processes, and reading that refusal as unreadable would leave
+/// a marker scan that met a passing zombie unresolved. Another user's live
+/// process gets the placeholder start time 0: it is outside the scan
+/// population, so its start time is not needed. A refusal for one of our
+/// own live processes stays unreadable.
+ProcessSnapshot macShortInfoSnapshot({
+  required int uid,
+  required bool zombie,
+  required int currentUid,
+}) {
+  if (!zombie && uid == currentUid) throw const ProcessReadDenied();
+  return ProcessSnapshot(
+    startTime: 0,
+    startedAt: DateTime.fromMicrosecondsSinceEpoch(0),
+    uid: uid,
+    zombie: zombie,
+  );
+}
+
 class _MacProcessTable extends PosixProcessTable {
   _MacProcessTable() : super._();
 
@@ -315,10 +339,9 @@ class _MacProcessTable extends PosixProcessTable {
     }
   }
 
-  /// macOS refuses `PROC_PIDTBSDINFO` for another user's process, but the
-  /// short info, which carries the owner, is readable for every process. A
-  /// process of another user is outside the scan population, so its start
-  /// time is not needed; a refusal for one of our own stays unreadable.
+  /// macOS refuses `PROC_PIDTBSDINFO` for another user's process, and can
+  /// refuse it for a zombie, but the short info, which carries the owner and
+  /// the state, is readable for every process ([macShortInfoSnapshot]).
   ProcessSnapshot? _foreignSnapshot(int pid) {
     final buffer = calloc<Uint8>(_shortInfoSize);
     try {
@@ -336,13 +359,10 @@ class _MacProcessTable extends PosixProcessTable {
       }
       if (n < _shortInfoSize) throw const ProcessReadDenied();
       final data = ByteData.sublistView(buffer.asTypedList(_shortInfoSize));
-      final uid = data.getUint32(36, Endian.host); // pbsi_uid
-      if (uid == currentUid) throw const ProcessReadDenied();
-      return ProcessSnapshot(
-        startTime: 0,
-        startedAt: DateTime.fromMicrosecondsSinceEpoch(0),
-        uid: uid,
+      return macShortInfoSnapshot(
+        uid: data.getUint32(36, Endian.host), // pbsi_uid
         zombie: data.getUint32(12, Endian.host) == _szomb, // pbsi_status
+        currentUid: currentUid,
       );
     } finally {
       calloc.free(buffer);
