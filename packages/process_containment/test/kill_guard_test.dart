@@ -264,7 +264,9 @@ void main() {
   });
 }
 
-/// Scripted answers, consumed in order; every call is logged. A snapshot
+/// Scripted answers, consumed in order; every call is logged, and every
+/// call must target the leader's pid (a `kill(0, 0)` probe would test the
+/// caller's own group). A snapshot
 /// answer equal to [denied] throws [ProcessReadDenied].
 class _Script {
   _Script({
@@ -300,6 +302,7 @@ class _Script {
     directFallback: fallback,
     snapshot: (p) {
       calls.add('snapshot');
+      expect(p, pid, reason: 'snapshot of another pid');
       expect(_snapshots, isNotEmpty, reason: 'unscripted snapshot');
       final answer = _snapshots.removeAt(0);
       if (answer != null && identical(answer, denied)) {
@@ -309,11 +312,13 @@ class _Script {
     },
     killpg: (p, s) {
       calls.add('killpg $s');
+      expect(p, pid, reason: 'killpg of another group');
       expect(_killpg, isNotEmpty, reason: 'unscripted killpg');
       return _killpg.removeAt(0);
     },
     kill: (p, s) {
       calls.add('kill $s');
+      expect(p, pid, reason: 'kill of another pid');
       expect(_kill, isNotEmpty, reason: 'unscripted kill');
       return _kill.removeAt(0);
     },
