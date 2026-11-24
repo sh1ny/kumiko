@@ -6,6 +6,7 @@ import 'dart:typed_data' show BytesBuilder;
 import 'package:ffi/ffi.dart';
 
 import 'contained_unit.dart';
+import 'kill_guard.dart';
 import 'libc.dart';
 import 'posix_process_table.dart';
 import 'process_table.dart';
@@ -13,6 +14,9 @@ import 'pty.dart';
 import 'pty_io.dart' show closePtyHandle;
 import 'unit_exec.dart';
 import 'unit_pipes.dart';
+
+// The guard's outcome is part of this library's public surface.
+export 'kill_guard.dart' show KillOutcome;
 
 /// The start time of [pid] on POSIX (Linux `/proc/<pid>/stat`, macOS
 /// `proc_pidinfo`), or null when it is gone or cannot be read. Opaque: only
@@ -53,58 +57,61 @@ bool posixIsProcessAlive(
   }
 }
 
-/// Result of a guarded `killpg`.
-enum KillOutcome {
-  /// The signal was sent to the group.
-  signalled,
-
-  /// The leader is gone, so the group is only reachable through the marker
-  /// scan.
-  leaderGone,
-
-  /// The pid now belongs to a process with another start time.
-  startTimeMismatch,
-
-  /// The kernel refused (for example `EPERM`).
-  failed,
-}
-
-/// Signals the process group led by [leaderPid] only while that leader is
-/// alive with [startTime]. A pid that was reused is never signalled
-/// (design: Flow & State Gaps).
+/// Signals the process group of a recorded unit, led by [leaderPid], after
+/// checking that the leader is alive with [startTime] (ADR 0001). The check
+/// comes before the signal and does not bind who receives it: a pid reused
+/// in between (C3), or after a reboot (C11), can still be reached.
 ///
-/// A leader recorded as [startTimeNotRead] is gone: this returns
-/// [KillOutcome.leaderGone] before reading or signalling [leaderPid], whose
-/// pid may belong to another process by now (#18), so a reused pid the host
-/// cannot read never turns a gone leader into a kill failure. Its
-/// descendants are reached only by the marker scan, which does not depend on
-/// this check. [posixIsProcessAlive] answers false for it the same way.
+/// - The first read refused: no signal, [KillOutcome.failed]. A signal
+///   refused (any error but `ESRCH`): [KillOutcome.failed] unless a recheck
+///   confirms the leader exited (a no-signal `kill(pid, 0)` answers `ESRCH`,
+///   or the pid holds a zombie) or was replaced (another start time, neither
+///   being 0). The rechecks use the start time and state only, never the
+///   owner (design C1).
+/// - After the first signal, no further signal is sent without a fresh
+///   recheck, and none is resent after a refusal, within one call. The only
+///   second signal the guard ever sends is the live-unit fallback after
+///   `killpg` answers `ESRCH`, once a fresh recheck confirms the leader; this
+///   entry never sends it. The first signal follows the unchanged entry
+///   check, with its gaps (C5, C11). The window from the identity read (on
+///   Linux the `stat` read, before `status`) to the signal remains; the
+///   marker scan and Retry cleanup are separate attempts (C3).
+/// - The first check keeps its mapping, gaps included: a `null` snapshot is
+///   [KillOutcome.leaderGone] though on macOS it can come from an unconfirmed
+///   read, and owners are not compared, so another user's process whose
+///   placeholder start time 0 equals a recorded 0 reaches `killpg` (C5,
+///   issue #31).
+/// - The `kill-failed` reason a caller records carries no errno, and no host
+///   test scripts this native path (C6, issue #31).
+/// - One process table instance serves the entry read and every recheck, so
+///   no recheck reads `/proc/uptime` again (C8).
+/// - This entry never signals the pid directly: the direct fallback, for a
+///   group that does not exist yet, is only for a unit this host instance
+///   started in its current run (`killLiveUnitGroup`, used by
+///   [PosixUnit.terminate]). A recorded unit may come from an earlier boot
+///   (C10).
+/// - A Linux start time counts ticks since boot and recorded rows carry no
+///   boot identity, so after a reboot the first check can still reach
+///   `killpg` for an unrelated group leader with the same pid and ticks
+///   (C11, issue #31).
+/// - A leader recorded as [startTimeNotRead] is gone: this returns
+///   [KillOutcome.leaderGone] before reading or signalling [leaderPid],
+///   whose pid may belong to another process by now (#18). Its
+///   descendants are reached only by the marker scan.
+///
 /// [snapshotForTesting] replaces the process read.
 KillOutcome killProcessGroup(
   int leaderPid,
   int startTime,
   int signal, {
   SnapshotReader? snapshotForTesting,
-}) {
-  if (startTime == startTimeNotRead) return KillOutcome.leaderGone;
-  final ProcessSnapshot? leader;
-  try {
-    leader = (snapshotForTesting ?? _readSnapshot)(leaderPid);
-  } on ProcessReadDenied {
-    return KillOutcome.failed;
-  }
-  if (leader == null || leader.zombie) return KillOutcome.leaderGone;
-  if (leader.startTime != startTime) return KillOutcome.startTimeMismatch;
-  final err = posixKillpg(leaderPid, signal);
-  if (err == 0) return KillOutcome.signalled;
-  if (err != esrch) return KillOutcome.failed;
-  // The leader is alive but its group does not exist yet: the shim has not
-  // reached `setsid`, so the process is still alone in the host's group.
-  // Nothing else belongs to the unit then; signal the process itself.
-  final direct = posixKill(leaderPid, signal);
-  if (direct == 0) return KillOutcome.signalled;
-  return direct == esrch ? KillOutcome.leaderGone : KillOutcome.failed;
-}
+}) => killUnitGroup(
+  leaderPid,
+  startTime,
+  signal,
+  directFallback: false,
+  snapshotForTesting: snapshotForTesting,
+);
 
 /// A unit on Linux or macOS: the leader of its own session, started through
 /// the `--unit-exec` shim.
@@ -150,7 +157,7 @@ class PosixUnit implements ContainedUnit {
     var exited = false;
     unawaited(exitCode.then((_) => exited = true));
 
-    switch (killProcessGroup(pid, startTime, posixSigterm)) {
+    switch (killLiveUnitGroup(pid, startTime, posixSigterm)) {
       case KillOutcome.signalled:
         break;
       case KillOutcome.leaderGone || KillOutcome.startTimeMismatch:
@@ -165,7 +172,7 @@ class PosixUnit implements ContainedUnit {
       return const TerminationResult.terminated();
     }
 
-    switch (killProcessGroup(pid, startTime, posixSigkill)) {
+    switch (killLiveUnitGroup(pid, startTime, posixSigkill)) {
       case KillOutcome.signalled || KillOutcome.leaderGone:
         break;
       case KillOutcome.startTimeMismatch:

@@ -11,13 +11,26 @@ import 'process_table.dart';
 typedef _KillNative = Int32 Function(Int32, Int32);
 typedef _KillDart = int Function(int, int);
 
-// A leaf call: no VM transition runs between `kill` and the `errno` read, so
-// the errno reported is this call's own (`libc.dart`, `errno`).
+// Errno and leaf calls. `kill`, `killpg` and `proc_pidinfo` are leaf calls,
+// and the errno accessor is bound before any of them can fail (`errno()` in
+// the wrappers below and in the `PosixProcessTable` constructor): no VM
+// transition runs between the call and the read of its errno, so a "no such
+// process" is never read as another error. All three are short and wait on
+// nothing, as a leaf call must be (design D4, A4).
+//
+// `proc_listpids` and the environment `sysctl` still read errno without a
+// leaf binding. Their answers grow with the process count or the
+// environment, and neither errno reaches the kill path: the first only goes
+// into a message, the second is rechecked by the marker scan (issue #31).
+
 final _KillDart _kill = libc.lookupFunction<_KillNative, _KillDart>(
   'kill',
   isLeaf: true,
 );
-final _KillDart _killpg = libc.lookupFunction<_KillNative, _KillDart>('killpg');
+final _KillDart _killpg = libc.lookupFunction<_KillNative, _KillDart>(
+  'killpg',
+  isLeaf: true,
+);
 
 final int Function() _getuid = libc
     .lookupFunction<Uint32 Function(), int Function()>('getuid');
@@ -26,8 +39,11 @@ final int Function() _getuid = libc
 const int posixSigterm = 15;
 const int posixSigkill = 9;
 
-/// `kill(pid, signal)`; returns 0 or the errno.
-int posixKill(int pid, int signal) => _kill(pid, signal) == 0 ? 0 : errno();
+/// `kill(pid, signal)`; returns 0 or the errno of this call.
+int posixKill(int pid, int signal) {
+  errno(); // bound before the call, so nothing runs between it and the read
+  return _kill(pid, signal) == 0 ? 0 : errno();
+}
 
 Object? _probeBinding;
 
@@ -38,9 +54,11 @@ void bindPosixProbe() {
   _probeBinding ??= (_kill, errno());
 }
 
-/// `killpg(pgrp, signal)`; returns 0 or the errno.
-int posixKillpg(int pgrp, int signal) =>
-    _killpg(pgrp, signal) == 0 ? 0 : errno();
+/// `killpg(pgrp, signal)`; returns 0 or the errno of this call.
+int posixKillpg(int pgrp, int signal) {
+  errno(); // bound before the call, so nothing runs between it and the read
+  return _killpg(pgrp, signal) == 0 ? 0 : errno();
+}
 
 /// The POSIX process table: `/proc` on Linux, `libproc` and `sysctl` on
 /// macOS (design D9).
@@ -48,7 +66,9 @@ abstract class PosixProcessTable implements ProcessTable {
   factory PosixProcessTable() =>
       Platform.isMacOS ? _MacProcessTable() : _LinuxProcessTable();
 
-  PosixProcessTable._();
+  PosixProcessTable._() {
+    errno(); // bind the accessor before the first leaf call that can fail
+  }
 
   @override
   final int currentUid = _getuid();
@@ -202,10 +222,37 @@ typedef _SysctlDart = int Function(
 final _ProcListpidsDart _procListpids = libc
     .lookupFunction<_ProcListpidsNative, _ProcListpidsDart>('proc_listpids');
 final _ProcPidinfoDart _procPidinfo = libc
-    .lookupFunction<_ProcPidinfoNative, _ProcPidinfoDart>('proc_pidinfo');
+    .lookupFunction<_ProcPidinfoNative, _ProcPidinfoDart>(
+      'proc_pidinfo',
+      isLeaf: true,
+    );
 final _SysctlDart _sysctl = libc.lookupFunction<_SysctlNative, _SysctlDart>(
   'sysctl',
 );
+
+/// The snapshot the macOS short read gives once the full read was refused.
+///
+/// A zombie is reported as a zombie whoever owns it: it is not running, and
+/// every caller skips it or reads it as exited before comparing start times.
+/// A zombie has no credentials, so the full read can refuse it even for one
+/// of our own processes, and reading that refusal as unreadable would leave
+/// a marker scan that met a passing zombie unresolved. Another user's live
+/// process gets the placeholder start time 0: it is outside the scan
+/// population, so its start time is not needed. A refusal for one of our
+/// own live processes stays unreadable.
+ProcessSnapshot macShortInfoSnapshot({
+  required int uid,
+  required bool zombie,
+  required int currentUid,
+}) {
+  if (!zombie && uid == currentUid) throw const ProcessReadDenied();
+  return ProcessSnapshot(
+    startTime: 0,
+    startedAt: DateTime.fromMicrosecondsSinceEpoch(0),
+    uid: uid,
+    zombie: zombie,
+  );
+}
 
 class _MacProcessTable extends PosixProcessTable {
   _MacProcessTable() : super._();
@@ -292,10 +339,9 @@ class _MacProcessTable extends PosixProcessTable {
     }
   }
 
-  /// macOS refuses `PROC_PIDTBSDINFO` for another user's process, but the
-  /// short info, which carries the owner, is readable for every process. A
-  /// process of another user is outside the scan population, so its start
-  /// time is not needed; a refusal for one of our own stays unreadable.
+  /// macOS refuses `PROC_PIDTBSDINFO` for another user's process, and can
+  /// refuse it for a zombie, but the short info, which carries the owner and
+  /// the state, is readable for every process ([macShortInfoSnapshot]).
   ProcessSnapshot? _foreignSnapshot(int pid) {
     final buffer = calloc<Uint8>(_shortInfoSize);
     try {
@@ -313,13 +359,10 @@ class _MacProcessTable extends PosixProcessTable {
       }
       if (n < _shortInfoSize) throw const ProcessReadDenied();
       final data = ByteData.sublistView(buffer.asTypedList(_shortInfoSize));
-      final uid = data.getUint32(36, Endian.host); // pbsi_uid
-      if (uid == currentUid) throw const ProcessReadDenied();
-      return ProcessSnapshot(
-        startTime: 0,
-        startedAt: DateTime.fromMicrosecondsSinceEpoch(0),
-        uid: uid,
+      return macShortInfoSnapshot(
+        uid: data.getUint32(36, Endian.host), // pbsi_uid
         zombie: data.getUint32(12, Endian.host) == _szomb, // pbsi_status
+        currentUid: currentUid,
       );
     } finally {
       calloc.free(buffer);
