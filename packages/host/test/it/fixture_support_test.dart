@@ -214,12 +214,12 @@ void main() {
       await deleteTree(profile);
     });
 
-    const total = 2 * 1024 * 1024;
-
-    int markers(OpenTerminal t) => 'GATED;'.allMatches(t.text).length;
+    // Far past the channel window and the pipes, so the fixture is still
+    // flooding, stalled on credit, when the test decides about the gate.
+    const total = 16 * 1024 * 1024;
 
     Future<(OpenTerminal, File)> flooding({
-      void Function(Uint8List data)? onData,
+      required void Function(Uint8List data) onData,
     }) async {
       final d = await Desktop.start(
         profile,
@@ -233,11 +233,6 @@ void main() {
       addTearDown(d.dispose);
       await d.waitState(within: const Duration(minutes: 2));
       await d.saveFixtureProfile(cwd: work.path);
-      if (onData == null) {
-        final t = await d.openTerminal('fixture');
-        await t.waitForText('READY;', within: const Duration(minutes: 2));
-        return (t, File(joinPath(work.path, 'gate')));
-      }
       final ready = MarkerLatch('READY;');
       final t = await d.openTerminal(
         'fixture',
@@ -262,55 +257,69 @@ void main() {
       return (t, File(joinPath(work.path, 'gate')));
     }
 
+    /// Floods [total] bytes with a gate and returns how many `GATED;`
+    /// markers came before `FLOODED:` ended it. Reading pauses after 1 MiB, so
+    /// the fixture stalls on credit long before the end while [atPause]
+    /// runs; the count then covers the whole flood.
+    Future<int> gatedFlood(void Function(File gate) atPause) async {
+      const window = 1024 * 1024;
+      OpenTerminal? term;
+      var counting = false;
+      var received = 0;
+      var count = 0;
+      var flooded = false;
+      var gatedCarry = '';
+      var endCarry = '';
+      final paused = Completer<void>();
+      final (t, gate) = await flooding(
+        onData: (data) {
+          if (!counting) return;
+          received += data.length;
+          final text = latin1.decode(data);
+          final gated = gatedCarry + text;
+          count += 'GATED;'.allMatches(gated).length;
+          gatedCarry = gated.length < 5
+              ? gated
+              : gated.substring(gated.length - 5);
+          final ended = endCarry + text;
+          if (ended.contains('FLOODED:')) flooded = true;
+          endCarry = ended.length < 7
+              ? ended
+              : ended.substring(ended.length - 7);
+          if (received >= window && !paused.isCompleted) {
+            term!.pause();
+            paused.complete();
+          }
+        },
+      );
+      term = t;
+      counting = true;
+      await t.send('flood $total gate');
+      await paused.future.timeout(
+        const Duration(minutes: 2),
+        onTimeout: () => fail('the flood never reached 1 MiB'),
+      );
+      expect(flooded, isFalse, reason: 'the flood ended before the pause');
+      expect(count, 0, reason: 'GATED; came before the gate decision');
+      atPause(gate);
+      t.resume();
+      await eventually(
+        () => flooded,
+        within: const Duration(minutes: 2),
+        reason: 'the flood never wrote FLOODED:',
+      );
+      return count;
+    }
+
     test(
       'a gate created mid-flood makes it write GATED; exactly once',
       () async {
-        // Output is counted as it arrives, never kept: the flood runs until
-        // teardown. A batch is 16 KiB and the gate is checked after each one,
-        // so 1 MiB of output before the file exists means many checks ran
-        // without it, and 1 MiB after the marker means many ran after it.
-        const window = 1024 * 1024;
-        var counting = false;
-        var received = 0;
-        var count = 0;
-        int? markedAt;
-        var carry = '';
-        final (t, gate) = await flooding(
-          onData: (data) {
-            if (!counting) return;
-            received += data.length;
-            final joined = carry + latin1.decode(data);
-            final found = 'GATED;'.allMatches(joined).length;
-            if (found > 0 && markedAt == null) markedAt = received;
-            count += found;
-            carry = joined.length < 5
-                ? joined
-                : joined.substring(joined.length - 5);
-          },
-        );
-        counting = true;
-        await t.send('flood ${1 << 40} gate');
-        await eventually(
-          () => received >= window,
-          within: const Duration(minutes: 2),
-          reason: 'the flood never started',
-        );
-        expect(count, 0, reason: 'GATED; came before the gate file existed');
-        gate.writeAsStringSync('go');
-        await eventually(
-          () => markedAt != null && received - markedAt! >= window,
-          within: const Duration(minutes: 2),
-          reason: 'no GATED; and further output after the gate file',
-        );
-        expect(count, 1);
+        expect(await gatedFlood((gate) => gate.writeAsStringSync('go')), 1);
       },
     );
 
     test('without the gate file it never writes GATED;', () async {
-      final (t, _) = await flooding();
-      await t.send('flood ${total ~/ 8} gate');
-      await t.waitForText('FLOODED:', within: const Duration(minutes: 2));
-      expect(markers(t), 0);
+      expect(await gatedFlood((_) {}), 0);
     });
   });
 }

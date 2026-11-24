@@ -112,10 +112,13 @@ void main() {
   // resolution and attach, which a slow runner would otherwise miss at the
   // production 5 s and 10 s and fail for reasons unrelated to drafts. A new
   // entry point that bypasses it reintroduces the production prerequisite
-  // deadlines.
+  // deadlines. It also sets a 10 min draft deadline, longer than any row's
+  // whole timeout (3 min by default, 5 min at most), so the real timer can
+  // never fire before a row's explicit `test/draft.expire` (rule 3 of #28).
   const draftSuiteEnv = {
     'KUMIKO_TEST_RESOLVE_TIMEOUT_MS': '120000',
     'KUMIKO_TEST_ATTACH_TIMEOUT_MS': '120000',
+    'KUMIKO_TEST_DRAFT_DEADLINE_MS': '600000',
   };
 
   Future<Desktop> desktop({

@@ -37,6 +37,9 @@ void main() {
         'KUMIKO_TEST_SHELL_PATH': '',
         'KUMIKO_TEST_RESOLVE_TIMEOUT_MS': '120000',
         'KUMIKO_TEST_ATTACH_TIMEOUT_MS': '120000',
+        // Longer than the test's whole timeout, so only the explicit
+        // `test/draft.expire` ever fails a held commit here (rule 3 of #28).
+        'KUMIKO_TEST_DRAFT_DEADLINE_MS': '600000',
         ...env,
       },
     );
