@@ -29,10 +29,10 @@
 
 ## 3. Verification
 
-- [ ] 3.1 Re-run the green rows of the Test map (`spawn_test.dart`, `marker_scan_test.dart`) and the host cleanup rows (`packages/host/test/it/cleanup_api_test.dart`); all pass.
-- [ ] 3.2 C2 is the spec's requirement text (`specs/host-process-cleanup/spec.md`); confirm with `openspec validate fix-macos-zombie-kill --strict`.
-- [ ] 3.3 Run `mise run check` and `mise run test:host`; both pass.
-- [ ] 3.4 Comment on issue #31 adding the gaps this change records against it: the boot-scoped identity of recorded units (C11) and the non-leaf `proc_listpids` and environment `sysctl` (C9).
+- [x] 3.1 Re-run the green rows of the Test map (`spawn_test.dart`, `marker_scan_test.dart`) and the host cleanup rows (`packages/host/test/it/cleanup_api_test.dart`); all pass.
+- [x] 3.2 C2 is the spec's requirement text (`specs/host-process-cleanup/spec.md`); confirm with `openspec validate fix-macos-zombie-kill --strict`.
+- [x] 3.3 Run `mise run check` and `mise run test:host`; both pass.
+- [x] 3.4 Comment on issue #31 adding the gaps this change records against it: the boot-scoped identity of recorded units (C11) and the non-leaf `proc_listpids` and environment `sysctl` (C9).
 
 ## Workflow follow-up
 
