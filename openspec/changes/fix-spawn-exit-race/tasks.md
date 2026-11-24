@@ -39,8 +39,8 @@ Every new test is POSIX-only (skipped on Windows, as the existing POSIX tests ar
 
 ## 3. Whole-change verification
 
-- [ ] 3.1 Run `mise run check` and `mise run test:host` on Windows; both pass.
-- [ ] 3.2 In a WSL Linux clone of the branch, run `packages/process_containment` tests and the host's `spawn_identity_test.dart`, `reconcile_test.dart`, `ledger_test.dart` and `cleanup_api_test.dart` one file at a time; all pass. macOS is covered by CI on the PR.
+- [x] 3.1 Run `mise run check` and `mise run test:host` on Windows; both pass.
+- [x] 3.2 In a WSL Linux clone of the branch, run `packages/process_containment` tests and the host's `spawn_identity_test.dart`, `reconcile_test.dart`, `ledger_test.dart` and `cleanup_api_test.dart` one file at a time; all pass. macOS is covered by CI on the PR.
 
 ## Workflow follow-up
 
