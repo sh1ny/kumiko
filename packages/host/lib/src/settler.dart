@@ -75,7 +75,8 @@ class Settler {
   /// marked survivor) leaves its rows unresolved. A scan that throws
   /// propagates (constraint C12): a live end then leaves the row as it was
   /// and the workspace open (#35), and restart marks every row
-  /// `reconcile-failed`.
+  /// `reconcile-failed` except an unconfirmed spawn's, which keeps its
+  /// pid-bearing reason (C9).
   Future<Map<String, UnitOutcome>> settle(
     List<UnitRow> rows, {
     required Map<String, LiveUnit> live,

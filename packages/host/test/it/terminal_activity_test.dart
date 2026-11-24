@@ -27,13 +27,14 @@ void main() {
     await deleteTree(profile);
   });
 
-  Future<Desktop> start() async {
+  Future<Desktop> start([Map<String, String> extra = const {}]) async {
     final desktop = await Desktop.start(
       profile,
       environment: {
         'USERPROFILE': home.path,
         'HOME': home.path,
         'TERM_FIXTURE_HOST': testHostExecutable(),
+        ...extra,
       },
     );
     addTearDown(desktop.dispose);
@@ -260,6 +261,20 @@ void main() {
     expect(answer.first.state, TerminalActivityState.ended);
     expect(answer.last.state, TerminalActivityState.idle);
   });
+
+  test('a terminal whose leader was proved gone before its start time was '
+      'read is not probed', () async {
+    // The spawn records start time -1 although the shell still runs.
+    final desktop = await start({'KUMIKO_TEST_SPAWN_IDENTITY': 'forced-gone'});
+    final t = await desktop.openTerminal('fixture');
+    await t.waitForText('READY;');
+    final before = await activityReads(desktop);
+
+    final a = await one(desktop, t.id);
+
+    expect(a.state, TerminalActivityState.ended);
+    expect(await activityReads(desktop), before, reason: 'pid not read');
+  }, skip: Platform.isWindows ? 'POSIX start time only' : null);
 
   test('65 ids refused invalid-params without a table read', () async {
     final desktop = await start();

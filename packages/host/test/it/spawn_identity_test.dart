@@ -392,10 +392,16 @@ void main() {
         id: 'pidless',
         state: 'unresolved',
         identity: 'seed:pidless',
-        reason: 'reconcile-failed: earlier',
+        reason: 'seeded',
       );
     });
-    final desktop = await start(const {});
+    // Reconcile's settle throws once, so the row starts with a reason
+    // that only the retry can replace.
+    final desktop = await start({'KUMIKO_TEST_FAULTS': 'scanThrows'});
+    expect(
+      LedgerView(profile).unit('pidless')!['unresolved_reason'],
+      startsWith('reconcile-failed'),
+    );
 
     final retried = await desktop.retry('seed:pidless');
 

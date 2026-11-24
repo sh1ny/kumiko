@@ -301,11 +301,11 @@ void main() {
       return s != null && !s.zombie;
     }
 
-    test('a PTY unit reaped before its start time is read spawns and reports '
-        'its exit code', () async {
+    test('a PTY unit reaped before its start time is read spawns, reports '
+        'its exit code and its output on the PTY', () async {
       final probes = <int>[];
       final unit = await spawn(
-        ['/bin/sh', '-c', 'exit 7'],
+        ['/bin/sh', '-c', 'echo reaped-output; exit 7'],
         before: reaped,
         probe: (pid) {
           final answer = posixKill(pid, 0);
@@ -317,6 +317,8 @@ void main() {
       expect(unit.startTime, startTimeNotRead);
       expect(probes, [esrchErrno], reason: 'absence was proved by the probe');
       expect(await unit.exitCode.timeout(hangGuard), 7);
+      final reader = PtyReader(unit.pty!.readHandle);
+      await reader.waitForText('reaped-output');
     });
 
     test('a missing program reaped before the read still raises SpawnFailed '
