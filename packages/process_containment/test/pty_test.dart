@@ -310,11 +310,11 @@ void main() {
       return s != null && !s.zombie;
     }
 
-    test('a PTY unit reaped before its start time is read spawns, reports '
-        'its exit code and its output on the PTY', () async {
+    test('a PTY unit reaped before its start time is read spawns and reports '
+        'its exit code', () async {
       final probes = <int>[];
       final unit = await spawn(
-        ['/bin/sh', '-c', 'echo reaped-output; exit 7'],
+        ['/bin/sh', '-c', 'exit 7'],
         before: reaped,
         probe: (pid) {
           final answer = posixKill(pid, 0);
@@ -326,9 +326,30 @@ void main() {
       expect(unit.startTime, startTimeNotRead);
       expect(probes, [esrchErrno], reason: 'absence was proved by the probe');
       expect(await unit.exitCode.timeout(hangGuard), 7);
-      final reader = PtyReader(unit.pty!.readHandle);
-      await reader.waitForText('reaped-output');
     });
+
+    // macOS drains a terminal's output when its last slave descriptor
+    // closes, so a unit with unread output cannot exit until the master is
+    // read: it cannot be reaped before the spawn returns its master.
+    test(
+      'a PTY unit reaped before its start time is read keeps its output on '
+      'the PTY',
+      () async {
+        final unit = await spawn([
+          '/bin/sh',
+          '-c',
+          'echo reaped-output; exit 7',
+        ], before: reaped);
+
+        expect(unit.startTime, startTimeNotRead);
+        expect(await unit.exitCode.timeout(hangGuard), 7);
+        final reader = PtyReader(unit.pty!.readHandle);
+        await reader.waitForText('reaped-output');
+      },
+      skip: Platform.isMacOS
+          ? 'macOS holds the exit until the terminal output is read'
+          : null,
+    );
 
     test('a missing program reaped before the read still raises SpawnFailed '
         'at exec', () async {
