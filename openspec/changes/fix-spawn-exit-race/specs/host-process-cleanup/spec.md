@@ -17,7 +17,7 @@ Before it spawns a unit, the host SHALL durably record a pending ledger entry wi
 
 #### Scenario: A running unit whose leader exited before its start time was read is ended
 - **WHEN** the host ends a running unit recorded with the start time that matches no process
-- **THEN** the leader check neither reads nor signals the recorded pid, the marker scan still runs for the unit's marker, and the unit is cleaned only if its exit is observed in time and the scan leaves no marked process; otherwise it is unresolved
+- **THEN** the leader check neither reads nor signals the recorded pid, the marker scan still runs for the unit's marker, and the unit is cleaned only if its exit is observed in time and the scan leaves no marked process; when the exit is not observed in time, or the scan reports a marked survivor, an unreadable process or a timeout, it is unresolved. A scan that throws instead of reporting is out of scope here (issue #35)
 
 #### Scenario: A later host reconciles such a unit
 - **WHEN** a later host reconciles a row recorded with the start time that matches no process
@@ -29,7 +29,7 @@ Before it spawns a unit, the host SHALL durably record a pending ledger entry wi
 
 #### Scenario: Unit identity cannot be confirmed
 - **WHEN** on Linux or macOS the read of a new unit's start time finds no process and the OS does not confirm that no process has its pid, whatever other failure the spawn also reports
-- **THEN** the launch fails with the spawn's own error (a PTY stage when one was reported), no signal is sent by that pid, the unit's row is unresolved with the pid in its reason before the marker scan for the unit's marker runs, and a new launch in that workspace is refused while the scan runs, after it, and if it fails, until the user confirms
+- **THEN** the launch fails with the spawn's own error, which the terminal API reports through its existing error mapping, no signal is sent by that pid, the unit's row is unresolved with the pid in its reason before the marker scan for the unit's marker runs, and a new launch in that workspace is refused while the scan runs, after it, and if it fails, until the user confirms
 
 #### Scenario: Unconfirmed unit is retried or confirmed
 - **WHEN** the user retries cleanup of a row left unresolved because the unit's identity could not be confirmed, or a later host reconciles it, even if that reconciliation fails
@@ -40,7 +40,7 @@ Before it spawns a unit, the host SHALL durably record a pending ledger entry wi
 - **THEN** the launch fails with the `status-read` stage, the unit is settled as for any failed PTY spawn, and no unit is returned
 
 ### Requirement: Unresolved cleanup is shown and can be retried or confirmed
-The desktop SHALL list each *cleanup unresolved* workspace with its unresolved units and reasons, stating that *cleaned* means no recorded or marked process remains. Retry SHALL rerun reconciliation for those units. A unit whose leader identity was never recorded, because its pid was never written or its identity could not be confirmed at spawn, SHALL stay unresolved through Retry, keeping its reason. Confirmation SHALL clear the workspace on the user's word.
+The desktop SHALL list each *cleanup unresolved* workspace with its unresolved units and reasons, stating that *cleaned* means no recorded or marked process remains. Retry SHALL rerun reconciliation for those units. A unit whose identity could not be confirmed at spawn SHALL stay unresolved through Retry, keeping its pid-bearing reason, until the user confirms. Confirmation SHALL clear the workspace on the user's word.
 
 #### Scenario: Many unresolved units
 - **WHEN** reconciliation leaves more unresolved workspaces and units than fit in one control message
@@ -50,13 +50,13 @@ The desktop SHALL list each *cleanup unresolved* workspace with its unresolved u
 - **WHEN** the user chooses Retry cleanup after the surviving processes have exited, and every unit of the workspace has a recorded leader identity
 - **THEN** the units become cleaned, the workspace leaves the list, and launches against it are accepted
 
-#### Scenario: Retry of a unit without a recorded identity
-- **WHEN** the user chooses Retry cleanup for a workspace with a unit whose leader identity was never recorded
+#### Scenario: Retry of a unit whose identity was not confirmed at spawn
+- **WHEN** the user chooses Retry cleanup for a workspace with a unit whose identity could not be confirmed at spawn
 - **THEN** that unit stays *cleanup unresolved* with its reason, the marker scan still ends whatever carries its marker, and the workspace stays in the list until the user confirms
 
 #### Scenario: Retry still fails
 - **WHEN** the user chooses Retry cleanup while a marked process is still alive and cannot be terminated
-- **THEN** the workspace stays *cleanup unresolved* with the updated reason
+- **THEN** the workspace stays *cleanup unresolved* with the updated reason; a unit whose identity could not be confirmed at spawn keeps its pid-bearing reason
 
 #### Scenario: User confirms the processes are gone
 - **WHEN** the user chooses Confirm processes are gone for a workspace
