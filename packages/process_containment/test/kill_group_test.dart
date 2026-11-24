@@ -35,7 +35,8 @@ void main() {
     final outcome = killLiveUnitGroup(child.pid, started, posixSigterm);
 
     expect(outcome, KillOutcome.signalled);
-    await child.exitCode;
+    // Ended by the signal, not by `sleep` finishing on its own.
+    expect(await child.exitCode, -posixSigterm);
   }, skip: Platform.isWindows ? 'POSIX process groups' : false);
 
   test('terminating a unit whose shim never made its group ends it', () async {
@@ -57,6 +58,6 @@ void main() {
     );
 
     expect(result.terminated, isTrue, reason: result.reason);
-    await unit.exitCode;
+    expect(await unit.exitCode, -posixSigterm);
   }, skip: Platform.isWindows ? 'POSIX process groups' : false);
 }
