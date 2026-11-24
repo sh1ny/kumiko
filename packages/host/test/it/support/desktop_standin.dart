@@ -20,6 +20,9 @@ Future<void> main(List<String> args) async {
   final launcher = HostLauncher(
     executable: args[0],
     profileDir: args[1],
+    // A hang guard for a slow test host start, not the production hello
+    // timeout (AGENTS.md, rule 4).
+    helloTimeout: const Duration(minutes: 2),
     capabilities: {
       Capability.testUnits,
       Capability.testFaults,

@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:typed_data';
 
 import 'package:host_protocol/host_protocol.dart';
 import 'package:test/test.dart';
@@ -213,13 +214,13 @@ void main() {
       await deleteTree(profile);
     });
 
-    // Past what the terminal and the host buffer without a reader, so the
-    // fixture is parked mid-flood while the gate is created.
     const total = 2 * 1024 * 1024;
 
     int markers(OpenTerminal t) => 'GATED;'.allMatches(t.text).length;
 
-    Future<(OpenTerminal, File)> flooding() async {
+    Future<(OpenTerminal, File)> flooding({
+      void Function(Uint8List data)? onData,
+    }) async {
       final d = await Desktop.start(
         profile,
         helloTimeout: const Duration(minutes: 2),
@@ -232,20 +233,78 @@ void main() {
       addTearDown(d.dispose);
       await d.waitState(within: const Duration(minutes: 2));
       await d.saveFixtureProfile(cwd: work.path);
-      final t = await d.openTerminal('fixture');
-      await t.waitForText('READY;', within: const Duration(minutes: 2));
+      if (onData == null) {
+        final t = await d.openTerminal('fixture');
+        await t.waitForText('READY;', within: const Duration(minutes: 2));
+        return (t, File(joinPath(work.path, 'gate')));
+      }
+      final ready = MarkerLatch('READY;');
+      final t = await d.openTerminal(
+        'fixture',
+        onData: (data) {
+          ready.add(data);
+          onData(data);
+        },
+      );
+      addTearDown(() async {
+        try {
+          await d.closeTerminal(t.id).timeout(const Duration(seconds: 30));
+        } on Object {
+          // not under test
+        }
+        await t.subscription.cancel();
+      });
+      await eventually(
+        () => ready.seen,
+        within: const Duration(minutes: 2),
+        reason: 'the fixture never printed READY;',
+      );
       return (t, File(joinPath(work.path, 'gate')));
     }
 
-    test('the gate file makes it write GATED; exactly once', () async {
-      final (t, gate) = await flooding();
-      t.pause();
-      await t.send('flood $total gate');
-      gate.writeAsStringSync('go');
-      t.resume();
-      await t.waitForText('FLOODED:', within: const Duration(minutes: 2));
-      expect(markers(t), 1);
-    });
+    test(
+      'a gate created mid-flood makes it write GATED; exactly once',
+      () async {
+        // Output is counted as it arrives, never kept: the flood runs until
+        // teardown. A batch is 16 KiB and the gate is checked after each one,
+        // so 1 MiB of output before the file exists means many checks ran
+        // without it, and 1 MiB after the marker means many ran after it.
+        const window = 1024 * 1024;
+        var counting = false;
+        var received = 0;
+        var count = 0;
+        int? markedAt;
+        var carry = '';
+        final (t, gate) = await flooding(
+          onData: (data) {
+            if (!counting) return;
+            received += data.length;
+            final joined = carry + latin1.decode(data);
+            final found = 'GATED;'.allMatches(joined).length;
+            if (found > 0 && markedAt == null) markedAt = received;
+            count += found;
+            carry = joined.length < 5
+                ? joined
+                : joined.substring(joined.length - 5);
+          },
+        );
+        counting = true;
+        await t.send('flood ${1 << 40} gate');
+        await eventually(
+          () => received >= window,
+          within: const Duration(minutes: 2),
+          reason: 'the flood never started',
+        );
+        expect(count, 0, reason: 'GATED; came before the gate file existed');
+        gate.writeAsStringSync('go');
+        await eventually(
+          () => markedAt != null && received - markedAt! >= window,
+          within: const Duration(minutes: 2),
+          reason: 'no GATED; and further output after the gate file',
+        );
+        expect(count, 1);
+      },
+    );
 
     test('without the gate file it never writes GATED;', () async {
       final (t, _) = await flooding();
