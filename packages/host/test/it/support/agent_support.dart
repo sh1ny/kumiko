@@ -106,9 +106,16 @@ class AgentPeer {
     await call(Method.agentPrompt, {'sessionId': id, 'text': text});
   }
 
+  /// Closes the session and waits for its `closed` exit. Closing can take
+  /// the host's own stop and kill budgets, so the wait is a hang guard, not a
+  /// bound (AGENTS.md, rule 4).
   Future<void> close() async {
     await call(Method.agentClose);
-    await wait(Method.agentExited, where: (p) => p['reason'] == 'closed');
+    await wait(
+      Method.agentExited,
+      where: (p) => p['reason'] == 'closed',
+      within: const Duration(minutes: 2),
+    );
   }
 }
 
