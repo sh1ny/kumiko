@@ -6,13 +6,13 @@
 |---|---|---|---|---|
 | host-process-cleanup → Stopping a unit confirms its processes are gone | Unit with an escaped descendant is ended | packages/process_containment/test/spawn_test.dart | termination ends the session; the marker scan ends an escaped descendant | green |
 | host-process-cleanup → Stopping a unit confirms its processes are gone | A process exits during the marker scan | packages/process_containment/test/marker_scan_test.dart | process gone or pid reused between list and read counts as gone | green |
-| host-process-cleanup → Stopping a unit confirms its processes are gone | The leader exits while it is being stopped | packages/process_containment/test/kill_guard_test.dart | refused killpg: probe ESRCH is leaderGone, with no snapshot read | red |
-| host-process-cleanup → Stopping a unit confirms its processes are gone | The leader's pid is not confirmed before a direct signal | packages/process_containment/test/kill_guard_test.dart | killpg ESRCH: an unconfirmed leader gets no direct signal | red |
-| host-process-cleanup → Stopping a unit confirms its processes are gone | The leader has no process group yet | packages/process_containment/test/kill_group_test.dart | a leader that has not made its group yet is still signalled | red |
-| host-process-cleanup → Stopping a unit confirms its processes are gone | A recorded unit's leader has no process group | packages/process_containment/test/kill_guard_test.dart | fallback disallowed: killpg ESRCH with the recorded start time is failed, with no direct signal | red |
+| host-process-cleanup → Stopping a unit confirms its processes are gone | The leader exits while it is being stopped | packages/process_containment/test/kill_guard_test.dart | refused killpg: probe ESRCH is leaderGone, with no snapshot read | green |
+| host-process-cleanup → Stopping a unit confirms its processes are gone | The leader's pid is not confirmed before a direct signal | packages/process_containment/test/kill_guard_test.dart | killpg ESRCH: an unconfirmed leader gets no direct signal | green |
+| host-process-cleanup → Stopping a unit confirms its processes are gone | The leader has no process group yet | packages/process_containment/test/kill_group_test.dart | a leader that has not made its group yet is still signalled | green |
+| host-process-cleanup → Stopping a unit confirms its processes are gone | A recorded unit's leader has no process group | packages/process_containment/test/kill_guard_test.dart | fallback disallowed: killpg ESRCH with the recorded start time is failed, with no direct signal | green |
 | host-process-cleanup → Stopping a unit confirms its processes are gone | A live process cannot be inspected | packages/process_containment/test/marker_scan_test.dart | live unreadable process yields scan-unreadable | green |
 | host-process-cleanup → Stopping a unit confirms its processes are gone | A marked process survives | packages/process_containment/test/marker_scan_test.dart | marked process that survives SIGKILL leaves the unit unresolved | green |
-| host-process-cleanup → Stopping a unit confirms its processes are gone | A refused signal whose leader is not confirmed gone | packages/process_containment/test/kill_guard_test.dart | refused killpg: an inconclusive recheck is failed | red |
+| host-process-cleanup → Stopping a unit confirms its processes are gone | A refused signal whose leader is not confirmed gone | packages/process_containment/test/kill_guard_test.dart | refused killpg: an inconclusive recheck is failed | green |
 
 ## 1. Error codes read from the call that set them
 
@@ -22,10 +22,10 @@
 
 ## 2. The guarded kill decision
 
-- [ ] 2.1 Write `packages/process_containment/test/kill_guard_test.dart` against the internal `kill_guard.dart` (not yet present), scripting snapshot, `killpg` and `kill` answers for every row of the design's Test map (D1, D3, fallback allowed and disallowed), asserting the outcome and the exact signals and reads. Confirm it fails because `kill_guard.dart` does not exist.
-- [ ] 2.2 Implement `packages/process_containment/lib/src/kill_guard.dart` (D1, D3) with C4 as its library doc comment, not exported from the barrel. Verify `kill_guard_test.dart` passes and flip its Test map rows green.
-- [ ] 2.3 Rewire `killProcessGroup` to call the guard with the fallback disallowed and one `PosixProcessTable` instance, and `PosixUnit.terminate` to call it with the fallback allowed. Write C1, C3, C5, C6, C8, C10 and C11 in the `killProcessGroup` doc comment. Verify with `mise run test:process_containment`.
-- [ ] 2.4 Move `kill_group_test.dart`'s row to the live-unit entry (the guard with the fallback allowed and the real calls), since the public `killProcessGroup` no longer falls back. Verify it passes on POSIX (Linux and macOS CI; skipped on Windows) and flip its Test map row green.
+- [x] 2.1 Write `packages/process_containment/test/kill_guard_test.dart` against the internal `kill_guard.dart` (not yet present), scripting snapshot, `killpg` and `kill` answers for every row of the design's Test map (D1, D3, fallback allowed and disallowed), asserting the outcome and the exact signals and reads. Confirm it fails because `kill_guard.dart` does not exist.
+- [x] 2.2 Implement `packages/process_containment/lib/src/kill_guard.dart` (D1, D3) with C4 as its library doc comment, not exported from the barrel. Verify `kill_guard_test.dart` passes and flip its Test map rows green.
+- [x] 2.3 Rewire `killProcessGroup` to call the guard with the fallback disallowed and one `PosixProcessTable` instance, and `PosixUnit.terminate` to call it with the fallback allowed. Write C1, C3, C5, C6, C8, C10 and C11 in the `killProcessGroup` doc comment. Verify with `mise run test:process_containment`.
+- [x] 2.4 Move `kill_group_test.dart`'s row to the live-unit entry (the guard with the fallback allowed and the real calls), since the public `killProcessGroup` no longer falls back. Verify it passes on POSIX (Linux and macOS CI; skipped on Windows) and flip its Test map row green.
 
 ## 3. Verification
 
