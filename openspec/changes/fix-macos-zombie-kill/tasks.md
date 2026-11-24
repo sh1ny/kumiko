@@ -16,9 +16,9 @@
 
 ## 1. Error codes read from the call that set them
 
-- [ ] 1.1 Verify A4: read the `dart:ffi` documentation of `isLeaf` (via ctx7) and confirm that `kill`, `killpg` and `proc_pidinfo` meet its conditions (no callback into Dart, no long wait); record the result in the commit body. CI on Linux and macOS then runs `spawn_test.dart` (tree fixture, session termination) and `marker_scan_test.dart` (real process table) through the leaf calls.
-- [ ] 1.2 Add `packages/process_containment/test/errno_capture_test.dart` (POSIX only): `posixKill` and `posixKillpg` with signal 0 on pid `0x7fffffff` return `esrch`. Run it with `mise exec -- dart test test/errno_capture_test.dart` in `packages/process_containment`; on Windows it is skipped, so it is confirmed on Linux and macOS CI.
-- [ ] 1.3 Bind `kill`, `killpg` and `proc_pidinfo` with `isLeaf: true` in `posix_process_table.dart`; call `errno()` first in `posixKill` and `posixKillpg` and once in the `PosixProcessTable` constructor. Write C7 and C9 as the doc comment at the native bindings. Verify with `mise run analyze` and `mise run test:process_containment`.
+- [x] 1.1 Verify A4: read the `dart:ffi` documentation of `isLeaf` (via ctx7) and confirm that `kill`, `killpg` and `proc_pidinfo` meet its conditions (no callback into Dart, no long wait); record the result in the commit body. CI on Linux and macOS then runs `spawn_test.dart` (tree fixture, session termination) and `marker_scan_test.dart` (real process table) through the leaf calls.
+- [x] 1.2 Add `packages/process_containment/test/errno_capture_test.dart` (POSIX only): `posixKill` and `posixKillpg` with signal 0 on pid `0x7fffffff` return `esrch`. Run it with `mise exec -- dart test test/errno_capture_test.dart` in `packages/process_containment`; on Windows it is skipped, so it is confirmed on Linux and macOS CI.
+- [x] 1.3 Bind `kill`, `killpg` and `proc_pidinfo` with `isLeaf: true` in `posix_process_table.dart`; call `errno()` first in `posixKill` and `posixKillpg` and once in the `PosixProcessTable` constructor. Write C7 and C9 as the doc comment at the native bindings. Verify with `mise run analyze` and `mise run test:process_containment`.
 
 ## 2. The guarded kill decision
 

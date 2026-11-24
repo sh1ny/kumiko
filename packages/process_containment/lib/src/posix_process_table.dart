@@ -11,8 +11,26 @@ import 'process_table.dart';
 typedef _KillNative = Int32 Function(Int32, Int32);
 typedef _KillDart = int Function(int, int);
 
-final _KillDart _kill = libc.lookupFunction<_KillNative, _KillDart>('kill');
-final _KillDart _killpg = libc.lookupFunction<_KillNative, _KillDart>('killpg');
+// Errno and leaf calls. `kill`, `killpg` and `proc_pidinfo` are leaf calls,
+// and the errno accessor is bound before any of them can fail (`errno()` in
+// the wrappers below and in the `PosixProcessTable` constructor): no VM
+// transition runs between the call and the read of its errno, so a "no such
+// process" is never read as another error. All three are short and wait on
+// nothing, as a leaf call must be (design D4, A4).
+//
+// `proc_listpids` and the environment `sysctl` still read errno without a
+// leaf binding. Their answers grow with the process count or the
+// environment, and neither errno reaches the kill path: the first only goes
+// into a message, the second is rechecked by the marker scan (issue #31).
+
+final _KillDart _kill = libc.lookupFunction<_KillNative, _KillDart>(
+  'kill',
+  isLeaf: true,
+);
+final _KillDart _killpg = libc.lookupFunction<_KillNative, _KillDart>(
+  'killpg',
+  isLeaf: true,
+);
 
 final int Function() _getuid = libc
     .lookupFunction<Uint32 Function(), int Function()>('getuid');
@@ -21,12 +39,17 @@ final int Function() _getuid = libc
 const int posixSigterm = 15;
 const int posixSigkill = 9;
 
-/// `kill(pid, signal)`; returns 0 or the errno.
-int posixKill(int pid, int signal) => _kill(pid, signal) == 0 ? 0 : errno();
+/// `kill(pid, signal)`; returns 0 or the errno of this call.
+int posixKill(int pid, int signal) {
+  errno(); // bound before the call, so nothing runs between it and the read
+  return _kill(pid, signal) == 0 ? 0 : errno();
+}
 
-/// `killpg(pgrp, signal)`; returns 0 or the errno.
-int posixKillpg(int pgrp, int signal) =>
-    _killpg(pgrp, signal) == 0 ? 0 : errno();
+/// `killpg(pgrp, signal)`; returns 0 or the errno of this call.
+int posixKillpg(int pgrp, int signal) {
+  errno(); // bound before the call, so nothing runs between it and the read
+  return _killpg(pgrp, signal) == 0 ? 0 : errno();
+}
 
 /// The POSIX process table: `/proc` on Linux, `libproc` and `sysctl` on
 /// macOS (design D9).
@@ -34,7 +57,9 @@ abstract class PosixProcessTable implements ProcessTable {
   factory PosixProcessTable() =>
       Platform.isMacOS ? _MacProcessTable() : _LinuxProcessTable();
 
-  PosixProcessTable._();
+  PosixProcessTable._() {
+    errno(); // bind the accessor before the first leaf call that can fail
+  }
 
   @override
   final int currentUid = _getuid();
@@ -188,7 +213,10 @@ typedef _SysctlDart = int Function(
 final _ProcListpidsDart _procListpids = libc
     .lookupFunction<_ProcListpidsNative, _ProcListpidsDart>('proc_listpids');
 final _ProcPidinfoDart _procPidinfo = libc
-    .lookupFunction<_ProcPidinfoNative, _ProcPidinfoDart>('proc_pidinfo');
+    .lookupFunction<_ProcPidinfoNative, _ProcPidinfoDart>(
+      'proc_pidinfo',
+      isLeaf: true,
+    );
 final _SysctlDart _sysctl = libc.lookupFunction<_SysctlNative, _SysctlDart>(
   'sysctl',
 );
