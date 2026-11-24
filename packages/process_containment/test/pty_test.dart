@@ -493,6 +493,39 @@ void main() {
       );
     });
 
+    for (final (name, wrapper) in <(String, StatusWrapper)>[
+      ('a throwing status wrapper', (_) => throw StateError('injected')),
+      ('a status cancel that throws synchronously', (_) => _SyncCancelThrows()),
+    ]) {
+      test(
+        '$name is a status-read failure that keeps the unconfirmed pid',
+        () async {
+          Object? error;
+          try {
+            await spawn(
+              ['/bin/sh', '-c', 'exec sleep 600'],
+              snapshot: (_) => null,
+              probe: (_) => 0,
+              status: wrapper,
+            );
+          } on Object catch (e) {
+            error = e;
+          }
+
+          expect(
+            error,
+            isA<SpawnFailed>()
+                .having((e) => e.stage, 'stage', 'status-read')
+                .having(
+                  (e) => e.unconfirmedPid,
+                  'unconfirmedPid',
+                  processes.single.pid,
+                ),
+          );
+        },
+      );
+    }
+
     test('the status-read failure names the unconfirmed pid', () async {
       Object? error;
       try {
@@ -516,4 +549,60 @@ void main() {
       );
     });
   }, skip: Platform.isWindows ? _posixOnly : null);
+}
+
+typedef StatusWrapper = Stream<List<int>> Function(Stream<List<int>> status);
+
+/// A status stream that reports a read error and whose subscription's
+/// `cancel` throws synchronously instead of returning a future.
+class _SyncCancelThrows extends Stream<List<int>> {
+  @override
+  StreamSubscription<List<int>> listen(
+    void Function(List<int> event)? onData, {
+    Function? onError,
+    void Function()? onDone,
+    bool? cancelOnError,
+  }) => _CancelThrows(
+    Stream<List<int>>.error(const OSError('injected status read error', 5))
+        .listen(
+          onData,
+          onError: onError,
+          onDone: onDone,
+          cancelOnError: cancelOnError,
+        ),
+  );
+}
+
+class _CancelThrows implements StreamSubscription<List<int>> {
+  _CancelThrows(this._inner);
+
+  final StreamSubscription<List<int>> _inner;
+
+  @override
+  Future<void> cancel() {
+    unawaited(_inner.cancel());
+    throw StateError('injected synchronous cancel failure');
+  }
+
+  @override
+  void onData(void Function(List<int> data)? handleData) =>
+      _inner.onData(handleData);
+
+  @override
+  void onError(Function? handleError) => _inner.onError(handleError);
+
+  @override
+  void onDone(void Function()? handleDone) => _inner.onDone(handleDone);
+
+  @override
+  void pause([Future<void>? resumeSignal]) => _inner.pause(resumeSignal);
+
+  @override
+  void resume() => _inner.resume();
+
+  @override
+  bool get isPaused => _inner.isPaused;
+
+  @override
+  Future<E> asFuture<E>([E? futureValue]) => _inner.asFuture(futureValue);
 }

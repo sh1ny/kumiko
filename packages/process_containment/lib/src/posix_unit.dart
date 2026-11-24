@@ -294,7 +294,8 @@ int _probe(int pid) => posixKill(pid, 0);
 /// and on the PTY path it cancels the status subscription and closes the
 /// master, before it throws and without waiting for an unsignalled process
 /// to exit. The status cancellation is not awaited. A status stream that
-/// throws on listen or cancel, or whose cancel never completes, and a
+/// throws on listen or cancel (synchronously or not), or whose cancel never
+/// completes, and a
 /// termination that throws, neither skip this cleanup nor replace the
 /// classified error, so an unconfirmed spawn's error still carries its pid
 /// (design D3, C10). Whether the unit's row is
@@ -309,9 +310,13 @@ int _probe(int pid) => posixKill(pid, 0);
 /// `Process.start` and the read (a test awaits the exit there);
 /// [snapshotForTesting] and [probeForTesting] replace the read and the
 /// `kill(pid, 0)` probe; [statusStreamForTesting] wraps the status stream
-/// on the PTY path. If one of them throws, the spawn closes the master and
-/// releases the stdio and rethrows; it sends no signal, since nothing has
-/// identified the pid as the unit's.
+/// on the PTY path. If the hook, the snapshot or the probe throws, the spawn
+/// closes the master, releases the stdio and rethrows; it sends no signal,
+/// since nothing has identified the pid as the unit's. The status wrapper
+/// runs after the identity is classified, and a throw from it, or from
+/// listening to or cancelling the stream it returns, is a `status-read`
+/// failure that carries [SpawnFailed.unconfirmedPid] when the identity was
+/// unconfirmed.
 Future<PosixUnit> spawnPosixUnit({
   required String shimExecutable,
   List<String> shimArgs = const [],
@@ -358,7 +363,6 @@ Future<PosixUnit> spawnPosixUnit({
     rethrow;
   }
   final _Identity identity;
-  final Stream<List<int>> statusStream;
   try {
     // Awaited only when supplied: a release spawn reads at once.
     final before = beforeStartTimeReadForTesting;
@@ -368,9 +372,6 @@ Future<PosixUnit> spawnPosixUnit({
       snapshotForTesting ?? _readSnapshot,
       probeForTesting ?? _probe,
     );
-    statusStream = master == null
-        ? process.stdout
-        : statusStreamForTesting?.call(process.stdout) ?? process.stdout;
   } catch (_) {
     // Nothing identified the pid as the unit's: release, never signal.
     _abandonStdio(process);
@@ -417,6 +418,10 @@ Future<PosixUnit> spawnPosixUnit({
   StreamSubscription<List<int>>? stderr;
   var timedOut = false;
   try {
+    // Wrapped here, after the identity is classified: a wrapper that throws
+    // is a status read error, so an unconfirmed pid still travels with it.
+    final statusStream =
+        statusStreamForTesting?.call(process.stdout) ?? process.stdout;
     subscription = statusStream.listen(
       status.add,
       onDone: () {
@@ -459,8 +464,8 @@ Future<PosixUnit> spawnPosixUnit({
   try {
     // Not awaited: a cancellation that waits (or throws) must neither hold
     // the handles below nor delay the classified error.
-    unawaited(subscription?.cancel().then((_) {}, onError: (Object _) {}));
-    unawaited(stderr?.cancel().then((_) {}, onError: (Object _) {}));
+    _cancelUnawaited(subscription);
+    _cancelUnawaited(stderr);
     _abandonStdio(process);
     switch (identity) {
       case _Read(:final startTime):
@@ -499,6 +504,17 @@ Future<PosixUnit> spawnPosixUnit({
   throw StateError(
     'unit ${process.pid} ($containmentId): its start time could not be read',
   );
+}
+
+/// Cancels [subscription] without waiting for it; a cancel that throws,
+/// synchronously or through its future, is ignored.
+void _cancelUnawaited(StreamSubscription<List<int>>? subscription) {
+  if (subscription == null) return;
+  try {
+    unawaited(subscription.cancel().then((_) {}, onError: (Object _) {}));
+  } on Object {
+    // Abandoned either way.
+  }
 }
 
 /// Releases the stdio of a process the spawn gives up on without signalling

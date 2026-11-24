@@ -40,8 +40,10 @@ class PtyOptions {
 /// on POSIX, `GetLastError` on Windows).
 ///
 /// The spawn has done its own cleanup when this is thrown: it ended the
-/// process it could identify, or sent no signal at all when it could not
-/// ([unconfirmedPid]). Whether the unit's ledger row is deleted or left
+/// process it could identify, or, when it could not ([unconfirmedPid]),
+/// sent no signal by that pid. Closing the PTY master can still hang up
+/// the terminal's processes, and the host may later signal processes it
+/// finds by their marker. Whether the unit's ledger row is deleted or left
 /// unresolved is the host's settlement, not this error's.
 class SpawnFailed implements Exception {
   const SpawnFailed(this.stage, this.errno, {this.unconfirmedPid});

@@ -100,6 +100,23 @@ void main() {
     skip: skipOnWindows,
   );
 
+  test('a terminal reaped before its start time is read opens and reports its '
+      'exit status', () async {
+    final ws = workspace('reaped-terminal');
+    final desktop = await start({'KUMIKO_TEST_SPAWN_IDENTITY': 'reaped'});
+    await desktop.saveFixtureProfile(
+      id: 'exits3',
+      fixtureArgs: ['exit', '3'],
+      cwd: ws.path,
+    );
+
+    final t = await desktop.openTerminal('exits3');
+    final exited = await t.waitExited();
+
+    expect(exited.status, 3);
+    expect(exited.reason, TerminalExitReason.exited);
+  }, skip: skipOnWindows);
+
   test('ending a forced-gone unit whose exit is not observed leaves it '
       'unresolved and the scan ends it', () async {
     final ws = workspace('forced');
