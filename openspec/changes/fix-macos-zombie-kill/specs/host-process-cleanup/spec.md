@@ -24,7 +24,7 @@ When the host ends a unit, it SHALL terminate its containment. On POSIX it SHALL
 - **THEN** the host signals the leader directly, and if that signal finds no such process, the host counts the leader as exited rather than as a failed kill
 
 #### Scenario: A recorded unit's leader has no process group
-- **WHEN** the host stops a unit recorded by an earlier host, and the unit's process group does not exist
+- **WHEN** the host stops a unit recorded by an earlier host, its first check finds the leader alive with the recorded start time, and the signal to the unit's process group answers that no such group exists
 - **THEN** the host does not signal the leader's pid directly as the unit's leader (a marked process holding that pid is left to the marker scan), and counts a failed kill unless it confirms that the leader has exited or that its pid belongs to another process
 
 #### Scenario: A live process cannot be inspected
