@@ -4,7 +4,7 @@
 
 | Trigger | Applies? | Evidence |
 |---|---|---|
-| T1 Components (new component, or 3+ with directed relationships) | no | `spawnPosixUnit`, `killProcessGroup` and `posixIsProcessAlive` change inside one file (`packages/process_containment/lib/src/posix_unit.dart`), plus the `kill` binding. Their callers stay as they are |
+| T1 Components (new component, or 3+ with directed relationships) | no | `spawnPosixUnit`, `killProcessGroup` and `posixIsProcessAlive` change inside one file (`packages/process_containment/lib/src/posix_unit.dart`), plus the `kill` binding. The host's failed-spawn settlement and its test option change in `unit_manager.dart`, `settler.dart` and `test_hooks.dart`; no new component |
 | T2 State (persistent state, caches, 3+ state machine) | yes | The ledger's `process_started_at` can now hold the "no process" start time (`packages/host/lib/src/ledger.dart:173-178`), and the next host reads it back (`ledger.dart:30`, `packages/host/lib/src/settler.dart:145-158`) |
 | T3 Concurrency (background work, workers/isolates, async, retries) | yes | The bug is a race between the start-time read and the reaping of the child by `dart:io` |
 | T4 Boundaries (data format, migration, shared interface, IPC, external) | yes | `ContainedUnit.startTime` (`packages/process_containment/lib/src/contained_unit.dart:27-29`) is shared by the host, the settler and the ledger. It gains a value that matches no process |
@@ -39,11 +39,14 @@ See proposal.md for the failures and the CI evidence.
   - `PosixUnit.terminate` waits for the exit on `leaderGone`/`startTimeMismatch` and returns `kill-failed` on `failed` (`posix_unit.dart:122-130`).
   - The next host's reconcile returns early when `isProcessAlive` is false and otherwise goes through `killProcessGroup` (`settler.dart:195-203`).
   - A kill failure stays the unit's outcome even when the marker scan is clean (`settler.dart:64-88`). The scan's own failures, a marked survivor or an unreadable process, make the unit unresolved (`settler.dart:109-119`).
-  - The marker scan does not depend on the leader check. It lists processes, matches the marker, and signals each match by that match's own pid and start time (`packages/process_containment/lib/src/marker_scan.dart:79-83`).
+  - The marker scan does not depend on the leader check. It lists processes, matches the marker, and signals each match by that match's own pid and start time (listing and matching: `packages/process_containment/lib/src/marker_scan.dart:114-157`; signalling: `marker_scan.dart:79-83`).
 - The ledger stores the start time as text and parses it back with `int.tryParse` (`ledger.dart:173-178`, `ledger.dart:30`), so a negative value round-trips.
 - The host writes the unit's pid and start time with `markRunning` before it reports the launch, then watches `exitCode` and ends the unit through the normal path (`packages/host/lib/src/unit_manager.dart:241-264`). A failed spawn with a pending row is settled through the marker scan for its marker, unless the error is a `ProcessException` (nothing ran). A clean scan deletes the row, and a scan failure marks it unresolved. No failed spawn is retried (`unit_manager.dart:216-230`, `unit_manager.dart:330-341`).
 - The marker scan skips a pid whose snapshot is null before reading its environment (`marker_scan.dart:139`). On macOS an unclassified read failure is such a null (above), so a clean scan does not prove that such a process is gone.
-- A test build can hold the settlement of a running unit with the `terminateHangs` fault (`settler.dart:130-131`), and reads `KUMIKO_TEST_*` options at start (`packages/host/lib/src/test_hooks/test_hooks.dart:33-45`).
+- A test build can hold the settlement of a running unit with the `terminateHangs` fault (`settler.dart:130-131`), and reads `KUMIKO_TEST_*` options at start (the documented options and the factory that reads them, `packages/host/lib/src/test_hooks/test_hooks.dart:33-57`). Its `test/unit.launch` method starts a named fixture and returns only the containment id (`test_hooks.dart:230-237`); the fixtures report their pid in a file named after it (`packages/host/lib/src/test_hooks/fixtures.dart:67-79`).
+- The workspace gate refuses a launch only while a row of the workspace is `unresolved` (`unit_manager.dart:179-185`). A failed spawn's row stays `pending` until `_settleFailedSpawn` writes it after the marker scan (`unit_manager.dart:330-341`), and the scan awaits and can throw (`marker_scan.dart:125-149`).
+- Retry and restart settle a POSIX row without a pid as `pending-without-pid` (`settler.dart:155-158`) and write that reason over the row's earlier one (`cleanup_service.dart:183-200`). Confirm deletes the row.
+- Live termination of a unit whose leader is gone waits for its exit to be observed (`posix_unit.dart:122-127`); a restarted host has no exit to wait for and skips the leader check (`settler.dart:195-203`).
 - On the PTY path, the shim's status pipe is close-on-exec: it reaches end of file with nothing written once `execve` succeeds (`packages/process_containment/lib/src/unit_exec.dart:23-28`). The shim can exit before `execve` without a report: when the status descriptor cannot be duplicated it writes only to stderr (`unit_exec.dart:43-53`, `unit_exec.dart:115-118`), and a report whose write fails is dropped (`unit_exec.dart:101-113`). An empty status at end of file is therefore ambiguous whatever the cause.
 - Windows reads the start time before it resumes the suspended process, so there is no race (`packages/process_containment/lib/src/windows_unit.dart:434-442`).
 - The PTY options already have a test-only field, `PtyOptions.slavePathForTesting` (`packages/process_containment/lib/src/pty.dart:27-33`).
@@ -56,7 +59,7 @@ See proposal.md for the failures and the CI evidence.
   - A snapshot gives the start time, as before.
   - `ProcessReadDenied` keeps today's failure: the pid is killed and `StateError` is thrown.
   - A null snapshot is followed by `kill(pid, 0)`. Only `ESRCH` proves the process is gone (D2).
-  - A null snapshot with any other probe answer fails the spawn with a new error, `SpawnIdentityUnconfirmed` (carrying the pid), and sends no signal to that pid. Something is there, but nothing shows whether it is our unit, and a live leader whose read keeps failing would also be invisible to the marker scan (Context). The host still runs the failed-spawn marker scan for the marker. It then marks the row unresolved with the reason `spawn-identity-unconfirmed:<pid>` whatever the scan finds, so the workspace stays gated until the user retries or confirms. A retry of a row without a pid stays unresolved (`settler.dart:158`), so confirmation is the way out.
+  - A null snapshot with any other probe answer means the unit's identity is unconfirmed. The spawn sends no signal to that pid by it: something is there, but nothing shows whether it is our unit, and a live leader whose read keeps failing would also be invisible to the marker scan (Context). On the plain path, and on the PTY path with an empty status, the spawn throws a new error, `SpawnIdentityUnconfirmed` (carrying the pid). On the PTY path a timeout, read error or reported failure still wins (D3), and its `SpawnFailed` carries the same fact in a new optional field, `unconfirmedPid`. The host settles either through D5.
 
   `kill` is bound as a leaf call, and `spawnPosixUnit` binds the errno accessor before `Process.start`. The probe's errno is then its own (the `libc.dart:16-20` convention). PR #32 makes the same binding change for its kill guard. Whichever merges second keeps one binding.
 - **Rejected:**
@@ -75,7 +78,7 @@ See proposal.md for the failures and the CI evidence.
   - `killProcessGroup` returns `leaderGone` for it before reading or signalling anything.
   - `posixIsProcessAlive` returns false for it before reading anything.
   - `PosixUnit.terminate` then waits for the exit (`posix_unit.dart:122-127`). The next host's reconcile skips the kill (`settler.dart:195-196`).
-  - In both, the marker scan still runs for the unit's marker, separately from the leader check (`marker_scan.dart:79-83`). Its outcome decides cleaned or unresolved, as for any unit (`settler.dart:64-88`).
+  - In both, the marker scan still runs for the unit's marker, separately from the leader check (`marker_scan.dart:114-157`). Its outcome decides cleaned or unresolved, as for any unit (`settler.dart:64-88`).
   - The value flows through the existing paths unchanged (`unit_manager.dart:241`, `ledger.dart:173-178`).
 - **Rejected:**
   - Relying on -1 matching no real start time. A reused pid that the host cannot read still makes `killProcessGroup` return `failed` and `posixIsProcessAlive` return true (Context). The workspace would then go unresolved for a leader that is known gone (design review round 2).
@@ -93,6 +96,8 @@ See proposal.md for the failures and the CI evidence.
   4. Empty status with a start time: the unit, as today.
   5. Empty status with the process proved gone: the exited unit with its PTY handles.
   6. Empty status otherwise: `StateError` after a refused read, `SpawnIdentityUnconfirmed` after an unproved one (D1).
+
+  Steps 1 to 3 decide the error thrown, not the cleanup. When the read was unconfirmed, the `SpawnFailed` of steps 1 to 3 carries `unconfirmedPid`, and the spawn's own cleanup sends no signal to that pid, as in step 6.
 
   Before a failure is reported, the unit is settled as today: terminated when its start time was read, killed after a refused read. A proved-gone or unproved unit gets no signal (D1). The master is closed in every failure.
 
@@ -135,12 +140,32 @@ See proposal.md for the failures and the CI evidence.
   - **Unconfirmed, host level:** with `KUMIKO_TEST_SPAWN_IDENTITY=unconfirmed`, a launch fails. Its row is `unresolved` with the reason `spawn-identity-unconfirmed:<pid>`, and a new launch against the workspace is refused.
   - **Status read error:** the status seam yields an error then end of file. The spawn raises `SpawnFailed('status-read')` exactly once, with no second completion error, and the unit's process has exited.
   - **Guards:** `killProcessGroup` and `posixIsProcessAlive` with `startTimeNotRead` never call the injected snapshot, and return `leaderGone` and false. With a real start time they still call it.
-  - **Live cleanup:** a reaped unit's `terminate()` returns terminated.
-  - **Durable write, host level:** with `KUMIKO_TEST_SPAWN_IDENTITY=reaped` and `terminateHangs` on, a launch of a unit that exits at once is reported. Its row is read while settlement is held: `running`, the unit's pid, and `process_started_at = '-1'`. After the fault is released, the row is cleaned.
-  - **Restart:** a seeded row with `process_started_at = '-1'` and the pid of a live bystander is cleaned at reconcile, and the bystander is never signalled. This is kept separate from the durable-write test.
+  - **Live cleanup:** a reaped unit's `terminate()` returns terminated once its exit is observed; with the exit future held past `killWait`, it returns the timeout failure. The host settles the first as cleaned and the second as unresolved.
+  - **Durable write, host level:** a new test fixture, `reported-exit`, writes its report (its own pid) and exits 0; it is one more value of the test-only fixture list (`messages.dart:1453`), with no new field. With `KUMIKO_TEST_SPAWN_IDENTITY=reaped` and `terminateHangs` on, `test/unit.launch` of it is reported. While settlement is held, the row is read: `running`, the pid from the fixture's report file, and `process_started_at = '-1'`. After the fault is released, the row is cleaned.
+  - **Unconfirmed, PTY failure mixed in:** with the snapshot returning null for a live unit and the status seam yielding a read error, the spawn raises `SpawnFailed('status-read')` with `unconfirmedPid` set, and no signal reaches that pid. At host level (`KUMIKO_TEST_SPAWN_IDENTITY=unconfirmed` with a missing program, so the shim reports `exec`), the row is `unresolved` with `spawn-identity-unconfirmed:<pid>` and a new launch is refused with `cleanup-unresolved`.
+  - **Gate before the scan:** with `KUMIKO_TEST_SPAWN_IDENTITY=unconfirmed` and the scan made to throw (the `killFails` fault's table, or a scan hook), the row is `unresolved` and a second launch is refused. Retry keeps the `spawn-identity-unconfirmed:<pid>` reason; Confirm deletes the row.
+  - **Restart, unmarked bystander:** a seeded row with `process_started_at = '-1'` and the pid of a live bystander is cleaned at reconcile, and the bystander is never signalled. Kept separate from the durable-write test.
+  - **Restart, marked descendant:** a seeded `-1` row whose marker a live `sleeper` started with that marker carries. Reconcile ends the sleeper through the marker scan and cleans the row; with `killFails` on, the row is unresolved. Either outcome fails if settlement skipped the scan for `-1`.
 - **Rejected:**
   - Spawning `exit 5` many times and hoping for the race: that is non-deterministic, and the repository's test rules (issue #26) forbid retrying to get green.
   - A pure decision function tested only with scripted reads: it would not show that a reaped `dart:io` child really reads as gone on Linux and macOS.
+- **Reversal cost:** low
+- **Important:** no
+- **Chosen by:** agent
+
+### D5: The host gates the workspace before it scans for an unconfirmed spawn
+
+- **Choice:**
+  - `_settleFailedSpawn` reads the unconfirmed pid from `SpawnIdentityUnconfirmed.pid` or `SpawnFailed.unconfirmedPid`.
+  - With one, it first marks the row unresolved with the reason `spawn-identity-unconfirmed:<pid>` and calls `onUnresolved`. The workspace is gated from then on (Context).
+  - Then it runs the failed-spawn marker scan only to end what carries the marker. It does not write the row afterwards, whatever the scan finds or throws: the earlier write is the only one.
+  - Retry and restart keep that reason for a row without a pid whose reason starts `spawn-identity-unconfirmed:`, instead of writing `pending-without-pid` over it, so the pid stays shown for the user's confirmation. Confirm deletes the row, as for any unresolved row, and is the only action that clears it.
+  - A Retry or Confirm that runs while the scan still runs touches only the unresolved row, and the scan writes nothing after it, so there is no second writer.
+  - Every other failed spawn is settled as today.
+- **Rejected:**
+  - Marking the row after the scan (round 5): a second launch passes the gate while the scan runs, and a scan exception leaves the row `pending`.
+  - Gating every failed spawn before its scan: a wider behaviour change than #18 needs; the same window for other failed spawns is unchanged.
+  - Writing the pid with a placeholder start time so Retry can read it: Retry would then treat the row as a recorded leader and could signal the unconfirmed pid.
 - **Reversal cost:** low
 - **Important:** no
 - **Chosen by:** agent
@@ -153,8 +178,9 @@ See proposal.md for the failures and the CI evidence.
 | S2 | Scope | Only a read that proves the process gone changes; Windows and a refused read keep their errors | Treating every failed read as an exit | low | no | agent |
 | D1 | Evidence of absence | Null snapshot and leaf `kill(pid, 0)` = `ESRCH`; unproved: `SpawnIdentityUnconfirmed`, no signal, row unresolved | A null snapshot alone; killing an unproved pid; deleting the row after a clean scan | low | no | agent |
 | D2 | Start time of an exited-before-read unit | `startTimeNotRead = -1`, short-circuited by `killProcessGroup` and `posixIsProcessAlive` | Rely on -1 not matching; nullable `startTime` | medium | yes | agent |
-| D3 | PTY outcome order | Timeout, read error, reported failure, readable success, proved-gone success, otherwise `StateError` | Return before the status answer; fix the status-descriptor gap here (#33) | low | no | agent |
-| D4 | Test reach | Test-only hooks on the spawn and the guards; tests fail on the old code | Repeating the race; a scripted pure function only | low | no | agent |
+| D3 | PTY outcome order | Timeout, read error, reported failure, readable success, proved-gone success, otherwise the refused or unconfirmed error; a failure carries `unconfirmedPid` | Return before the status answer; fix the status-descriptor gap here (#33) | low | no | agent |
+| D4 | Test reach | Test-only hooks on the spawn and the guards, a host test option and a `reported-exit` fixture; tests fail on the old code | Repeating the race; a scripted pure function only | low | no | agent |
+| D5 | Unconfirmed spawn settlement | Mark unresolved before the scan, never write after it; Retry and restart keep the reason; Confirm clears | Marking after the scan; gating every failed spawn first | low | no | agent |
 
 ## Assumptions
 
@@ -164,7 +190,7 @@ See proposal.md for the failures and the CI evidence.
 
 - **C1:** A unit start time of `startTimeNotRead` (-1) means the unit's leader exited before its start time could be read and is known to be gone. It matches no process, and must never be replaced by a value a live process can have. Kind: invariant. Destination: doc comment: packages/process_containment/lib/src/contained_unit.dart `ContainedUnit.startTime`
 - **C2:** `killProcessGroup` and `posixIsProcessAlive` treat `startTimeNotRead` as gone without reading or signalling the pid. A reused pid the host cannot read then never turns a gone leader into a kill failure. The marker scan does not depend on this check. Kind: invariant. Destination: doc comment: packages/process_containment/lib/src/posix_unit.dart `killProcessGroup`
-- **C3:** The spawn returns an exited unit only on positive evidence of absence: a null snapshot and a leaf `kill(pid, 0)` answering `ESRCH`, with errno bound before `Process.start`. A null snapshot with a process still at the pid fails the spawn with `SpawnIdentityUnconfirmed`, without signalling that pid. Kind: invariant. Destination: doc comment: packages/process_containment/lib/src/posix_unit.dart `spawnPosixUnit`
+- **C3:** When the start time cannot be read, the spawn returns an exited unit only on positive evidence of absence: a null snapshot and a leaf `kill(pid, 0)` answering `ESRCH`, with errno bound before `Process.start`. A null snapshot with a process still at the pid fails the spawn with `SpawnIdentityUnconfirmed`, or a `SpawnFailed` carrying `unconfirmedPid` on the PTY path, without signalling by that pid. Kind: invariant. Destination: doc comment: packages/process_containment/lib/src/posix_unit.dart `spawnPosixUnit`
 - **C4:** A failed spawn is never retried: the program may already have run. Kind: rejected alternative. Destination: doc comment: packages/process_containment/lib/src/posix_unit.dart `spawnPosixUnit`
 - **C5:** A pid reused between the reaping of the unit and the snapshot is not guarded: the spawn then records the other process's start time. After a refused read the spawn still kills the pid, as before this change. Kind: deliberate gap. Destination: doc comment: packages/process_containment/lib/src/posix_unit.dart `spawnPosixUnit`
 - **C6:** Ledger rows may hold `process_started_at = '-1'`. A change to the start-time encoding must keep reading it as "the leader is gone". Kind: invariant. Destination: doc comment: packages/host/lib/src/ledger.dart `Ledger.markRunning`
@@ -173,9 +199,11 @@ See proposal.md for the failures and the CI evidence.
   - a read error on the pipe (`status-read`): a failure;
   - a shim that exited before `execve` without a report, for any reason (empty status, issue #33): reads as a started program.
 
+  The thrown error and the cleanup evidence are separate: an unconfirmed identity travels on whichever error wins.
+
   Kind: deliberate gap. Destination: doc comment: packages/process_containment/lib/src/posix_unit.dart `spawnPosixUnit`
 - **C8:** A successful spawn never awaits the unit's exit. A terminal must open, and a piped caller must get its endpoints, while the unit runs; waiting for the exit happens only in the test hook. Kind: invariant. Destination: doc comment: packages/process_containment/lib/src/posix_unit.dart `spawnPosixUnit`
-- **C9:** A failed spawn whose identity was not confirmed leaves its row unresolved whatever the marker scan finds, because the scan cannot see a process whose snapshot reads null. Kind: invariant. Destination: doc comment: packages/host/lib/src/unit_manager.dart `_settleFailedSpawn`
+- **C9:** A failed spawn whose identity was not confirmed, whichever error carries it, has its row marked unresolved before the marker scan and never written after it; Retry and restart keep its reason, and Confirm alone clears it. The scan cannot see a process whose snapshot reads null. Kind: invariant. Destination: doc comment: packages/host/lib/src/unit_manager.dart `_settleFailedSpawn`
 
 ## Diagrams (FULL)
 
@@ -230,11 +258,11 @@ flowchart LR
 |---|---|---|---|---|
 | spawn, process proved gone | unit returned exited; its exit code reaches the caller | none needed | n/a | the caller, through `exitCode` (a terminal shows the exit) |
 | spawn, read refused | pid killed, `StateError` as today | the host settles the failed launch through the marker scan (`unit_manager.dart:330-341`) | no: the program may have run (C4) | the caller, as a spawn error |
-| spawn, null read but a process at the pid | no signal, `SpawnIdentityUnconfirmed` | the host's failed-spawn marker scan ends whatever carries the marker; the row is left unresolved whatever it finds (C9) | no (C4) | the caller, as a spawn error, and the user, through unresolved cleanup |
+| spawn, null read but a process at the pid | no signal by that pid, `SpawnIdentityUnconfirmed` or `SpawnFailed` with `unconfirmedPid` | the host marks the row unresolved, then its marker scan ends whatever carries the marker; nothing is written after the scan (D5, C9) | no (C4) | the caller, as a spawn error, and the user, through unresolved cleanup |
 | PTY status read error | `SpawnFailed('status-read')`, unit settled per D3 | as for any `SpawnFailed` | no (C4) | the caller |
 | test hook throws | master closed, pid signalled only under D1, error propagates | none | n/a | the test |
 | host dies after the spawn, before `markRunning` | row stays pending without a pid | existing `pending-without-pid` path (`settler.dart:158`) | n/a | unresolved cleanup, as today |
-| ending a -1 unit: termination timeout, marked survivor or unfinished scan | unit unresolved (`posix_unit.dart:122-127`, `settler.dart:64-88`, `settler.dart:109-119`) | the user's retry or confirm, as for any unit | yes, as today | the user, through unresolved cleanup |
+| ending a -1 unit: live exit not observed in time, marked survivor or unfinished scan (live or at restart) | unit unresolved (`posix_unit.dart:122-127`, `settler.dart:64-88`, `settler.dart:109-119`) | the user's retry or confirm, as for any unit | yes, as today | the user, through unresolved cleanup |
 
 ## Resource Bounds (FULL)
 
@@ -266,7 +294,7 @@ Nothing new is buffered or queued. The test hook runs only in tests, under its o
 | Await `exitCode` inside the spawn | no (C8) | A terminal or piped caller needs the unit while it runs | a caller that needs the exit code before the spawn returns |
 | Unresolved row after an unconfirmed spawn | yes | A clean scan cannot prove a null-snapshot leader gone; deleting the row would open the workspace gate | a snapshot that never returns null for a live process |
 | `KUMIKO_TEST_SPAWN_IDENTITY` host option | yes | The only way to observe the durable `-1` write and the unconfirmed settlement through a real launch | none |
-| Status-descriptor failure report in the shim | no | Not introduced by this change (D3); issue #33 | a CI failure from that path |
+| Status-descriptor failure report in the shim | no | The ambiguity predates this change, which extends it to reaped shims (D3); issue #33 | a CI failure from that path |
 | Windows change | no | No race there (Context) | a Windows path that reads the start time after resuming |
 
 ## Risks / Trade-offs
