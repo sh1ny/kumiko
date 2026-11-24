@@ -25,11 +25,28 @@ int? posixProcessStartTime(int pid) {
   }
 }
 
+/// The start time of a unit whose process was proved gone before its start
+/// time could be read (#18). It matches no process: real start times are
+/// non-negative. Every leader check treats it as a leader known to be gone
+/// and never reads or signals the pid, which may since have been reused.
+const int startTimeNotRead = -1;
+
+/// Reads one process (`PosixProcessTable.snapshot`); replaced in tests.
+typedef SnapshotReader = ProcessSnapshot? Function(int pid);
+
+ProcessSnapshot? _readSnapshot(int pid) => PosixProcessTable().snapshot(pid);
+
 /// True while [pid] runs with start time [startTime]; a zombie or a reused
-/// pid is not alive.
-bool posixIsProcessAlive(int pid, int startTime) {
+/// pid is not alive, and neither is a leader recorded as [startTimeNotRead].
+/// [snapshotForTesting] replaces the process read.
+bool posixIsProcessAlive(
+  int pid,
+  int startTime, {
+  SnapshotReader? snapshotForTesting,
+}) {
+  if (startTime == startTimeNotRead) return false;
   try {
-    final s = PosixProcessTable().snapshot(pid);
+    final s = (snapshotForTesting ?? _readSnapshot)(pid);
     return s != null && !s.zombie && s.startTime == startTime;
   } on ProcessReadDenied {
     return true; // exists; we cannot show it is gone
@@ -55,10 +72,24 @@ enum KillOutcome {
 /// Signals the process group led by [leaderPid] only while that leader is
 /// alive with [startTime]. A pid that was reused is never signalled
 /// (design: Flow & State Gaps).
-KillOutcome killProcessGroup(int leaderPid, int startTime, int signal) {
+///
+/// A leader recorded as [startTimeNotRead] is gone: this returns
+/// [KillOutcome.leaderGone] before reading or signalling [leaderPid], whose
+/// pid may belong to another process by now (#18), so a reused pid the host
+/// cannot read never turns a gone leader into a kill failure. Its
+/// descendants are reached only by the marker scan, which does not depend on
+/// this check. [posixIsProcessAlive] answers false for it the same way.
+/// [snapshotForTesting] replaces the process read.
+KillOutcome killProcessGroup(
+  int leaderPid,
+  int startTime,
+  int signal, {
+  SnapshotReader? snapshotForTesting,
+}) {
+  if (startTime == startTimeNotRead) return KillOutcome.leaderGone;
   final ProcessSnapshot? leader;
   try {
-    leader = PosixProcessTable().snapshot(leaderPid);
+    leader = (snapshotForTesting ?? _readSnapshot)(leaderPid);
   } on ProcessReadDenied {
     return KillOutcome.failed;
   }
@@ -160,11 +191,79 @@ class PosixUnit implements ContainedUnit {
   }
 }
 
+/// What the spawn learned about a new unit's identity right after
+/// `Process.start` (#18, design D1).
+sealed class _Identity {
+  const _Identity();
+}
+
+/// The start time was read.
+final class _Read extends _Identity {
+  const _Read(this.startTime);
+  final int startTime;
+}
+
+/// No process has the pid: the snapshot was null and `kill(pid, 0)` answered
+/// `ESRCH`. The unit exited and was reaped before the read.
+final class _Gone extends _Identity {
+  const _Gone();
+}
+
+/// The read was refused (`ProcessReadDenied`).
+final class _Refused extends _Identity {
+  const _Refused();
+}
+
+/// The snapshot was null, but the probe did not prove the pid free: something
+/// may run there, and nothing shows whether it is the unit.
+final class _Unconfirmed extends _Identity {
+  const _Unconfirmed();
+}
+
+_Identity _readIdentity(
+  int pid,
+  SnapshotReader snapshot,
+  int Function(int) probe,
+) {
+  final ProcessSnapshot? read;
+  try {
+    read = snapshot(pid);
+  } on ProcessReadDenied {
+    return const _Refused();
+  }
+  if (read != null) return _Read(read.startTime);
+  return probe(pid) == esrch ? const _Gone() : const _Unconfirmed();
+}
+
+int _probe(int pid) => posixKill(pid, 0);
+
 /// Starts a unit: `shimExecutable [shimArgs] --unit-exec containmentId --
 /// argv...` with `KUMIKO_UNIT` set to the containment id in its environment. The host
 /// passes its own executable as [shimExecutable]. The shim makes the process a
 /// session leader and `execve`s [argv], so the returned pid and start time are
 /// the unit's own.
+///
+/// The start time is read right after `Process.start` (#18, design D1):
+/// - read: the unit carries it;
+/// - the snapshot finds no process and `kill(pid, 0)` answers `ESRCH`: the
+///   unit already exited and was reaped, and is returned with
+///   [startTimeNotRead] unless something else failed. Only this positive
+///   evidence of absence returns such a unit; `kill` and `errno` are bound
+///   before `Process.start`, so the probe's errno is its own;
+/// - the read is refused: the spawn kills the process and throws
+///   [StateError], as before;
+/// - the snapshot finds no process but the probe does not prove the pid
+///   free: the spawn sends no signal by that pid and throws
+///   [SpawnIdentityUnconfirmed] (or, on the PTY path, a [SpawnFailed] that
+///   carries [SpawnFailed.unconfirmedPid]). The host then keeps the unit's row
+///   unresolved, since its marker scan cannot see a process whose read fails.
+///
+/// A pid reused between the unit's reaping and the read is not guarded: the
+/// spawn then records the other process's start time. A failed spawn is
+/// never retried, since the program may already have run.
+///
+/// A successful spawn never waits for the unit's exit: a terminal must open,
+/// and a piped caller get its endpoints, while the unit runs.
 ///
 /// With [pty] the unit runs on a new pseudo-terminal (design D2): the host
 /// opens the master, sizes it, and the shim opens the slave as the unit's
@@ -172,13 +271,31 @@ class PosixUnit implements ContainedUnit {
 /// status pipe reached end of file with nothing written, that is after
 /// `execve` succeeded; the master is then in [PosixUnit.pty]
 /// ([PtyHandles.readHandle]), and the unit's `Process.stdout` has been
-/// consumed. A setup or `execve` failure, or no answer within 5 s, settles the
-/// unit, closes the master and throws [SpawnFailed].
+/// consumed. The outcome order is: no answer within 5 s
+/// (`status-timeout`), a read error on the pipe (`status-read`), a reported
+/// setup or `execve` failure, then a readable or proved-gone success, else the
+/// refused or unconfirmed error. Each [SpawnFailed] carries
+/// [SpawnFailed.unconfirmedPid] when the identity was unconfirmed. A shim that
+/// exits before `execve` without writing a report (empty status, #33) still
+/// reads as a started program, now also when it was reaped before the read.
+///
+/// [SpawnFailed], [SpawnIdentityUnconfirmed] and [StateError] describe the
+/// spawn's own cleanup: it ends the process it could identify, kills a
+/// process whose read was refused, and signals nothing else. It cancels the
+/// status subscription, closes the master and the unclaimed stdio before it
+/// throws, without waiting for an unsignalled process to exit. Whether the
+/// unit's row is deleted or left unresolved is the host's settlement.
 ///
 /// With [pipes], the existing Process pipes are handed to the caller in
 /// [PosixUnit.pipes], without reading stdout as shim status. Exec failures
 /// therefore remain exit 126/127 with stderr. [pipes] and [pty] are mutually
 /// exclusive; plain units retain their existing Process stdio behavior.
+///
+/// Test-only parameters: [beforeStartTimeReadForTesting] runs between
+/// `Process.start` and the read (a test awaits the exit there; if it throws,
+/// the process is killed and the error rethrown); [snapshotForTesting] and
+/// [probeForTesting] replace the read and the `kill(pid, 0)` probe;
+/// [statusStreamForTesting] wraps the status stream on the PTY path.
 Future<PosixUnit> spawnPosixUnit({
   required String shimExecutable,
   List<String> shimArgs = const [],
@@ -191,10 +308,15 @@ Future<PosixUnit> spawnPosixUnit({
   // False supplies only explicit variables plus the containment marker; the
   // exec shim inherits this already-filtered environment, never the host copy.
   bool inheritParentEnvironment = true,
+  Future<void> Function(Process process)? beforeStartTimeReadForTesting,
+  SnapshotReader? snapshotForTesting,
+  int Function(int pid)? probeForTesting,
+  Stream<List<int>> Function(Stream<List<int>> status)? statusStreamForTesting,
 }) async {
   if (pipes && pty != null) {
     throw ArgumentError('pipes and pty are mutually exclusive');
   }
+  bindPosixProbe();
   final master = pty == null ? null : _openMaster(pty.size);
   final Process process;
   try {
@@ -219,32 +341,64 @@ Future<PosixUnit> spawnPosixUnit({
     master?.close();
     rethrow;
   }
-  final startTime = posixProcessStartTime(process.pid);
-  if (master == null) {
-    if (startTime == null) {
+  if (beforeStartTimeReadForTesting != null) {
+    try {
+      await beforeStartTimeReadForTesting(process);
+    } catch (_) {
       process.kill(ProcessSignal.sigkill);
-      throw StateError(
-        'unit ${process.pid} ($containmentId) exited before its start time '
-        'could be read',
-      );
+      master?.close();
+      rethrow;
     }
-    return PosixUnit._(
-      process,
-      startTime,
-      containmentId,
-      null,
-      pipes ? UnitPipes.process(process) : null,
-    );
+  }
+  final identity = _readIdentity(
+    process.pid,
+    snapshotForTesting ?? _readSnapshot,
+    probeForTesting ?? _probe,
+  );
+  if (master == null) {
+    switch (identity) {
+      case _Read(:final startTime):
+        return PosixUnit._(
+          process,
+          startTime,
+          containmentId,
+          null,
+          pipes ? UnitPipes.process(process) : null,
+        );
+      case _Gone():
+        return PosixUnit._(
+          process,
+          startTimeNotRead,
+          containmentId,
+          null,
+          pipes ? UnitPipes.process(process) : null,
+        );
+      case _Refused():
+        process.kill(ProcessSignal.sigkill);
+        throw StateError(
+          'unit ${process.pid} ($containmentId): its start time could not be '
+          'read',
+        );
+      case _Unconfirmed():
+        _abandonStdio(process);
+        throw SpawnIdentityUnconfirmed(process.pid, containmentId);
+    }
   }
 
   // The start time does not change at `execve`, so reading it before the
   // status answer keeps a program that exits at once spawnable.
   final status = BytesBuilder();
   final eof = Completer<void>();
-  process.stdout.listen(
+  Object? readError;
+  final statusStream =
+      statusStreamForTesting?.call(process.stdout) ?? process.stdout;
+  final subscription = statusStream.listen(
     status.add,
-    onDone: eof.complete,
-    onError: (Object _) {
+    onDone: () {
+      if (!eof.isCompleted) eof.complete();
+    },
+    onError: (Object error) {
+      readError ??= error;
       if (!eof.isCompleted) eof.complete();
     },
   );
@@ -254,41 +408,78 @@ Future<PosixUnit> spawnPosixUnit({
   await eof.future.timeout(_statusTimeout, onTimeout: () => timedOut = true);
   master.releaseSlave();
 
-  final unit = startTime == null
-      ? null
-      : PosixUnit._(process, startTime, containmentId, master.handles);
-  if (!timedOut && status.isEmpty && unit != null) return unit;
+  if (!timedOut && readError == null && status.isEmpty) {
+    switch (identity) {
+      case _Read(:final startTime):
+        return PosixUnit._(process, startTime, containmentId, master.handles);
+      case _Gone():
+        return PosixUnit._(
+          process,
+          startTimeNotRead,
+          containmentId,
+          master.handles,
+        );
+      case _Refused() || _Unconfirmed():
+        break;
+    }
+  }
 
-  // Failed: settle the unit before reporting.
-  if (unit != null) {
-    await unit.terminate();
-  } else {
-    process.kill(ProcessSignal.sigkill);
-    await process.exitCode.timeout(
-      const Duration(seconds: 3),
-      onTimeout: () => -1,
-    );
+  // Failed: settle what the spawn can identify before reporting.
+  await subscription.cancel();
+  switch (identity) {
+    case _Read(:final startTime):
+      await PosixUnit._(process, startTime, containmentId).terminate();
+    case _Gone():
+      break; // proved gone: nothing to signal
+    case _Refused():
+      process.kill(ProcessSignal.sigkill);
+      await process.exitCode.timeout(
+        const Duration(seconds: 3),
+        onTimeout: () => -1,
+      );
+    case _Unconfirmed():
+      break; // nothing shows the pid is the unit's: no signal
   }
   master.close();
-  if (timedOut) throw const SpawnFailed('status-timeout', 0);
-  if (status.isEmpty) {
-    throw StateError(
-      'unit ${process.pid} ($containmentId) exited before its start time '
-      'could be read',
-    );
+  final unconfirmedPid = identity is _Unconfirmed ? process.pid : null;
+  if (timedOut) {
+    throw SpawnFailed('status-timeout', 0, unconfirmedPid: unconfirmedPid);
   }
-  throw _parseStatus(status.takeBytes());
+  if (readError != null) {
+    throw SpawnFailed('status-read', 0, unconfirmedPid: unconfirmedPid);
+  }
+  if (status.isNotEmpty) {
+    throw _parseStatus(status.takeBytes(), unconfirmedPid);
+  }
+  if (unconfirmedPid != null) {
+    throw SpawnIdentityUnconfirmed(unconfirmedPid, containmentId);
+  }
+  throw StateError(
+    'unit ${process.pid} ($containmentId): its start time could not be read',
+  );
+}
+
+/// Releases the stdio of a process the spawn gives up on without signalling
+/// it, so no host-side handle waits on a process nobody owns (design D3).
+void _abandonStdio(Process process) {
+  unawaited(process.stdin.close().then((_) {}, onError: (Object _) {}));
+  unawaited(process.stdout.listen(null).cancel());
+  unawaited(process.stderr.listen(null).cancel());
 }
 
 const Duration _statusTimeout = Duration(seconds: 5);
 
-SpawnFailed _parseStatus(List<int> bytes) {
+SpawnFailed _parseStatus(List<int> bytes, int? unconfirmedPid) {
   try {
     final line = const LineSplitter().convert(utf8.decode(bytes)).first;
     final json = jsonDecode(line) as Map<String, Object?>;
-    return SpawnFailed(json['stage']! as String, json['errno']! as int);
+    return SpawnFailed(
+      json['stage']! as String,
+      json['errno']! as int,
+      unconfirmedPid: unconfirmedPid,
+    );
   } on Object {
-    return const SpawnFailed('status-malformed', 0);
+    return SpawnFailed('status-malformed', 0, unconfirmedPid: unconfirmedPid);
   }
 }
 

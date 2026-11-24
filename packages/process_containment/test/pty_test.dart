@@ -223,4 +223,160 @@ void main() {
       });
     }
   }, skip: Platform.isWindows ? _posixOnly : null);
+
+  // Issue #18 on the PTY path: the status pipe still decides first, and the
+  // start-time outcome is forced through the spawn's test-only parameters.
+  group('POSIX PTY start time read', () {
+    const esrchErrno = 3;
+    const hangGuard = Duration(minutes: 2);
+    final processes = <Process>[];
+
+    // Every spawned process is registered by the hook before the spawn can
+    // fail, so it is ended even when no unit was returned.
+    tearDown(() async {
+      for (final process in processes) {
+        process.kill(ProcessSignal.sigkill);
+        await process.exitCode.timeout(hangGuard);
+      }
+      processes.clear();
+    });
+
+    Future<PosixUnit> spawn(
+      List<String> argv, {
+      Future<void> Function(Process)? before,
+      ProcessSnapshot? Function(int pid)? snapshot,
+      int Function(int pid)? probe,
+      Stream<List<int>> Function(Stream<List<int>>)? status,
+    }) async {
+      final unit = await spawnPosixUnit(
+        shimExecutable: exe,
+        containmentId: 'pty-read-$counter',
+        argv: argv,
+        pty: const PtyOptions(size: PtySize(80, 24)),
+        beforeStartTimeReadForTesting: (process) async {
+          processes.add(process);
+          await before?.call(process);
+        },
+        snapshotForTesting: snapshot,
+        probeForTesting: probe,
+        statusStreamForTesting: status,
+      );
+      units.add(unit);
+      return unit;
+    }
+
+    Future<void> reaped(Process process) => process.exitCode.timeout(hangGuard);
+
+    Stream<List<int>> readError(Stream<List<int>> _) =>
+        Stream.error(const OSError('injected status read error', 5));
+
+    bool runs(int pid) {
+      final s = PosixProcessTable().snapshot(pid);
+      return s != null && !s.zombie;
+    }
+
+    test('a PTY unit reaped before its start time is read spawns and reports '
+        'its exit code', () async {
+      final probes = <int>[];
+      final unit = await spawn(
+        ['/bin/sh', '-c', 'exit 7'],
+        before: reaped,
+        probe: (pid) {
+          final answer = posixKill(pid, 0);
+          probes.add(answer);
+          return answer;
+        },
+      );
+
+      expect(unit.startTime, startTimeNotRead);
+      expect(probes, [esrchErrno], reason: 'absence was proved by the probe');
+      expect(await unit.exitCode.timeout(hangGuard), 7);
+    });
+
+    test('a missing program reaped before the read still raises SpawnFailed '
+        'at exec', () async {
+      final snapshots = <ProcessSnapshot?>[];
+      final probes = <int>[];
+      await expectLater(
+        spawn(
+          [p.join(tmp.path, 'does-not-exist')],
+          before: reaped,
+          snapshot: (pid) {
+            final s = PosixProcessTable().snapshot(pid);
+            snapshots.add(s);
+            return s;
+          },
+          probe: (pid) {
+            final answer = posixKill(pid, 0);
+            probes.add(answer);
+            return answer;
+          },
+        ),
+        throwsA(
+          isA<SpawnFailed>()
+              .having((e) => e.stage, 'stage', 'exec')
+              .having((e) => e.unconfirmedPid, 'unconfirmedPid', isNull),
+        ),
+      );
+
+      // The proved-gone branch was taken, then overruled by the report.
+      expect(snapshots, [isNull]);
+      expect(probes, [esrchErrno]);
+    });
+
+    test('status pipe read error fails with status-read once', () async {
+      await expectLater(
+        spawn(['/bin/sh', '-c', 'exec sleep 600'], status: readError),
+        throwsA(
+          isA<SpawnFailed>()
+              .having((e) => e.stage, 'stage', 'status-read')
+              .having((e) => e.unconfirmedPid, 'unconfirmedPid', isNull),
+        ),
+      );
+
+      // The spawn settled its unit before reporting.
+      await processes.single.exitCode.timeout(hangGuard);
+    });
+
+    test('an unconfirmed read under a status read error carries the pid and '
+        'sends no signal', () async {
+      await expectLater(
+        spawn(
+          ['/bin/sh', '-c', 'exec sleep 600'],
+          snapshot: (_) => null,
+          probe: (_) => 0,
+          status: readError,
+        ),
+        throwsA(
+          isA<SpawnFailed>().having((e) => e.stage, 'stage', 'status-read'),
+        ),
+      );
+      final process = processes.single;
+
+      expect(runs(process.pid), isTrue, reason: 'not signalled');
+    });
+
+    test('the status-read failure names the unconfirmed pid', () async {
+      Object? error;
+      try {
+        await spawn(
+          ['/bin/sh', '-c', 'exec sleep 600'],
+          snapshot: (_) => null,
+          probe: (_) => 0,
+          status: readError,
+        );
+      } on SpawnFailed catch (e) {
+        error = e;
+      }
+
+      expect(
+        error,
+        isA<SpawnFailed>().having(
+          (e) => e.unconfirmedPid,
+          'unconfirmedPid',
+          processes.single.pid,
+        ),
+      );
+    });
+  }, skip: Platform.isWindows ? _posixOnly : null);
 }

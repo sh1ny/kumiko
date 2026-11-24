@@ -34,18 +34,48 @@ class PtyOptions {
 }
 
 /// A unit could not be started. [stage] names the failing step (POSIX shim:
-/// `status-fd`, `setsid`, `open-slave`, `tiocsctty`, `dup2`, `exec`, or
-/// `status-timeout` when the shim reported nothing for 5 s) and [errno] the OS
-/// error (`errno` on POSIX, `GetLastError` on Windows). The unit has been
-/// settled when this is thrown.
+/// `status-fd`, `setsid`, `open-slave`, `tiocsctty`, `dup2`, `exec`;
+/// `status-timeout` when the shim reported nothing for 5 s; `status-read` when
+/// the host could not read the status pipe) and [errno] the OS error (`errno`
+/// on POSIX, `GetLastError` on Windows).
+///
+/// The spawn has done its own cleanup when this is thrown: it ended the
+/// process it could identify, or sent no signal at all when it could not
+/// ([unconfirmedPid]). Whether the unit's ledger row is deleted or left
+/// unresolved is the host's settlement, not this error's.
 class SpawnFailed implements Exception {
-  const SpawnFailed(this.stage, this.errno);
+  const SpawnFailed(this.stage, this.errno, {this.unconfirmedPid});
 
   final String stage;
   final int errno;
 
+  /// Set when the unit's start time could not be read and its absence could
+  /// not be proved either (#18): a process may still run at this pid, and it
+  /// was not signalled. The host keeps the unit's row unresolved. This pid is
+  /// a diagnostic only, never a leader identity to signal.
+  final int? unconfirmedPid;
+
   @override
-  String toString() => 'spawn failed at $stage (OS error $errno)';
+  String toString() => unconfirmedPid == null
+      ? 'spawn failed at $stage (OS error $errno)'
+      : 'spawn failed at $stage (OS error $errno); unit $unconfirmedPid '
+            'not confirmed gone';
+}
+
+/// A POSIX unit's start time could not be read, yet the OS did not confirm
+/// that no process has its [pid] (#18). Nothing shows whether a process there
+/// is the unit, so the spawn sent it no signal. The host keeps the unit's row
+/// unresolved until the user confirms; [pid] is a diagnostic only.
+class SpawnIdentityUnconfirmed implements Exception {
+  const SpawnIdentityUnconfirmed(this.pid, this.containmentId);
+
+  final int pid;
+  final String containmentId;
+
+  @override
+  String toString() =>
+      'unit $pid ($containmentId): start time unreadable and the process is '
+      'not confirmed gone';
 }
 
 /// The native handles of one pseudo-terminal, as plain integers: they are
