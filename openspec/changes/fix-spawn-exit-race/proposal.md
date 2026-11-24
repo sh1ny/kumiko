@@ -45,7 +45,7 @@ None.
 - `packages/host/lib/src/settler.dart`: Retry and restart keep an unconfirmed row's reason.
 - `packages/process_containment/lib/src/pty.dart`: `SpawnFailed` gains an optional `unconfirmedPid`.
 - `packages/host/lib/src/test_hooks/fixtures.dart`, `host_faults.dart`, `cleanup_service.dart` and the test-only fixture and fault lists in `packages/host_protocol`: one more fixture, two scan faults, and the restart handler keeps an unconfirmed reason.
-- `openspec/specs/host-process-cleanup`: Retry leaves a unit with no recorded identity unresolved until Confirm.
+- `openspec/specs/host-process-cleanup`: Retry leaves a unit whose identity could not be confirmed at spawn unresolved, with its pid-bearing reason, until Confirm; other units without a recorded pid keep their existing settlement.
 - `packages/host/lib/src/test_hooks/test_hooks.dart`: reads `KUMIKO_TEST_SPAWN_IDENTITY`.
 - `packages/process_containment/lib/src/contained_unit.dart`: the `startTime` doc names that value.
 - Tests in `packages/process_containment/test/` (spawn and PTY) and `packages/host/test/it/` (reconcile and launch).

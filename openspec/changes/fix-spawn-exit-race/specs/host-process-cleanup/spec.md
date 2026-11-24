@@ -52,7 +52,7 @@ The desktop SHALL list each *cleanup unresolved* workspace with its unresolved u
 
 #### Scenario: Retry of a unit whose identity was not confirmed at spawn
 - **WHEN** the user chooses Retry cleanup for a workspace with a unit whose identity could not be confirmed at spawn
-- **THEN** that unit stays *cleanup unresolved* with its reason, the marker scan still ends whatever carries its marker, and the workspace stays in the list until the user confirms
+- **THEN** the marker scan still runs for the unit's marker and attempts to end whatever carries it, and whatever the scan finds, that unit stays *cleanup unresolved* with its reason and the workspace stays in the list until the user confirms
 
 #### Scenario: Retry still fails
 - **WHEN** the user chooses Retry cleanup while a marked process is still alive and cannot be terminated
