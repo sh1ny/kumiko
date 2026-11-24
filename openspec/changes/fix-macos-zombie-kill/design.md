@@ -76,6 +76,7 @@ TIER: FULL
 - **Reversal cost:** low
 - **Important:** yes. It may be the actual cause of issue #30 (A3), and every errno-based decision in the reader depends on it.
 - **Chosen by:** user (owner, round 4: "add the error-code fix")
+- **Note (macOS CI on the merged head):** with the exact errno, macOS refuses `PROC_PIDTBSDINFO` (EPERM) for one of our own zombies, which has no credentials left. The short read then saw our own uid and reported the process as unreadable before it looked at the zombie state, so a marker scan passing a concurrent test's zombie failed with `scan-unreadable` and left the workspace `cleanup-unresolved`. The short read now reports a zombie as a zombie whoever owns it (`macShortInfoSnapshot`); only one of our own live processes stays unreadable. The old errno read could hide this: a refused read whose errno was overwritten did not reach the short read.
 
 ### Decision summary
 
