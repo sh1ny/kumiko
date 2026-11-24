@@ -17,11 +17,11 @@ Before it spawns a unit, the host SHALL durably record a pending ledger entry wi
 
 #### Scenario: A running unit whose leader exited before its start time was read is ended
 - **WHEN** the host ends a running unit recorded with the start time that matches no process
-- **THEN** the leader check neither reads nor signals the recorded pid, the marker scan still runs for the unit's marker, and the unit is cleaned only if its exit is observed in time and the scan leaves no marked process; when the exit is not observed in time, or the scan reports a marked survivor, an unreadable process or a timeout, it is unresolved. A scan that throws instead of reporting is out of scope here (issue #35)
+- **THEN** the leader check neither reads nor signals the recorded pid, the marker scan still runs for the unit's marker, and the unit is cleaned only if its exit is observed in time and the scan leaves no marked process; when the exit is not observed in time, or the scan reports a marked survivor, a process table it could not list, an unreadable process or a timeout, it is unresolved. A scan that throws instead of reporting is out of scope here (issue #35)
 
 #### Scenario: A later host reconciles such a unit
 - **WHEN** a later host reconciles a row recorded with the start time that matches no process
-- **THEN** the leader check neither reads nor signals the recorded pid, the marker scan still runs for the unit's marker, and the row is cleaned only if the scan ends every marked process; a marked survivor or an unfinished scan leaves it unresolved
+- **THEN** the leader check neither reads nor signals the recorded pid, the marker scan still runs for the unit's marker, and the row is cleaned only if the scan ends every marked process; a scan that reports a marked survivor, a process table it could not list, an unreadable process or a timeout leaves it unresolved, and so does a scan that throws (its reason is then `reconcile-failed`)
 
 #### Scenario: Start time read refused
 - **WHEN** on Linux or macOS the read of a new unit's start time is refused

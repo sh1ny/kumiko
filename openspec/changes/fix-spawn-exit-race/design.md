@@ -17,6 +17,8 @@ TIER: FULL
 
 See proposal.md for the failures and the CI evidence.
 
+Every citation in this section, and every claim about behaviour before this change (such as D1's binding premise), refers to the baseline `640de23`, the branch's merge base with main. The implementation has since moved some of these ranges and changed the `kill` binding.
+
 - `spawnPosixUnit` reads the start time once, right after `Process.start` returns, for both paths (`posix_unit.dart:222`).
   - On the plain path a null read kills the pid and throws `StateError` (`posix_unit.dart:223-229`).
   - On the PTY path the same read is used after the status wait (`posix_unit.dart:240-241` says why it comes first). The failures are checked in this order (`posix_unit.dart:257-280`):
@@ -172,7 +174,7 @@ See proposal.md for the failures and the CI evidence.
 - **Choice:**
   - `_settleFailedSpawn` reads the unconfirmed pid from `SpawnIdentityUnconfirmed.pid` or `SpawnFailed.unconfirmedPid`.
   - With one, it first marks the row unresolved with the reason `spawn-identity-unconfirmed:<pid>` and calls `onUnresolved`. The workspace is gated from then on (Context).
-  - Then it runs the failed-spawn marker scan only to end what carries the marker. It does not write the row afterwards, whatever the scan finds or throws: the earlier write is the only one. An exception from the scan is caught and logged, and the launch rethrows the spawn's own error, which the terminal API reports through its existing error mapping.
+  - Then it runs the failed-spawn marker scan only to end what carries the marker. It does not write the row afterwards, whatever the scan finds or throws: the earlier write is the only one. An exception from the scan is caught and logged, and the launch fails with the spawn's own failure: a `SpawnFailed` (or `ProcessException`) is rethrown as it is and reaches the terminal API's existing mapping, so a PTY `exec` failure with `ENOENT` is `executable-not-found` and any other stage is `spawn-failed`; a plain `SpawnIdentityUnconfirmed` is wrapped as `internal-error`, as every other spawn error is (`unit_manager.dart:228-229`).
   - Retry and restart keep that reason for a row without a pid whose reason starts `spawn-identity-unconfirmed:`, instead of writing `pending-without-pid` over it, so the pid stays shown for the user's confirmation. The restart handler that writes `reconcile-failed` over every row after a thrown settle skips such rows too (`cleanup_service.dart:60-75`).
   - The pid in the reason is a diagnostic for the user only. It is never written as the row's pid, so no leader check or Retry can signal it. Confirm deletes the row, as for any unresolved row, and is the only action that clears it.
   - A Retry or Confirm that runs while the scan still runs touches only the unresolved row, and the scan writes nothing after it, so there is no second writer.
@@ -219,7 +221,10 @@ See proposal.md for the failures and the CI evidence.
 
   Kind: deliberate gap. Destination: doc comment: packages/process_containment/lib/src/posix_unit.dart `spawnPosixUnit`
 - **C8:** A successful spawn never awaits the unit's exit. A terminal must open, and a piped caller must get its endpoints, while the unit runs; waiting for the exit happens only in the test hook. Kind: invariant. Destination: doc comment: packages/process_containment/lib/src/posix_unit.dart `spawnPosixUnit`
-- **C9:** A failed spawn whose identity was not confirmed, whichever error carries it, has its row marked unresolved before the marker scan and never written after it; Retry and restart (a thrown settle included) keep its reason, and Confirm alone clears it. The scan cannot see a process whose snapshot reads null, and a scan error never replaces the spawn's error. The pid in the reason is diagnostic only and is never recorded as the row's leader identity. Kind: invariant. Destination: doc comment: packages/host/lib/src/unit_manager.dart `_settleFailedSpawn`
+- **C9:** From its unresolved write on, a failed spawn whose identity was not confirmed, whichever error carries it, has its row marked unresolved before the marker scan and never written after it; Retry and restart (a thrown settle included) keep its reason, and Confirm alone clears it. The scan cannot see a process whose snapshot reads null, and a scan error never replaces the spawn's error. The pid in the reason is diagnostic only and is never recorded as the row's leader identity. Kind: invariant. Destination: doc comment: packages/host/lib/src/unit_manager.dart `_settleFailedSpawn`
+- **C10:** A failed spawn releases what it opened on every failure path, plain or PTY, without waiting for an unsignalled process: it closes stdin and stops reading stdout and stderr, and on the PTY path it cancels the status subscription and closes the master. A status stream that throws on listen or cancel, or a throwing termination, does not skip this or replace the classified error, so an unconfirmed spawn's error still carries its pid. Kind: invariant. Destination: doc comment: packages/process_containment/lib/src/posix_unit.dart `spawnPosixUnit`
+- **C11:** Before the unresolved write, a spawn whose identity is already in doubt does not gate its workspace: while the PTY status is awaited, and when the unresolved write itself fails, a second launch can pass the gate (issue #34). C9 starts at that write. Kind: deliberate gap. Destination: doc comment: packages/host/lib/src/unit_manager.dart `_settleFailedSpawn`
+- **C12:** A marker scan that throws while a live unit is ended leaves its row as it was and its workspace open (issue #35); the start-time -1 scenario covers only a scan that reports. At restart a thrown scan marks every row `reconcile-failed`. Kind: deliberate gap. Destination: doc comment: packages/host/lib/src/settler.dart `Settler.settle`
 
 ## Diagrams (FULL)
 
@@ -277,15 +282,16 @@ flowchart LR
 | spawn, read refused | pid killed, `StateError` as today | the host settles the failed launch through the marker scan (`unit_manager.dart:330-341`) | no: the program may have run (C4) | the caller, as a spawn error |
 | spawn, null read but a process at the pid | no signal by that pid, `SpawnIdentityUnconfirmed` or `SpawnFailed` with `unconfirmedPid` | the host marks the row unresolved, then its marker scan ends whatever carries the marker; nothing is written after the scan (D5, C9) | no (C4) | the caller, as a spawn error, and the user, through unresolved cleanup |
 | PTY status read error | `SpawnFailed('status-read')`, unit settled per D3 | as for any `SpawnFailed` | no (C4) | the caller |
-| test hook throws | master closed, pid signalled only under D1, error propagates | none | n/a | the test |
+| test hook, injected read or status stream throws | master closed, stdio released, nothing signalled, error propagates (C10) | none | n/a | the test |
 | host dies after the spawn, before `markRunning` | row stays pending without a pid | existing `pending-without-pid` path (`settler.dart:158`) | n/a | unresolved cleanup, as today |
-| ending a -1 unit: live exit not observed in time, marked survivor or unfinished scan (live or at restart) | unit unresolved (`posix_unit.dart:122-127`, `settler.dart:64-88`, `settler.dart:109-119`) | the user's retry or confirm, as for any unit | yes, as today | the user, through unresolved cleanup |
+| ending a -1 unit: live exit not observed in time, or a scan that reports a marked survivor, an unlistable table, an unreadable process or a timeout (live or at restart) | unit unresolved (`settler.dart` `Settler._scanFailure`, `Settler.settle`) | the user's retry or confirm, as for any unit | yes, as today | the user, through unresolved cleanup |
+| ending a -1 unit: the scan throws | live: out of scope, row left as it was (C12, #35); restart: every row `reconcile-failed` (`cleanup_service.dart` `_reconcile`) | restart: the user's retry or confirm | yes, as today | restart: the user, through unresolved cleanup |
 
 ## Resource Bounds (FULL)
 
 | Queue / buffer / cache / transfer | Bound | At the bound | Timeout | At 10x / 100x |
 |---|---|---|---|---|
-| PTY status wait | unchanged | unchanged | the existing 5 s `_statusTimeout` (`posix_unit.dart:283`) | unchanged |
+| PTY status wait | unchanged | unchanged | the existing 5 s `_statusTimeout` (`posix_unit.dart`, unchanged since `640de23:posix_unit.dart:283`) | unchanged |
 
 Nothing new is buffered or queued. The test hook runs only in tests, under its own minutes-long hang guard.
 
