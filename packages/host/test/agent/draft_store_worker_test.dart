@@ -32,15 +32,25 @@ void main() {
     for (final s in stores) {
       s.dispose();
     }
-    // Windows may hold a killed isolate's file a moment longer.
-    for (var i = 0; i < 40; i++) {
-      try {
-        dir.deleteSync(recursive: true);
-        return;
-      } on FileSystemException {
-        await Future<void>.delayed(const Duration(milliseconds: 50));
-      }
-    }
+    // Disposal does not wait for the worker, so wait for each one to exit
+    // before deleting what it held, and fail if the files stay locked
+    // (AGENTS.md, rules 5 and 6).
+    await Future.wait([for (final s in stores) s.workerExited]).timeout(
+      const Duration(minutes: 2),
+      onTimeout: () => fail('a disposed draft worker never exited'),
+    );
+    await eventually(
+      () {
+        try {
+          dir.deleteSync(recursive: true);
+          return true;
+        } on FileSystemException {
+          return false;
+        }
+      },
+      within: const Duration(minutes: 2),
+      reason: 'the draft directory ${dir.path} stayed locked',
+    );
   });
 
   DraftStore open({
@@ -579,6 +589,15 @@ void main() {
       expect(s.phase, DraftPhase.available);
       expect(s.releaseOpen(), isFalse);
       expect(await s.save('a', 'x', 1), 1);
+    });
+
+    test('a worker disposed before its isolate is up still exits', () async {
+      final s = open();
+      s.dispose();
+      await s.workerExited.timeout(
+        const Duration(minutes: 2),
+        onTimeout: () => fail('the disposed worker never exited'),
+      );
     });
 
     test('disposal clears an acknowledged gate', () async {

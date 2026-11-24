@@ -138,7 +138,8 @@ What the change has to work with, beyond proposal.md:
 ### D7: Generous deadlines as hang guards in test hosts and the worker unit tests
 
 - **Choice:**
-  - In `TestHostExtension.fromEnvironment`, a missing `KUMIKO_TEST_DRAFT_DEADLINE_MS` gives 2 min. No draft-store test sets the variable any more, so `quick`, the 800 ms setting, `settledSave` and `settledLoad` go away.
+  - In `TestHostExtension.fromEnvironment`, a missing `KUMIKO_TEST_DRAFT_DEADLINE_MS` gives 2 min, a hang guard for every other suite. No test shortens the deadline any more, so `quick`, the 800 ms setting, `settledSave` and `settledLoad` go away.
+  - The draft suite and the draft hook rows set it to 10 min (`draftSuiteEnv`), longer than any row's whole timeout, so a held operation they expire explicitly can never be failed first by the real timer (added in pre-ship round 5).
   - The row at `draft_store_test.dart:805-824` is retired. It tested the helper. The product behaviour behind it, a late commit landing after a missed deadline, is kept by the released-commit row, which loads `held` after the release.
   - The worker tests' `open` helper defaults to a 2 min deadline.
 - **Rejected:** Keeping 5 s in test hosts (the S2 alternative). Incidental draft calls in every suite would still race a real budget.

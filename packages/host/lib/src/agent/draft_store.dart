@@ -226,9 +226,18 @@ class DraftStore {
     if (_disposed) return;
     _disposed = true;
     _failAll(_unavailable('the host is shutting down'));
-    _worker?.kill();
+    final worker = _worker;
+    _disposedExit = worker?.exited.future;
+    worker?.kill();
     _worker = null;
   }
+
+  Future<void>? _disposedExit;
+
+  /// Completes once the worker [dispose] ended has exited, so a test can
+  /// release the files it held (AGENTS.md, rule 5). Disposal itself never
+  /// waits; before [dispose] this is already complete.
+  Future<void> get workerExited => _disposedExit ?? Future<void>.value();
 
   // --- operations -------------------------------------------------------
 
@@ -458,6 +467,7 @@ class _Worker {
   bool intentional = false;
 
   Isolate? _isolate;
+  bool _killed = false;
   SendPort? _commands;
   final _early = Queue<Object?>();
   final _from = ReceivePort();
@@ -485,14 +495,23 @@ class _Worker {
       onGone();
     });
     _errors.listen((_) {});
-    _isolate = await Isolate.spawn<List<Object?>>(
-      _workerMain,
-      [_from.sendPort, init.path, init.gated],
-      onExit: _exit.sendPort,
-      onError: _errors.sendPort,
-      errorsAreFatal: true,
-      debugName: 'kumiko-drafts',
-    );
+    try {
+      _isolate = await Isolate.spawn<List<Object?>>(
+        _workerMain,
+        [_from.sendPort, init.path, init.gated],
+        onExit: _exit.sendPort,
+        onError: _errors.sendPort,
+        errorsAreFatal: true,
+        debugName: 'kumiko-drafts',
+      );
+    } on Object {
+      // Nothing runs, so nothing is left to exit.
+      if (!exited.isCompleted) exited.complete(true);
+      _close();
+      rethrow;
+    }
+    // A kill that came while the isolate was still spawning.
+    if (_killed) kill();
   }
 
   void post(Object? message) {
@@ -505,6 +524,7 @@ class _Worker {
   }
 
   void kill() {
+    _killed = true;
     _isolate?.kill(priority: Isolate.immediate);
   }
 
