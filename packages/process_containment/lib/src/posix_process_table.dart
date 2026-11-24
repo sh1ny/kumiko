@@ -45,6 +45,15 @@ int posixKill(int pid, int signal) {
   return _kill(pid, signal) == 0 ? 0 : errno();
 }
 
+Object? _probeBinding;
+
+/// Looks up `kill` and the errno accessor now, so that a later
+/// [posixKill] probe does no first-use lookup between the call and its errno
+/// read. The spawn calls it before `Process.start` (#18).
+void bindPosixProbe() {
+  _probeBinding ??= (_kill, errno());
+}
+
 /// `killpg(pgrp, signal)`; returns 0 or the errno of this call.
 int posixKillpg(int pgrp, int signal) {
   errno(); // bound before the call, so nothing runs between it and the read

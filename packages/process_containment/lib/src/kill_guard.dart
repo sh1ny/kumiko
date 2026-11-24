@@ -3,13 +3,15 @@
 ///
 /// Internal: the package barrel does not export this library; only this
 /// package's code and tests import it. The public entry is
-/// `killProcessGroup` in `posix_unit.dart`, whose signature stays as it is,
-/// so no test-only parameter widens the interface the host imports
-/// (design D2, C4).
+/// `killProcessGroup` in `posix_unit.dart`, whose signature stays as main
+/// has it (its optional `snapshotForTesting`, from #18, passes through to
+/// the guard's snapshot read), so this seam adds no test-only parameter to
+/// the interface the host imports (design D2, C4).
 library;
 
 import 'libc.dart' show esrch;
 import 'posix_process_table.dart';
+import 'posix_unit.dart' show startTimeNotRead;
 import 'process_table.dart';
 
 /// Result of a guarded `killpg`.
@@ -37,20 +39,21 @@ KillOutcome killLiveUnitGroup(int leaderPid, int startTime, int signal) =>
 
 /// [guardedKill] with the real process table and signals. One table
 /// instance serves the entry read and every recheck, so a recheck never
-/// reads `/proc/uptime` again (design C8).
+/// reads `/proc/uptime` again (design C8). [snapshotForTesting] replaces
+/// the process read.
 KillOutcome killUnitGroup(
   int leaderPid,
   int startTime,
   int signal, {
   required bool directFallback,
+  ProcessSnapshot? Function(int pid)? snapshotForTesting,
 }) {
-  final table = PosixProcessTable();
   return guardedKill(
     pid: leaderPid,
     startTime: startTime,
     signal: signal,
     directFallback: directFallback,
-    snapshot: table.snapshot,
+    snapshot: snapshotForTesting ?? PosixProcessTable().snapshot,
     killpg: posixKillpg,
     kill: posixKill,
   );
@@ -58,6 +61,10 @@ KillOutcome killUnitGroup(
 
 /// The decision. [snapshot] may throw [ProcessReadDenied]; [killpg] and
 /// [kill] return 0 or the errno of their own call.
+///
+/// A leader recorded as [startTimeNotRead] exited before its start time
+/// was read: it is [KillOutcome.leaderGone] before any read or signal by
+/// its pid, which may belong to another process by now (#18).
 ///
 /// The first check keeps its mapping (design C5). After a refused signal (any
 /// error but `ESRCH`) the leader is rechecked, and only a confirmed exit or
@@ -73,6 +80,7 @@ KillOutcome guardedKill({
   required int Function(int pgrp, int signal) killpg,
   required int Function(int pid, int signal) kill,
 }) {
+  if (startTime == startTimeNotRead) return KillOutcome.leaderGone;
   final ProcessSnapshot? leader;
   try {
     leader = snapshot(pid);

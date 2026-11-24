@@ -42,6 +42,10 @@ class TestHostExtension implements HostExtension {
   /// install locations off; `KUMIKO_TEST_SHELL_DIRS` lists them instead.
   /// `KUMIKO_TEST_RUNTIME_PATH` / `KUMIKO_TEST_RUNTIME_DIRS` independently
   /// override adapter detection using the same convention.
+  /// `KUMIKO_TEST_SPAWN_IDENTITY` (`reaped`, `unconfirmed`, `forced-gone`)
+  /// forces a POSIX spawn's start time read, `KUMIKO_TEST_KILL_WAIT_MS` the
+  /// wait after a unit's last signal, and `KUMIKO_TEST_FAULTS` (fault names,
+  /// comma-separated) turns faults on before reconciliation starts.
   factory TestHostExtension.fromEnvironment(Map<String, String> env) {
     int? number(String name) => int.tryParse(env['KUMIKO_TEST_$name'] ?? '');
     Duration? millis(String name) {
@@ -140,6 +144,20 @@ class TestHostExtension implements HostExtension {
         postExitReadDeadline:
             millis('READ_DEADLINE_MS') ??
             HostOptions.defaultPostExitReadDeadline,
+        spawnIdentityForTesting: _spawnIdentity(
+          env['KUMIKO_TEST_SPAWN_IDENTITY'],
+        ),
+        killWait: millis('KILL_WAIT_MS'),
+        initialFaults: {
+          for (final name in (env['KUMIKO_TEST_FAULTS'] ?? '').split(','))
+            if (name.trim().isNotEmpty)
+              TestFault.values.asNameMap()[name.trim()] ??
+                  (throw ArgumentError.value(
+                    name,
+                    'KUMIKO_TEST_FAULTS',
+                    'unknown fault',
+                  )),
+        },
       ),
     );
   }
@@ -330,6 +348,18 @@ class TestHostExtension implements HostExtension {
   /// Test channels' producers by channel id, for `test/channel.stats`.
   final Map<int, _Producer> _producers = {};
 }
+
+SpawnIdentityForTesting? _spawnIdentity(String? value) => switch (value) {
+  null || '' => null,
+  'reaped' => SpawnIdentityForTesting.reaped,
+  'unconfirmed' => SpawnIdentityForTesting.unconfirmed,
+  'forced-gone' => SpawnIdentityForTesting.forcedGone,
+  _ => throw ArgumentError.value(
+    value,
+    'KUMIKO_TEST_SPAWN_IDENTITY',
+    'expected reaped, unconfirmed or forced-gone',
+  ),
+};
 
 /// The source of one test channel.
 class _Producer {

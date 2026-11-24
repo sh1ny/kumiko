@@ -26,6 +26,11 @@ abstract interface class ContainedUnit {
 
   /// The OS start time of [pid], an opaque value compared for equality; see
   /// `processStartTime`.
+  ///
+  /// On POSIX it can be `startTimeNotRead` (-1): the leader exited and was
+  /// reaped before its start time could be read, and is known to be gone
+  /// (#18). It matches no process, and must never be replaced by a value a
+  /// live process can have.
   int get startTime;
 
   String get containmentId;

@@ -67,7 +67,7 @@ class Host {
   final Directory profile;
   final HostExtension? extension;
   final HostOptions options;
-  final HostFaults faults = HostFaults();
+  late final HostFaults faults = HostFaults(options.initialFaults);
 
   final Completer<int> _exit = Completer();
   late final Connection _connection;
@@ -271,7 +271,12 @@ class Host {
       desktopStartedAt: params.desktopStartTime,
       os: Platform.operatingSystem,
     );
-    final settler = Settler(ledger: ledger, log: log, faults: faults);
+    final settler = Settler(
+      ledger: ledger,
+      log: log,
+      faults: faults,
+      killWait: options.killWait,
+    );
     final resolver = WorkspaceResolver(
       faults: faults,
       timeout: options.resolveTimeout,

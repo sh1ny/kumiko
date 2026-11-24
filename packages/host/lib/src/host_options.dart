@@ -1,5 +1,21 @@
+import 'package:host_protocol/host_protocol.dart' show TestFault;
+
 import 'agent/codex/codex_auth_signal.dart';
 import 'agent/codex/codex_auth_signatures.dart';
+
+/// How a test build forces the outcome of a POSIX unit's start time read
+/// (#18, fix-spawn-exit-race design D4).
+enum SpawnIdentityForTesting {
+  /// The spawn awaits the unit's exit before the read.
+  reaped,
+
+  /// The read finds no process, and the probe finds one at the pid.
+  unconfirmed,
+
+  /// The read finds no process, and the probe answers `ESRCH` for a live
+  /// unit.
+  forcedGone,
+}
 
 /// Host settings. The release host uses the defaults; a test build can change
 /// them to make timing deterministic.
@@ -36,6 +52,9 @@ class HostOptions {
     this.advertiseLifecycle = true,
     this.codexProbeArgs,
     this.ompProbeArgs,
+    this.spawnIdentityForTesting,
+    this.killWait,
+    this.initialFaults = const {},
     // Keep the existing public named override while storing its nullable sentinel.
     Set<CodexAuthSignal>? codexAuthSignatures,
     // ignore: prefer_initializing_formals
@@ -132,4 +151,14 @@ class HostOptions {
 
   /// Extra wait inside a cleanup retry (tests only).
   final Duration retryDelay;
+
+  /// Forces the start time read of POSIX spawns (tests only).
+  final SpawnIdentityForTesting? spawnIdentityForTesting;
+
+  /// The wait for a POSIX unit's exit after its last signal when the host
+  /// ends it; null keeps the unit's own default (tests only).
+  final Duration? killWait;
+
+  /// Faults on from the start, before reconciliation runs (tests only).
+  final Set<TestFault> initialFaults;
 }

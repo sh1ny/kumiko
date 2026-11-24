@@ -276,6 +276,22 @@ void main() {
       ).fault,
       TestFault.killFails,
     );
+    // #18: the spawn-identity faults and fixture travel by name.
+    for (final fault in [TestFault.spawnScanHangs, TestFault.scanThrows]) {
+      expect(
+        TestFaultSetParams.fromJson(TestFaultSetParams(fault).toJson()).fault,
+        fault,
+      );
+    }
+    expect(
+      TestUnitLaunchParams.fromJson(
+        const TestUnitLaunchParams(
+          target: 't',
+          fixture: TestFixture.reportedExit,
+        ).toJson(),
+      ).fixture,
+      TestFixture.reportedExit,
+    );
 
     final unit = CleanupUnit(
       containmentId: 'u',

@@ -1,6 +1,7 @@
 @Timeout(Duration(minutes: 5))
 library;
 
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
@@ -223,4 +224,406 @@ void main() {
       });
     }
   }, skip: Platform.isWindows ? _posixOnly : null);
+
+  // Issue #18 on the PTY path: the status pipe still decides first, and the
+  // start-time outcome is forced through the spawn's test-only parameters.
+  group('POSIX PTY start time read', () {
+    const esrchErrno = 3;
+    const hangGuard = Duration(minutes: 2);
+    final processes = <Process>[];
+
+    // Every spawned process is registered by the hook before the spawn can
+    // fail, so it is ended even when no unit was returned.
+    tearDown(() async {
+      for (final process in processes) {
+        process.kill(ProcessSignal.sigkill);
+        await process.exitCode.timeout(hangGuard);
+      }
+      processes.clear();
+    });
+
+    Future<PosixUnit> spawn(
+      List<String> argv, {
+      Future<void> Function(Process)? before,
+      ProcessSnapshot? Function(int pid)? snapshot,
+      int Function(int pid)? probe,
+      Stream<List<int>> Function(Stream<List<int>>)? status,
+    }) async {
+      final unit = await spawnPosixUnit(
+        shimExecutable: exe,
+        containmentId: 'pty-read-$counter',
+        argv: argv,
+        pty: const PtyOptions(size: PtySize(80, 24)),
+        beforeStartTimeReadForTesting: (process) async {
+          processes.add(process);
+          await before?.call(process);
+        },
+        snapshotForTesting: snapshot,
+        probeForTesting: probe,
+        statusStreamForTesting: status,
+      );
+      units.add(unit);
+      return unit;
+    }
+
+    Future<void> reaped(Process process) => process.exitCode.timeout(hangGuard);
+
+    /// A status read error followed at once by end of file: a synchronous
+    /// controller delivers both while `listen` runs, before the spawn can
+    /// cancel, so its done handler must tolerate a completed read.
+    Stream<List<int>> readError(Stream<List<int>> _) {
+      final c = StreamController<List<int>>(sync: true);
+      c.onListen = () {
+        c.addError(const OSError('injected status read error', 5));
+        unawaited(c.close());
+      };
+      return c.stream;
+    }
+
+    /// A unit that ignores SIGHUP (kept across `exec`) and then writes
+    /// [ready]: once that file exists it runs its program on the PTY, and
+    /// closing the master cannot end it.
+    List<String> hangupProof(File ready) => [
+      '/bin/sh',
+      '-c',
+      'trap "" HUP; : > "\$1"; exec sleep 600',
+      'sh',
+      ready.path,
+    ];
+
+    /// The status read error, raised only after [ready] exists. A poll for
+    /// the file the unit writes, failing loudly at the hang guard.
+    Stream<List<int>> Function(Stream<List<int>>) readErrorAfter(File ready) =>
+        (_) async* {
+          final deadline = DateTime.now().add(hangGuard);
+          while (!ready.existsSync()) {
+            if (DateTime.now().isAfter(deadline)) {
+              fail('the unit never wrote ${ready.path}');
+            }
+            await Future<void>.delayed(const Duration(milliseconds: 20));
+          }
+          throw const OSError('injected status read error', 5);
+        };
+
+    bool runs(int pid) {
+      final s = PosixProcessTable().snapshot(pid);
+      return s != null && !s.zombie;
+    }
+
+    test('a PTY unit reaped before its start time is read spawns and reports '
+        'its exit code', () async {
+      final probes = <int>[];
+      final unit = await spawn(
+        ['/bin/sh', '-c', 'exit 7'],
+        before: reaped,
+        probe: (pid) {
+          final answer = posixKill(pid, 0);
+          probes.add(answer);
+          return answer;
+        },
+      );
+
+      expect(unit.startTime, startTimeNotRead);
+      expect(probes, [esrchErrno], reason: 'absence was proved by the probe');
+      expect(await unit.exitCode.timeout(hangGuard), 7);
+    });
+
+    // macOS drains a terminal's output when its last slave descriptor
+    // closes, so a unit with unread output cannot exit until the master is
+    // read: it cannot be reaped before the spawn returns its master.
+    test(
+      'a PTY unit reaped before its start time is read keeps its output on '
+      'the PTY',
+      () async {
+        final unit = await spawn([
+          '/bin/sh',
+          '-c',
+          'echo reaped-output; exit 7',
+        ], before: reaped);
+
+        expect(unit.startTime, startTimeNotRead);
+        expect(await unit.exitCode.timeout(hangGuard), 7);
+        final reader = PtyReader(unit.pty!.readHandle);
+        await reader.waitForText('reaped-output');
+      },
+      skip: Platform.isMacOS
+          ? 'macOS holds the exit until the terminal output is read'
+          : null,
+    );
+
+    test('a missing program reaped before the read still raises SpawnFailed '
+        'at exec', () async {
+      final snapshots = <ProcessSnapshot?>[];
+      final probes = <int>[];
+      await expectLater(
+        spawn(
+          [p.join(tmp.path, 'does-not-exist')],
+          before: reaped,
+          snapshot: (pid) {
+            final s = PosixProcessTable().snapshot(pid);
+            snapshots.add(s);
+            return s;
+          },
+          probe: (pid) {
+            final answer = posixKill(pid, 0);
+            probes.add(answer);
+            return answer;
+          },
+        ),
+        throwsA(
+          isA<SpawnFailed>()
+              .having((e) => e.stage, 'stage', 'exec')
+              .having((e) => e.unconfirmedPid, 'unconfirmedPid', isNull),
+        ),
+      );
+
+      // The proved-gone branch was taken, then overruled by the report.
+      expect(snapshots, [isNull]);
+      expect(probes, [esrchErrno]);
+    });
+
+    test('status pipe read error fails with status-read once', () async {
+      await expectLater(
+        spawn(['/bin/sh', '-c', 'exec sleep 600'], status: readError),
+        throwsA(
+          isA<SpawnFailed>()
+              .having((e) => e.stage, 'stage', 'status-read')
+              .having((e) => e.unconfirmedPid, 'unconfirmedPid', isNull),
+        ),
+      );
+
+      // The spawn settled its unit before reporting.
+      await processes.single.exitCode.timeout(hangGuard);
+    });
+
+    test('an unconfirmed read under a status read error carries the pid and '
+        'sends no signal', () async {
+      final ready = File(p.join(tmp.path, 'ready${counter++}'));
+      await expectLater(
+        spawn(
+          hangupProof(ready),
+          snapshot: (_) => null,
+          probe: (_) => 0,
+          status: readErrorAfter(ready),
+        ),
+        throwsA(
+          isA<SpawnFailed>().having((e) => e.stage, 'stage', 'status-read'),
+        ),
+      );
+      final process = processes.single;
+
+      expect(runs(process.pid), isTrue, reason: 'not signalled');
+    });
+
+    test(
+      'a throwing injected read is rethrown and nothing is signalled',
+      () async {
+        final ready = File(p.join(tmp.path, 'ready${counter++}'));
+        final readFailure = StateError('injected read failure');
+        await expectLater(
+          spawn(
+            hangupProof(ready),
+            // Waits until the unit runs its program and ignores SIGHUP, so
+            // only a signal from the spawn could end it.
+            before: (_) async {
+              final deadline = DateTime.now().add(hangGuard);
+              while (!ready.existsSync()) {
+                if (DateTime.now().isAfter(deadline)) {
+                  fail('the unit never wrote ${ready.path}');
+                }
+                await Future<void>.delayed(const Duration(milliseconds: 20));
+              }
+            },
+            snapshot: (_) => throw readFailure,
+          ),
+          throwsA(same(readFailure)),
+        );
+
+        expect(runs(processes.single.pid), isTrue, reason: 'not signalled');
+      },
+    );
+
+    test('a status stream whose cancel throws still reports the unconfirmed '
+        'pid', () async {
+      Stream<List<int>> cancelThrows(Stream<List<int>> _) {
+        late final StreamController<List<int>> c;
+        c = StreamController<List<int>>(
+          onListen: () =>
+              c.addError(const OSError('injected status read error', 5)),
+          onCancel: () => throw StateError('injected cancel failure'),
+        );
+        return c.stream;
+      }
+
+      Object? error;
+      try {
+        await spawn(
+          ['/bin/sh', '-c', 'exec sleep 600'],
+          snapshot: (_) => null,
+          probe: (_) => 0,
+          status: cancelThrows,
+        );
+      } on Object catch (e) {
+        error = e;
+      }
+
+      expect(
+        error,
+        isA<SpawnFailed>()
+            .having((e) => e.stage, 'stage', 'status-read')
+            .having(
+              (e) => e.unconfirmedPid,
+              'unconfirmedPid',
+              processes.single.pid,
+            ),
+      );
+    });
+
+    test('a status stream whose cancel never completes still reports the '
+        'unconfirmed pid', () async {
+      Stream<List<int>> cancelHangs(Stream<List<int>> _) {
+        late final StreamController<List<int>> c;
+        c = StreamController<List<int>>(
+          onListen: () =>
+              c.addError(const OSError('injected status read error', 5)),
+          onCancel: () => Completer<void>().future,
+        );
+        return c.stream;
+      }
+
+      Object? error;
+      try {
+        // The group's hang guard ends the test if the spawn waits on it.
+        await spawn(
+          ['/bin/sh', '-c', 'exec sleep 600'],
+          snapshot: (_) => null,
+          probe: (_) => 0,
+          status: cancelHangs,
+        );
+      } on Object catch (e) {
+        error = e;
+      }
+
+      expect(
+        error,
+        isA<SpawnFailed>().having(
+          (e) => e.unconfirmedPid,
+          'unconfirmedPid',
+          processes.single.pid,
+        ),
+      );
+    });
+
+    for (final (name, wrapper) in <(String, StatusWrapper)>[
+      ('a throwing status wrapper', (_) => throw StateError('injected')),
+      ('a status cancel that throws synchronously', (_) => _SyncCancelThrows()),
+    ]) {
+      test(
+        '$name is a status-read failure that keeps the unconfirmed pid',
+        () async {
+          Object? error;
+          try {
+            await spawn(
+              ['/bin/sh', '-c', 'exec sleep 600'],
+              snapshot: (_) => null,
+              probe: (_) => 0,
+              status: wrapper,
+            );
+          } on Object catch (e) {
+            error = e;
+          }
+
+          expect(
+            error,
+            isA<SpawnFailed>()
+                .having((e) => e.stage, 'stage', 'status-read')
+                .having(
+                  (e) => e.unconfirmedPid,
+                  'unconfirmedPid',
+                  processes.single.pid,
+                ),
+          );
+        },
+      );
+    }
+
+    test('the status-read failure names the unconfirmed pid', () async {
+      Object? error;
+      try {
+        await spawn(
+          ['/bin/sh', '-c', 'exec sleep 600'],
+          snapshot: (_) => null,
+          probe: (_) => 0,
+          status: readError,
+        );
+      } on SpawnFailed catch (e) {
+        error = e;
+      }
+
+      expect(
+        error,
+        isA<SpawnFailed>().having(
+          (e) => e.unconfirmedPid,
+          'unconfirmedPid',
+          processes.single.pid,
+        ),
+      );
+    });
+  }, skip: Platform.isWindows ? _posixOnly : null);
+}
+
+typedef StatusWrapper = Stream<List<int>> Function(Stream<List<int>> status);
+
+/// A status stream that reports a read error and whose subscription's
+/// `cancel` throws synchronously instead of returning a future.
+class _SyncCancelThrows extends Stream<List<int>> {
+  @override
+  StreamSubscription<List<int>> listen(
+    void Function(List<int> event)? onData, {
+    Function? onError,
+    void Function()? onDone,
+    bool? cancelOnError,
+  }) => _CancelThrows(
+    Stream<List<int>>.error(const OSError('injected status read error', 5))
+        .listen(
+          onData,
+          onError: onError,
+          onDone: onDone,
+          cancelOnError: cancelOnError,
+        ),
+  );
+}
+
+class _CancelThrows implements StreamSubscription<List<int>> {
+  _CancelThrows(this._inner);
+
+  final StreamSubscription<List<int>> _inner;
+
+  @override
+  Future<void> cancel() {
+    unawaited(_inner.cancel());
+    throw StateError('injected synchronous cancel failure');
+  }
+
+  @override
+  void onData(void Function(List<int> data)? handleData) =>
+      _inner.onData(handleData);
+
+  @override
+  void onError(Function? handleError) => _inner.onError(handleError);
+
+  @override
+  void onDone(void Function()? handleDone) => _inner.onDone(handleDone);
+
+  @override
+  void pause([Future<void>? resumeSignal]) => _inner.pause(resumeSignal);
+
+  @override
+  void resume() => _inner.resume();
+
+  @override
+  bool get isPaused => _inner.isPaused;
+
+  @override
+  Future<E> asFuture<E>([E? futureValue]) => _inner.asFuture(futureValue);
 }
