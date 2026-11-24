@@ -52,7 +52,10 @@ bool posixIsProcessAlive(int pid, int startTime) {
 ///   being 0). The rechecks use the start time and state only, never the
 ///   owner (design C1).
 /// - No signal is sent without a fresh confirmation, and none is resent
-///   after a refusal, within one call. The window from the identity read (on
+///   after a refusal, within one call. The only second signal the guard
+///   ever sends is the live-unit fallback after `killpg` answers `ESRCH`,
+///   and only once a fresh recheck confirms the leader; this entry never
+///   sends it. The window from the identity read (on
 ///   Linux the `stat` read, before `status`) to the signal remains; the
 ///   marker scan and Retry cleanup are separate attempts (C3).
 /// - The first check keeps its mapping, gaps included: a `null` snapshot is

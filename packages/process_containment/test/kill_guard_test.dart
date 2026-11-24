@@ -124,13 +124,25 @@ void main() {
     });
 
     test('a refused direct signal with an inconclusive recheck is failed', () {
-      final s = _Script(
-        snapshots: [running(recorded), running(recorded), running(recorded)],
-        killpg: [esrch],
-        kill: [0, eperm, 0],
-      );
-      expect(s.run(pid, recorded, term, fallback: true), KillOutcome.failed);
-      expect(s.sentSignals, [term, term]);
+      for (final recheck in <Object?>[
+        running(recorded), // the same leader: a real refusal
+        running(0), // the macOS placeholder of another user's process
+        null, // not found, but the probe did not confirm absence
+        denied, // the read is refused
+      ]) {
+        final s = _Script(
+          snapshots: [running(recorded), running(recorded), recheck],
+          killpg: [esrch],
+          kill: [0, eperm, 0],
+          denied: denied,
+        );
+        expect(
+          s.run(pid, recorded, term, fallback: true),
+          KillOutcome.failed,
+          reason: '$recheck',
+        );
+        expect(s.sentSignals, [term, term], reason: '$recheck');
+      }
     });
 
     test('a refused direct signal whose leader then exits is leaderGone', () {

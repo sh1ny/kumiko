@@ -1,3 +1,6 @@
+@Timeout(Duration(minutes: 2))
+library;
+
 import 'dart:io';
 
 import 'package:process_containment/process_containment.dart';
@@ -32,6 +35,28 @@ void main() {
     final outcome = killLiveUnitGroup(child.pid, started, posixSigterm);
 
     expect(outcome, KillOutcome.signalled);
-    await child.exitCode.timeout(const Duration(seconds: 5));
+    await child.exitCode;
+  }, skip: Platform.isWindows ? 'POSIX process groups' : false);
+
+  test('terminating a unit whose shim never made its group ends it', () async {
+    // `sh` stands in for a shim stopped before `setsid`: it ignores the
+    // shim arguments and stays in this process's group.
+    final unit = await spawnPosixUnit(
+      shimExecutable: '/bin/sh',
+      shimArgs: ['-c', 'exec sleep 30', 'sh'],
+      containmentId: 'kill-group-pre-setsid',
+      argv: ['unused'],
+    );
+    addTearDown(() => unit.process.kill(ProcessSignal.sigkill));
+
+    // Grace and wait are hang guards, not expected outcomes (AGENTS.md
+    // rule 4): SIGTERM ends `sleep` at once.
+    final result = await unit.terminate(
+      grace: const Duration(minutes: 1),
+      killWait: const Duration(minutes: 1),
+    );
+
+    expect(result.terminated, isTrue, reason: result.reason);
+    await unit.exitCode;
   }, skip: Platform.isWindows ? 'POSIX process groups' : false);
 }
