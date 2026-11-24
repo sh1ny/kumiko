@@ -145,6 +145,34 @@ void main() {
       );
     });
 
+    test('a refused direct signal is resolved by the recheck snapshot', () {
+      final exited = _Script(
+        snapshots: [running(recorded), running(recorded), zombie(recorded)],
+        killpg: [esrch],
+        kill: [0, eperm, 0],
+      );
+      expect(
+        exited.run(pid, recorded, term, fallback: true),
+        KillOutcome.leaderGone,
+      );
+      expect(exited.sentSignals, [term, term]);
+
+      final reused = _Script(
+        snapshots: [
+          running(recorded),
+          running(recorded),
+          running(recorded + 1),
+        ],
+        killpg: [esrch],
+        kill: [0, eperm, 0],
+      );
+      expect(
+        reused.run(pid, recorded, term, fallback: true),
+        KillOutcome.startTimeMismatch,
+      );
+      expect(reused.sentSignals, [term, term]);
+    });
+
     test('killpg ESRCH: an unconfirmed leader gets no direct signal', () {
       for (final recheck in <Object?>[running(0), null, denied]) {
         final s = _Script(

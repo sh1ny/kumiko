@@ -40,9 +40,10 @@ bool posixIsProcessAlive(int pid, int startTime) {
   }
 }
 
-/// Signals the process group of a recorded unit, led by [leaderPid], only
-/// while that leader is alive with [startTime]. A pid that was reused is
-/// never signalled (ADR 0001).
+/// Signals the process group of a recorded unit, led by [leaderPid], after
+/// checking that the leader is alive with [startTime] (ADR 0001). The check
+/// comes before the signal and does not bind who receives it: a pid reused
+/// in between (C3), or after a reboot (C11), can still be reached.
 ///
 /// - The first read refused: no signal, [KillOutcome.failed]. A signal
 ///   refused (any error but `ESRCH`): [KillOutcome.failed] unless a recheck
