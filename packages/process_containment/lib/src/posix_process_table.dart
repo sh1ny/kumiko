@@ -11,7 +11,12 @@ import 'process_table.dart';
 typedef _KillNative = Int32 Function(Int32, Int32);
 typedef _KillDart = int Function(int, int);
 
-final _KillDart _kill = libc.lookupFunction<_KillNative, _KillDart>('kill');
+// A leaf call: no VM transition runs between `kill` and the `errno` read, so
+// the errno reported is this call's own (`libc.dart`, `errno`).
+final _KillDart _kill = libc.lookupFunction<_KillNative, _KillDart>(
+  'kill',
+  isLeaf: true,
+);
 final _KillDart _killpg = libc.lookupFunction<_KillNative, _KillDart>('killpg');
 
 final int Function() _getuid = libc
@@ -23,6 +28,15 @@ const int posixSigkill = 9;
 
 /// `kill(pid, signal)`; returns 0 or the errno.
 int posixKill(int pid, int signal) => _kill(pid, signal) == 0 ? 0 : errno();
+
+Object? _probeBinding;
+
+/// Looks up `kill` and the errno accessor now, so that a later
+/// [posixKill] probe does no first-use lookup between the call and its errno
+/// read. The spawn calls it before `Process.start` (#18).
+void bindPosixProbe() {
+  _probeBinding ??= (_kill, errno());
+}
 
 /// `killpg(pgrp, signal)`; returns 0 or the errno.
 int posixKillpg(int pgrp, int signal) =>

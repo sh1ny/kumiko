@@ -392,6 +392,9 @@ class TerminalService {
         continue;
       }
       final unit = t.unit;
+      // A leader proved gone before its start time was read: its pid may
+      // already be another process's, so it is never read (constraint C2).
+      if (unit is PosixUnit && unit.startTime == startTimeNotRead) continue;
       int? job;
       if (unit is WindowsUnit) {
         try {

@@ -304,6 +304,22 @@ class UnitManager {
       inheritParentEnvironment: inheritParentEnvironment,
       pty: pty,
       pipes: pipes,
+      beforeStartTimeReadForTesting: switch (options.spawnIdentityForTesting) {
+        SpawnIdentityForTesting.reaped => (process) => process.exitCode.timeout(
+          const Duration(minutes: 2),
+        ),
+        _ => null,
+      },
+      snapshotForTesting: switch (options.spawnIdentityForTesting) {
+        SpawnIdentityForTesting.unconfirmed ||
+        SpawnIdentityForTesting.forcedGone => (_) => null,
+        _ => null,
+      },
+      probeForTesting: switch (options.spawnIdentityForTesting) {
+        SpawnIdentityForTesting.unconfirmed => (_) => 0,
+        SpawnIdentityForTesting.forcedGone => (_) => esrch,
+        _ => null,
+      },
     );
     // A PTY consumed its shim pipes during spawn. Piped units hand both
     // outputs to the caller. Plain units retain the existing discard drain.
@@ -327,8 +343,46 @@ class UnitManager {
   /// whose descendants outlive it, so the marker scan ends whatever carries
   /// the unit's marker first; a survivor marks the row unresolved. On
   /// Windows a failed spawn's job ends with it.
+  ///
+  /// A spawn whose identity was not confirmed ([SpawnIdentityUnconfirmed],
+  /// or a [SpawnFailed] carrying `unconfirmedPid`) is different (#18, design
+  /// D5, constraint C9): its row is marked unresolved with
+  /// `spawn-identity-unconfirmed:<pid>` before the marker scan and never
+  /// written after it, so the workspace is gated from then on and a Retry or
+  /// Confirm made meanwhile is never undone. The scan cannot see a process
+  /// whose snapshot reads null, so a clean scan proves nothing; it only ends
+  /// what carries the marker. A scan error is logged and never replaces the
+  /// spawn's own error. Retry and restart (a thrown settle included) keep the
+  /// reason, and Confirm alone clears it. The pid in the reason is diagnostic
+  /// only and is never recorded as the row's leader, so nothing signals it.
+  ///
+  /// The gate starts at that write (constraint C11): while a PTY spawn whose
+  /// identity is already in doubt still awaits its status, or if the write
+  /// itself fails, a second launch can pass it (#34).
   Future<void> _settleFailedSpawn(String id, Object error) async {
     final row = ledger.unit(id);
+    final unconfirmedPid = switch (error) {
+      SpawnIdentityUnconfirmed(:final pid) => pid,
+      SpawnFailed(:final unconfirmedPid) => unconfirmedPid,
+      _ => null,
+    };
+    if (row != null && unconfirmedPid != null) {
+      ledger.markUnresolved(
+        id,
+        '$spawnIdentityUnconfirmedPrefix$unconfirmedPid',
+      );
+      onUnresolved();
+      try {
+        await settler.scanFailedSpawn(row);
+      } on Object catch (e) {
+        log.event(
+          'failed-spawn-scan-error',
+          code: '${e.runtimeType}',
+          ids: {'unit': id},
+        );
+      }
+      return;
+    }
     final reason = error is ProcessException || row == null
         ? null
         : await settler.scanFailedSpawn(row);

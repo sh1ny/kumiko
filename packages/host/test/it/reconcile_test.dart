@@ -138,6 +138,85 @@ void main() {
     expect(await desktop.allWorkspaces(), isEmpty);
   });
 
+  // Issue #18: a row whose leader exited before its start time was read
+  // carries -1, which matches no process (design D2).
+  final skipOnWindows = Platform.isWindows ? 'POSIX start time -1 only' : null;
+
+  test('start time -1 row with a live bystander pid is cleaned and the '
+      'bystander never signalled', () async {
+    final bystander = workspace('bystander');
+    final process = await Process.start(testHostExecutable(), [
+      '--test-fixture',
+      'sleeper',
+    ], workingDirectory: bystander.path);
+    addTearDown(() => process.kill(ProcessSignal.sigkill));
+    final started = (await waitReports(bystander, 1)).single;
+    await withStore(profile, (store) {
+      seedInstance(store);
+      seedUnit(
+        store,
+        id: 'gone-leader',
+        state: 'running',
+        path: bystander.path,
+        identity: 'gone:1',
+        pid: started.pid,
+        startedAt: -1,
+      );
+    });
+
+    final desktop = await Desktop.start(profile);
+    addTearDown(desktop.dispose);
+    await desktop.waitState();
+
+    expect(started.alive, isTrue, reason: 'never signalled');
+    expect(LedgerView(profile).unit('gone-leader'), isNull);
+  }, skip: skipOnWindows);
+
+  for (final killFails in [false, true]) {
+    test('start time -1 row: the marker scan ends its marked descendant'
+        '${killFails ? ' (kills fail: unresolved)' : ''}', () async {
+      // Seeded first: the scan reads processes started since the row.
+      await withStore(profile, (store) {
+        seedInstance(store);
+        seedUnit(
+          store,
+          id: 'gone-leader',
+          state: 'running',
+          identity: 'gone:2',
+          pid: 2147483000,
+          startedAt: -1,
+        );
+      });
+      final marked = workspace('marked');
+      final process = await Process.start(
+        testHostExecutable(),
+        ['--test-fixture', 'sleeper'],
+        workingDirectory: marked.path,
+        environment: {'KUMIKO_UNIT': 'gone-leader'},
+      );
+      addTearDown(() => process.kill(ProcessSignal.sigkill));
+      final sleeper = (await waitReports(marked, 1)).single;
+
+      // With kills failing from the start, reconcile cannot end it.
+      final desktop = await Desktop.start(
+        profile,
+        environment: {if (killFails) 'KUMIKO_TEST_FAULTS': 'killFails'},
+      );
+      addTearDown(desktop.dispose);
+      await desktop.waitState();
+
+      final row = LedgerView(profile).unit('gone-leader');
+      if (killFails) {
+        expect(sleeper.alive, isTrue);
+        expect(row!['state'], 'unresolved');
+        expect(row['unresolved_reason'], 'marked-survivor:${sleeper.pid}');
+      } else {
+        await expectAllGone([sleeper]);
+        expect(row, isNull);
+      }
+    }, skip: skipOnWindows);
+  }
+
   test('crash windows leave unresolved unless Windows job confirmed', () async {
     for (final fault in [
       TestFault.crashAfterPendingWrite,
