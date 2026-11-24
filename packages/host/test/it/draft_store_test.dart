@@ -328,12 +328,22 @@ void main() {
       await stalledPeer.start(workspace.id, runtime: 'stalled');
       await stalledPeer.attach(credit: false);
       await stalledPeer.prompt();
+      Future<Json?> stalledStats() async {
+        final stats = await _hook(d, 'test/agent.stats');
+        return (stats['sessions']! as Json)[stalledPeer.id] as Json?;
+      }
+
+      // B must still be present, paused and not ending at each later point,
+      // or the flood and the saves would pass without the backpressure.
+      Future<void> expectStillStalled(String when) async {
+        final b = await stalledStats();
+        expect(b, isNotNull, reason: 'session B is gone $when');
+        expect(b!['paused'], isTrue, reason: 'session B resumed $when');
+        expect(b['ending'], isFalse, reason: 'session B is ending $when');
+      }
+
       await eventually(
-        () async {
-          final stats = await _hook(d, 'test/agent.stats');
-          final sessions = stats['sessions']! as Json;
-          return (sessions[stalledPeer.id] as Json?)?['paused'] == true;
-        },
+        () async => (await stalledStats())?['paused'] == true,
         within: _guard,
         reason: 'session B never paused for want of credit',
       );
@@ -376,8 +386,10 @@ void main() {
         reason: 'A stopped while a commit was held',
       );
       expect(settled, isFalse, reason: 'the commit was not held');
+      await expectStillStalled('while the commit was held');
       await d.setFault(TestFault.draftCommitHangs, enabled: false);
       expect((await held).revision, 21);
+      await expectStillStalled('after the held save was acknowledged');
     }, timeout: const Timeout(Duration(minutes: 5)));
   });
 
@@ -603,6 +615,13 @@ void main() {
         expect(e.reason, ErrorCode.storeError);
         final loaded = await drafts.load(a.id);
         expect((loaded.text, loaded.revision), ('kept draft', 1));
+        // The load's reply comes after anything the host published for the
+        // refused send, so a brief `running` would already be here.
+        expect(
+          a.of(Method.agentState).where((s) => s['state'] == 'running'),
+          isEmpty,
+          reason: 'the refused send was shown as running',
+        );
 
         // Sending again later is safe, and the retry's own text is the first
         // and only prompt the adapter receives: the refused send never ran.
