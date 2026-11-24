@@ -2,29 +2,33 @@
 
 ## Metadata
 
-- **Round:** 5
-- **Prior round:** Round 4 — REVISE. The owner requested all five required changes and another review.
-- **Reviewer:** Cross-model CLI (OMP, GPT-6.2-sol)
-- **Reviewed:** Round-4 review; revised proposal, design, and spec delta; current cleanup spec; architecture and ADR 0001; cited containment and host source; spawn, PTY, ledger, and reconciliation tests; test-host harness and Dart unit-test skill.
-- **Limits:** No shell or file-write tool was available. I could not run `git ls-files`, verify the checkout against `783b59e`, inspect PR #29’s test rules, or replace `review.md`. This is the replacement text.
+- **Round:** 6
+- **Prior round:** Round 5 — REVISE. The owner requested all six fixes and another review of revision `0f008fd`.
+- **Reviewer:** user (USER_OVERRIDE), after round 6 by the cross-model CLI (OMP, GPT-6.2-sol); the round-6 findings below are the reviewer's
+- **Reviewed:** Round-5 review, proposal, design, cleanup spec delta and current spec, architecture, ADR 0001, Dart unit-test skill, cited process-containment and host source, protocol fixture definitions, spawn and PTY tests, and relevant host ledger and terminal tests.
+- **Limits:** No shell or file-write tool was available. I could not run `git ls-files`, independently verify the checkout against `0f008fd` or inspect PR #29’s test rules, or replace `review.md`. This is the replacement text. No `tasks.md` was present in the change directory.
 
 ## Findings
 
 ### Critical (blocking)
 
-1. **PTY error precedence still erases the evidence needed to keep the workspace gated.** D3 surfaces `SpawnIdentityUnconfirmed` only for empty EOF. A timeout, read error, or shim report instead surfaces `SpawnFailed`. `UnitManager.launch` passes only the thrown object to `_settleFailedSpawn`; the design does not carry the unconfirmed identity separately (`unit_manager.dart:216–230,330–341`). A live leader with a null snapshot can therefore be skipped by a clean marker scan and lose its row, reopening the workspace in violation of ADR 0001. C9 states the right invariant but does not specify how it survives D3. D4 tests status errors and unconfirmed identity separately, so neither test catches the combined failure.
+1. **D5 gates the scan, but not the interval after PTY identity becomes unconfirmed.** D3 classifies identity before waiting up to five seconds for PTY status (`posix_unit.dart:240–283`). D5 acts only after `_spawn` throws. In that interval the ledger row is `pending`, and a second same-workspace launch can pass `UnitManager.launch`’s unresolved-only gate (`unit_manager.dart:179–230`; `ledger.dart:254–261`). There is a second fail-open path: if the first `markUnresolved` fails, `_guard` propagates a store error and leaves only the pending row (`ledger.dart:72–78,199–206`). The design needs a fail-closed admission rule from classification through the durable write, not just before the scan.
 
-2. **D1 leaves the workspace open while the failed-spawn scan runs, and indefinitely if it throws.** D1 marks the row unresolved *after* the scan. During that await, the row is still `pending`; another same-workspace launch can pass the gate, which selects only `unresolved` rows (`unit_manager.dart:179–193,330–341`; `ledger.dart:254–261`). The scan yields while traversing the process table and can propagate exceptions (`marker_scan.dart:125–149`); if it throws, the unresolved write is never reached. Fence new launches once identity is classified as unconfirmed, and retain the gate if the scan fails. Specify who owns the row until the scan finishes so Retry or Confirm cannot race a second settlement writer.
+2. **A scan exception still breaks both PTY error precedence and the restart diagnostic.** In the launch path, an exception from `_settleFailedSpawn` bypasses the rethrow of the original `SpawnFailed` (`unit_manager.dart:216–230`). Marking the row earlier preserves the gate, but the caller can lose the `status-read` or `exec` error that D3 says wins. At restart, preserving `row.reason` in `Settler._terminate` only works when `settle` returns normally: `CleanupService._reconcile` catches scan exceptions and overwrites every affected row with `reconcile-failed: $e` (`cleanup_service.dart:60–75`). The user then loses the PID needed for confirmation. D5 and C9 promise preservation on these paths but do not change the handlers that defeat it.
+
+3. **A thrown live sentinel scan can leave a `running` row and an open workspace.** `Settler.settle` awaits the scan before returning outcomes (`settler.dart:64–88`); a thrown scan skips `settler.apply` in `UnitManager.endUnits` (`unit_manager.dart:404–425`). The natural exit watcher discards the error (`unit_manager.dart:259–267`), and the terminal end path’s generic catch returns `end-failed` without marking the ledger unresolved (`terminal_service.dart:619–635`). Thus a fast-exit terminal can report cleanup failure while a subsequent launch is accepted against the same workspace. The delta says an unfinished scan leaves the live unit unresolved; ADR 0001 requires that to gate execution, not just appear in a terminal error.
 
 ### Moderate
 
-3. **The spec gives incompatible instructions for refused reads, PTY failures, and recovery.** “Can neither read the start time nor prove the process gone” includes `ProcessReadDenied`, but the refusal scenario and D1 retain the existing `SIGKILL` attempt. The fast-exit SHALL lacks the PTY failure exclusions its own scenario supplies. “No signal is sent to that pid” also prohibits the intended later marker-based signal if an independent read identifies the same process (`marker_scan.dart:79–83,129–155`). Finally, the delta says Retry or Confirm can clear the gate; D1 correctly notes that retrying a row with no recorded identity returns `pending-without-pid`. Retry and restart also overwrite the original PID-bearing diagnostic (`cleanup_service.dart:62–67,183–200`; `settler.dart:155–159,237–250`). That loses the information the user needs for manual confirmation.
+4. **The delta does not reconcile its new recovery rules with the requirements it inherits.** The current cleanup spec’s unqualified “Retry succeeds” scenario requires rows to clear after surviving processes exit; the delta says an unconfirmed row stays unresolved with the same reason and only Confirm clears it. Put the exception in the Retry requirement and scenarios. Also define unconfirmed as *absence not proved* after a null snapshot, not just the OS affirmatively reporting a process, to match D1’s non-`ESRCH` branch. Make the in-flight gate explicitly subject to user confirmation. For refused reads, specify the existing kill *attempt* and settlement: the current code ignores the kill result and the plain path does not wait for exit (`posix_unit.dart:223–229,269–275`).
 
-4. **The durable-write test has a hold but no specified fast-exit fixture or independent PID evidence.** `terminateHangs` can hold natural settlement and the existing fault setter can release it (`settler.dart:130–140`; `host_faults.dart:153–164`). But the existing `test/unit.launch` accepts only fixtures that stay alive and returns only a containment ID (`test_hooks.dart:230–239`; `fixtures.dart:31–60`; `messages.dart:1453,1619–1622`). Using that route as-is makes `reaped` wait rather than exercise the write; taking the expected PID from the row tests nothing about its value. Name the existing host launch surface and fixture that exits and reports its own PID independently. Keep the seeded reconcile test separate.
+5. **The gate and mixed-error tests are not yet deterministic tests of their stated contracts.** `killFails` cannot make the scan throw: `_NoKillTable` delegates reads and returns `false` from `kill` (`settler.dart:91–102,273–291`). A launch attempted only after the scan throws also passes if the row was marked in a post-scan catch. Hold the scan at an observable barrier, attempt a launch while held, and exercise Retry and Confirm against the in-flight scan; separately release it with an exception. For the mixed PTY case, `test/unit.launch` is not a PTY launch (`test_hooks.dart:230–238`), and the terminal maps `exec`/`ENOENT` to `executable-not-found` without the PTY stage (`terminal_service.dart:345–356`). Reuse the non-executable profile case that exposes `spawn-failed{stage: exec}` (`terminal_test.dart:143–162`), force the probe result independently of when the shim exits, and assert the stage, clean scan, PID-bearing row, and refusal.
 
-5. **The `-1` settlement scenario conflates live cleanup and restart, and the test map does not prove the scan still runs.** Live termination can time out waiting for `exitCode`; a later host has no exit future and skips recorded-leader termination on the sentinel (`posix_unit.dart:122–153`; `settler.dart:145–158,195–203`). D4’s direct `terminate()` test and seeded unmarked-bystander test would both pass if host settlement accidentally skipped the marker scan for `-1`. Add a sentinel-row case with a marked descendant and assert its cleanup outcome. Distinguish a live exit-notification timeout from scan failure on either path.
+6. **D4 does not supply a way to exercise the promised live timeout.** The `reaped` hook awaits the same `Process.exitCode` that `PosixUnit.terminate` observes (`posix_unit.dart:111–127`). None of the proposed seams holds that observation back. Host `terminateHangs` stops before `terminate` and does not exercise its `termination-timeout` result (`settler.dart:130–140`). Specify a deterministic direct test of the POSIX timeout branch and a host test that observes the unresolved ledger outcome. The durable-write fixture is otherwise sound; use a valid enum value such as `reportedExit` consistently, since the RPC passes `p.fixture.name` straight to the fixture dispatcher (`messages.dart:1453,1610`; `test_hooks.dart:230–237`).
 
-6. **Several evidence references and carried statements still misstate the contract.** Context cites `marker_scan.dart:79–83` for listing and matching; those lines only signal matches, while listing and matching are at `114–157`. The test-option citation ends at the factory declaration (`test_hooks.dart:33–45`), before it reads the options. T1 says callers are unchanged despite D4 changing `_spawn`. The proposal says #33 gains no new way to report success, but D3 extends that ambiguity to reaped shims. C3 says an exited unit is returned *only* after the absence probe, excluding the existing readable-snapshot path when the process exits before return. Narrow C3 to **missing identity**, carry the distinction between outward PTY failure and cleanup evidence in C7/C9, and align the decision summary with those constraints.
+7. **The failure path leaves ownership of abandoned I/O unspecified.** Today the PTY status listener is not retained or canceled after timeout (`posix_unit.dart:242–258`); failed-spawn cleanup relied on ending the child to close its streams. D3 allows an unconfirmed child to survive, and closing the PTY master does not cancel the separate shim stdout subscription. A plain failed `_spawn` also bypasses the host’s post-success drains (`unit_manager.dart:216–226,298–312`). Specify who abandons the status subscription and other unclaimed endpoints on each failure path, without waiting for the unsignalled process to exit. Otherwise an unresolved process can retain host-side I/O after its launch has returned.
+
+8. **Remaining evidence and carried-constraint gaps hide implementation work.** `cleanup_service.dart:183–200` shows Retry, not restart; cite the restart catch at `60–75`. `windows_unit.dart:434–442` shows the read before resume, but the suspended creation premise is at `396–408`. The `test_hooks.dart:33–57` citation reaches the environment reads but not their forwarding into `HostOptions` at `86–139`. A1 assigns the reaping check to absent Task 1.1; map it to an automated task when adding the task list. C9 should explicitly carry D5’s rejected representation: the unconfirmed PID is diagnostic only and must not become a recorded leader identity that Retry can signal. Record ownership of that row and reason across launch, Retry, restart, and Confirm in the FULL state table.
 
 ### Suggestions
 
@@ -32,25 +36,27 @@ None.
 
 ## Verdict
 
-VERDICT: REVISE
+The owner, after rounds 5 and 6 (two consecutive REVISE) were escalated: "Fix the #18 critical and the moderates, file the other two as issues, go to the build".
+
+VERDICT: USER_OVERRIDE
 
 ## Required Changes
 
-1. Carry unconfirmed identity into host settlement independently of the outward PTY error. Add a deterministic mixed-outcome regression that observes the PTY stage, a clean scan, the unresolved row, and a `cleanup-unresolved` refusal.
-2. Keep the workspace gated from classification through settlement, including a scan exception. Specify and test how another launch, Retry, and Confirm interact with that in-flight settlement.
-3. Make the spec distinguish refused reads, unconfirmed identity, and PTY handshake failures. Limit the no-signal rule to direct signalling based on the unverified PID. State which action can clear this row and retain its PID-bearing reason through Retry and restart.
-4. Specify a fast-exit host fixture and an independent PID observation without adding a protocol field. Assert the committed PID and `'-1'` while settlement is held, then release the hold and verify cleanup.
-5. Separate live and restart settlement criteria. Automate the sentinel path with a marked descendant so the test fails if host settlement bypasses the scan.
-6. Correct the citations, #33 scope wording, decision summary, and carried constraints identified above.
+None: the round-6 changes the owner asked for are applied in the revision this verdict covers.
 
 CHANGES_APPLIED: n/a
 
 ## Rebuttals
 
-- Round-4 change 1 is incomplete: the plain failure has the required unresolved outcome, but PTY precedence and scan interruption can still bypass it.
-- Round-4 change 2 fixed ordinary launch reporting and added a status-read scenario. The remaining contradictions are in findings 3 and 5.
-- Round-4 change 3 addressed the standalone read-error seam, proved-gone observation, and teardown registration. The mixed status/identity case is still uncovered.
-- Round-4 change 4 added host forwarding and a releasable hold. The fixture and independent PID observation are still unspecified.
-- Round-4 change 5 corrected failed-spawn routing and empty-EOF ambiguity in D3, distinguished local cleanup from host settlement, and added C8. The proposal and carried wording still need alignment.
-- No `tasks.md` was present to review. The new verification cases are automatable; none requires a user observation.
-- **Owner escalation:** Resolve the two blocking settlement decisions before implementation: how identity uncertainty crosses the PTY error boundary, and when the workspace gate takes effect.
+Open findings at the override and their handling:
+
+1. Critical 1 (gate during the PTY status wait; a failed unresolved write): not fixed here. Filed as #34 on the owner's decision; D5 records it as out of scope. Open.
+2. Critical 2 (scan exception replaces the spawn error; restart catch overwrites the reason): fixed in D5 and C9. The scan error is caught and the spawn's error rethrown; the restart catch keeps a `spawn-identity-unconfirmed` reason. Test "Scan throws" in D4.
+3. Critical 3 (a thrown scan while ending a live unit leaves the row running): exists today for every unit. Filed as #35 on the owner's decision. Open.
+4. Moderate 4: the delta now modifies "Unresolved cleanup is shown and can be retried or confirmed" (Retry leaves a unit with no recorded identity unresolved; Confirm clears it). Unconfirmed is defined as absence not proved. The refused read says "attempts to kill" and names the host's scan.
+5. Moderate 5: new test faults `spawnScanHangs` and `scanThrows`; the gate is asserted while the scan is held, and Confirm is checked against late scan completion. The mixed PTY case uses the non-executable profile route (`exec` stage) with the probe injected.
+6. Moderate 6: `forced-gone` identity hook and `KUMIKO_TEST_KILL_WAIT_MS` give a deterministic live timeout, directly and at host level. The fixture is named `reportedExit`.
+7. Moderate 7: D3 makes the spawn cancel the status subscription and close the master and unclaimed endpoints on every failure path, without waiting for the process to exit.
+8. Moderate 8: citations corrected (restart catch 60-75, Windows 396-408, option forwarding 86-139). The A1 check is a tasks.md task. C9 carries the diagnostic-only pid. The state table has a row for the unconfirmed row's owner.
+
+The pre-ship review is the next gate.
