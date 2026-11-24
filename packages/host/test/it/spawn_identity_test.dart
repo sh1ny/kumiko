@@ -5,6 +5,7 @@ import 'dart:async';
 import 'dart:io';
 
 import 'package:host_protocol/host_protocol.dart';
+import 'package:process_containment/process_containment.dart' show chmodPath;
 import 'package:test/test.dart';
 
 import 'support/harness.dart';
@@ -58,10 +59,18 @@ void main() {
       (await desktop.allWorkspaces()).single.targetIdentity;
 
   /// Starts a launch that settles only once a held fault is released, and
-  /// keeps its error for later.
-  Future<Object?> heldLaunch(Desktop desktop, Directory target) => desktop
-      .launch(target, TestFixture.sleeper)
-      .then<Object?>((_) => null, onError: (Object e) => e);
+  /// keeps its error for later. [HeldLaunch.settled] turns true when its
+  /// answer arrives. Answers come in order on the one connection, so a
+  /// launch still unsettled when a later call's answer arrives was still
+  /// held when the host answered that call.
+  HeldLaunch heldLaunch(Desktop desktop, Directory target) {
+    final held = HeldLaunch();
+    held.result = desktop
+        .launch(target, TestFixture.sleeper)
+        .then<Object?>((_) => null, onError: (Object e) => e)
+        .whenComplete(() => held.settled = true);
+    return held;
+  }
 
   test(
     'fast-exit unit is durably recorded with its pid and start time -1 before '
@@ -144,6 +153,34 @@ void main() {
     skip: skipOnWindows,
   );
 
+  test('unconfirmed PTY spawn that fails exec with ENOENT, under a throwing '
+      'scan, reports executable-not-found and refuses the workspace', () async {
+    final ws = workspace('enoent');
+    final desktop = await start({'KUMIKO_TEST_SPAWN_IDENTITY': 'unconfirmed'});
+    // An executable script whose interpreter does not exist: the file
+    // resolves, and only its execve fails, with ENOENT.
+    final file = File(joinPath(ws.path, 'orphan.sh'))
+      ..writeAsStringSync('#!/nonexistent/kumiko-interpreter\n');
+    chmodPath(file.path, 0x1c0);
+    await desktop.saveFixtureProfile(
+      id: 'orphan',
+      executable: file.path,
+      cwd: ws.path,
+    );
+    await desktop.setFault(TestFault.scanThrows);
+
+    final e = await rpcFailure(desktop.openTerminalRaw('orphan'));
+
+    expect(e.reason, ErrorCode.executableNotFound);
+    final row = onlyRow();
+    expect(row['state'], 'unresolved');
+    expect(row['unresolved_reason'], matches(unconfirmedReason));
+    expect(
+      await desktop.launchRefusal(root, TestFixture.sleeper),
+      ErrorCode.cleanupUnresolved,
+    );
+  }, skip: skipOnWindows);
+
   test('the workspace is gated while the failed-spawn scan is held, and a '
       'confirm made then is not undone by the scan', () async {
     final ws = workspace('held');
@@ -164,10 +201,17 @@ void main() {
     final confirmed = await desktop.confirm(await identityOf(desktop));
     expect(confirmed.resolvedUnits, 1);
     expect(LedgerView(profile).units(), isEmpty);
+    final revision = (await desktop.list()).revision;
+    expect(launching.settled, isFalse, reason: 'the scan is still held');
 
     await desktop.setFault(TestFault.spawnScanHangs, enabled: false);
-    expect(await launching, isA<RpcException>());
+    expect(await launching.result, isA<RpcException>());
     expect(LedgerView(profile).units(), isEmpty, reason: 'stays confirmed');
+    expect(
+      (await desktop.list()).revision,
+      revision,
+      reason: 'the released scan wrote nothing, not even to a deleted row',
+    );
     await expectAllGone([sleeper]);
   }, skip: skipOnWindows);
 
@@ -194,11 +238,18 @@ void main() {
 
       expect(retried.unresolvedUnits, 1);
       expect(onlyRow()['unresolved_reason'], reason);
+      final revision = (await desktop.list()).revision;
+      expect(launching.settled, isFalse, reason: 'the scan is still held');
 
       await desktop.setFault(TestFault.spawnScanHangs, enabled: false);
-      expect(await launching, isA<RpcException>());
+      expect(await launching.result, isA<RpcException>());
       expect(onlyRow()['state'], 'unresolved');
       expect(onlyRow()['unresolved_reason'], reason, reason: 'no late write');
+      expect(
+        (await desktop.list()).revision,
+        revision,
+        reason: 'the released scan wrote nothing',
+      );
     },
     skip: skipOnWindows,
   );
@@ -294,4 +345,70 @@ void main() {
     expect(LedgerView(profile).unit('unconfirmed'), isNull);
     expect(await desktop.allWorkspaces(), isEmpty);
   }, skip: skipOnWindows);
+
+  test('retry of an unconfirmed row whose marked process survives keeps '
+      'its pid-bearing reason', () async {
+    const reason = 'spawn-identity-unconfirmed:4242';
+    await withStore(profile, (store) {
+      seedInstance(store);
+      seedUnit(
+        store,
+        id: 'unconfirmed',
+        state: 'unresolved',
+        identity: 'seed:unconfirmed',
+        reason: reason,
+      );
+    });
+    final desktop = await start(const {});
+
+    final marked = workspace('survivor');
+    final process = await Process.start(
+      testHostExecutable(),
+      ['--test-fixture', 'sleeper'],
+      workingDirectory: marked.path,
+      environment: {'KUMIKO_UNIT': 'unconfirmed'},
+    );
+    addTearDown(() => process.kill(ProcessSignal.sigkill));
+    await waitReports(marked, 1);
+    // The scan finds the marked process but cannot end it.
+    await desktop.setFault(TestFault.killFails);
+
+    final retried = await desktop.retry('seed:unconfirmed');
+
+    expect(retried.unresolvedUnits, 1);
+    expect(
+      LedgerView(profile).unit('unconfirmed')!['unresolved_reason'],
+      reason,
+      reason: 'not replaced by marked-survivor',
+    );
+  }, skip: skipOnWindows);
+
+  test('retry of a row without a pid that is not an unconfirmed spawn takes '
+      'the ordinary pending-without-pid reason', () async {
+    await withStore(profile, (store) {
+      seedInstance(store);
+      seedUnit(
+        store,
+        id: 'pidless',
+        state: 'unresolved',
+        identity: 'seed:pidless',
+        reason: 'reconcile-failed: earlier',
+      );
+    });
+    final desktop = await start(const {});
+
+    final retried = await desktop.retry('seed:pidless');
+
+    expect(retried.unresolvedUnits, 1);
+    expect(
+      LedgerView(profile).unit('pidless')!['unresolved_reason'],
+      'pending-without-pid',
+    );
+  }, skip: skipOnWindows);
+}
+
+/// A launch held by a test fault; see `heldLaunch`.
+class HeldLaunch {
+  late final Future<Object?> result;
+  bool settled = false;
 }

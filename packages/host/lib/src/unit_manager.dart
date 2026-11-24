@@ -355,6 +355,10 @@ class UnitManager {
   /// spawn's own error. Retry and restart (a thrown settle included) keep the
   /// reason, and Confirm alone clears it. The pid in the reason is diagnostic
   /// only and is never recorded as the row's leader, so nothing signals it.
+  ///
+  /// The gate starts at that write (constraint C11): while a PTY spawn whose
+  /// identity is already in doubt still awaits its status, or if the write
+  /// itself fails, a second launch can pass it (#34).
   Future<void> _settleFailedSpawn(String id, Object error) async {
     final row = ledger.unit(id);
     final unconfirmedPid = switch (error) {

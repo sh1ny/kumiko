@@ -288,11 +288,15 @@ int _probe(int pid) => posixKill(pid, 0);
 ///
 /// [SpawnFailed], [SpawnIdentityUnconfirmed] and [StateError] describe the
 /// spawn's own cleanup: it ends the process it could identify, kills a
-/// process whose read was refused, and signals nothing else. It cancels the
-/// status subscription, closes the master, closes stdin and stops reading
-/// stdout and stderr before it throws, without waiting for an unsignalled
-/// process to exit. Whether the unit's row is deleted or left unresolved is
-/// the host's settlement.
+/// process whose read was refused, and signals nothing else. On every
+/// failure path, plain or PTY, it closes stdin and stops reading stdout
+/// and stderr (a stream already listened to is cancelled by its listener),
+/// and on the PTY path it cancels the status subscription and closes the
+/// master, before it throws and without waiting for an unsignalled process
+/// to exit. A status stream that throws on listen or cancel does not skip
+/// this cleanup or replace the classified error, so an unconfirmed spawn's
+/// error still carries its pid (design D3, C10). Whether the unit's row is
+/// deleted or left unresolved is the host's settlement.
 ///
 /// With [pipes], the existing Process pipes are handed to the caller in
 /// [PosixUnit.pipes], without reading stdout as shim status. Exec failures
@@ -354,7 +358,9 @@ Future<PosixUnit> spawnPosixUnit({
   final _Identity identity;
   final Stream<List<int>> statusStream;
   try {
-    await beforeStartTimeReadForTesting?.call(process);
+    // Awaited only when supplied: a release spawn reads at once.
+    final before = beforeStartTimeReadForTesting;
+    if (before != null) await before(process);
     identity = _readIdentity(
       process.pid,
       snapshotForTesting ?? _readSnapshot,
@@ -389,6 +395,7 @@ Future<PosixUnit> spawnPosixUnit({
         );
       case _Refused():
         process.kill(ProcessSignal.sigkill);
+        _abandonStdio(process);
         throw StateError(
           'unit ${process.pid} ($containmentId): its start time could not be '
           'read',
@@ -404,21 +411,28 @@ Future<PosixUnit> spawnPosixUnit({
   final status = BytesBuilder();
   final eof = Completer<void>();
   Object? readError;
-  final subscription = statusStream.listen(
-    status.add,
-    onDone: () {
-      if (!eof.isCompleted) eof.complete();
-    },
-    onError: (Object error) {
-      readError ??= error;
-      if (!eof.isCompleted) eof.complete();
-    },
-  );
-  // Discarded while the unit runs; released at once if the spawn fails.
-  final stderr = process.stderr.listen(null, onError: (Object _) {});
-  unawaited(process.stdin.close().then((_) {}, onError: (Object _) {}));
+  StreamSubscription<List<int>>? subscription;
+  StreamSubscription<List<int>>? stderr;
   var timedOut = false;
-  await eof.future.timeout(_statusTimeout, onTimeout: () => timedOut = true);
+  try {
+    subscription = statusStream.listen(
+      status.add,
+      onDone: () {
+        if (!eof.isCompleted) eof.complete();
+      },
+      onError: (Object error) {
+        readError ??= error;
+        if (!eof.isCompleted) eof.complete();
+      },
+    );
+    // Discarded while the unit runs; released at once if the spawn fails.
+    stderr = process.stderr.listen(null, onError: (Object _) {});
+    unawaited(process.stdin.close().then((_) {}, onError: (Object _) {}));
+    await eof.future.timeout(_statusTimeout, onTimeout: () => timedOut = true);
+  } catch (e) {
+    // A status stream that cannot be read is a read error.
+    readError ??= e;
+  }
   master.releaseSlave();
 
   if (!timedOut && readError == null && status.isEmpty) {
@@ -437,24 +451,34 @@ Future<PosixUnit> spawnPosixUnit({
     }
   }
 
-  // Failed: settle what the spawn can identify before reporting.
-  await subscription.cancel();
-  unawaited(stderr.cancel());
-  switch (identity) {
-    case _Read(:final startTime):
-      await PosixUnit._(process, startTime, containmentId).terminate();
-    case _Gone():
-      break; // proved gone: nothing to signal
-    case _Refused():
-      process.kill(ProcessSignal.sigkill);
-      await process.exitCode.timeout(
-        const Duration(seconds: 3),
-        onTimeout: () => -1,
-      );
-    case _Unconfirmed():
-      break; // nothing shows the pid is the unit's: no signal
+  // Failed: settle what the spawn can identify before reporting. The
+  // handles are released and the master closed even if a cancellation or
+  // the termination throws, and the classified error below still wins.
+  try {
+    try {
+      await subscription?.cancel();
+    } on Object {
+      // The status stream is abandoned either way.
+    }
+    unawaited(stderr?.cancel().then((_) {}, onError: (Object _) {}));
+    _abandonStdio(process);
+    switch (identity) {
+      case _Read(:final startTime):
+        await PosixUnit._(process, startTime, containmentId).terminate();
+      case _Gone():
+        break; // proved gone: nothing to signal
+      case _Refused():
+        process.kill(ProcessSignal.sigkill);
+        await process.exitCode.timeout(
+          const Duration(seconds: 3),
+          onTimeout: () => -1,
+        );
+      case _Unconfirmed():
+        break; // nothing shows the pid is the unit's: no signal
+    }
+  } finally {
+    master.close();
   }
-  master.close();
   final unconfirmedPid = identity is _Unconfirmed ? process.pid : null;
   if (timedOut) {
     throw SpawnFailed('status-timeout', 0, unconfirmedPid: unconfirmedPid);

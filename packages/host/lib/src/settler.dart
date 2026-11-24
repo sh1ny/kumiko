@@ -70,6 +70,12 @@ class Settler {
 
   /// Terminates and scans for [rows], without writing the ledger. [live]
   /// holds the handles this host instance still has.
+  ///
+  /// A scan that reports a failure (unlistable, timed out, unreadable, a
+  /// marked survivor) leaves its rows unresolved. A scan that throws
+  /// propagates (constraint C12): a live end then leaves the row as it was
+  /// and the workspace open (#35), and restart marks every row
+  /// `reconcile-failed`.
   Future<Map<String, UnitOutcome>> settle(
     List<UnitRow> rows, {
     required Map<String, LiveUnit> live,

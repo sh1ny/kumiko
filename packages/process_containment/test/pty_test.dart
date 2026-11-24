@@ -1,6 +1,7 @@
 @Timeout(Duration(minutes: 5))
 library;
 
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
@@ -409,6 +410,42 @@ void main() {
         expect(runs(processes.single.pid), isTrue, reason: 'not signalled');
       },
     );
+
+    test('a status stream whose cancel throws still reports the unconfirmed '
+        'pid', () async {
+      Stream<List<int>> cancelThrows(Stream<List<int>> _) {
+        late final StreamController<List<int>> c;
+        c = StreamController<List<int>>(
+          onListen: () =>
+              c.addError(const OSError('injected status read error', 5)),
+          onCancel: () => throw StateError('injected cancel failure'),
+        );
+        return c.stream;
+      }
+
+      Object? error;
+      try {
+        await spawn(
+          ['/bin/sh', '-c', 'exec sleep 600'],
+          snapshot: (_) => null,
+          probe: (_) => 0,
+          status: cancelThrows,
+        );
+      } on Object catch (e) {
+        error = e;
+      }
+
+      expect(
+        error,
+        isA<SpawnFailed>()
+            .having((e) => e.stage, 'stage', 'status-read')
+            .having(
+              (e) => e.unconfirmedPid,
+              'unconfirmedPid',
+              processes.single.pid,
+            ),
+      );
+    });
 
     test('the status-read failure names the unconfirmed pid', () async {
       Object? error;
