@@ -16,7 +16,8 @@ The failure is a race in the product, not only in the test. A user command that 
 - When the start-time read finds no process and the OS confirms that no process has the pid, the spawn returns the unit as already exited instead of throwing. Its exit code still arrives through `exitCode`.
 - Such a unit carries a start time that means "the leader is known to be gone". The guards (termination, liveness and the next host's reconcile) act on it without reading or signalling the pid, so a reused pid is never touched. The marker scan still covers its descendants.
 - On the PTY path, the status pipe still decides first: a timeout or a reported setup or `execve` failure is still `SpawnFailed`, and only an empty status from a gone unit returns the exited unit.
-- A start-time read that is refused, or a null read while the OS still reports a process at the pid, fails the spawn as it does today.
+- A start-time read that is refused fails the spawn as it does today. A null read while the OS still reports a process at the pid also fails the spawn, but sends no signal to a pid whose owner is unknown: the host's failed-spawn marker scan ends the unit by its marker.
+- A read error on the PTY status pipe fails the spawn (`status-read`) instead of counting as end of file.
 - A failed status-pipe setup in the shim already reads as a started program. This change adds no new way to reach it, and it is filed as #33.
 - Tests:
   - A unit that has exited and been reaped before its start time is read spawns on both paths and reports its exit code. The test reaches that state by waiting for the exit, not by retrying the race.
