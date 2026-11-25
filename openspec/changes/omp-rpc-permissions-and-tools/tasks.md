@@ -73,8 +73,8 @@ Red rows cover new or changed behavior. Green rows carry forward tests from the 
 
 ## 1. Record architecture and check the input contract
 
-- [ ] 1.1 Write ADR 0018 and update `openspec/architecture.md` as specified in the design. Carry C3, C6, C8, C9 and C11 into the ADR. Verify the index, documented bounds and limited supersession against the design, and run `openspec validate omp-rpc-permissions-and-tools --strict`.
-- [ ] 1.2 Verify A1, A2 and A3 against the pinned public source: trace approval formatting, exact select values, withdrawal and the ordinary prompt callback versus awaited input hooks; check v1 elisions, execution events, registration, callback answers and cancellation. Record the source revision and the verified frame shapes in the group commit body. No real installed runtime or provider requests. If the source contradicts a decision, stop for Specwright drift review.
+- [x] 1.1 Write ADR 0018 and update `openspec/architecture.md` as specified in the design. Carry C3, C6, C8, C9 and C11 into the ADR. Verify the index, documented bounds and limited supersession against the design, and run `openspec validate omp-rpc-permissions-and-tools --strict`.
+- [x] 1.2 Verify A1, A2 and A3 against the pinned public source: trace approval formatting, exact select values, withdrawal and the ordinary prompt callback versus awaited input hooks; check v1 elisions, execution events, registration, callback answers and cancellation. Record the source revision and the verified frame shapes in the group commit body. No real installed runtime or provider requests. If the source contradicts a decision, stop for Specwright drift review.
 
 ## 2. Present and settle OMP approvals
 
