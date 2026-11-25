@@ -82,7 +82,7 @@ TIER: FULL
 
     `State:` and `Threads:` come from the same read, which is one task. A sibling's `exec`, which takes over the leader's pid, therefore cannot pair a dead leader's state with a live leader's count (A2). The stat state is not used. A count of 0 is not accepted: one read of a leader that the kernel still counts must show 1.
 
-    **`hidepid`.** With `/proc` mounted with `hidepid` other than `0` or `off`, a live process of the same user can turn invisible (ENOENT) when it becomes non-dumpable (A2). The check reads `/proc/self/mountinfo` on each call, and if the `proc` mount at `/proc` has such an option, ENOENT and ESRCH confirm nothing. A mountinfo that cannot be read or parsed is treated the same way.
+    **`hidepid`.** With `/proc` mounted with `hidepid` other than `0` or `off`, a live process of the same user can turn invisible (ENOENT) when it becomes non-dumpable (A2). The check reads `/proc/self/mountinfo` on each call, and if any `proc` mount at `/proc` has such an option, ENOENT and ESRCH confirm nothing: row order does not show which of stacked mounts is in use, so none is trusted over another (pre-ship review round 3, F1). A mountinfo that cannot be read or parsed is treated the same way. The decision from the two reads is a pure function, so ENOENT under each mount configuration is tested on every OS (F4).
   - **macOS**, per call. No errno is taken as evidence (a listing that fails reads it only for its diagnostic), and no call waits:
     - For each pid with a known start time, the existing leaf `proc_pidinfo(PROC_PIDTBSDINFO)` with `arg` 0 succeeds with another start time: the pid was replaced.
     - For the pids not confirmed so, one fresh `proc_listpids(PROC_ALL_PIDS)` listing is made after those reads. It lists live and zombie processes, so a pid absent from it has been reaped (A3). The listing must be complete: the existing sized listing, which retries a full buffer and throws when it cannot complete. A listing that throws confirms nothing.
@@ -146,6 +146,16 @@ TIER: FULL
 - **Important:** yes. It is a documented limit of the cleanup guarantee.
 - **Chosen by:** user (round-3 escalation)
 
+### D7: A macOS pid reused between the two foreign-pid listings is accepted (owner's waiver)
+
+- **Choice:** `foreignPids` names a pid absent from our user's listing and present in the full listing made right after it (D1). A pid reaped before the first listing and reused by another process of our own user before the second would be named foreign, and on the final pass that clears an unreadable pid whose exit was not confirmed. This is accepted.
+  - The window is two adjacent `proc_listpids` calls, and the pid must be both reaped and reused by our own user inside it.
+  - Pre-ship review round 3 raised it as F2 (P1). The owner waived it.
+- **Rejected:** Not trusting foreign naming on the final pass. Every macOS scan that reaches a second pass while another user has an unreaped zombie would then fail: a fix that costs more than the risk.
+- **Reversal cost:** low. It is one predicate in `macForeignPids`.
+- **Important:** yes. It is a documented limit of the macOS cleanup guarantee.
+- **Chosen by:** user (pre-ship waiver)
+
 ### Decision summary
 
 | # | Decision | Choice | Rejected | Reversal cost | Important | Chosen by |
@@ -158,6 +168,7 @@ TIER: FULL
 | D4 | Linux listing | Retry at most 8 times on a vanished `/proc/<n>` | Async list; FFI readdir | low | no | agent |
 | D5 | Environment errno | Unchanged (#31) | Leaf sysctl now | low | no | agent |
 | D6 | Race after the final listing | Left to OS grouping (ADR 0001, #9) | Fail on any unread pid of the final pass | low | yes | user |
+| D7 | macOS pid reused between the foreign-pid listings | Accepted (two adjacent `proc_listpids` calls) | Distrust foreign naming on the final pass | low | yes | user |
 
 ## Assumptions
 
@@ -275,7 +286,7 @@ flowchart LR
 | `/proc` listings per `listPids` | 8 | `ProcessTableUnlistable` | None: each is a synchronous directory read outside the pass clock. At most 16 per scan | Each costs one `/proc` read, which grows with the process count |
 | Exit checks in a pass | One `confirmedExits` call per unread pid, and one `foreignPids` call per null snapshot it does not confirm | A failed macOS listing confirms or names nothing, so the pid stays pending | Inside the pid's iteration, so inside the pass clock | Linux: a mountinfo read and up to 2 reads per call. macOS: one complete `proc_listpids` per `confirmedExits` call and two per `foreignPids` call (each a sizing call and at most four buffer attempts). Linear in the unread count times the process count on macOS. Not measured |
 | Pending pids | The pids of one listing | — | The settle checks its 1 s clock before each sweep, so it can overrun by one whole sweep plus 10 ms | A sweep is one `confirmedExits` call: on Linux, a mountinfo read and up to 2 reads per pending pid; on macOS, one leaf `proc_pidinfo` per pending pid with a start time, plus one complete `proc_listpids` (a sizing call and at most four buffer attempts). Linear in the pending count plus one listing. Not measured |
-| Scan duration | Two passes, each stopped at 10 s between pids, plus the settle and the listings | `scan-timeout` | Nothing inside a synchronous step is interrupted. Each pass can overrun by one whole pid iteration (snapshot, environment read and exit check). The settle can overrun by one sweep. Up to 16 Linux listings run outside every clock | The pass clocks bound the per-pid loop at any process count. The listings, one iteration and one sweep grow with it |
+| Scan duration | Two passes, each stopped at 10 s between pids and checked once more after the last pid's exit check (pre-ship review round 3, F3), plus the settle and the listings | `scan-timeout` | Nothing inside a synchronous step is interrupted. Each pass can overrun by one whole pid iteration (snapshot, environment read and exit check). The settle can overrun by one sweep. Up to 16 Linux listings run outside every clock | The pass clocks bound the per-pid loop at any process count. The listings, one iteration and one sweep grow with it |
 
 The shutdown deadline (`packages/host/lib/src/unit_manager.dart:504-519`) is an async timeout on the same isolate. It is checked only between synchronous steps, so it cannot stop a step already running. That was already true before this change.
 
