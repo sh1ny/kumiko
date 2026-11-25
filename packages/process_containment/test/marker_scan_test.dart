@@ -518,7 +518,8 @@ void main() {
     test('a first-pass unconfirmed pid is named and the second settle does not '
         'run', () async {
       var killed = false;
-      final table = FakeProcessTable(
+      late final FakeProcessTable table;
+      table = FakeProcessTable(
         pids: [20, 50],
         onList: (n) => n == 1 ? [20, 50] : [52],
         onSnapshot: (pid) => _snap(100 + pid),
@@ -531,9 +532,18 @@ void main() {
         onConfirmedExits: (pid, _) => pid == 50,
       );
 
-      final result = await scan(table, settleExpired: settleExpiresAfter(3));
+      // Each settle gets its own budget: the first expires after three
+      // sweeps over 20; a second settle, if one ran, would sweep 52 once
+      // before expiring, which the call count below would show.
+      final result = await scan(
+        table,
+        settleExpired: () => table.listCount == 1
+            ? table.confirmCalls[20]! >= 4
+            : table.confirmCalls[52]! >= 2,
+      );
 
       expect(result.failure, 'scan-unreadable:20');
+      expect(table.confirmCalls[20], 4, reason: 'its read and three sweeps');
       expect(table.confirmCalls[52], 1, reason: 'only the check at its read');
     });
 
@@ -558,7 +568,8 @@ void main() {
 
     test('a second pass that times out runs no second settle', () async {
       var expired = false;
-      final table = FakeProcessTable(
+      late final FakeProcessTable table;
+      table = FakeProcessTable(
         pids: [50],
         onList: (n) => n == 1 ? [50] : [52, 53],
         onSnapshot: (pid) => _snap(100 + pid),
@@ -574,10 +585,12 @@ void main() {
         },
       );
 
+      // A second settle, if one ran, would sweep 52 once and then expire.
       final result = await scan(
         table,
         passExpired: () => expired,
-        settleExpired: () => false,
+        settleExpired: () =>
+            table.listCount == 2 && table.confirmCalls[52]! >= 2,
       );
 
       expect(result.failure, 'scan-timeout');

@@ -156,17 +156,23 @@ Future<MarkerScanResult> runMarkerScan({
   // result: not after a failed listing or a timeout, which take
   // precedence, nor when the first settle already left a pid unconfirmed,
   // which is named first (issue #42, design D2).
-  final lastUnconfirmed =
+  final settles =
       second.listed &&
-          !second.timedOut &&
-          unconfirmed.isEmpty &&
-          second.pending.isNotEmpty
-      ? await _settle(table, const [], second.pending, settleExpiredForTesting)
-      : second.pending.keys.toList();
+      !second.timedOut &&
+      unconfirmed.isEmpty &&
+      second.pending.isNotEmpty;
+  final lastUnconfirmed = settles
+      ? (await _settle(
+          table,
+          const [],
+          second.pending,
+          settleExpiredForTesting,
+        )).firstOrNull
+      : second.pending.keys.firstOrNull;
   return MarkerScanResult(
     listed: second.listed,
     timedOut: second.timedOut,
-    unreadablePid: unconfirmed.firstOrNull ?? lastUnconfirmed.firstOrNull,
+    unreadablePid: unconfirmed.firstOrNull ?? lastUnconfirmed,
     killed: killed,
     remaining: second.matches,
   );
