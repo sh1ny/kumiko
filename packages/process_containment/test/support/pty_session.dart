@@ -6,6 +6,8 @@ import 'dart:typed_data';
 
 import 'package:process_containment/process_containment.dart';
 
+import 'hang_guard.dart';
+
 /// Reads one PTY output handle on its own isolate (the shape of the host's
 /// reader isolate, design D3) and accumulates what arrives.
 class PtyReader {
@@ -56,12 +58,9 @@ class PtyReader {
   String get text =>
       stripEscapes(utf8.decode(_bytes.toBytes(), allowMalformed: true));
 
-  /// Completes with the text once [test] holds for it.
-  Future<String> waitFor(
-    bool Function(String text) test, {
-    Duration timeout = const Duration(seconds: 20),
-    String? what,
-  }) {
+  /// Completes with the text once [test] holds for it. Fails at once if
+  /// output ends first, and under [hangGuard] if neither happens.
+  Future<String> waitFor(bool Function(String text) test, {String? what}) {
     final completer = Completer<String>();
     void check() {
       if (completer.isCompleted) return;
@@ -76,21 +75,15 @@ class PtyReader {
 
     _waiters.add(check);
     check();
-    return completer.future
-        .timeout(
-          timeout,
-          onTimeout: () => throw StateError(
-            'timed out waiting for ${what ?? 'match'}: ${_show()}',
-          ),
-        )
-        .whenComplete(() => _waiters.remove(check));
+    return guarded(
+      completer.future,
+      what ?? 'match',
+      state: _show,
+    ).whenComplete(() => _waiters.remove(check));
   }
 
-  Future<String> waitForText(String needle, {Duration? timeout}) => waitFor(
-    (t) => t.contains(needle),
-    what: needle,
-    timeout: timeout ?? const Duration(seconds: 20),
-  );
+  Future<String> waitForText(String needle) =>
+      waitFor((t) => t.contains(needle), what: needle);
 
   String _show() =>
       jsonEncode(text.length > 600 ? text.substring(text.length - 600) : text);
@@ -141,20 +134,35 @@ class PtySession {
     final hpcon = pty.console;
     if (hpcon == null || _closer != null) return;
     _closer = await ConsoleCloser.start(hpcon);
-    await _closer!.done.timeout(const Duration(seconds: 15));
+    await guarded(_closer!.done, 'console close (ClosePseudoConsole)');
   }
 
   /// Ends the unit, drains the reader and releases the handles.
+  ///
+  /// If output does not end under [hangGuard], it still closes the write
+  /// handle and the Windows unit, leaves the read handle open (the reader
+  /// isolate may be blocked reading it), and then fails naming the unit.
   Future<void> dispose() async {
     await unit.terminate();
     await closeConsole();
-    await reader.done.timeout(const Duration(seconds: 15), onTimeout: () {});
+    Object? drainError;
+    try {
+      await guarded(reader.done, 'end of output after dispose');
+    } on StateError catch (e) {
+      drainError = e;
+    }
     if (reader.atEof) {
       closePtyHandle(pty.readHandle);
     }
     closePtyHandle(pty.writeHandle);
     final u = unit;
     if (u is WindowsUnit) u.close();
+    if (drainError != null) {
+      throw StateError(
+        'PTY output of unit pid ${unit.pid} did not end after dispose: '
+        '$drainError',
+      );
+    }
   }
 }
 
