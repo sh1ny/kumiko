@@ -239,7 +239,7 @@ The host SHALL include each live session's Kumiko tools status, and its reason w
 - **THEN** it applies the turn state and ignores the extra field without error
 
 ### Requirement: Tool traffic never uses the desktop connection
-Tool calls SHALL travel only between bridge and host over the tool endpoint. Saturated or stalled desktop channels SHALL NOT delay tool calls, and tool calls SHALL NOT delay desktop control. Source: ADR 0002, ADR 0005.
+Kumiko tool requests and results SHALL remain between the runtime and the host. Claude and Codex use the bridge and tool endpoint. OMP uses its private runtime stdio. Stalled desktop channels SHALL NOT delay another run's calls, and tool calls SHALL NOT delay desktop control. OMP frames behind a full event queue in their own session wait for normal event backpressure. Source: ADR 0002, ADR 0005 and ADR 0016.
 
 #### Scenario: Tool call under saturated output
 - **WHEN** a terminal saturates its output channel, another session's event channel has no credit, and session C calls `kumiko_session_info`
@@ -248,6 +248,10 @@ Tool calls SHALL travel only between bridge and host over the tool endpoint. Sat
 #### Scenario: Busy tool clients do not delay Stop
 - **WHEN** a client holds the per-connection maximum of in-flight tool calls and the user presses Stop in another session
 - **THEN** Stop is acknowledged within the control-latency bound
+
+#### Scenario: OMP tool request on a backpressured runtime pipe
+- **WHEN** OMP sends a host tool request while the event queue of that same run is full
+- **THEN** another session's Stop can be acknowledged while that queue is full. When credit resumes, OMP receives its tool result over private stdio without the tool request or result going through the desktop as tool traffic.
 
 ### Requirement: Lifecycle, activity and draft methods are capability-gated
 `app/quit` and `app/previousExit` SHALL need the `lifecycle` capability, `terminal/activity` the `terminal` capability, and `agent/draftSave`, `agent/draftLoad`, `agent/draftReset` and the `agent/draftStoreReady` notification the `agent` capability, each advertised by both peers in `hello`. Without it they SHALL fail with `method-not-available` and the rest of the session SHALL keep working. Source: ADR 0002.
