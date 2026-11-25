@@ -247,7 +247,8 @@ class OmpRuntimeDriver extends RuntimeDriver {
   @override
   Future<void> cancel(String id) => cancelWithPermissions(id, const []);
 
-  /// Refusal leaves Stop and all of its pending approvals unchanged.
+  /// Admits the cancellation replies and correlated abort as one write.
+  /// A busy refusal leaves Stop and all of its pending approvals unchanged.
   @override
   Future<void> cancelWithPermissions(String id, Iterable<Object> requests) {
     final turn = _turn;
