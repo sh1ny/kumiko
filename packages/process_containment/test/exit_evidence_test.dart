@@ -48,6 +48,64 @@ void main() {
     });
   });
 
+  group('macOS', () {
+    test('a different start time from the leaf read confirms', () {
+      expect(
+        macConfirmedExits(
+          pids: {10: 100, 11: 100},
+          readStartTimes: {10: 200, 11: 100},
+          listed: {10, 11},
+        ),
+        {10},
+      );
+    });
+
+    test('a pid absent from a complete listing confirms', () {
+      expect(
+        macConfirmedExits(
+          pids: {10: 100, 11: null, 12: null},
+          readStartTimes: const {},
+          listed: {12, 99},
+        ),
+        {10, 11},
+      );
+    });
+
+    test('a pid still listed is not confirmed, zombie or not', () {
+      // An unreaped zombie is still listed (zombproc): not confirmed.
+      expect(
+        macConfirmedExits(
+          pids: {10: 100, 11: null},
+          readStartTimes: {10: 100},
+          listed: {10, 11},
+        ),
+        isEmpty,
+      );
+    });
+
+    test('a listing that threw confirms only start-time differences', () {
+      expect(
+        macConfirmedExits(
+          pids: {10: 100, 11: 100, 12: null},
+          readStartTimes: {10: 200},
+          listed: null,
+        ),
+        {10},
+      );
+    });
+
+    test('a start time read for a pid with none known confirms nothing', () {
+      expect(
+        macConfirmedExits(
+          pids: {10: null},
+          readStartTimes: {10: 200},
+          listed: {10},
+        ),
+        isEmpty,
+      );
+    });
+  });
+
   group('Linux /proc mount', () {
     String mountinfo(String superOptions, {String point = '/proc'}) => [
       '23 1 8:32 / / rw,relatime shared:1 - ext4 /dev/sdc rw',

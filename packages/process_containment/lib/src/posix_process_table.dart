@@ -301,6 +301,33 @@ bool procHidesPids(String mountinfo) {
   return false;
 }
 
+/// The macOS pids of [pids] (pid to known start time) whose full exit is
+/// confirmed.
+///
+/// [readStartTimes] holds the start times that the leaf
+/// `proc_pidinfo(PROC_PIDTBSDINFO)` with `arg` 0 read successfully; another
+/// start time than the known one means the pid was replaced. [listed] is
+/// one complete `proc_listpids(PROC_ALL_PIDS)` listing made after those
+/// reads, or null when it could not be made. It holds live and zombie
+/// processes alike, so a pid absent from it has been reaped.
+///
+/// No call behind this waits, and no errno is read: a failed `arg` 0 read
+/// says only that exit has begun, and the zombie-aware `arg` 1 read can
+/// sleep. So a zombie that its parent has not reaped is not confirmed
+/// (issue #40, design D2).
+Set<int> macConfirmedExits({
+  required Map<int, int?> pids,
+  required Map<int, int> readStartTimes,
+  required Set<int>? listed,
+}) => {
+  for (final MapEntry(key: pid, value: known) in pids.entries)
+    if ((known != null &&
+            readStartTimes[pid] != null &&
+            readStartTimes[pid] != known) ||
+        (listed != null && !listed.contains(pid)))
+      pid,
+};
+
 /// The snapshot the macOS short read gives once the full read was refused.
 ///
 /// A zombie is reported as a zombie whoever owns it: it is not running, and

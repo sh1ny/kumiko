@@ -28,9 +28,9 @@ Further tests from the design's test map, with no scenario row of their own, are
 
 ## 2. macOS exit evidence
 
-- [ ] 2.1 Verify A3: re-read `bsd/kern/proc_info.c` (`proc_pidinfo` with `arg` 0 uses `proc_find` and does not wait) and `bsd/kern/kern_proc.c`/`kern_exit.c` (`proc_listpids(PROC_ALL_PIDS)` walks `allproc` then `zombproc`; a pid leaves both only when reaped) in apple-oss-distributions/xnu, for facts only; record the files and the result in the commit body. A contradiction is design drift: stop and amend D2.
-- [ ] 2.2 Write failing pure tests in `exit_evidence_test.dart` for `macConfirmedExits`: given the start times read by the leaf call (or none) and a complete listing, a different start time confirms, the same one does not; a pid absent from the listing confirms, a present one does not; a listing that threw confirms only the start-time differences. Verify they fail because the function does not exist.
-- [ ] 2.3 Implement `macConfirmedExits` in `posix_process_table.dart`; verify the 2.2 tests pass.
+- [x] 2.1 Verify A3: re-read `bsd/kern/proc_info.c` (`proc_pidinfo` with `arg` 0 uses `proc_find` and does not wait) and `bsd/kern/kern_proc.c`/`kern_exit.c` (`proc_listpids(PROC_ALL_PIDS)` walks `allproc` then `zombproc`; a pid leaves both only when reaped) in apple-oss-distributions/xnu, for facts only; record the files and the result in the commit body. A contradiction is design drift: stop and amend D2.
+- [x] 2.2 Write failing pure tests in `exit_evidence_test.dart` for `macConfirmedExits`: given the start times read by the leaf call (or none) and a complete listing, a different start time confirms, the same one does not; a pid absent from the listing confirms, a present one does not; a listing that threw confirms only the start-time differences. Verify they fail because the function does not exist.
+- [x] 2.3 Implement `macConfirmedExits` in `posix_process_table.dart`; verify the 2.2 tests pass.
 
 ## 3. `ProcessTable.confirmedExits`
 
