@@ -122,15 +122,49 @@ void main() {
       );
       expect(closed, [11, 12]);
     });
+
+    test('a terminate that throws still waits for the end of output and '
+        'fails with both errors', () async {
+      final unit = _Unit(throws: true);
+      final closed = <int>[];
+      final expiry = Completer<void>();
+      final session = PtySession(
+        unit,
+        handles,
+        reader: PtyReader.detached(),
+        drainExpiry: expiry.future,
+        closeHandle: closed.add,
+      );
+
+      // Output never ends: the drain after the failed terminate can only
+      // finish through its guard, fired here.
+      expiry.complete();
+      await expectLater(
+        session.dispose(),
+        throwsA(
+          isA<StateError>().having(
+            (e) => e.message,
+            'message',
+            allOf(
+              contains('unit pid 4242'),
+              contains('job query failed'),
+              contains('end of output after dispose'),
+            ),
+          ),
+        ),
+      );
+      expect(closed, [12]);
+    });
   });
 }
 
-/// A unit whose termination succeeds, or reports [failure] the way the native
-/// units do: a failed result, not a throw.
+/// A unit whose termination succeeds, reports [failure] the way the native
+/// units do (a failed result), or throws when [throws] is set.
 class _Unit extends Fake implements ContainedUnit {
-  _Unit({this.failure});
+  _Unit({this.failure, this.throws = false});
 
   final String? failure;
+  final bool throws;
   var terminations = 0;
 
   @override
@@ -139,6 +173,7 @@ class _Unit extends Fake implements ContainedUnit {
   @override
   Future<TerminationResult> terminate() async {
     terminations++;
+    if (throws) throw StateError('job query failed');
     final reason = failure;
     return reason == null
         ? const TerminationResult.terminated()

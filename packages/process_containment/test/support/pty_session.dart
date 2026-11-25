@@ -74,7 +74,7 @@ class PtyReader {
         completer.complete(text);
       } else if (atEof) {
         completer.completeError(
-          StateError('output ended without ${what ?? 'match'}: ${_show()}'),
+          StateError('output ended without ${what ?? 'match'}: ${excerpt()}'),
         );
       }
     }
@@ -84,14 +84,15 @@ class PtyReader {
     return guarded(
       completer.future,
       what ?? 'match',
-      state: _show,
+      state: excerpt,
     ).whenComplete(() => _waiters.remove(check));
   }
 
   Future<String> waitForText(String needle) =>
       waitFor((t) => t.contains(needle), what: needle);
 
-  String _show() =>
+  /// The last 600 characters of [text], JSON-quoted, for failure messages.
+  String excerpt() =>
       jsonEncode(text.length > 600 ? text.substring(text.length - 600) : text);
 }
 
@@ -156,29 +157,39 @@ class PtySession {
     await guarded(
       _closer!.done,
       'console close (ClosePseudoConsole)',
-      state: reader._show,
+      state: reader.excerpt,
     );
   }
 
   /// Ends the unit, drains the reader and releases the handles.
   ///
-  /// If a step fails (terminate reports a failure or throws, the console does
-  /// not close, output does not end under [hangGuard]), it still closes the
-  /// write handle and the Windows unit, leaves the read handle open unless
-  /// output ended (the reader isolate may be blocked reading it), and then
-  /// fails naming the unit and every failure.
+  /// Termination waits for the unit under [hangGuard], not the units' own
+  /// few-second defaults. Each step runs even when an earlier one failed:
+  /// terminate (a failed result or a throw), closing the console, and the
+  /// end of output under [hangGuard]. Then it closes the write handle and the
+  /// Windows unit, leaves the read handle open unless output ended (the
+  /// reader isolate may be blocked reading it), and fails naming the unit and
+  /// every failure.
   Future<void> dispose() async {
     final failures = <Object>[];
     try {
-      final result = await unit.terminate();
+      final result = await _terminate();
       if (!result.terminated) {
         failures.add('terminate failed: ${result.reason}');
       }
+    } on Object catch (e) {
+      failures.add('terminate threw: $e');
+    }
+    try {
       await closeConsole();
+    } on Object catch (e) {
+      failures.add(e);
+    }
+    try {
       await guarded(
         reader.done,
         'end of output after dispose',
-        state: reader._show,
+        state: reader.excerpt,
         expiry: drainExpiry,
       );
     } on Object catch (e) {
@@ -197,6 +208,12 @@ class PtySession {
       );
     }
   }
+
+  Future<TerminationResult> _terminate() => switch (unit) {
+    final WindowsUnit u => u.terminate(wait: hangGuard),
+    final PosixUnit u => u.terminate(killWait: hangGuard),
+    final u => u.terminate(),
+  };
 }
 
 /// Starts the fixture host [exe] with `--fixture <fixtureArgs>` as a PTY unit
