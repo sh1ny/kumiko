@@ -18,8 +18,10 @@ void main() {
   late HostFaults faults;
   late List<DraftStore> stores;
   late int available;
+  late List<(String, String?)> logs;
 
   setUp(() {
+    logs = [];
     dir = Directory.systemTemp.createTempSync('kumiko_drafts_');
     file = File('${dir.path}${Platform.pathSeparator}drafts.sqlite');
     faults = HostFaults();
@@ -30,29 +32,42 @@ void main() {
     for (final s in stores) {
       s.dispose();
     }
-    // Windows may hold a killed isolate's file a moment longer.
-    for (var i = 0; i < 40; i++) {
-      try {
-        dir.deleteSync(recursive: true);
-        return;
-      } on FileSystemException {
-        await Future<void>.delayed(const Duration(milliseconds: 50));
-      }
-    }
+    // Disposal does not wait for the worker, so wait for each one to exit
+    // before deleting what it held, and fail if the files stay locked
+    // (AGENTS.md, rules 5 and 6).
+    await Future.wait([for (final s in stores) s.workerExited]).timeout(
+      const Duration(minutes: 2),
+      onTimeout: () => fail('a disposed draft worker never exited'),
+    );
+    await eventually(
+      () {
+        try {
+          dir.deleteSync(recursive: true);
+          return true;
+        } on FileSystemException {
+          return false;
+        }
+      },
+      within: const Duration(minutes: 2),
+      reason: 'the draft directory ${dir.path} stayed locked',
+    );
   });
 
   DraftStore open({
     File? at,
-    Duration deadline = const Duration(seconds: 5),
-    Duration openHold = Duration.zero,
+    Duration deadline = const Duration(minutes: 2),
+    bool holdOpen = false,
+    FakeTimers? timers,
     bool autostart = true,
   }) {
     final store = DraftStore(
       file: at ?? file,
       faults: faults,
       deadline: deadline,
-      openHold: openHold,
+      holdOpen: holdOpen,
+      timerFactory: timers?.create ?? Timer.new,
       onAvailable: () => available++,
+      log: (op, {code}) => logs.add((op, code)),
     );
     faults.onDraftRelease = store.releaseHeld;
     stores.add(store);
@@ -293,8 +308,10 @@ void main() {
   });
 
   group('pending bound, deadline and not responding', () {
-    test('at most 16 operations are pending; the 17th fails at once', () async {
-      final s = open(deadline: const Duration(seconds: 30));
+    test('at most 16 operations are pending; the 17th is refused with no '
+        'timer and no slot', () async {
+      final timers = FakeTimers();
+      final s = open(timers: timers);
       await ready(s);
       faults.set(TestFault.draftCommitHangs, enabled: true);
       final held = [for (var i = 0; i < 16; i++) s.save('s$i', 'x', 1)];
@@ -302,16 +319,59 @@ void main() {
         (f) => f.then<Object?>((v) => v, onError: (Object e) => e),
       );
       expect(s.pending, 16);
-      final watch = Stopwatch()..start();
+      expect(timers.armed, hasLength(16));
       final e = await failure(s.save('s16', 'x', 1));
       expect(e.reason, ErrorCode.draftUnavailable);
-      expect(watch.elapsedMilliseconds, lessThan(200));
+      expect(timers.armed, hasLength(16), reason: 'refused before a timer');
       expect(s.pending, 16);
 
       faults.set(TestFault.draftCommitHangs, enabled: false);
       expect(await Future.wait(outcomes), everyElement(1));
       expect(s.pending, 0);
+      expect(timers.armed.every((t) => !t.fired), isTrue);
       expect(await s.save('s16', 'x', 1), 1);
+    });
+
+    test('the release host deadline arms 5 s; firing it is not responding; '
+        'the next call is refused with no timer', () async {
+      final timers = FakeTimers();
+      final s = open(
+        deadline: const HostOptions().draftDeadline,
+        timers: timers,
+      );
+      await ready(s);
+      faults.set(TestFault.draftCommitHangs, enabled: true);
+      final first = failure(s.save('a', 'x', 1));
+      expect(timers.armed, hasLength(1));
+      expect(timers.armed.single.duration, const Duration(seconds: 5));
+      expect(s.pending, 1);
+
+      timers.armed.single.fire();
+      expect((await first).reason, ErrorCode.draftUnavailable);
+      expect(s.notResponding, isTrue);
+
+      final again = await failure(s.save('b', 'x', 1));
+      expect(again.reason, ErrorCode.draftUnavailable);
+      expect(timers.armed, hasLength(1), reason: 'refused before a timer');
+      expect(s.pending, 1, reason: 'refused before it was admitted');
+
+      faults.set(TestFault.draftCommitHangs, enabled: false);
+      await eventually(() => !s.notResponding, reason: 'never cleared');
+    });
+
+    test('a store built with no deadline arms the same 5 s', () async {
+      final timers = FakeTimers();
+      final s = DraftStore(
+        file: file,
+        faults: faults,
+        timerFactory: timers.create,
+      );
+      stores.add(s);
+      s.start();
+      await ready(s);
+      expect(await s.save('a', 'x', 1), 1);
+      expect(timers.armed.single.duration, const Duration(seconds: 5));
+      expect(timers.armed.single.duration, HostOptions.defaultDraftDeadline);
     });
 
     test('the default deadline is 5 s', () {
@@ -326,21 +386,22 @@ void main() {
     test(
       'a commit past the deadline fails and the store is not responding',
       () async {
-        final s = open(deadline: const Duration(milliseconds: 400));
+        final timers = FakeTimers();
+        final s = open(timers: timers);
         await ready(s);
         final before = available;
         faults.set(TestFault.draftCommitHangs, enabled: true);
-        final watch = Stopwatch()..start();
-        final e = await failure(s.save('a', 'held', 1));
+        final held = failure(s.save('a', 'held', 1));
+        await eventually(() => s.heldCommit != null, reason: 'no hold');
+        timers.armed.single.fire();
+        final e = await held;
         expect(e.reason, ErrorCode.draftUnavailable);
-        expect(watch.elapsedMilliseconds, inInclusiveRange(380, 1500));
         expect(s.notResponding, isTrue);
 
-        // Not queued: the next operation fails at once.
-        watch.reset();
+        // Not queued: the next operation is refused with no timer.
         final again = await failure(s.save('b', 'x', 1));
         expect(again.reason, ErrorCode.draftUnavailable);
-        expect(watch.elapsedMilliseconds, lessThan(100));
+        expect(timers.armed, hasLength(1));
         expect(s.pending, 1, reason: 'only the stuck operation is pending');
         expect(available, before, reason: 'not announced while stuck');
 
@@ -375,53 +436,212 @@ void main() {
     );
   });
 
-  group('open and draftStoreReady', () {
-    test(
-      'operations wait for the open and succeed within the deadline',
-      () async {
-        final s = open(openHold: const Duration(milliseconds: 500));
-        final watch = Stopwatch()..start();
-        expect(await s.save('a', 'x', 1), 1);
-        expect(watch.elapsedMilliseconds, greaterThanOrEqualTo(450));
-        expect(available, 1, reason: 'announced once the open finished');
-      },
-    );
+  group('stage acknowledgements and explicit expiry', () {
+    test('a held commit sets heldCommit before its release and clears it '
+        'on its reply', () async {
+      final s = open(timers: FakeTimers());
+      await ready(s);
+      expect(s.heldCommit, isNull);
+      faults.set(TestFault.draftCommitHangs, enabled: true);
+      final save = s.save('a', 'x', 1);
+      await eventually(
+        () => s.heldCommit != null,
+        reason: 'the worker never reported the hold',
+      );
+      expect(s.pending, 1);
+      faults.set(TestFault.draftCommitHangs, enabled: false);
+      expect(await save, 1);
+      expect(s.heldCommit, isNull);
+      expect(s.pending, 0);
+    });
 
-    test(
-      'a held open past the deadline fails operations; ready follows',
-      () async {
-        final s = open(
-          deadline: const Duration(milliseconds: 300),
-          openHold: const Duration(milliseconds: 1500),
-        );
-        final e = await failure(s.load('a'));
-        expect(e.reason, ErrorCode.draftUnavailable);
-        expect(s.notResponding, isTrue);
-        expect(available, 0);
-        await eventually(
-          () => s.phase == DraftPhase.available && !s.notResponding,
-          reason: 'the store never answered again',
-        );
-        expect(available, 1);
-        expect(await s.save('a', 'x', 1), 1);
-      },
-    );
+    test('expirePending expires each pending op once, keeps its slot and '
+        'leaves the worker waiting until the release', () async {
+      final timers = FakeTimers();
+      final s = open(timers: timers);
+      await ready(s);
+      faults.set(TestFault.draftCommitHangs, enabled: true);
+      final first = failure(s.save('a', 'x', 1));
+      final second = failure(s.save('b', 'y', 1));
+      await eventually(() => s.heldCommit != null, reason: 'no hold reported');
+      final held = s.heldCommit;
+      expect(s.pending, 2);
+
+      expect(s.expirePending(), 2);
+      expect((await first).reason, ErrorCode.draftUnavailable);
+      expect((await second).reason, ErrorCode.draftUnavailable);
+      expect(s.notResponding, isTrue);
+      expect(timers.armed.every((t) => t.cancelled), isTrue);
+      expect(logs.where((l) => l == ('draft-deadline', 'save')), hasLength(2));
+      expect(s.expirePending(), 0, reason: 'never counted twice');
+      expect(s.pending, 2, reason: 'expired ops keep their slots');
+      expect(s.heldCommit, held, reason: 'the worker is still waiting');
+
+      faults.set(TestFault.draftCommitHangs, enabled: false);
+      await eventually(() => !s.notResponding, reason: 'never cleared');
+      expect(s.pending, 0);
+      expect(s.heldCommit, isNull);
+      expect((await s.load('a')).text, 'x', reason: 'the commit landed late');
+    });
+
+    test('the draft-deadline log names the kind of the op', () async {
+      final s = open(timers: FakeTimers());
+      await ready(s);
+      faults.set(TestFault.draftCommitHangs, enabled: true);
+      final send = failure(s.commitSend('a', 1, synced: true));
+      await eventually(() => s.heldCommit != null, reason: 'no hold reported');
+      expect(s.expirePending(), 1);
+      await send;
+      expect(logs, contains(('draft-deadline', 'send')));
+      faults.set(TestFault.draftCommitHangs, enabled: false);
+      await eventually(() => !s.notResponding, reason: 'never cleared');
+    });
+
+    test('disposal retires an expired op and clears the held id', () async {
+      final s = open(timers: FakeTimers());
+      await ready(s);
+      faults.set(TestFault.draftCommitHangs, enabled: true);
+      final save = failure(s.save('a', 'x', 1));
+      await eventually(() => s.heldCommit != null, reason: 'no hold reported');
+      expect(s.expirePending(), 1);
+      await save;
+      expect(s.pending, 1);
+      s.dispose();
+      expect(s.pending, 0);
+      expect(s.notResponding, isFalse);
+      expect(s.heldCommit, isNull);
+    });
+  });
+
+  test(
+    'a reset followed by a held commit needs one release, not two',
+    () async {
+      file.writeAsStringSync('this is not a database ' * 40);
+      final s = open();
+      await ready(s);
+      expect(s.phase, DraftPhase.disabled);
+      // A release in the first generation must not leak into the next one.
+      s.releaseHeld();
+      await s.reset();
+      expect(s.phase, DraftPhase.available);
+
+      faults.set(TestFault.draftCommitHangs, enabled: true);
+      final save = s.save('a', 'x', 1);
+      await eventually(() => s.heldCommit != null, reason: 'no hold reported');
+      faults.set(TestFault.draftCommitHangs, enabled: false);
+      await eventually(
+        () => s.heldCommit == null,
+        reason: 'one release did not free the commit',
+      );
+      expect(await save, 1);
+    },
+  );
+
+  group('open and draftStoreReady', () {
+    test('a save admitted during the open gate waits and succeeds after '
+        'the release, with no expiry', () async {
+      final timers = FakeTimers();
+      final s = open(holdOpen: true, timers: timers);
+      await eventually(() => s.openHeld, reason: 'the gate was not reached');
+      final save = s.save('a', 'x', 1);
+      expect(s.pending, 1);
+      expect(s.phase, DraftPhase.starting);
+      expect(s.releaseOpen(), isTrue);
+      expect(await save, 1);
+      expect(s.openHeld, isFalse);
+      expect(timers.armed.every((t) => !t.fired), isTrue);
+      expect(available, 1, reason: 'announced once the open finished');
+    });
+
+    test('a load admitted during the open gate is expired and refused while '
+        'the gate holds; the release makes the store work', () async {
+      final s = open(holdOpen: true, timers: FakeTimers());
+      await eventually(() => s.openHeld, reason: 'the gate was not reached');
+      final load = failure(s.load('a'));
+      expect(s.pending, 1);
+      expect(s.expirePending(), 1);
+      expect((await load).reason, ErrorCode.draftUnavailable);
+      expect(s.notResponding, isTrue);
+      expect(s.openHeld, isTrue, reason: 'still gated');
+      expect(
+        (await failure(s.save('a', 'x', 1))).reason,
+        ErrorCode.draftUnavailable,
+      );
+      expect(available, 0);
+
+      expect(s.releaseOpen(), isTrue);
+      await eventually(
+        () => s.phase == DraftPhase.available && !s.notResponding,
+        reason: 'the store never answered again',
+      );
+      expect(available, 1);
+      expect(await s.save('a', 'x', 1), 1);
+    });
+
+    test('releaseOpen is false before the acknowledgement, true once, then '
+        'false', () async {
+      final s = open(holdOpen: true);
+      expect(s.releaseOpen(), isFalse, reason: 'the gate is not reached yet');
+      await eventually(() => s.openHeld, reason: 'the gate was not reached');
+      expect(s.releaseOpen(), isTrue);
+      expect(s.releaseOpen(), isFalse);
+      await ready(s);
+      expect(s.phase, DraftPhase.available);
+      expect(s.releaseOpen(), isFalse);
+      expect(await s.save('a', 'x', 1), 1);
+    });
+
+    test('a worker disposed before its isolate is up still exits', () async {
+      final s = open();
+      s.dispose();
+      await s.workerExited.timeout(
+        const Duration(minutes: 2),
+        onTimeout: () => fail('the disposed worker never exited'),
+      );
+    });
+
+    test('disposal clears an acknowledged gate', () async {
+      final s = open(holdOpen: true);
+      await eventually(() => s.openHeld, reason: 'the gate was not reached');
+      s.dispose();
+      expect(s.openHeld, isFalse);
+      expect(s.releaseOpen(), isFalse, reason: 'no worker is left to release');
+    });
+
+    test('after a reset the successor opens ungated and the reset needs no '
+        'release', () async {
+      file.writeAsStringSync('this is not a database ' * 40);
+      final s = open(holdOpen: true);
+      await eventually(() => s.openHeld, reason: 'the gate was not reached');
+      expect(s.releaseOpen(), isTrue);
+      await ready(s);
+      expect(s.phase, DraftPhase.disabled);
+      expect(s.openHeld, isFalse);
+
+      await s.reset();
+      expect(s.phase, DraftPhase.available);
+      expect(s.workersSpawned, 2);
+      expect(s.openHeld, isFalse);
+      expect(s.releaseOpen(), isFalse, reason: 'the successor is ungated');
+      expect(await s.save('a', 'after', 1), 1);
+    });
 
     test(
       'an unopenable file disables drafts; reset replaces it once',
       () async {
         file.writeAsStringSync('this is not a database ' * 40);
-        final s = open();
+        final timers = FakeTimers();
+        final s = open(timers: timers);
         await ready(s);
         expect(s.phase, DraftPhase.disabled);
         expect(s.disabledReason, isNotNull);
         expect(available, 0);
-        final watch = Stopwatch()..start();
         expect(
           (await failure(s.save('a', 'x', 1))).reason,
           ErrorCode.draftUnavailable,
         );
-        expect(watch.elapsedMilliseconds, lessThan(100));
+        expect(timers.armed, isEmpty, reason: 'refused before a timer');
+        expect(s.pending, 0);
 
         await s.reset();
         expect(s.phase, DraftPhase.available);
@@ -456,6 +676,9 @@ void main() {
     });
   });
 
+  /// The draft save and removal latency row prints its median and does not
+  /// assert it. The 100 ms threshold for reopening ADR 0014 decision 12 is
+  /// checked by the later qualification slice, not by a test failure here.
   test('measured: draft save and removal latency', () async {
     final s = open();
     await ready(s);
@@ -484,18 +707,46 @@ void main() {
       'measured: draft save $rounds x 4 KiB ${summary(saves)}; '
       'removal ${summary(removals)} on ${Platform.operatingSystem}',
     );
-    final sortedSaves = [...saves]..sort();
-    expect(
-      sortedSaves[sortedSaves.length ~/ 2],
-      lessThan(100000),
-      reason: 'a median save above 100 ms reopens design D4',
-    );
   });
+}
+
+/// A hand-written stand-in for the store's deadline timer: it records every
+/// armed duration and callback and fires only when a test says so.
+class FakeTimer implements Timer {
+  FakeTimer(this.duration, this._callback);
+  final Duration duration;
+  final void Function() _callback;
+  bool cancelled = false;
+  bool fired = false;
+
+  void fire() {
+    fired = true;
+    _callback();
+  }
+
+  @override
+  void cancel() => cancelled = true;
+
+  @override
+  bool get isActive => !cancelled && !fired;
+
+  @override
+  int get tick => fired ? 1 : 0;
+}
+
+class FakeTimers {
+  final armed = <FakeTimer>[];
+
+  Timer create(Duration duration, void Function() callback) {
+    final timer = FakeTimer(duration, callback);
+    armed.add(timer);
+    return timer;
+  }
 }
 
 Future<void> eventually(
   FutureOr<bool> Function() check, {
-  Duration within = const Duration(seconds: 20),
+  Duration within = const Duration(minutes: 2),
   String reason = 'condition not reached',
 }) async {
   final deadline = DateTime.now().add(within);

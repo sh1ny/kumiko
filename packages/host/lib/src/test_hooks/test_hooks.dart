@@ -35,8 +35,15 @@ class TestHostExtension implements HostExtension {
   /// `SHUTDOWN_DEADLINE_MS`, `WORKSPACE_CAP`, `RESOLVE_TIMEOUT_MS`,
   /// `ATTACH_TIMEOUT_MS`, `SETTLE_DEADLINE_MS`, `CONSOLE_CLOSE_TIMEOUT_MS`,
   /// `READ_DEADLINE_MS`, `REVOKED_SECRETS_KEPT`, `DRAFT_DEADLINE_MS`,
-  /// `DRAFT_OPEN_HOLD_MS`; `KUMIKO_TEST_NO_LIFECYCLE=1` withholds the
+  /// `DRAFT_OPEN_HELD` (`1` gates the first draft open until
+  /// `test/draft.releaseOpen`); `KUMIKO_TEST_NO_LIFECYCLE=1` withholds the
   /// `lifecycle` capability.
+  ///
+  /// A test host runs a 2-minute draft deadline when `DRAFT_DEADLINE_MS` is
+  /// missing: a hang guard, not a bound under test. A test that needs the
+  /// deadline to fire calls `test/draft.expire` once the stage is
+  /// acknowledged, and never sets a short `KUMIKO_TEST_DRAFT_DEADLINE_MS`: a
+  /// short deadline also expires ordinary commits on a loaded machine.
   /// `KUMIKO_TEST_SHELL_PATH` replaces `PATH` for shell detection (entries
   /// split by the platform's path separator) and switches the well-known
   /// install locations off; `KUMIKO_TEST_SHELL_DIRS` lists them instead.
@@ -137,9 +144,8 @@ class TestHostExtension implements HostExtension {
         revokedSecretsKept:
             number('REVOKED_SECRETS_KEPT') ??
             HostOptions.defaultRevokedSecretsKept,
-        draftDeadline:
-            millis('DRAFT_DEADLINE_MS') ?? HostOptions.defaultDraftDeadline,
-        draftOpenHold: millis('DRAFT_OPEN_HOLD_MS') ?? Duration.zero,
+        draftDeadline: millis('DRAFT_DEADLINE_MS') ?? _draftHangGuard,
+        draftOpenHeld: env['KUMIKO_TEST_DRAFT_OPEN_HELD'] == '1',
         advertiseLifecycle: env['KUMIKO_TEST_NO_LIFECYCLE'] != '1',
         postExitReadDeadline:
             millis('READ_DEADLINE_MS') ??
@@ -161,6 +167,8 @@ class TestHostExtension implements HostExtension {
       ),
     );
   }
+
+  static const Duration _draftHangGuard = Duration(minutes: 2);
 
   @override
   final HostOptions options;
@@ -295,6 +303,12 @@ class TestHostExtension implements HostExtension {
       case 'test/draft.stats':
         EmptyParams.fromJson(params);
         return host.agents.draftSnapshot();
+      case 'test/draft.expire':
+        EmptyParams.fromJson(params);
+        return {'expired': host.agents.expireDrafts()};
+      case 'test/draft.releaseOpen':
+        EmptyParams.fromJson(params);
+        return {'released': host.agents.releaseDraftOpen()};
       case 'test/agent.stats':
         if (params.keys.any(
           (key) => key != 'secretScanRoots' && key != 'secretScanSessionId',

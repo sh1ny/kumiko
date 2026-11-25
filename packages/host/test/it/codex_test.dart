@@ -5425,7 +5425,9 @@ void nativeCases(Directory Function() profile, Directory Function() work) {
                   e['kind'] == 'notice' &&
                   (e['text'] as String).contains('Interruption'),
             ),
-            within: const Duration(seconds: 11),
+            // The notice follows the host's 10 s interrupt deadline; this is
+            // only a hang guard (AGENTS.md, rule 4).
+            within: const Duration(minutes: 2),
           );
           final reason =
               a.events.lastWhere(

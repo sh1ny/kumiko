@@ -283,6 +283,9 @@ void main() {
           'secretScanSessionId': 'unavailable',
           'secretScanRoots': [cwd.path],
         },
+        'test/draft.stats': <String, Object?>{},
+        'test/draft.expire': <String, Object?>{},
+        'test/draft.releaseOpen': <String, Object?>{},
         Method.testUnitLaunch: TestUnitLaunchParams(
           target: cwd.path,
           fixture: TestFixture.sleeper,

@@ -106,9 +106,29 @@ class AgentPeer {
     await call(Method.agentPrompt, {'sessionId': id, 'text': text});
   }
 
+  /// Closes the session and waits for its `closed` exit. Closing can take
+  /// the host's own stop and kill budgets, so the wait is a hang guard, not a
+  /// bound (AGENTS.md, rule 4).
+  ///
+  /// The host answers a close with either an exit or `agent/closeFailed`.
+  /// Whichever arrives first after the close decides, and any answer other
+  /// than a `closed` exit fails at once with its parameters (rule 6), so a
+  /// failed close is reported as itself rather than as an expired guard.
   Future<void> close() async {
+    final exitsBefore = of(Method.agentExited).length;
+    final failuresBefore = of(Method.agentCloseFailed).length;
     await call(Method.agentClose);
-    await wait(Method.agentExited, where: (p) => p['reason'] == 'closed');
+    await eventually(
+      () =>
+          of(Method.agentExited).length > exitsBefore ||
+          of(Method.agentCloseFailed).length > failuresBefore,
+      within: const Duration(minutes: 2),
+      reason: 'no agent/exited or agent/closeFailed for $id after close',
+    );
+    final failures = of(Method.agentCloseFailed).skip(failuresBefore);
+    if (failures.isNotEmpty) fail('close of $id failed: ${failures.first}');
+    final exit = of(Method.agentExited)[exitsBefore];
+    if (exit['reason'] != 'closed') fail('close of $id exited with $exit');
   }
 }
 
@@ -162,3 +182,27 @@ Future<Json> waitFixture(File report, bool Function(Json) test) async {
 
 Matcher rpcCode(String reason) =>
     throwsA(isA<RpcException>().having((e) => e.reason, 'reason', reason));
+
+/// The text of every prompt the fixture adapter of [report] received, in
+/// order, from its `promptReceived` reports (written for every
+/// `session/prompt`, even one the fixture then refuses). The payload of each
+/// must be exactly one `{type: text, text: ...}` block; anything else fails
+/// the test.
+List<String> promptTexts(File report) {
+  final texts = <String>[];
+  for (final entry in fixtureReports(report)) {
+    if (!entry.containsKey('promptReceived')) continue;
+    final payload = entry['promptReceived'];
+    if (payload is! List || payload.length != 1) {
+      fail('a prompt is not exactly one block: ${jsonEncode(payload)}');
+    }
+    final block = payload.single;
+    if (block is! Map || block['type'] != 'text' || block['text'] is! String) {
+      fail(
+        'a prompt block is not {type: text, text: ...}: ${jsonEncode(block)}',
+      );
+    }
+    texts.add(block['text'] as String);
+  }
+  return texts;
+}

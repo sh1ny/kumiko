@@ -48,7 +48,7 @@ class HostOptions {
     this.toolEndpointFault,
     this.revokedSecretsKept = defaultRevokedSecretsKept,
     this.draftDeadline = defaultDraftDeadline,
-    this.draftOpenHold = Duration.zero,
+    this.draftOpenHeld = false,
     this.advertiseLifecycle = true,
     this.codexProbeArgs,
     this.ompProbeArgs,
@@ -126,8 +126,8 @@ class HostOptions {
   /// The deadline of one draft operation.
   final Duration draftDeadline;
 
-  /// Extra wait before the draft worker opens its file (tests only).
-  final Duration draftOpenHold;
+  /// Gates the first draft worker's open until it is released (tests only).
+  final bool draftOpenHeld;
 
   /// Whether `hello` offers the `lifecycle` capability; a test build turns it
   /// off to play a host that predates it.

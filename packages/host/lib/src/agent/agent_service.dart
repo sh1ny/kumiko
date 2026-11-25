@@ -1654,7 +1654,15 @@ class AgentService {
     'workersSpawned': drafts.workersSpawned,
     'disabledReason': drafts.disabledReason,
     'pragmas': drafts.pragmas,
+    'heldCommit': drafts.heldCommit,
+    'openHeld': drafts.openHeld,
   };
+
+  /// `test/draft.expire`: see [DraftStore.expirePending].
+  int expireDrafts() => drafts.expirePending();
+
+  /// `test/draft.releaseOpen`: see [DraftStore.releaseOpen].
+  bool releaseDraftOpen() => drafts.releaseOpen();
 
   void _requireCodexPeer() =>
       requireCodexCapabilities(connection.negotiated?.capabilities ?? const {});
