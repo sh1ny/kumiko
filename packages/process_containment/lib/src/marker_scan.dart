@@ -30,7 +30,8 @@ class MarkerScanResult {
   /// A pass ran past its timeout.
   final bool timedOut;
 
-  /// A live process in the population whose environment could not be read.
+  /// A process in the population that could not be read and whose full
+  /// exit was not confirmed before the scan listed the processes again.
   final int? unreadablePid;
 
   /// Marked processes the scan sent `SIGKILL`.
@@ -59,21 +60,63 @@ class MarkerScanResult {
 class _Pass {
   bool listed = true;
   bool timedOut = false;
-  int? unreadable;
+
+  /// Pids that could not be read and whose full exit is not confirmed, in
+  /// listing order, with their start times where known.
+  final pending = <int, int?>{};
+
+  /// A pid could not be read, whatever the exit check found: the second
+  /// listing must come after that evidence.
+  bool notRead = false;
+
   final matches = <MarkedProcess>[];
 }
 
 /// Scans the current user's processes that started at or after
 /// [oldestCreatedAt] minus 1 s for [markers], kills the matches with
 /// `SIGKILL`, and scans again (design D9). At most two passes of
-/// [passTimeout] each.
+/// [passTimeout] each; [passExpiredForTesting] replaces the pass clock's
+/// check before each pid.
+///
+/// A process the first pass cannot read (a refused or null snapshot, a
+/// zombie, or a failed environment read) is *pending* unless
+/// [ProcessTable.confirmedExits] confirms its full exit. The population
+/// filter (another uid, or a known start before the window) runs first; a
+/// null snapshot whose exit is not confirmed is skipped when
+/// [ProcessTable.foreignPids] names it. Every exit check runs at the pid's
+/// own failed read, inside the pass clock, never deferred to the end of the
+/// pass. A pending pid is cleared only by a confirmed exit before the
+/// second listing, at that check or while the scan settles for at most 1 s; it
+/// disappearing later clears nothing, and the settle's expiry is never an
+/// outcome in itself: an unconfirmed pid is `scan-unreadable` (issue #40,
+/// design D1, C1).
+///
+/// Any match or pid not read, pending or not, makes the second pass run, so
+/// the second listing always comes after the exit evidence. The second
+/// pass only verifies: it kills nothing, a marked process there is a
+/// survivor, and a pid there that cannot be read and is not confirmed
+/// exited is unreadable (C2).
+///
+/// A process can start a child after the final listing and vanish before
+/// it is read; the scan does not see that child. By the owner's decision
+/// that race is left to OS-provided grouping (ADR 0001, issue #9; design
+/// D6, C7).
 Future<MarkerScanResult> runMarkerScan({
   required ProcessTable table,
   required Set<String> markers,
   required DateTime oldestCreatedAt,
   Duration passTimeout = const Duration(seconds: 10),
+  bool Function()? passExpiredForTesting,
 }) async {
-  final first = await _pass(table, markers, oldestCreatedAt, passTimeout);
+  Future<_Pass> pass() => _pass(
+    table,
+    markers,
+    oldestCreatedAt,
+    passTimeout,
+    passExpiredForTesting,
+  );
+
+  final first = await pass();
   if (!first.listed) return const MarkerScanResult(listed: false);
 
   final killed = <MarkedProcess>[];
@@ -83,22 +126,19 @@ Future<MarkerScanResult> runMarkerScan({
     if (table.kill(m.pid, m.startTime)) signalled.add(m);
   }
   if (first.timedOut) {
-    return MarkerScanResult(
-      timedOut: true,
-      unreadablePid: first.unreadable,
-      killed: killed,
-    );
+    // The timeout already fails the scan; its pending pids are dropped.
+    return MarkerScanResult(timedOut: true, killed: killed);
   }
-  if (first.matches.isEmpty) {
-    return MarkerScanResult(unreadablePid: first.unreadable);
+  if (first.matches.isEmpty && !first.notRead) {
+    return const MarkerScanResult();
   }
 
-  await _settle(table, signalled);
-  final second = await _pass(table, markers, oldestCreatedAt, passTimeout);
+  final unconfirmed = await _settle(table, signalled, first.pending);
+  final second = await pass();
   return MarkerScanResult(
     listed: second.listed,
     timedOut: second.timedOut,
-    unreadablePid: second.unreadable ?? first.unreadable,
+    unreadablePid: unconfirmed.firstOrNull ?? second.pending.keys.firstOrNull,
     killed: killed,
     remaining: second.matches,
   );
@@ -109,6 +149,7 @@ Future<_Pass> _pass(
   Set<String> markers,
   DateTime oldestCreatedAt,
   Duration timeout,
+  bool Function()? expired,
 ) async {
   final pass = _Pass();
   final List<int> pids;
@@ -120,9 +161,16 @@ Future<_Pass> _pass(
   final window = oldestCreatedAt.subtract(const Duration(seconds: 1));
   final clock = Stopwatch()..start();
   const prefix = '$unitMarkerVariable=';
+  // The exit check of a pid that could not be read, at that read (D1).
+  void unread(int pid, int? start, {bool ownerUnknown = false}) {
+    pass.notRead = true;
+    if (table.confirmedExits({pid: start}).contains(pid)) return;
+    if (ownerUnknown && table.foreignPids({pid}).contains(pid)) return;
+    pass.pending[pid] = start;
+  }
 
   for (var i = 0; i < pids.length; i++) {
-    if (clock.elapsed >= timeout) {
+    if (expired?.call() ?? clock.elapsed >= timeout) {
       pass.timedOut = true;
       break;
     }
@@ -133,11 +181,19 @@ Future<_Pass> _pass(
     try {
       seen = table.snapshot(pid);
     } on ProcessReadDenied {
-      pass.unreadable ??= pid;
+      unread(pid, null);
       continue;
     }
-    if (seen == null || seen.zombie) continue;
-    if (seen.uid != table.currentUid || seen.startedAt.isBefore(window)) {
+    if (seen == null) {
+      unread(pid, null, ownerUnknown: true);
+      continue;
+    }
+    if (seen.uid != table.currentUid) continue;
+    // Start time 0 is the macOS short read's placeholder: unknown.
+    final start = seen.startTime == 0 ? null : seen.startTime;
+    if (start != null && seen.startedAt.isBefore(window)) continue;
+    if (seen.zombie) {
+      unread(pid, start);
       continue;
     }
 
@@ -146,7 +202,7 @@ Future<_Pass> _pass(
       env = table.environment(pid);
     } on Exception catch (e) {
       if (e is! ProcessGone && e is! ProcessReadDenied) rethrow;
-      if (_stillThere(table, pid, seen)) pass.unreadable ??= pid;
+      unread(pid, start);
       continue;
     }
     for (final entry in env) {
@@ -158,40 +214,38 @@ Future<_Pass> _pass(
       break;
     }
   }
+  // The last pid's exit check may have crossed the deadline.
+  if (!pass.timedOut && (expired?.call() ?? clock.elapsed >= timeout)) {
+    pass.timedOut = true;
+  }
   return pass;
 }
 
-/// The re-check after a failed environment read: gone, or a different start
-/// time (the pid was reused), means the process we listed does not exist.
-bool _stillThere(ProcessTable table, int pid, ProcessSnapshot seen) {
-  try {
-    final again = table.snapshot(pid);
-    return again != null && !again.zombie && again.startTime == seen.startTime;
-  } on ProcessReadDenied {
-    return true;
-  }
-}
-
-/// Gives killed processes a moment to disappear before the rescan.
-Future<void> _settle(ProcessTable table, List<MarkedProcess> killed) async {
+/// Gives killed processes and pending pids a moment for their full exit to
+/// be confirmed before the rescan: at most 1 s, polling every 10 ms, with
+/// one [ProcessTable.confirmedExits] call per sweep. A killed process is not
+/// taken as gone from a null snapshot or a zombie, which the second pass
+/// does not accept either (pre-ship review round 4, F1). Returns the
+/// pending pids still unconfirmed, in listing order.
+Future<List<int>> _settle(
+  ProcessTable table,
+  List<MarkedProcess> killed,
+  Map<int, int?> pending,
+) async {
   final clock = Stopwatch()..start();
-  var pending = killed;
-  while (pending.isNotEmpty && clock.elapsed < const Duration(seconds: 1)) {
-    pending = [
-      for (final m in pending)
-        if (_aliveWithStartTime(table, m)) m,
-    ];
-    if (pending.isNotEmpty) {
+  // Start time 0 is the macOS short read's placeholder: unknown.
+  final dying = {
+    for (final m in killed) m.pid: m.startTime == 0 ? null : m.startTime,
+  };
+  final waiting = Map.of(pending);
+  while ((dying.isNotEmpty || waiting.isNotEmpty) &&
+      clock.elapsed < const Duration(seconds: 1)) {
+    final confirmed = table.confirmedExits({...dying, ...waiting});
+    dying.removeWhere((pid, _) => confirmed.contains(pid));
+    waiting.removeWhere((pid, _) => confirmed.contains(pid));
+    if (dying.isNotEmpty || waiting.isNotEmpty) {
       await Future<void>.delayed(const Duration(milliseconds: 10));
     }
   }
-}
-
-bool _aliveWithStartTime(ProcessTable table, MarkedProcess m) {
-  try {
-    final s = table.snapshot(m.pid);
-    return s != null && !s.zombie && s.startTime == m.startTime;
-  } on ProcessReadDenied {
-    return true;
-  }
+  return waiting.keys.toList();
 }

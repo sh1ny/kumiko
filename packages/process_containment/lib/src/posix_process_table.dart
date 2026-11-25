@@ -112,16 +112,47 @@ class _LinuxProcessTable extends PosixProcessTable {
   }
 
   @override
-  List<int> listPids() {
-    try {
-      return [
-        for (final e in Directory('/proc').listSync(followLinks: false))
-          ?int.tryParse(e.uri.pathSegments.lastWhere((s) => s.isNotEmpty)),
-      ];
-    } on FileSystemException catch (e) {
-      throw ProcessTableUnlistable('${e.path}: ${e.osError}');
-    }
+  List<int> listPids() => listProcPids(
+    () => [
+      for (final e in Directory('/proc').listSync(followLinks: false)) e.path,
+    ],
+  );
+
+  /// The fields of a `/proc/<pid>/stat` text after `comm`, which may hold
+  /// spaces and parentheses: `[state, ppid, ...]`.
+  static List<String> _statFields(String stat) =>
+      stat.substring(stat.lastIndexOf(')') + 2).split(' ');
+
+  static bool _vanished(FileSystemException e) {
+    final code = e.osError?.errorCode;
+    return code == enoent || code == esrch;
   }
+
+  /// Linux evidence of a full exit (design D2): `/proc/<pid>` gone, unless
+  /// `/proc` is mounted with `hidepid`; another start time; or one status
+  /// read of a zombie leader counted as the only thread.
+  @override
+  Set<int> confirmedExits(Map<int, int?> pids) {
+    bool hidden;
+    try {
+      hidden = procHidesPids(File('/proc/self/mountinfo').readAsStringSync());
+    } on FileSystemException {
+      hidden = true;
+    }
+    return {
+      for (final MapEntry(key: pid, value: known) in pids.entries)
+        if (linuxExitConfirmed(
+          known,
+          readStat: File('/proc/$pid/stat').readAsStringSync,
+          readStatus: File('/proc/$pid/status').readAsStringSync,
+          hidden: hidden,
+        ))
+          pid,
+    };
+  }
+
+  @override
+  Set<int> foreignPids(Set<int> pids) => const {};
 
   @override
   ProcessSnapshot? snapshot(int pid) {
@@ -131,12 +162,10 @@ class _LinuxProcessTable extends PosixProcessTable {
       stat = File('/proc/$pid/stat').readAsStringSync();
       status = File('/proc/$pid/status').readAsStringSync();
     } on FileSystemException catch (e) {
-      final code = e.osError?.errorCode;
-      if (code == enoent || code == esrch) return null;
+      if (_vanished(e)) return null;
       throw const ProcessReadDenied();
     }
-    // "pid (comm) S ppid ..."; comm may hold spaces and parentheses.
-    final rest = stat.substring(stat.lastIndexOf(')') + 2).split(' ');
+    final rest = _statFields(stat);
     final state = rest[0];
     final ticks = int.parse(rest[19]); // field 22, starttime
     final uidMatch = RegExp(
@@ -230,6 +259,170 @@ final _SysctlDart _sysctl = libc.lookupFunction<_SysctlNative, _SysctlDart>(
   'sysctl',
 );
 
+/// The pids of a `/proc` listing that [list] makes, as the entries' paths.
+///
+/// A process that exits while `/proc` is listed can make the listing fail
+/// with ENOENT or ESRCH on its own `/proc/<pid>` entry. Only that failure is
+/// listed again, at most 8 times in all. Every other failure, or a vanished
+/// entry on all 8 attempts, throws [ProcessTableUnlistable], so the scan
+/// still fails closed (issue #40, design D4).
+List<int> listProcPids(List<String> Function() list) {
+  const attempts = 8;
+  final vanished = RegExp(r'^/proc/\d+/?$');
+  for (var attempt = 1; ; attempt++) {
+    try {
+      return [
+        for (final path in list())
+          ?int.tryParse(path.split('/').lastWhere((s) => s.isNotEmpty)),
+      ];
+    } on FileSystemException catch (e) {
+      final code = e.osError?.errorCode;
+      final retry =
+          (code == enoent || code == esrch) &&
+          vanished.hasMatch(e.path ?? '') &&
+          attempt < attempts;
+      if (!retry) throw ProcessTableUnlistable('${e.path}: ${e.osError}');
+    }
+  }
+}
+
+/// Whether one read of `/proc/<pid>/status` proves the process has fully
+/// exited: the leader is a zombie (`Z` or `X`) and the kernel still counts it
+/// as the group's only thread.
+///
+/// `State:` and `Threads:` come from the same read, which is generated from
+/// one task, so a sibling's `exec` cannot pair a dead leader's state with a
+/// live leader's count. A count of 0 means the read could not lock the
+/// signal state, which says nothing about the group, so only exactly 1
+/// confirms (issue #40, design D2).
+bool linuxStatusConfirmsExit(String status) {
+  final state = RegExp(r'^State:\s+(\S)', multiLine: true).firstMatch(status);
+  final threads = RegExp(
+    r'^Threads:\s+(\d+)\s*$',
+    multiLine: true,
+  ).firstMatch(status);
+  if (state == null || threads == null) return false;
+  final zombie = state.group(1) == 'Z' || state.group(1) == 'X';
+  return zombie && threads.group(1) == '1';
+}
+
+/// The Linux exit decision for one pid (design D2), from its
+/// `/proc/<pid>/stat` and `/proc/<pid>/status` reads.
+///
+/// With a [known] start time, another one in the stat means the pid was
+/// replaced. Otherwise one status read decides through
+/// [linuxStatusConfirmsExit]. A read that answers ENOENT or ESRCH confirms
+/// the exit only when no mount [hidden]s pids; any other read error, or a
+/// stat text that cannot be parsed, confirms nothing.
+bool linuxExitConfirmed(
+  int? known, {
+  required String Function() readStat,
+  required String Function() readStatus,
+  required bool hidden,
+}) {
+  try {
+    if (known != null) {
+      final stat = readStat();
+      final ticks = int.tryParse(
+        stat.substring(stat.lastIndexOf(')') + 2).split(' ')[19],
+      );
+      if (ticks != null && ticks != known) return true;
+    }
+    return linuxStatusConfirmsExit(readStatus());
+  } on FileSystemException catch (e) {
+    final code = e.osError?.errorCode;
+    return !hidden && (code == enoent || code == esrch);
+  } on RangeError {
+    return false; // a stat text we cannot parse proves nothing
+  }
+}
+
+/// Whether a `proc` mount at `/proc`, as `/proc/self/mountinfo` describes
+/// it, can hide a live process from us.
+///
+/// With `hidepid` other than `0` or `off`, `/proc/<pid>` is visible only to
+/// a reader that may ptrace the process, so a live process of our own user
+/// answers ENOENT once it becomes non-dumpable. Row order does not show
+/// which of stacked mounts is in use, so any `proc` mount at `/proc` with
+/// such an option hides pids. A mountinfo with no such mount, or with a row
+/// that names `/proc` and cannot be parsed, counts as hiding, so ENOENT is
+/// never trusted on a guess (issue #40, design D2).
+bool procHidesPids(String mountinfo) {
+  var found = false;
+  for (final line in const LineSplitter().convert(mountinfo)) {
+    // A row that names /proc but cannot be parsed could be the mount that
+    // hides pids, so it fails closed (pre-ship review round 5, F1).
+    final namesProc = line.split(' ').contains('/proc');
+    final separator = line.indexOf(' - ');
+    if (separator < 0) {
+      if (namesProc) return true;
+      continue;
+    }
+    final mount = line.substring(0, separator).split(' ');
+    final fs = line.substring(separator + 3).split(' ');
+    if (mount.length < 6 || fs.length < 3) {
+      if (namesProc) return true;
+      continue;
+    }
+    if (mount[4] != '/proc' || fs[0] != 'proc') continue;
+    found = true;
+    for (final option in '${mount[5]},${fs[2]}'.split(',')) {
+      if (!option.startsWith('hidepid=')) continue;
+      final value = option.substring('hidepid='.length);
+      if (value != '0' && value != 'off') return true;
+    }
+  }
+  return !found;
+}
+
+/// The macOS pids of [pids] (pid to known start time) whose full exit is
+/// confirmed.
+///
+/// [readStartTimes] holds the start times that the leaf
+/// `proc_pidinfo(PROC_PIDTBSDINFO)` with `arg` 0 read successfully; another
+/// start time than the known one means the pid was replaced. [listed] is
+/// one complete `proc_listpids(PROC_ALL_PIDS)` listing made after those
+/// reads, or null when it could not be made. It holds live and zombie
+/// processes alike, so a pid absent from it has been reaped.
+///
+/// No call behind this waits, and no errno is taken as evidence (a listing
+/// that fails reads it only for its diagnostic): a failed `arg` 0 read says
+/// only that exit has begun, and the zombie-aware `arg` 1 read can
+/// sleep. So a zombie that its parent has not reaped is not confirmed
+/// (issue #40, design D2).
+Set<int> macConfirmedExits({
+  required Map<int, int?> pids,
+  required Map<int, int> readStartTimes,
+  required Set<int>? listed,
+}) => {
+  for (final MapEntry(key: pid, value: known) in pids.entries)
+    if ((known != null &&
+            readStartTimes[pid] != null &&
+            readStartTimes[pid] != known) ||
+        (listed != null && !listed.contains(pid)))
+      pid,
+};
+
+/// The pids of [pids] absent from [ownListing], one complete macOS
+/// `proc_listpids(PROC_UID_ONLY, <our uid>)` listing, and present in
+/// [laterListing], one complete `proc_listpids(PROC_ALL_PIDS)` listing made
+/// after it; none when either listing could not be made.
+///
+/// The first listing filters on each proc's credentials, which a zombie
+/// keeps until it is reaped, so our own zombies are in it. A pid reaped
+/// before it is absent from the later listing too, so only a pid shown to
+/// exist under another user is named (issue #40, design D1).
+Set<int> macForeignPids(
+  Set<int> pids, {
+  required Set<int>? ownListing,
+  required Set<int>? laterListing,
+}) => ownListing == null || laterListing == null
+    ? const {}
+    : {
+        for (final pid in pids)
+          if (!ownListing.contains(pid) && laterListing.contains(pid)) pid,
+      };
+
 /// The snapshot the macOS short read gives once the full read was refused.
 ///
 /// A zombie is reported as a zombie whoever owns it: it is not running, and
@@ -258,6 +451,7 @@ class _MacProcessTable extends PosixProcessTable {
   _MacProcessTable() : super._();
 
   static const _procAllPids = 1;
+  static const _procUidOnly = 4;
   static const _procPidtbsdinfo = 3;
   static const _bsdInfoSize = 136; // sizeof(struct proc_bsdinfo)
   static const _szomb = 5;
@@ -269,11 +463,16 @@ class _MacProcessTable extends PosixProcessTable {
   static const _enomem = 12;
 
   @override
-  List<int> listPids() {
+  List<int> listPids() => _listPids(_procAllPids, 0);
+
+  /// One `proc_listpids` listing of [type] and [typeinfo]. The kernel stops
+  /// early only when the buffer is full, so a listing that leaves room to
+  /// spare is complete.
+  List<int> _listPids(int type, int typeinfo) {
     // proc_listpids returns the number of bytes; grow the buffer until the
     // result leaves room to spare.
     var capacity = 0;
-    final probe = _procListpids(_procAllPids, 0, nullptr, 0);
+    final probe = _procListpids(type, typeinfo, nullptr, 0);
     if (probe <= 0) {
       throw ProcessTableUnlistable('proc_listpids errno ${errno()}');
     }
@@ -282,8 +481,8 @@ class _MacProcessTable extends PosixProcessTable {
       final buffer = calloc<Uint8>(capacity);
       try {
         final bytes = _procListpids(
-          _procAllPids,
-          0,
+          type,
+          typeinfo,
           buffer.cast<Void>(),
           capacity,
         );
@@ -305,6 +504,68 @@ class _MacProcessTable extends PosixProcessTable {
     throw const ProcessTableUnlistable('proc_listpids kept growing');
   }
 
+  /// macOS evidence of a full exit (design D2): one leaf `arg` 0 read per
+  /// pid with a known start time, then one complete listing after those
+  /// reads, decided by [macConfirmedExits]. Nothing here waits, and no
+  /// errno is evidence: a failed listing reads it only for its message.
+  @override
+  Set<int> confirmedExits(Map<int, int?> pids) {
+    final read = <int, int>{
+      for (final MapEntry(key: pid, value: known) in pids.entries)
+        if (known != null) pid: ?_leafStartTime(pid),
+    };
+    Set<int>? listed;
+    try {
+      listed = listPids().toSet();
+    } on ProcessTableUnlistable {
+      listed = null;
+    }
+    return macConfirmedExits(pids: pids, readStartTimes: read, listed: listed);
+  }
+
+  /// The pids absent from one complete listing of our user's processes
+  /// (`PROC_UID_ONLY`) and present in a complete full listing made after
+  /// it, decided by [macForeignPids] (design D1).
+  @override
+  Set<int> foreignPids(Set<int> pids) {
+    Set<int>? attempt(List<int> Function() list) {
+      try {
+        return list().toSet();
+      } on ProcessTableUnlistable {
+        return null;
+      }
+    }
+
+    final own = attempt(() => _listPids(_procUidOnly, currentUid));
+    final later = attempt(listPids);
+    return macForeignPids(pids, ownListing: own, laterListing: later);
+  }
+
+  /// The start time from a successful full `arg` 0 read, else null.
+  int? _leafStartTime(int pid) {
+    final buffer = calloc<Uint8>(_bsdInfoSize);
+    try {
+      final n = _procPidinfo(
+        pid,
+        _procPidtbsdinfo,
+        0,
+        buffer.cast<Void>(),
+        _bsdInfoSize,
+      );
+      if (n < _bsdInfoSize) return null;
+      return _startMicros(
+        ByteData.sublistView(buffer.asTypedList(_bsdInfoSize)),
+      );
+    } finally {
+      calloc.free(buffer);
+    }
+  }
+
+  /// `pbi_start_tvsec` and `pbi_start_tvusec` of a `proc_bsdinfo`, in µs.
+  static int _startMicros(ByteData info) =>
+      info.getUint64(120, Endian.host) * 1000000 +
+      info.getUint64(128, Endian.host);
+
   @override
   ProcessSnapshot? snapshot(int pid) {
     final buffer = calloc<Uint8>(_bsdInfoSize);
@@ -325,9 +586,7 @@ class _MacProcessTable extends PosixProcessTable {
       final data = ByteData.sublistView(buffer.asTypedList(_bsdInfoSize));
       final status = data.getUint32(4, Endian.host);
       final uid = data.getUint32(20, Endian.host);
-      final sec = data.getUint64(120, Endian.host);
-      final usec = data.getUint64(128, Endian.host);
-      final micros = sec * 1000000 + usec;
+      final micros = _startMicros(data);
       return ProcessSnapshot(
         startTime: micros,
         startedAt: DateTime.fromMicrosecondsSinceEpoch(micros),
