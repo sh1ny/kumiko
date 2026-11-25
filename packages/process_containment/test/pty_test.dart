@@ -56,11 +56,20 @@ void main() {
       }
     }
     for (final u in toEnd) {
-      await u.terminate();
-      final pty = u.pty;
-      if (pty != null) {
-        closePtyHandle(pty.readHandle);
-        closePtyHandle(pty.writeHandle);
+      try {
+        final result = await u.terminate(killWait: hangGuard);
+        if (!result.terminated) {
+          throw StateError('unit ${u.pid} not terminated: ${result.reason}');
+        }
+      } catch (e, st) {
+        failure ??= e;
+        failureStack ??= st;
+      } finally {
+        final pty = u.pty;
+        if (pty != null) {
+          closePtyHandle(pty.readHandle);
+          closePtyHandle(pty.writeHandle);
+        }
       }
     }
     if (failure != null) Error.throwWithStackTrace(failure, failureStack!);

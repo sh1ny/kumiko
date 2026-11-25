@@ -57,7 +57,7 @@ void main() {
         unit,
         handles,
         reader: PtyReader.detached(),
-        drainExpiry: expiry.future,
+        disposeExpiry: expiry.future,
         closeHandle: closed.add,
       );
 
@@ -89,7 +89,7 @@ void main() {
         handles,
         reader: PtyReader.detached(ended: true),
         // Never fired: the output has ended, so the wait does not need it.
-        drainExpiry: Completer<void>().future,
+        disposeExpiry: Completer<void>().future,
         closeHandle: closed.add,
       );
 
@@ -106,7 +106,7 @@ void main() {
         unit,
         handles,
         reader: PtyReader.detached(ended: true),
-        drainExpiry: Completer<void>().future,
+        disposeExpiry: Completer<void>().future,
         closeHandle: closed.add,
       );
 
@@ -132,7 +132,7 @@ void main() {
         unit,
         handles,
         reader: PtyReader.detached(),
-        drainExpiry: expiry.future,
+        disposeExpiry: expiry.future,
         closeHandle: closed.add,
       );
 

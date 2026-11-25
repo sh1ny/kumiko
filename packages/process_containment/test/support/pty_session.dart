@@ -125,14 +125,14 @@ String stripEscapes(String s) => s.replaceAll(_escapes, '');
 /// A fixture unit attached to a PTY with a reader running.
 class PtySession {
   /// [reader] and [closeHandle] replace the real reader and
-  /// [closePtyHandle], and [drainExpiry] fires the hang guard of the
-  /// end-of-output wait in [dispose] instead of its timer (see [guarded]).
-  /// Only this file's own tests pass them.
+  /// [closePtyHandle], and [disposeExpiry] fires the one hang guard of
+  /// [dispose] instead of its timer (see [guarded]). Only this file's own
+  /// tests pass them.
   PtySession(
     this.unit,
     this.pty, {
     PtyReader? reader,
-    this.drainExpiry,
+    this.disposeExpiry,
     void Function(int handle)? closeHandle,
   }) : reader = reader ?? PtyReader(pty.readHandle),
        _closeHandle = closeHandle ?? closePtyHandle;
@@ -140,7 +140,7 @@ class PtySession {
   final ContainedUnit unit;
   final PtyHandles pty;
   final PtyReader reader;
-  final Future<void>? drainExpiry;
+  final Future<void>? disposeExpiry;
   final void Function(int handle) _closeHandle;
   ConsoleCloser? _closer;
 
@@ -150,7 +150,8 @@ class PtySession {
 
   /// Closes the pseudo-console (Windows) so its output pipe ends. Needed for
   /// EOF after the child exited: ConPTY keeps the pipe open until then.
-  Future<void> closeConsole() async {
+  /// [expiry] replaces the hang guard's timer (see [guarded]).
+  Future<void> closeConsole({Future<void>? expiry}) async {
     final hpcon = pty.console;
     if (hpcon == null || _closer != null) return;
     _closer = await ConsoleCloser.start(hpcon);
@@ -158,19 +159,30 @@ class PtySession {
       _closer!.done,
       'console close (ClosePseudoConsole)',
       state: reader.excerpt,
+      expiry: expiry,
     );
   }
 
   /// Ends the unit, drains the reader and releases the handles.
   ///
-  /// Termination waits for the unit under [hangGuard], not the units' own
-  /// few-second defaults. Each step runs even when an earlier one failed:
-  /// terminate (a failed result or a throw), closing the console, and the
-  /// end of output under [hangGuard]. Then it closes the write handle and the
-  /// Windows unit, leaves the read handle open unless output ended (the
-  /// reader isolate may be blocked reading it), and fails naming the unit and
-  /// every failure.
+  /// One [hangGuard] covers the whole of dispose, not each step, so a unit
+  /// that will not end fails here, naming it, within about [hangGuard] and
+  /// well inside each test file's `@Timeout`. Termination waits for the unit
+  /// up to [hangGuard] instead of the units' own few-second defaults. Each
+  /// step runs even when an earlier one failed: terminate (a failed result or
+  /// a throw), closing the console, and the end of output; after the guard
+  /// expired the later waits fail at once. Then it closes the write handle
+  /// and the Windows unit, leaves the read handle open unless output ended
+  /// (the reader isolate may be blocked reading it), and fails naming the
+  /// unit and every failure.
   Future<void> dispose() async {
+    final expired = Completer<void>();
+    void expire() {
+      if (!expired.isCompleted) expired.complete();
+    }
+
+    final timer = disposeExpiry == null ? Timer(hangGuard, expire) : null;
+    disposeExpiry?.then((_) => expire());
     final failures = <Object>[];
     try {
       final result = await _terminate();
@@ -181,7 +193,7 @@ class PtySession {
       failures.add('terminate threw: $e');
     }
     try {
-      await closeConsole();
+      await closeConsole(expiry: expired.future);
     } on Object catch (e) {
       failures.add(e);
     }
@@ -190,11 +202,12 @@ class PtySession {
         reader.done,
         'end of output after dispose',
         state: reader.excerpt,
-        expiry: drainExpiry,
+        expiry: expired.future,
       );
     } on Object catch (e) {
       failures.add(e);
     }
+    timer?.cancel();
     if (reader.atEof) {
       _closeHandle(pty.readHandle);
     }
