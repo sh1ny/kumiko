@@ -198,6 +198,7 @@ class OmpRuntimeDriver extends RuntimeDriver {
             accept(invoked);
             turn.accepted = true;
             turn.agentInvoked = invoked;
+            if (!invoked) _activity.reset();
             final lines = <Uint8List>[];
             for (final update in turn.staged) {
               if (!invoked && update.event != null) continue;
@@ -351,7 +352,7 @@ class OmpRuntimeDriver extends RuntimeDriver {
     } else if (type == 'tool_execution_start' ||
         type == 'tool_execution_update' ||
         type == 'tool_execution_end') {
-      if (!draining) {
+      if (_canProjectToolEvents(turn)) {
         final event = _activity.frame(
           type as String,
           frame,
@@ -383,13 +384,17 @@ class OmpRuntimeDriver extends RuntimeDriver {
     );
   }
 
+  bool _canProjectToolEvents(_Turn? turn) =>
+      !draining && (turn?.accepted != true || turn?.agentInvoked != false);
+
   Object? _frameError(Json frame, _Turn? turn, List<Uint8List> lines) {
     switch (frame['originalType']) {
       case 'tool_execution_start' ||
           'tool_execution_update' ||
           'tool_execution_end':
+        if (!_canProjectToolEvents(turn)) return null;
         final event = _activity.omitted(active: turn != null);
-        if (!draining && event != null) _toolEvent(lines, turn, event);
+        if (event != null) _toolEvent(lines, turn, event);
         return _delivery(lines);
       case 'tool_stream_update' ||
           'subagent_lifecycle' ||

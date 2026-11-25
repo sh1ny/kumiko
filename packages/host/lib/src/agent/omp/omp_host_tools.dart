@@ -132,7 +132,16 @@ final class OmpHostTools {
       ).ignore();
       return;
     }
-    final write = _reply(id, text);
+    final Future<void> write;
+    try {
+      write = _reply(id, text);
+    } on RpcException catch (error) {
+      if (error.reason != ErrorCode.busy) rethrow;
+      // Do not queue a retry. If even the mandatory refusal cannot fit,
+      // let the frame reader fail the run rather than leave OMP waiting.
+      _reply(id, 'Kumiko tools are busy', isError: true).ignore();
+      return;
+    }
     final receipt = _writes[id] = _ToolWrite();
     unawaited(
       write.then<void>(

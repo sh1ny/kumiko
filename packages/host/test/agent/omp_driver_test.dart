@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:typed_data';
 
+import 'package:host/src/agent/agent_session.dart';
 import 'package:host/src/agent/omp/omp_client.dart';
 import 'package:host/src/agent/omp/omp_driver.dart';
 import 'package:host/src/agent/runtime_driver.dart';
@@ -871,6 +872,101 @@ void main() {
     expect(cards(events).last.status, 'completed');
   });
 
+  test('OMP: A locally handled prompt cannot seed a later tool card', () async {
+    await readySession();
+    final events = <AgentEvent>[];
+    recordEvents(events);
+    final (admitted, done) = driver.admitPrompt('local command', (_) {});
+    done.ignore();
+    peer.send(startTool('shared', 'shell'));
+    peer.result('k3', {'agentInvoked': false});
+    peer.send(toolResult('shared', 'shell', 'late result'));
+    await admitted;
+    await done;
+
+    final (next, result) = driver.admitPrompt('agent prompt', (_) {});
+    peer.result('k4');
+    await next;
+    peer.send(startTool('shared', 'shell'));
+    peer.send(toolResult('shared', 'shell', 'current result'));
+    finishTurn('k4');
+    await result;
+
+    final output = cards(events).toList();
+    expect(output.map((e) => e.kind), [
+      AgentEventKind.tool,
+      AgentEventKind.toolUpdate,
+    ]);
+    expect(output.first.toolCallId, output.last.toolCallId);
+    expect(
+      output.last.content.map((block) => block['text']),
+      contains('current result'),
+    );
+  });
+
+  test('OMP: Omitted arguments do not mark a tool card truncated', () async {
+    await readySession();
+    final events = <AgentEvent>[];
+    recordEvents(events);
+    final (admitted, done) = driver.admitPrompt('work', (_) {});
+    peer.result('k3');
+    await admitted;
+    peer.send(startTool('no-args', 'clock')..remove('args'));
+    peer.send(toolResult('no-args', 'clock', 'done'));
+    finishTurn('k3');
+    await done;
+    final output = cards(events).toList();
+    expect(output.first.content, isEmpty);
+    expect(output.last.content.single['text'], 'done');
+    expect(output.map((e) => e.truncated), [false, false]);
+  });
+
+  test('OMP: A redacted approval preview does not offer a choice', () async {
+    await readySession();
+    const hidden = 'test-only-sensitive-value';
+    final events = <AgentEvent>[];
+    final requests = <AgentPermissionRequestedParams>[];
+    final ended = Completer<AgentTurnEndedParams>();
+    final session = AgentSession(
+      sessionId: 'host',
+      driver: driver,
+      onState: (_) {},
+      onPermissionRequested: requests.add,
+      onPermissionResolved: (_) {},
+      onStopResult: (_) {},
+      onTurnEnded: ended.complete,
+      redact: (text) => text.replaceAll(hidden, '[redacted]'),
+      enqueueEvents: (lines) {
+        for (final line in lines) {
+          events.add(
+            AgentEvent.fromJson(jsonDecode(utf8.decode(line)) as Json),
+          );
+        }
+      },
+    )..ready(nativeSessionId: 'fixture');
+    addTearDown(session.dispose);
+
+    final admitted = session.acceptPrompt('work')!;
+    peer.result('k3');
+    await admitted;
+    peer.send(
+      approval('sensitive', title: 'Allow tool: bash\nCommand: $hidden'),
+    );
+    finishTurn('k3');
+    expect((await ended.future).stopReason, 'completed');
+    await session.eventsEnqueued;
+
+    expect(requests, isEmpty);
+    expect(peer.writes.where((f) => f['type'] == 'extension_ui_response'), [
+      {'type': 'extension_ui_response', 'id': 'sensitive', 'cancelled': true},
+    ]);
+    expect(
+      events.where((e) => e.kind == AgentEventKind.notice).single.text,
+      contains('full details cannot be displayed'),
+    );
+    expect(events.map((e) => e.text).join(), isNot(contains(hidden)));
+  });
+
   const facts = ToolRunFacts(
     sessionId: 'saved-session',
     role: ToolRole.coding,
@@ -983,4 +1079,55 @@ void main() {
       expect(peer.client.failure, isA<OmpProtocolException>());
     },
   );
+
+  Future<void> fillStdin({required int leaveBytes}) {
+    const frame = {'type': 'fixture', 'value': ''};
+    final overhead = utf8.encode('${jsonEncode(frame)}\n').length;
+    return peer.client.send({
+      ...frame,
+      'value': 'x' * (1024 * 1024 - leaveBytes - overhead),
+    });
+  }
+
+  test('OMP: A busy tool result falls back to a bounded refusal', () async {
+    await readySession();
+    final connected = Completer<void>();
+    await bindTools(connected.complete);
+    final blocked = peer.blockedWrite = Completer<void>();
+    final filled = fillStdin(leaveBytes: 180)..ignore();
+    try {
+      peer.send(callback('busy-result'));
+      await commandBarrier('k4');
+      final reply = toolReplies().single;
+      expect(reply['id'], 'busy-result');
+      expect(reply['isError'], isTrue);
+      expect(jsonEncode(reply['result']), contains('Kumiko tools are busy'));
+      expect(connected.isCompleted, isFalse);
+    } finally {
+      peer.blockedWrite = null;
+      blocked.complete();
+    }
+    await filled;
+    peer.send(callback('later-result'));
+    await connected.future;
+    expect(toolReplies().last['id'], 'later-result');
+  });
+
+  test('OMP: An unwriteable mandatory tool refusal ends the run', () async {
+    await readySession();
+    var uses = 0;
+    await bindTools(() => uses++);
+    final blocked = peer.blockedWrite = Completer<void>();
+    fillStdin(leaveBytes: 0).ignore();
+    try {
+      peer.send(callback('cannot-answer'));
+      await peer.client.done;
+      expect(peer.client.failure, isA<OmpProtocolException>());
+      expect(toolReplies(), isEmpty);
+      expect(uses, 0);
+    } finally {
+      peer.blockedWrite = null;
+      blocked.complete();
+    }
+  });
 }

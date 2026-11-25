@@ -58,7 +58,9 @@ final class OmpToolActivity {
           _open.length >= _maxOpen) {
         return omitted(active: true);
       }
-      final (arguments, clipped) = _arguments(frame['args']);
+      final (arguments, clipped) = frame.containsKey('args')
+          ? _arguments(frame['args'])
+          : (null, false);
       final tool = _Tool(
         'omp-tool-${++_nextCard}',
         toolName,
@@ -98,7 +100,6 @@ final class OmpToolActivity {
       !_elision.hasMatch(value);
 
   static (Json?, bool) _arguments(Object? value) {
-    if (value == null) return (null, true);
     final sink = _ArgumentPrefix(_argumentBytes);
     var clipped = false;
     try {
