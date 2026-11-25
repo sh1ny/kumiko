@@ -152,10 +152,21 @@ TIER: FULL
 - **Choice:** `foreignPids` names a pid absent from our user's listing and present in the full listing made right after it (D1). A pid reaped before the first listing and reused by another process of our own user before the second would be named foreign, and on the final pass that clears an unreadable pid whose exit was not confirmed. This is accepted.
   - The window is two adjacent `proc_listpids` calls, and the pid must be both reaped and reused by our own user inside it.
   - Pre-ship review round 3 raised it as F2 (P1). The owner waived it.
+  - Pre-ship review round 5 (F2) found the requirement silent on it; with the owner's approval the requirement now states the exception.
 - **Rejected:** Not trusting foreign naming on the final pass. Every macOS scan that reaches a second pass while another user has an unreaped zombie would then fail: a fix that costs more than the risk.
 - **Reversal cost:** low. It is one predicate in `macForeignPids`.
 - **Important:** yes. It is a documented limit of the macOS cleanup guarantee.
 - **Chosen by:** user (pre-ship waiver)
+
+### D8: The pre-ship review loop ends after round 5 (owner's decision)
+
+- **Choice:** Round 5 fixes the last two blocking findings (a `/proc` row that cannot be parsed counts as hiding; the requirement states D7), and the change is pushed without another pre-ship review. The two P2 test findings of that review stay open and are listed in the PR description.
+  - Each of reviews 1 to 5 raised new findings on the fixes of the round before. The owner ended the loop; the PR's review and CI on all three OSes take over.
+  - The requirement's D7 sentence is a behaviour-change amendment the owner approved; under the same decision it gets no new design review.
+- **Rejected:** A sixth pre-ship review, or a new design review, before the push.
+- **Reversal cost:** low. A pre-ship review can still run on the PR head.
+- **Important:** yes. The head that is pushed has no passing pre-ship record.
+- **Chosen by:** user (owner, after round 5)
 
 ### Decision summary
 
@@ -169,7 +180,8 @@ TIER: FULL
 | D4 | Linux listing | Retry at most 8 times on a vanished `/proc/<n>` | Async list; FFI readdir | low | no | agent |
 | D5 | Environment errno | Unchanged (#31) | Leaf sysctl now | low | no | agent |
 | D6 | Race after the final listing | Left to OS grouping (ADR 0001, #9) | Fail on any unread pid of the final pass | low | yes | user |
-| D7 | macOS pid reused between the foreign-pid listings | Accepted (two adjacent `proc_listpids` calls) | Distrust foreign naming on the final pass | low | yes | user |
+| D7 | macOS pid reused between the foreign-pid listings | Accepted (two adjacent `proc_listpids` calls); stated in the requirement | Distrust foreign naming on the final pass | low | yes | user |
+| D8 | End of the pre-ship review loop | Push after round 5 without another review; P2 test findings open in the PR | A sixth review | low | yes | user |
 
 ## Assumptions
 
