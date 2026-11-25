@@ -16,14 +16,30 @@ const hangGuard = Duration(minutes: 2);
 
 /// Waits for [future] under [hangGuard]. If the guard expires first, throws a
 /// [StateError] naming [what] and, when given, the [state] seen so far.
+///
+/// [expiry] replaces the real [hangGuard] timer: the guard expires when it
+/// completes. Only tests of the waits themselves pass it, to fire the guard
+/// at the stage they test without a clock.
 Future<T> guarded<T>(
   Future<T> future,
   String what, {
   String Function()? state,
-}) => future.timeout(
-  hangGuard,
-  onTimeout: () => throw StateError(
-    'hang guard: no $what within $hangGuard'
-    '${state == null ? '' : ': ${state()}'}',
-  ),
-);
+  Future<void>? expiry,
+}) {
+  final expired = Completer<void>();
+  void expire() {
+    if (!expired.isCompleted) expired.complete();
+  }
+
+  final timer = expiry == null ? Timer(hangGuard, expire) : null;
+  expiry?.then((_) => expire());
+  return Future.any<T>([
+    future,
+    expired.future.then<T>(
+      (_) => throw StateError(
+        'hang guard expired waiting for $what'
+        '${state == null ? '' : ': ${state()}'}',
+      ),
+    ),
+  ]).whenComplete(() => timer?.cancel());
+}

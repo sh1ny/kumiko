@@ -123,23 +123,23 @@ String stripEscapes(String s) => s.replaceAll(_escapes, '');
 
 /// A fixture unit attached to a PTY with a reader running.
 class PtySession {
-  /// [reader], [drain] and [closeHandle] replace the real reader, the
-  /// end-of-output wait under [hangGuard] and [closePtyHandle]; only this
-  /// file's own tests pass them.
+  /// [reader] and [closeHandle] replace the real reader and
+  /// [closePtyHandle], and [drainExpiry] fires the hang guard of the
+  /// end-of-output wait in [dispose] instead of its timer (see [guarded]).
+  /// Only this file's own tests pass them.
   PtySession(
     this.unit,
     this.pty, {
     PtyReader? reader,
-    Drain? drain,
+    this.drainExpiry,
     void Function(int handle)? closeHandle,
   }) : reader = reader ?? PtyReader(pty.readHandle),
-       _drain = drain ?? guarded,
        _closeHandle = closeHandle ?? closePtyHandle;
 
   final ContainedUnit unit;
   final PtyHandles pty;
   final PtyReader reader;
-  final Drain _drain;
+  final Future<void>? drainExpiry;
   final void Function(int handle) _closeHandle;
   ConsoleCloser? _closer;
 
@@ -162,23 +162,27 @@ class PtySession {
 
   /// Ends the unit, drains the reader and releases the handles.
   ///
-  /// If a step fails (output does not end under [hangGuard], the console does
-  /// not close, the unit does not terminate), it still closes the write handle
-  /// and the Windows unit, leaves the read handle open unless output ended
-  /// (the reader isolate may be blocked reading it), and then fails naming
-  /// the unit and the step's error.
+  /// If a step fails (terminate reports a failure or throws, the console does
+  /// not close, output does not end under [hangGuard]), it still closes the
+  /// write handle and the Windows unit, leaves the read handle open unless
+  /// output ended (the reader isolate may be blocked reading it), and then
+  /// fails naming the unit and every failure.
   Future<void> dispose() async {
-    Object? failure;
+    final failures = <Object>[];
     try {
-      await unit.terminate();
+      final result = await unit.terminate();
+      if (!result.terminated) {
+        failures.add('terminate failed: ${result.reason}');
+      }
       await closeConsole();
-      await _drain(
+      await guarded(
         reader.done,
         'end of output after dispose',
         state: reader._show,
+        expiry: drainExpiry,
       );
     } on Object catch (e) {
-      failure = e;
+      failures.add(e);
     }
     if (reader.atEof) {
       _closeHandle(pty.readHandle);
@@ -186,22 +190,14 @@ class PtySession {
     _closeHandle(pty.writeHandle);
     final u = unit;
     if (u is WindowsUnit) u.close();
-    if (failure != null) {
+    if (failures.isNotEmpty) {
       throw StateError(
         'PTY session of unit pid ${unit.pid} was not disposed cleanly: '
-        '$failure',
+        '${failures.join('; ')}',
       );
     }
   }
 }
-
-/// The end-of-output wait of [PtySession.dispose]: [guarded] unless a test
-/// replaces it.
-typedef Drain = Future<void> Function(
-  Future<void> done,
-  String what, {
-  String Function()? state,
-});
 
 /// Starts the fixture host [exe] with `--fixture <fixtureArgs>` as a PTY unit
 /// on the current OS.
