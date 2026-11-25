@@ -95,7 +95,7 @@ Red rows cover new or changed behavior. Green rows carry forward tests from the 
 
 ## 5. Verify the integrated change
 
-- [ ] 5.1 Run the affected OMP host fixture/client/driver and Flutter pane tests, including existing Continue refusal, launch gates, Send ordering and containment. Verify the OMP pane with fixtures only. Ensure every mapped test is green and no timed correctness gate was added. Run the required `mise run check` and `mise run test:host` after the gaming check, or obtain their CI equivalent on the exact PR commit when gaming blocks them. Verify `openspec validate omp-rpc-permissions-and-tools --strict`.
+- [x] 5.1 Run the affected OMP host fixture/client/driver and Flutter pane tests, including existing Continue refusal, launch gates, Send ordering and containment. Verify the OMP pane with fixtures only. Ensure every mapped test is green and no timed correctness gate was added. Run the required `mise run check` and `mise run test:host` after the gaming check, or obtain their CI equivalent on the exact PR commit when gaming blocks them. Verify `openspec validate omp-rpc-permissions-and-tools --strict`.
 
 ## Workflow follow-up
 
