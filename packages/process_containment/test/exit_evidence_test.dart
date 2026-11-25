@@ -106,6 +106,20 @@ void main() {
     });
   });
 
+  group('macOS foreign pids', () {
+    test("a pid absent from our user's listing is foreign", () {
+      expect(macForeignPids({10, 11, 12}, ownListing: {11, 99}), {10, 12});
+    });
+
+    test('a pid listed under our user is not foreign', () {
+      expect(macForeignPids({11}, ownListing: {11}), isEmpty);
+    });
+
+    test('a listing that threw names no pid', () {
+      expect(macForeignPids({10, 11}, ownListing: null), isEmpty);
+    });
+  });
+
   group('Linux /proc mount', () {
     String mountinfo(String superOptions, {String point = '/proc'}) => [
       '23 1 8:32 / / rw,relatime shared:1 - ext4 /dev/sdc rw',

@@ -145,6 +145,9 @@ class _LinuxProcessTable extends PosixProcessTable {
     };
   }
 
+  @override
+  Set<int> foreignPids(Set<int> pids) => const {};
+
   bool _exitConfirmed(int pid, int? known, {required bool hidden}) {
     try {
       if (known != null) {
@@ -371,6 +374,16 @@ Set<int> macConfirmedExits({
       pid,
 };
 
+/// The pids of [pids] absent from [ownListing], one complete macOS
+/// `proc_listpids(PROC_UID_ONLY, <our uid>)` listing, or none when that
+/// listing could not be made.
+///
+/// The listing filters on each proc's credentials, which a zombie keeps
+/// until it is reaped, so our own zombies are in it and only another user's
+/// pids (or pids already reaped) are named (issue #40, design D1).
+Set<int> macForeignPids(Set<int> pids, {required Set<int>? ownListing}) =>
+    ownListing == null ? const {} : pids.difference(ownListing);
+
 /// The snapshot the macOS short read gives once the full read was refused.
 ///
 /// A zombie is reported as a zombie whoever owns it: it is not running, and
@@ -399,6 +412,7 @@ class _MacProcessTable extends PosixProcessTable {
   _MacProcessTable() : super._();
 
   static const _procAllPids = 1;
+  static const _procUidOnly = 4;
   static const _procPidtbsdinfo = 3;
   static const _bsdInfoSize = 136; // sizeof(struct proc_bsdinfo)
   static const _szomb = 5;
@@ -410,11 +424,16 @@ class _MacProcessTable extends PosixProcessTable {
   static const _enomem = 12;
 
   @override
-  List<int> listPids() {
+  List<int> listPids() => _listPids(_procAllPids, 0);
+
+  /// One `proc_listpids` listing of [type] and [typeinfo]. The kernel stops
+  /// early only when the buffer is full, so a listing that leaves room to
+  /// spare is complete.
+  List<int> _listPids(int type, int typeinfo) {
     // proc_listpids returns the number of bytes; grow the buffer until the
     // result leaves room to spare.
     var capacity = 0;
-    final probe = _procListpids(_procAllPids, 0, nullptr, 0);
+    final probe = _procListpids(type, typeinfo, nullptr, 0);
     if (probe <= 0) {
       throw ProcessTableUnlistable('proc_listpids errno ${errno()}');
     }
@@ -423,8 +442,8 @@ class _MacProcessTable extends PosixProcessTable {
       final buffer = calloc<Uint8>(capacity);
       try {
         final bytes = _procListpids(
-          _procAllPids,
-          0,
+          type,
+          typeinfo,
           buffer.cast<Void>(),
           capacity,
         );
@@ -463,6 +482,19 @@ class _MacProcessTable extends PosixProcessTable {
       listed = null;
     }
     return macConfirmedExits(pids: pids, readStartTimes: read, listed: listed);
+  }
+
+  /// The pids absent from one complete listing of our user's processes
+  /// (`PROC_UID_ONLY`), decided by [macForeignPids] (design D1).
+  @override
+  Set<int> foreignPids(Set<int> pids) {
+    Set<int>? own;
+    try {
+      own = _listPids(_procUidOnly, currentUid).toSet();
+    } on ProcessTableUnlistable {
+      own = null;
+    }
+    return macForeignPids(pids, ownListing: own);
   }
 
   /// The start time from a successful full `arg` 0 read, else null.

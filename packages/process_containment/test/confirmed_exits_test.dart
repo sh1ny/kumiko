@@ -55,7 +55,27 @@ void main() {
     expect(table.confirmedExits({child.pid: start}), {child.pid});
   });
 
-  test('an unreaped zombie is confirmed on Linux and not on macOS', () async {
+  test("only another user's pid is foreign", () async {
+    final child = await Process.start('sleep', ['600']);
+    addTearDown(() async {
+      child.kill(ProcessSignal.sigkill);
+      await child.exitCode;
+    });
+
+    final foreign = table.foreignPids({1, child.pid});
+    if (Platform.isMacOS) {
+      expect(foreign, {1}, reason: 'launchd runs as root');
+    } else {
+      // A null Linux snapshot means the pid is gone: confirmedExits judges.
+      expect(foreign, isEmpty);
+    }
+  });
+
+  // A real unreaped zombie of our own would fail every real marker scan
+  // running at the same time on macOS, where it is not confirmed (design
+  // D2), so this case runs on Linux only (AGENTS.md rule 9). The macOS
+  // answer is covered by the decoding tests.
+  test('an unreaped zombie leader is confirmed on Linux', () async {
     // The shell starts a child that blocks on a copy of the shell's stdin,
     // prints its pid and becomes `sleep`, which never reaps it.
     final parent = await Process.start('sh', [
@@ -87,13 +107,7 @@ void main() {
       'the released child to be an unreaped zombie',
     );
 
-    final confirmed = table.confirmedExits({child: start});
-    if (Platform.isMacOS) {
-      // Still listed until its parent reaps it (design D2).
-      expect(confirmed, isEmpty);
-    } else {
-      // A zombie leader counted as its only thread.
-      expect(confirmed, {child});
-    }
-  });
+    // A zombie leader counted as its only thread.
+    expect(table.confirmedExits({child: start}), {child});
+  }, testOn: 'linux');
 }

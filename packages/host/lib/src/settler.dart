@@ -323,5 +323,8 @@ class _NoKillTable implements ProcessTable {
   Set<int> confirmedExits(Map<int, int?> pids) => _inner.confirmedExits(pids);
 
   @override
+  Set<int> foreignPids(Set<int> pids) => _inner.foreignPids(pids);
+
+  @override
   bool kill(int pid, int startTime) => false;
 }

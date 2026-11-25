@@ -10,6 +10,7 @@ class FakeProcessTable implements ProcessTable {
     required this.onSnapshot,
     required this.onEnvironment,
     this.onConfirmedExits,
+    this.onForeignPids,
     this.onKill,
     this.onList,
   });
@@ -24,14 +25,18 @@ class FakeProcessTable implements ProcessTable {
   /// Without it, nothing is ever confirmed.
   final bool Function(int pid, int? startTime)? onConfirmedExits;
 
+  /// Whether a pid with a null snapshot belongs to another user. Without
+  /// it, no pid is foreign.
+  final bool Function(int pid)? onForeignPids;
+
   /// The listing for the [listCount]th call (1-based); without it, [pids].
   final List<int> Function(int listCount)? onList;
 
   final List<(int, int)> kills = [];
 
-  /// Every `listPids` and `confirmedExits` call in order, as `list` or
-  /// `confirm:<pids>`, so a test can assert that a confirmation came
-  /// before a listing.
+  /// Every `listPids`, `confirmedExits` and `foreignPids` call in order, as
+  /// `list`, `confirm:<pids>` or `foreign:<pids>`, so a test can assert that
+  /// a confirmation came before a listing.
   final List<String> calls = [];
 
   /// How often `confirmedExits` was asked about each pid.
@@ -64,6 +69,15 @@ class FakeProcessTable implements ProcessTable {
     return {
       for (final MapEntry(key: pid, value: start) in pids.entries)
         if (onConfirmedExits?.call(pid, start) ?? false) pid,
+    };
+  }
+
+  @override
+  Set<int> foreignPids(Set<int> pids) {
+    calls.add('foreign:${pids.join(',')}');
+    return {
+      for (final pid in pids)
+        if (onForeignPids?.call(pid) ?? false) pid,
     };
   }
 

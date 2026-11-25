@@ -78,6 +78,17 @@ abstract interface class ProcessTable {
   /// stays with issue #31 (C5).
   Set<int> confirmedExits(Map<int, int?> pids);
 
+  /// The pids of [pids] that the table can show belong to another user,
+  /// for pids whose snapshot was null and so gave no uid. It names a pid
+  /// only on that evidence, names none when its read fails, and never waits.
+  ///
+  /// On macOS every zombie answers a null snapshot. A zombie keeps its
+  /// credentials until it is reaped, so a listing of the current user's
+  /// processes still holds our own zombies: only another user's pids are
+  /// named. On Linux a null snapshot means the pid is gone, which
+  /// [confirmedExits] judges, so none are named (issue #40, design D1).
+  Set<int> foreignPids(Set<int> pids);
+
   /// Sends `SIGKILL` to [pid] only while its start time is still
   /// [startTime]. True when the signal was sent or the process is gone;
   /// false when the kill failed.
