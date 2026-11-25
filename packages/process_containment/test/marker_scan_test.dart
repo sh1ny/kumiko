@@ -319,7 +319,99 @@ void main() {
       final result = await scan(table);
 
       expect(result.failure, isNull, reason: '$result');
-      expect(table.calls, ['list', 'foreign:43']);
+      // Asked only after its exit is not confirmed; still not read, so the
+      // second listing runs (pre-ship review F1).
+      expect(table.calls, [
+        'list',
+        'confirm:43',
+        'foreign:43',
+        'list',
+        'confirm:43',
+        'foreign:43',
+      ]);
+    });
+
+    test(
+      'a null-snapshot pid named foreign still gets a second listing',
+      () async {
+        // Reaped between the listings, the pid is absent from our user's
+        // listing too: naming it is no evidence it never was ours (F1).
+        final table = FakeProcessTable(
+          pids: [44],
+          onList: (n) => n == 1 ? [44] : [45],
+          onSnapshot: (pid) => pid == 44 ? null : _snap(145),
+          onEnvironment: (pid) => pid == 45
+              ? ['$unitMarkerVariable=$marker']
+              : fail('pid $pid was not readable'),
+          onForeignPids: (pid) => pid == 44,
+        );
+
+        final result = await scan(table);
+
+        expect(result.failure, 'marked-survivor:45');
+      },
+    );
+
+    test('a process that exits after its failed read on the final pass is '
+        'unreadable', () async {
+      // Pass 2 refuses 52, which exits only once 53 has been read: a
+      // check deferred to the end of the pass would clear it (F2).
+      var killed = false;
+      var exited = false;
+      var secondPass = false;
+      final table = FakeProcessTable(
+        pids: [50, 52, 53],
+        onSnapshot: (pid) {
+          if (pid == 50) return killed ? null : _snap(150);
+          if (pid == 53 && secondPass) exited = true;
+          return _snap(100 + pid);
+        },
+        onEnvironment: (pid) {
+          if (pid == 50) return ['$unitMarkerVariable=$marker'];
+          if (pid == 52 && secondPass) throw const ProcessReadDenied();
+          return ['PATH=/bin'];
+        },
+        onKill: (_, _) => killed = true,
+        onList: (n) {
+          secondPass = n == 2;
+          return [50, 52, 53];
+        },
+        onConfirmedExits: (pid, _) => pid == 50 || (pid == 52 && exited),
+      );
+
+      final result = await scan(table);
+
+      expect(result.failure, 'scan-unreadable:52');
+    });
+
+    test('each exit check runs inside its own pid iteration', () async {
+      // The pass clock covers every exit check (F3).
+      late final FakeProcessTable table;
+      table = FakeProcessTable(
+        pids: [90, 91],
+        onList: (n) => n == 1 ? [90, 91] : [],
+        onSnapshot: (pid) => _snap(100 + pid),
+        onEnvironment: (_) => throw const ProcessReadDenied(),
+        onConfirmedExits: (_, _) => true,
+      );
+
+      final result = await scan(
+        table,
+        passExpired: () {
+          table.calls.add('check');
+          return false;
+        },
+      );
+
+      expect(result.failure, isNull, reason: '$result');
+      expect(table.calls, [
+        'list',
+        'check',
+        'confirm:90',
+        'check',
+        'confirm:91',
+        'list',
+      ]);
     });
 
     test(
@@ -444,7 +536,10 @@ void main() {
 
         expect(result.failure, 'scan-timeout');
         expect(table.kills, [(80, 180)]);
-        expect(table.calls, ['list'], reason: 'no exit check, no second pass');
+        expect(table.calls, [
+          'list',
+          'confirm:81',
+        ], reason: 'no exit check past the expiry, no settle, no second pass');
       },
     );
   });

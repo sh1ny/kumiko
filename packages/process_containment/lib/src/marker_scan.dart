@@ -65,8 +65,9 @@ class _Pass {
   /// listing order, with their start times where known.
   final pending = <int, int?>{};
 
-  /// A pid could not be read, and its full exit was confirmed.
-  bool exitConfirmed = false;
+  /// A pid could not be read, whatever the exit check found: the second
+  /// listing must come after that evidence.
+  bool notRead = false;
 
   final matches = <MarkedProcess>[];
 }
@@ -80,15 +81,17 @@ class _Pass {
 /// A process the first pass cannot read (a refused or null snapshot, a
 /// zombie, or a failed environment read) is *pending* unless
 /// [ProcessTable.confirmedExits] confirms its full exit. The population
-/// filter (another uid, or a known start before the window, and
-/// [ProcessTable.foreignPids] for null snapshots) runs first. A pending pid
-/// is cleared only by a confirmed exit before the second listing, at the
-/// end of the first pass or while the scan settles for at most 1 s; it
+/// filter (another uid, or a known start before the window) runs first; a
+/// null snapshot whose exit is not confirmed is skipped when
+/// [ProcessTable.foreignPids] names it. Every exit check runs at the pid's
+/// own failed read, inside the pass clock, never deferred to the end of the
+/// pass. A pending pid is cleared only by a confirmed exit before the
+/// second listing, at that check or while the scan settles for at most 1 s; it
 /// disappearing later clears nothing, and the settle's expiry is never an
 /// outcome in itself: an unconfirmed pid is `scan-unreadable` (issue #40,
 /// design D1, C1).
 ///
-/// Any match, pending pid or confirmed exit makes the second pass run, so
+/// Any match or pid not read, pending or not, makes the second pass run, so
 /// the second listing always comes after the exit evidence. The second
 /// pass only verifies: it kills nothing, a marked process there is a
 /// survivor, and a pid there that cannot be read and is not confirmed
@@ -126,7 +129,7 @@ Future<MarkerScanResult> runMarkerScan({
     // The timeout already fails the scan; its pending pids are dropped.
     return MarkerScanResult(timedOut: true, killed: killed);
   }
-  if (first.matches.isEmpty && first.pending.isEmpty && !first.exitConfirmed) {
+  if (first.matches.isEmpty && !first.notRead) {
     return const MarkerScanResult();
   }
 
@@ -158,10 +161,13 @@ Future<_Pass> _pass(
   final window = oldestCreatedAt.subtract(const Duration(seconds: 1));
   final clock = Stopwatch()..start();
   const prefix = '$unitMarkerVariable=';
-  // Pids not read, with their start times where known; and those whose
-  // null snapshot gave no uid.
-  final unread = <int, int?>{};
-  final ownerUnknown = <int>{};
+  // The exit check of a pid that could not be read, at that read (D1).
+  void unread(int pid, int? start, {bool ownerUnknown = false}) {
+    pass.notRead = true;
+    if (table.confirmedExits({pid: start}).contains(pid)) return;
+    if (ownerUnknown && table.foreignPids({pid}).contains(pid)) return;
+    pass.pending[pid] = start;
+  }
 
   for (var i = 0; i < pids.length; i++) {
     if (expired?.call() ?? clock.elapsed >= timeout) {
@@ -175,12 +181,11 @@ Future<_Pass> _pass(
     try {
       seen = table.snapshot(pid);
     } on ProcessReadDenied {
-      unread[pid] = null;
+      unread(pid, null);
       continue;
     }
     if (seen == null) {
-      unread[pid] = null;
-      ownerUnknown.add(pid);
+      unread(pid, null, ownerUnknown: true);
       continue;
     }
     if (seen.uid != table.currentUid) continue;
@@ -188,7 +193,7 @@ Future<_Pass> _pass(
     final start = seen.startTime == 0 ? null : seen.startTime;
     if (start != null && seen.startedAt.isBefore(window)) continue;
     if (seen.zombie) {
-      unread[pid] = start;
+      unread(pid, start);
       continue;
     }
 
@@ -197,7 +202,7 @@ Future<_Pass> _pass(
       env = table.environment(pid);
     } on Exception catch (e) {
       if (e is! ProcessGone && e is! ProcessReadDenied) rethrow;
-      unread[pid] = start;
+      unread(pid, start);
       continue;
     }
     for (final entry in env) {
@@ -207,22 +212,6 @@ Future<_Pass> _pass(
         pass.matches.add(MarkedProcess(pid, seen.startTime, marker));
       }
       break;
-    }
-  }
-  if (pass.timedOut) return pass;
-
-  if (ownerUnknown.isNotEmpty) {
-    final foreign = table.foreignPids(ownerUnknown);
-    unread.removeWhere((pid, _) => foreign.contains(pid));
-  }
-  if (unread.isNotEmpty) {
-    final confirmed = table.confirmedExits(unread);
-    for (final MapEntry(key: pid, value: start) in unread.entries) {
-      if (confirmed.contains(pid)) {
-        pass.exitConfirmed = true;
-      } else {
-        pass.pending[pid] = start;
-      }
     }
   }
   return pass;

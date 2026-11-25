@@ -357,8 +357,9 @@ bool procHidesPids(String mountinfo) {
 /// reads, or null when it could not be made. It holds live and zombie
 /// processes alike, so a pid absent from it has been reaped.
 ///
-/// No call behind this waits, and no errno is read: a failed `arg` 0 read
-/// says only that exit has begun, and the zombie-aware `arg` 1 read can
+/// No call behind this waits, and no errno is taken as evidence (a listing
+/// that fails reads it only for its diagnostic): a failed `arg` 0 read says
+/// only that exit has begun, and the zombie-aware `arg` 1 read can
 /// sleep. So a zombie that its parent has not reaped is not confirmed
 /// (issue #40, design D2).
 Set<int> macConfirmedExits({
@@ -467,8 +468,8 @@ class _MacProcessTable extends PosixProcessTable {
 
   /// macOS evidence of a full exit (design D2): one leaf `arg` 0 read per
   /// pid with a known start time, then one complete listing after those
-  /// reads, decided by [macConfirmedExits]. Nothing here waits or reads
-  /// errno.
+  /// reads, decided by [macConfirmedExits]. Nothing here waits, and no
+  /// errno is evidence: a failed listing reads it only for its message.
   @override
   Set<int> confirmedExits(Map<int, int?> pids) {
     final read = <int, int>{
