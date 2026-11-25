@@ -45,6 +45,7 @@ class HostOptions {
     this.settleDeadline = defaultSettleDeadline,
     this.consoleCloseTimeout = defaultConsoleCloseTimeout,
     this.postExitReadDeadline = defaultPostExitReadDeadline,
+    this.limitOmpClose = _timeLimit,
     this.toolEndpointFault,
     this.revokedSecretsKept = defaultRevokedSecretsKept,
     this.draftDeadline = defaultDraftDeadline,
@@ -116,6 +117,12 @@ class HostOptions {
   final Duration settleDeadline;
   final Duration consoleCloseTimeout;
   final Duration postExitReadDeadline;
+
+  /// Test fixtures can await real peer events without testing the production
+  /// close grace clock.
+  final Future<T> Function<T>(Future<T>, Duration) limitOmpClose;
+  static Future<T> _timeLimit<T>(Future<T> event, Duration budget) =>
+      event.timeout(budget);
 
   /// Makes creating the tool endpoint fail with this cause (tests only).
   final String? toolEndpointFault;

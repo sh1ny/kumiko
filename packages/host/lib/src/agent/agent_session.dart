@@ -79,6 +79,10 @@ class AgentSession {
     this.client.onPermission = _nativePermission;
     this.client.onQuestion = _nativeQuestion;
     this.client.onRetired = _nativeRetired;
+    if (this.client case final OmpRuntimeDriver omp) {
+      omp.hasPendingApproval = (id) =>
+          _permissions.values.any((permission) => permission.rpcId == id);
+    }
     this.client.reserveEarly = reserveEarly;
     this.client.releaseEarly = releaseEarly;
     _publish();
@@ -683,7 +687,8 @@ class AgentSession {
     // started the bridge. The idle publication below carries the change.
     if (!_firstTurnEnded) {
       _firstTurnEnded = true;
-      if (_tools?.status == AgentToolsStatus.notYetUsed &&
+      if (client is! OmpRuntimeDriver &&
+          _tools?.status == AgentToolsStatus.notYetUsed &&
           !_toolsAuthenticated) {
         _tools = const AgentTools(AgentToolsStatus.notStarted);
       }
@@ -836,7 +841,8 @@ class AgentSession {
         ),
       );
     }
-    final id = '$runId:permission-${++_requestId}';
+    final omp = client is OmpRuntimeDriver;
+    final id = '${omp ? sessionId : runId}:permission-${++_requestId}';
     final options = <String, Object?>{};
     final display = <AgentPermissionOption>[];
     for (var i = 0; i < request.choices.length; i++) {
@@ -868,6 +874,14 @@ class AgentSession {
       }
     }
     final preview = request.preview == null ? null : _redact(request.preview!);
+    if (omp && preview != request.preview) {
+      _observeWrite(client.reply(request.id, request.cancellation));
+      return encodeAgentEvent(
+        AgentEvent.notice(
+          'OMP approval declined because its full details cannot be displayed.',
+        ),
+      );
+    }
     final title = _redact(
       request.threadId == null
           ? request.title
@@ -1377,6 +1391,28 @@ class AgentSession {
     final running = _hasTurn || _delegatedWork;
     _set(AgentState.closing);
     _deadline?.cancel();
+    if (client case final OmpRuntimeDriver omp) {
+      omp.revokeHostTools();
+      omp.draining = true;
+      final cancellation = [
+        for (final permission in _permissions.values)
+          RuntimeReply(permission.rpcId, permission.cancellation!),
+      ];
+      _cancelPermissions(answer: false);
+      if (running && _nativeSessionId != null) {
+        try {
+          _observeNativeControl(
+            omp.cancelWithPermissions(_nativeSessionId!, cancellation),
+            'Interruption',
+          );
+        } on Object catch (error) {
+          // Close cannot retry. Stop accepting frames; the service still
+          // owns stdin closure and containment settlement.
+          omp.client.fail(error);
+        }
+      }
+      return;
+    }
     _cancelPermissions();
     if (running && _nativeSessionId != null) {
       final cancellation = client.cancel(_nativeSessionId!);
@@ -1405,10 +1441,11 @@ class AgentSession {
 
   void fail(Object error) {
     if (_disposed || _terminal) return;
+    if (client case final OmpRuntimeDriver omp) omp.revokeHostTools();
     failure = error;
     _deadline?.cancel();
     _hasTurn = false;
-    _cancelPermissions();
+    _cancelPermissions(answer: client is! OmpRuntimeDriver);
     _set(AgentState.failed);
   }
 
@@ -1427,6 +1464,10 @@ class AgentSession {
     client.onPermission = null;
     client.onQuestion = null;
     client.onRetired = null;
+    if (client case final OmpRuntimeDriver omp) {
+      omp.revokeHostTools();
+      omp.hasPendingApproval = null;
+    }
     client.onTurnIdentity = null;
     client.onDelegatedChanged = null;
     client.onNativeTurnEnded = null;

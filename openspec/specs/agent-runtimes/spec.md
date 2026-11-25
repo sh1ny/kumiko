@@ -183,7 +183,7 @@ For each Claude ACP session the host SHALL record the adapter name and version r
 
 #### Scenario: Unqualified version
 
-- **WHEN** the user chooses Continue on a saved session, and the adapter started for it reports a version that is not on the qualified list while advertising `loadSession` and `resume`
+- **WHEN** the user chooses Continue, and the adapter started for it reports a version that is not on the qualified list while advertising `loadSession` and `resume`
 
 - **THEN** the pane shows *resume unavailable: adapter version not qualified* with that version, the adapter is terminated, and the saved record is unchanged
 
@@ -215,7 +215,7 @@ For each Claude ACP session the host SHALL record the adapter name and version r
 
 - **WHEN** OMP at or above the minimum version starts without an exact-version evidence row
 
-- **THEN** the run claims prompt, streamed replies and Stop from the native contract, and reports Continue, steering, permissions and Kumiko tools unavailable with the reason that this Kumiko version does not support them for OMP
+- **THEN** the session accepts and streams a prompt, can Stop it, and shows a supported approval and root tool card when OMP emits them. A successful registration or call updates Kumiko tools status without any exact-version evidence row. Continue and steering remain unavailable.
 
 ### Requirement: Kumiko tool delivery is qualified per adapter version
 Real qualification of an adapter version SHALL record a `kumiko tool call` item per OS: an authenticated `kumiko_session_info` call that succeeded, or the failure observed. The qualification checker SHALL require that item for every listed Claude adapter version and every recorded Codex evidence section. A version whose tool delivery was observed to fail SHALL be listed with that failure, and sessions on that exact version SHALL report it. Source: ADR 0005 qualification in M1; ADR 0012 decisions 5 to 7.

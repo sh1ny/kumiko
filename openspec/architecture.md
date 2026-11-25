@@ -24,7 +24,7 @@ flowchart LR
         H --> S[(Local SQLite store<br/>ADR 0003)]
         H -- "ACP stdio JSON-RPC" --> CC[Claude Code ACP adapter]
         H -- "native stdio JSON-RPC (ADR 0015)" --> CX[Codex App Server root and child threads]
-        H -- "private stdio NDJSON v1 (ADR 0016)" --> OMP[OMP native RPC]
+        H <-->|"private stdio NDJSON v1: chat and host tools (ADR 0016, ADR 0018)"| OMP[OMP native RPC]
         H -- "PTY bytes" --> SH[Shells and TUIs]
         CC -- "MCP stdio" --> B[mcp-bridge]
         CX -- "isolated per-run MCP when proven safe" --> B
@@ -42,7 +42,7 @@ flowchart LR
 | Execution host (`host`) | Spawns and owns runtimes, adapters, PTYs and the tool service; sole local-store writer; terminates all children when the desktop goes | Live process table, session records, local store | Desktop (ADR 0002); runtimes (ACP/RPC); PTYs; bridge endpoint (ADR 0005) |
 | Runtime adapters (in host) | Map each runtime onto the session model, with capabilities justified by its runtime contract | Per-session protocol state | ACP for Claude; native App Server for Codex; native RPC for OMP (ADR 0004, ADR 0015, ADR 0016) |
 | Agent adapter unit (one per live session) | Run one adapter and its tool descendants in containment; no shared multi-session adapter process | Host `AgentService` / `AgentSession` own the unit, shared runtime state, permissions, event relay and stderr ring; `UnitManager` owns containment and ledger settlement | ACP v1, native Codex App Server or native OMP RPC over piped stdio; desktop via one per-session event channel plus capability-gated control (ADR 0012, ADR 0016) |
-| Tool service and `mcp-bridge` | Expose authorized Kumiko operations to agent sessions | Session-secret map (one grant per live session run), per-run Kumiko tools status inputs, per-role tool catalog | MCP stdio to the runtime; per-user local endpoint to the host: owner-only named pipe or `tools.sock`, secret handshake, then the built-in MCP subset (ADR 0005, ADR 0013) |
+| Tool service and `mcp-bridge` | Expose authorized Kumiko operations to agent sessions | Per-role catalog and shared call authorization; MCP session-secret grants; private OMP run bindings | Claude and Codex use the owner-only pipe or `tools.sock` via MCP stdio and a secret handshake. OMP calls through private runtime stdio without a secret (ADR 0005, ADR 0013, ADR 0018). |
 | Local store | Durable local state | SQLite files: the main store, and the separate draft store `drafts.sqlite` owned by one host draft worker isolate (ADR 0014) | Host only, under the profile lock (ADR 0003, ADR 0014) |
 | `domain` package | Pure rules shared by local and team paths | None | Library |
 | `process_containment` package | `dart:ffi` bindings to OS process APIs: Windows job objects and process creation, POSIX `setsid`/`execve`/`killpg`, process start times, the marker scan, file identity. No native library of its own | None | Library used by the host, and by the desktop for the Windows outer job only |
@@ -124,7 +124,7 @@ tool activity, approval, Stop, close/descendants, Kumiko call and auth-required;
 optional recovery/steering/questions/child observations remain separate. Missing
 evidence does not disable compatible versions. Claude qualification stays unchanged.
 
-### Native OMP contract (ADR 0016)
+### Native OMP contract (ADR 0016, ADR 0018)
 
 One contained process serves one root `omp` session over private v1 NDJSON.
 Both peers require `agent` and `omp`. OMP 18.20.1 or newer enters through a
@@ -135,8 +135,18 @@ reviewed transport contract, not evidence of real-runtime qualification.
 Prompt admission commits user input; the native prompt result settles the turn.
 Stop uses `abort` without killing the process. Close aborts a running turn,
 ends input, drains output and gives the leader up to 2 s to exit before
-containment settlement. Interactive requests are declined; OMP's own approval
-mode is unchanged. Continue, steering and Kumiko tool delivery are unavailable.
+containment settlement. OMP's native policy determines when tools ask. Kumiko
+shows only recognized one-shot and denial choices and maps reported root tool
+activity to the shared cards. It cancels unsupported dialogs. Continue and
+steering remain unavailable.
+
+The host registers its allowed tools once with `set_host_tools`; each call
+uses the authority of that live run's private connection. Successful
+registration shows *not yet used*. Only a successful authorized call shows
+*connected*. A failed registration leaves chat usable. An OMP run does not
+start a bridge or depend on the MCP endpoint. A full event queue pauses
+unread callbacks and approvals in that run without holding desktop control
+or other runtimes.
 
 | OMP resource | Bound | At limit/failure |
 |---|---|---|
@@ -146,13 +156,15 @@ mode is unchanged. Continue, steering and Kumiko tool delivery are unavailable.
 | Events before admission | 64 entries or 256 KiB | Fail the session with a protocol reason |
 | Open-message delta flags | 64 messages, 256 flagged indexes/message, 4 KiB encoded/message ID | Release on `message_end`; overflow fails without eviction |
 | Decline and notify notices | 8 per turn or idle period, plus one overflow notice | Continue declining without more notices |
+| Pending decisions and callbacks | 16 decisions; 8 authorized result writes; native request ids ≤ 4 KiB encoded | Cancel excess decisions and refuse excess calls. An unanswered required write that cannot be admitted fails the run |
+| Tool cards | 16 open and 256 recently closed ids per prompt; tool ids and names ≤ 256 encoded bytes; retained argument preview ≤ 4 KiB per open card | Mark omissions at the open cap; evict the oldest closed id at its cap |
 
 ### Shared contracts
 
 - **Desktop-host protocol:** defined in the `host_protocol` package, versioned with a `hello` handshake and capability set (ADR 0002). Both sides use the generated or shared types only.
 - **Runtime protocols:** ACP v1 (stdio newline-delimited JSON-RPC; load/resume only when advertised and qualified for the exact adapter name/version); native Codex App Server stdio JSON-RPC (minimum 0.166.0); native OMP RPC v1 stdio NDJSON (minimum 18.20.1). Neither native path has an exact-version allowlist. Shared control uses `Capability.agent`; Codex controls and OMP start require their negotiated capability gates. Raw runtime frames never cross to the desktop (ADR 0004, ADR 0012, ADR 0015, ADR 0016).
 - **Runtime qualification evidence:** [`docs/qualification/`](../docs/qualification/) holds real per-version, per-OS observations independently of archived change artifacts. `qualified_adapters.dart` and `tool/check_qualification.dart` keep claims tied to this evidence; fake-agent tests prove Kumiko behaviour, not real-adapter qualification. Claude agent ACP 0.99.1 currently claims load and resume from confirmed Windows observations; Linux/macOS user items remain unproven, permitting only provisional ACCEPTED across platforms. The Windows-only M1 close is an explicit scope decision, not an upgrade of this qualification evidence.
-- **Kumiko tools:** MCP tool schemas are owned by the host tool service and versioned with it. Authorization is per call against the session's role (ADR 0005). The endpoint, bridge handshake, MCP subset, per-role catalog, tools status semantics and the `kumiko tool call` qualification item with `toolDeliveryFailures` are defined in ADR 0013.
+- **Kumiko tools:** The host owns the catalog and checks each call against the bound run, its role and its immutable target. ADR 0013 defines the MCP endpoint, handshake, envelope and bridge status. ADR 0018 adds the OMP native callback route with the same operation checks but no listener, bridge or secret. The desktop receives status, not callback RPC traffic. Exact-version qualification records stay separate from native admission.
 - **Local store schema:** a version table in each database, with forward migrations run by the host (ADR 0003).
 - **Team API (M4+):** negotiated compatibility in both upgrade orders (D26). There are no message types for private data (ADR 0007).
 - **Dependency rule:** no package may add product-analytics, crash-report or remote-logging SDKs (D25). A dependency audit enforces this in CI.
@@ -248,6 +260,7 @@ Lists accepted ADRs, plus proposed ones marked as such.
 | [0015](../docs/adr/0015-native-codex-app-server-and-child-identity.md) | Accepted 2026-11-10: native Dart Codex driver; one contained App Server/root; minimum 0.166.0 without allowlist; native controls/history; isolated root MCP and attributed child activity | 0004 Codex ACP choice only; 0012 Codex exact-version gating only; refines 0005 decision 2 and 0013 decisions 7/8/12; amends 0014 decision 1 for active children. All unaffected decisions, including Claude qualification, immutable authority, drafts and terminals remain in force. |
 | [0016](../docs/adr/0016-native-omp-rpc-transport.md) | Native OMP v1 NDJSON; contained 18.20.1 minimum-version probe; `omp` peer gate and `omp-rpc` saved identity; decline interactive requests and omit Kumiko tool delivery | 0004 decision 2 and 0012 decisions 5–7 for OMP admission only; 0005 decision 2 and 0013 decisions 7, 8 and 12 for OMP tool delivery only |
 | [0017](../docs/adr/0017-tests-never-gate-on-elapsed-time.md) | Tests assert order and outcome, never elapsed time; deadlines under test run on an injected or fake clock or are fired explicitly; real time only as generous hang guards; measurements are printed as `measured:` and checked by qualification, not gated. The ten shared rules live in `AGENTS.md`. Amends 0014's Consequences sentence that the draft latency test fails above a 100 ms median; the 100 ms reopening threshold stands | - |
+| [0018](../docs/adr/0018-omp-approvals-and-private-host-tools.md) | OMP one-shot approvals under native policy, root tool cards and private authorized callbacks with no MCP secret | ADR 0016 decision 5 for interaction and tool delivery only; refines the shared tool and transport rules for OMP |
 
 ADR 0004 and 0012 remain in force for their unchanged scope; the native-runtime
-exceptions are indexed in ADR 0015 and ADR 0016. Accepted ADR files are not rewritten.
+exceptions are indexed in ADR 0015, ADR 0016 and ADR 0018. Accepted ADR files are not rewritten.

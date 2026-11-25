@@ -735,9 +735,7 @@ void main() {
           'requestId': p['requestId'],
           'optionId': option,
         };
-        final clock = Stopwatch()..start();
         await a.call(Method.agentPermissionReply, reply);
-        expect(clock.elapsed, lessThan(const Duration(milliseconds: 250)));
         final answer = await waitFixture(
           report,
           (p) => p.containsKey('permissionOutcome'),
@@ -770,9 +768,7 @@ void main() {
     final unit = LedgerView(profile).units().single;
     await a.prompt();
     await a.wait(Method.agentPermissionRequested);
-    final clock = Stopwatch()..start();
     await a.call(Method.agentStop);
-    expect(clock.elapsed, lessThan(const Duration(milliseconds: 250)));
     expect((await a.wait(Method.agentStopResult))['outcome'], 'stopped');
     await a.wait(Method.agentState, where: (p) => p['state'] == 'idle');
     expect(

@@ -140,6 +140,14 @@ class _AgentPaneViewState extends State<AgentPaneView> {
               padding: const EdgeInsets.symmetric(horizontal: 8),
               child: Text(label, key: Key('agent-tools-$id')),
             ),
+          if (link.runtimeKind == 'omp')
+            const Padding(
+              padding: EdgeInsets.symmetric(horizontal: 8),
+              child: Text(
+                'OMP settings decide when tools ask. Kumiko only answers '
+                'supported one-shot approvals and does not sandbox OMP.',
+              ),
+            ),
           if (link.transcript.hiddenEntries > 0)
             Text(
               'Earlier messages hidden (${link.transcript.hiddenEntries} entries)',
@@ -421,6 +429,8 @@ class _AgentPaneViewState extends State<AgentPaneView> {
     }
     if (entry.kind == AgentEventKind.tool ||
         entry.kind == AgentEventKind.toolUpdate) {
+      final title = fields['title'] ?? 'Tool';
+      final kind = fields['toolKind'];
       return Card(
         key: ValueKey(entry),
         child: Padding(
@@ -428,9 +438,7 @@ class _AgentPaneViewState extends State<AgentPaneView> {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              SelectableText(
-                '${fields['title'] ?? 'Tool'} · ${fields['toolKind'] ?? 'tool'}',
-              ),
+              SelectableText(kind == null ? '$title' : '$title · $kind'),
               Text(entry.statuses.join(' → ')),
               for (final location in (fields['locations'] as List? ?? const []))
                 SelectableText(

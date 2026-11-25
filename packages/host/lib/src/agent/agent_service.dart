@@ -34,6 +34,7 @@ import 'omp/version_probe.dart';
 import 'qualification.dart';
 import 'qualified_adapters.dart';
 import 'runtime_profile_service.dart';
+import 'tools/tool_catalog.dart';
 import 'tools/tool_endpoint.dart';
 import 'tools/tool_service.dart';
 import 'tool_secret_redaction.dart';
@@ -1034,9 +1035,7 @@ class AgentService {
       // `session/new` can authenticate and wait for the record. Without an
       // endpoint the adapter gets no `kumiko` entry at all.
       final endpoint = tools.endpoint;
-      if (omp) {
-        toolsUnavailableReason = 'Kumiko tools are not delivered to OMP yet';
-      } else if (endpoint != null) {
+      if (!omp && endpoint != null) {
         grant = tools.register(
           target: target.path,
           role: ToolRole.coding,
@@ -1135,37 +1134,57 @@ class AgentService {
       late final _Agent a;
       if (saved == null) {
         final startingIo = io;
-        stage = omp ? 'session' : 'session/new';
-        await io.client.newSession(
-          target.path,
-          mcpServers: mcpServers,
-          onCreated: (native) {
-            _available();
-            final now = DateTime.now().toUtc().toIso8601String();
-            final record = AgentSessionRecord(
-              id: _newId(),
-              runtimeKind: profile.runtimeKind,
-              runtimeProfileId: profile.id,
-              adapter: adapter,
-              nativeSessionId: native,
-              target: target,
-              createdAt: now,
-              updatedAt: now,
-            );
-            stage = 'record';
-            _insert(record);
-            a = _registerNativeSession(
-              record: record,
-              io: startingIo,
-              reservation: reservation,
-              claims: claims,
-              grant: grant,
-              mcpServers: mcpServers,
-              toolsUnavailableReason: toolsUnavailableReason,
-            );
-            live = a;
-          },
-        );
+        void created(String native) {
+          _available();
+          final now = DateTime.now().toUtc().toIso8601String();
+          final record = AgentSessionRecord(
+            id: _newId(),
+            runtimeKind: profile.runtimeKind,
+            runtimeProfileId: profile.id,
+            adapter: adapter,
+            nativeSessionId: native,
+            target: target,
+            createdAt: now,
+            updatedAt: now,
+          );
+          stage = 'record';
+          _insert(record);
+          a = _registerNativeSession(
+            record: record,
+            io: startingIo,
+            reservation: reservation,
+            claims: claims,
+            grant: grant,
+            mcpServers: mcpServers,
+            toolsUnavailableReason: toolsUnavailableReason,
+          );
+          live = a;
+        }
+
+        if (startingIo.client case final OmpRuntimeDriver driver) {
+          stage = 'session';
+          final native = await driver.newSession(target.path);
+          _available();
+          stage = 'tools/config';
+          final reason =
+              _deliveryFailure(adapter) ??
+              await driver.registerHostTools(ToolRole.coding);
+          if (driver.isClosed) {
+            throw driver.failure ??
+                OmpProtocolException('OMP tool transport closed');
+          }
+          toolsUnavailableReason = reason == null
+              ? null
+              : clampUtf8(_redact(reason), 4096);
+          created(native);
+        } else {
+          stage = 'session/new';
+          await startingIo.client.newSession(
+            target.path,
+            mcpServers: mcpServers,
+            onCreated: created,
+          );
+        }
       } else {
         if (!claims.canLoad && !claims.canResume) {
           throw _resumeUnavailable(
@@ -1343,6 +1362,10 @@ class AgentService {
     // bounded history restoration succeed. Early bridge calls keep waiting.
     if (record.runtimeKind != 'codex' || mode == null) grant?.bind(record.id);
     a.relay.onFailure = (error) => _fail(a, error);
+    final nativeTools = switch (io.client) {
+      final OmpRuntimeDriver driver when driver.hostToolsRegistered => driver,
+      _ => null,
+    };
     a.session = AgentSession(
       sessionId: record.id,
       driver: io.client,
@@ -1354,6 +1377,8 @@ class AgentService {
               AgentToolsStatus.unavailable,
               reason: toolsUnavailableReason,
             )
+          : nativeTools != null
+          ? const AgentTools(AgentToolsStatus.notYetUsed)
           : _startTools(grant, record.adapter),
       toolsAuthenticated: grant?.everAuthenticated ?? false,
       redact: (text) => _redact(text, grant),
@@ -1386,6 +1411,21 @@ class AgentService {
       onStopResult: (p) => _notify(a, Method.agentStopResult, p.toJson()),
       onTurnEnded: (p) => _notify(a, Method.agentTurnEnded, p.toJson()),
     );
+    if (nativeTools != null) {
+      nativeTools.bindHostTools(
+        ToolRunFacts(
+          sessionId: record.id,
+          role: ToolRole.coding,
+          runtime: record.runtimeKind,
+          adapter: record.adapter.name,
+          version: record.adapter.version,
+          target: record.target.path,
+        ),
+        onSucceeded: () {
+          if (_current(a) && !a.ending && !a.exited) a.session.toolsCalled();
+        },
+      );
+    }
     if (mode == null) {
       a.session.ready(nativeSessionId: record.nativeSessionId);
     }
@@ -1789,20 +1829,26 @@ class AgentService {
         if (!_current(a)) return;
         final driver = a.io.client;
         if (driver is OmpRuntimeDriver) {
-          driver.draining = true;
           final pending = driver.pendingTurn;
           if (pending != null && !attachTimeout) {
             try {
-              await pending.timeout(const Duration(seconds: 2));
+              await options.limitOmpClose(pending, const Duration(seconds: 2));
             } on Object {
               // Close still owns stdin and containment.
             }
           }
+          driver.stopNativeWrites();
           try {
             const grace = Duration(seconds: 2);
             final clock = Stopwatch()..start();
-            await a.io.launch.pipes!.stdin.close().timeout(grace);
-            await a.io.launch.unit.exitCode.timeout(grace - clock.elapsed);
+            await options.limitOmpClose(
+              a.io.launch.pipes!.stdin.close(),
+              grace,
+            );
+            await options.limitOmpClose(
+              a.io.launch.unit.exitCode,
+              grace - clock.elapsed,
+            );
           } on Object {
             // The unit is still settled below even when EOF is not enough.
           }

@@ -83,39 +83,66 @@ class OmpClient implements RuntimeTransport {
     Object? Function(Object? data)? onSuccess,
   }) {
     try {
-      if (isClosed) throw _closedError();
-      if (_pending.length >= 32) {
-        throw RpcException('busy', '32 OMP commands pending');
-      }
-      final next = _issued + 1;
-      final id = 'k$next';
-      final bytes = _encode({...fields, 'type': type, 'id': id});
-      final result = Completer<Object?>();
-      _writer
-          .admit(
-            bytes,
-            beforeWrite: () {
-              onIssued?.call(id);
-              _issued = next;
-              final timer = Timer(timeout, () {
-                final expired = _pending.remove(id);
-                expired?.result.completeError(
-                  TimeoutException('OMP $type timed out', timeout),
-                );
-              });
-              _pending[id] = _Pending(result, timer, onSuccess);
-            },
-          )
-          .ignore();
-      return result.future;
+      return admitCommand(
+        type,
+        fields: fields,
+        timeout: timeout,
+        onIssued: onIssued,
+        onSuccess: onSuccess,
+      );
     } on Object catch (error, stack) {
       return Future.error(error, stack);
     }
   }
 
-  /// Write an uncorrelated frame such as an extension UI reply.
-  Future<void> send(Json frame) =>
-      Future.sync(() => _writer.admit(_encode(frame)));
+  /// Admits a complete command and any preceding replies as one write.
+  /// Capacity refusals are synchronous and consume neither bytes nor an id.
+  Future<Object?> admitCommand(
+    String type, {
+    Json fields = const {},
+    Iterable<Json> before = const [],
+    Duration timeout = const Duration(seconds: 60),
+    void Function(String id)? onIssued,
+    Object? Function(Object? data)? onSuccess,
+  }) {
+    if (isClosed) throw _closedError();
+    if (_pending.length >= 32) {
+      throw RpcException('busy', '32 OMP commands pending');
+    }
+    final next = _issued + 1;
+    final id = 'k$next';
+    final command = {...fields, 'type': type, 'id': id};
+    final bytes = before.isEmpty
+        ? _encode(command)
+        : utf8.encode(
+            [
+              for (final frame in before) jsonEncode(frame),
+              jsonEncode(command),
+              '',
+            ].join('\n'),
+          );
+    final result = Completer<Object?>();
+    _writer
+        .admit(
+          bytes,
+          beforeWrite: () {
+            onIssued?.call(id);
+            _issued = next;
+            final timer = Timer(timeout, () {
+              final expired = _pending.remove(id);
+              expired?.result.completeError(
+                TimeoutException('OMP $type timed out', timeout),
+              );
+            });
+            _pending[id] = _Pending(result, timer, onSuccess);
+          },
+        )
+        .ignore();
+    return result.future;
+  }
+
+  /// Writes an uncorrelated frame. A busy writer refuses synchronously.
+  Future<void> send(Json frame) => _writer.admit(_encode(frame));
 
   static List<int> _encode(Json frame) => utf8.encode('${jsonEncode(frame)}\n');
 

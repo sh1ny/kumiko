@@ -7,7 +7,7 @@ Gives agent sessions that Kumiko launches authenticated, per-call authorized acc
 ## Requirements
 
 ### Requirement: The host serves Kumiko tools on a per-user local endpoint
-The host SHALL run one Kumiko tool service for its lifetime. Its only listening surface SHALL be a per-user local endpoint: a named pipe on Windows that only the current OS user can open and that rejects remote clients, and a Unix domain socket in the owner-only profile directory on Linux and macOS. The endpoint SHALL be removed when the host exits. Source: ADR 0005 decision 2 and consequences.
+The host SHALL run one Kumiko tool service for its lifetime. Its only listening surface SHALL be a per-user local MCP endpoint: a named pipe on Windows that only the current OS user can open and that rejects remote clients, and a Unix domain socket in the owner-only profile directory on Linux and macOS. The endpoint SHALL be removed when the host exits. OMP SHALL use only its private runtime connection for Kumiko tools. Source: ADR 0005 decision 2 and consequences; owner decision S2.
 
 #### Scenario: Endpoint exists while the host runs
 - **WHEN** the host has started with a usable profile
@@ -18,8 +18,8 @@ The host SHALL run one Kumiko tool service for its lifetime. Its only listening 
 - **THEN** on Windows the pipe's access list read back from the OS grants access only to the current user's SID and the local system account, and the pipe rejects remote clients; on Linux and macOS the socket's directory is accessible only to its owner and the socket's mode is `0600`
 
 #### Scenario: Endpoint cannot be created
-- **WHEN** the endpoint cannot be created at host start (for example a socket path longer than the platform limit)
-- **THEN** the host still starts, the failure and its reason are written to the host log, and every session shows Kumiko tools *unavailable* with that reason
+- **WHEN** the host cannot create the MCP endpoint
+- **THEN** the host still starts, logs the reason and reports tools unavailable for sessions that use MCP. OMP still registers and serves its authorized tools over private RPC.
 
 #### Scenario: Endpoint is removed on exit
 - **WHEN** the host exits after the desktop goes away
@@ -31,7 +31,7 @@ The host SHALL run one Kumiko tool service for its lifetime. Its only listening 
 
 ### Requirement: Each live session run receives a Kumiko MCP entry
 
-When the host creates or continues a session while its tool endpoint is available, it SHALL pass exactly one stdio MCP server entry named `kumiko` through the runtime-specific session configuration: ACP session requests or native Codex per-run App Server configuration. OMP runs SHALL receive no entry until OMP delivery is implemented, SHALL report Kumiko tools unavailable with that reason and SHALL keep no grant. The entry's command SHALL be the bundled host executable in `mcp-bridge` mode. Kumiko SHALL NOT write or change any repository file or runtime configuration to deliver it. Source: ADR 0005 decisions 2 and 6; D14, D15.
+When the host creates or continues a Claude or Codex session while its tool endpoint is available, it SHALL pass exactly one stdio MCP server entry named `kumiko` through the runtime-specific session configuration: ACP session requests or native Codex per-run App Server configuration. The entry's command SHALL be the bundled host executable in `mcp-bridge` mode. OMP SHALL get no MCP entry or MCP grant. Kumiko SHALL NOT write or change any repository file or runtime configuration to deliver its tools. Source: ADR 0005 decisions 2 and 6; D14, D15.
 
 #### Scenario: New session gets the entry
 
@@ -93,12 +93,12 @@ When the host creates or continues a session while its tool endpoint is availabl
 
 #### Scenario: OMP run without tool delivery
 
-- **WHEN** the user starts an OMP session while the tool endpoint is available
+- **WHEN** the user starts an OMP session
 
-- **THEN** OMP receives no kumiko entry, no workspace or OMP configuration file is created or changed, the session shows Kumiko tools *unavailable* with the reason that delivery to OMP is not supported yet, and no grant for that run remains
+- **THEN** the run gets no `kumiko` MCP entry, bridge secret or bridge process, and no workspace or OMP configuration file is created or changed to register Kumiko tools
 
 ### Requirement: Tool connections are authenticated by a per-run session secret
-Each live session run SHALL get a fresh random secret of at least 256 bits. It SHALL be passed only through the MCP entry's environment, never stored, logged, sent to the desktop or written to a repository file. The secret SHALL map to exactly one live session run, and SHALL be revoked when that run's adapter exits, the session is closed, or the host exits. A connection SHALL present its secret before any MCP message is processed. Source: ADR 0005 decision 3.
+Each live session run using MCP SHALL get a fresh random secret of at least 256 bits. It SHALL be passed only through the MCP entry's environment, never stored, logged, sent to the desktop or written to a repository file. The secret SHALL map to exactly one live session run, and SHALL be revoked when that run's adapter exits, the session is closed, or the host exits. A connection SHALL present its secret before any MCP message is processed. For OMP the host SHALL use the identity of the private connection it opened for the run, never a transferable credential or a caller-supplied session identifier. Source: ADR 0005 decision 3; owner decision S2.
 
 #### Scenario: Correct secret
 - **WHEN** a bridge connects with the secret of a live session run
@@ -117,8 +117,12 @@ Each live session run SHALL get a fresh random secret of at least 256 bits. It S
 - **THEN** the connection is refused as for a wrong secret
 
 #### Scenario: Secret stays out of the record and the desktop
-- **WHEN** a session is started and then listed through the session records method and observed in its control messages
+- **WHEN** a session using MCP is started and then listed through the session records method and observed in its control messages
 - **THEN** neither the stored record nor any message to the desktop contains the secret
+
+#### Scenario: Two OMP runs use the same native call id
+- **WHEN** two OMP connections carry a call with the same native id, or one call supplies another run's identity as an argument
+- **THEN** a valid call returns only its connection's own run information. A call with the extra identity argument is refused and returns no other run's data.
 
 ### Requirement: Every tool call is authorized against its session
 The host SHALL check every tool call, at the time of the call, against the calling session's role, owner and target. A tool the role does not permit SHALL be absent from that session's tool list and SHALL be rejected if called. Identifiers in tool arguments SHALL NOT grant access. Source: ADR 0005 decision 4; backlog `agent-tool-access` *Kumiko tool authority is authenticated and scoped* and *Tool operations respect the session role*.
@@ -155,7 +159,7 @@ The tool service SHALL offer `kumiko_session_info` to `coding` sessions. It SHAL
 - **THEN** the result still names the session's original target workspace
 
 ### Requirement: The Kumiko tools status reports only what was observed
-Each live session SHALL have one Kumiko tools status shown in its chat pane: *not yet used*, *connected*, *not started by the adapter*, or *unavailable* with a reason. *connected* SHALL be shown only after an authenticated tool call succeeded in that session run. Source: ADR 0005 decision 5.
+Each live session SHALL show one Kumiko tools status. MCP runs use *not yet used*, *connected*, *not started by the adapter*, or *unavailable* with a reason. A registered OMP run stays *not yet used* until a call succeeds and never reports a bridge startup state. *Connected* SHALL require a successful authorized tool call in that run. Source: ADR 0005 decision 5.
 
 #### Scenario: Successful call connects
 - **WHEN** a session starts, and later its bridge authenticates and a `kumiko_session_info` call succeeds
@@ -166,7 +170,7 @@ Each live session SHALL have one Kumiko tools status shown in its chat pane: *no
 - **THEN** the pane does not show *connected*
 
 #### Scenario: Adapter never starts the bridge
-- **WHEN** a session's first turn ends and no bridge has authenticated for that session run
+- **WHEN** an MCP session's first turn ends and no bridge has authenticated for that session run
 - **THEN** the pane shows *Kumiko tools: not started by the adapter*; a later authentication changes it to *not yet used*, and a later successful call to *connected*
 
 #### Scenario: Bridge authenticated during session creation
@@ -184,6 +188,10 @@ Each live session SHALL have one Kumiko tools status shown in its chat pane: *no
 #### Scenario: Continue resets the status
 - **WHEN** a session showing *connected* exits and the user continues it
 - **THEN** the new run shows *not yet used* until a call succeeds in that run
+
+#### Scenario: OMP registers but has not used a tool
+- **WHEN** OMP confirms the catalog and ends a turn without a successful host call
+- **THEN** the pane still shows *not yet used*. A later successful `kumiko_session_info` result changes it to *connected* in the same run.
 
 ### Requirement: The bridge ends with its session or its host
 The `mcp-bridge` process SHALL run as a descendant of its session's adapter inside that session's contained unit. It SHALL exit when its standard input closes or its endpoint connection ends, and SHALL never itself open a listening surface. Source: ADR 0001, ADR 0005 decision 2, ADR 0012 decision 1.
@@ -239,3 +247,22 @@ Test-only native canary audits SHALL bind content selection before a run, and le
 - **WHEN** an exact owner-approved manifest binds changed-artifacts-v4 and an entry present in the baseline is absent after the run
 - **THEN** v4 behaves as v3, and a removed file, directory, link or socket that is not at a protected leaf name is counted in a content-free removed-entries counter without making the audit incomplete
 - **AND** a removed protected entry, and every traversal, metadata, storage or admission error that leaves entries out of the after-run inventory, keep the audit incomplete; a new or changed file elsewhere is still selected and scanned; no removed name or path is emitted, and changed-artifacts-v3, v2, v1 and legacy keep their recorded behaviour
+
+### Requirement: OMP registers and invokes authorized Kumiko tools over private RPC
+The host SHALL register its allowed catalog once per OMP run. A call SHALL require confirmed registration and a live, bound run. The host SHALL use the same role, owner, immutable target and argument checks as MCP. Failed registration SHALL leave tools unavailable without overwriting another tool or retrying registration. Source: direction D14 and D15; owner decision S2.
+
+#### Scenario: OMP calls the registered tool
+- **WHEN** an OMP run confirms registration and invokes `kumiko_session_info` with empty arguments after its session record exists
+- **THEN** the result identifies the calling run's saved Kumiko session, coding role, adapter and version, and original target, even after the user switches workspaces
+
+#### Scenario: Registration unavailable
+- **WHEN** OMP rejects registration, reports a name collision, returns a mismatched acknowledgement or does not confirm before its deadline while the transport remains live
+- **THEN** chat stays usable and tools report unavailable with a bounded reason. Further callbacks do not run tools. Kumiko sends no second registration and overwrites no existing definition.
+
+#### Scenario: Host tool call refused
+- **WHEN** a callback names an unknown tool or supplies invalid arguments, or arrives before the run is bound or after authority is withdrawn
+- **THEN** no operation runs and the tools status cannot advance. If the connection is still usable and the request can be correlated, OMP receives an error for that id.
+
+#### Scenario: Host tool callback is cancelled or transport is lost
+- **WHEN** OMP withdraws a callback, or the private connection ends
+- **THEN** withdrawal cannot trigger a second reply or a successful result for another callback. An ended connection loses all tool authority, and a late result cannot update another run's status.

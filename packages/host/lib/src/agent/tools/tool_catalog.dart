@@ -1,3 +1,5 @@
+import 'package:host_protocol/host_protocol.dart';
+
 /// The role a tool grant was issued for. M1 has only [coding].
 enum ToolRole {
   coding('coding');
@@ -39,14 +41,14 @@ class ToolDefinition {
     'annotations': {'readOnlyHint': readOnly},
   };
 
-  /// Validates MCP `arguments` against the schema. Returns an error message,
-  /// or null when valid. An absent value counts as an empty object.
-  String? validate(Object? arguments) {
+  String? _validate(Object? arguments, {required bool describeInput}) {
     if (arguments == null) return null;
     if (arguments is! Map) return 'arguments must be an object';
     for (final key in arguments.keys) {
       if (!properties.contains(key)) {
-        return 'unexpected argument "$key"';
+        return describeInput
+            ? 'unexpected argument "$key"'
+            : 'unexpected argument';
       }
     }
     return null;
@@ -80,4 +82,47 @@ abstract final class ToolCatalog {
     }
     return null;
   }
+
+  /// Uses the same role and schema checks for authenticated MCP requests and
+  /// private OMP callbacks. OMP does not need echoed native input in errors.
+  static String? refusal(
+    ToolRole role,
+    Object? name,
+    Object? arguments, {
+    bool describeInput = true,
+  }) {
+    if (name is! String) return 'invalid params: missing tool name';
+    final tool = find(role, name);
+    if (tool == null) {
+      return describeInput
+          ? 'tool $name is not available'
+          : 'tool is not available';
+    }
+    final invalid = tool._validate(arguments, describeInput: describeInput);
+    return invalid == null ? null : 'invalid arguments: $invalid';
+  }
+}
+
+/// Facts captured by the host, never by a tool caller. Both tool transports
+/// use the same read-only operation and bind it to their own run.
+final class ToolRunFacts {
+  const ToolRunFacts({
+    required this.sessionId,
+    required this.role,
+    required this.runtime,
+    required this.adapter,
+    required this.version,
+    required this.target,
+  });
+
+  final String sessionId, runtime, adapter, version, target;
+  final ToolRole role;
+
+  Json sessionInfo() => {
+    'sessionId': sessionId,
+    'role': role.wire,
+    'runtime': runtime,
+    'adapter': {'name': adapter, 'version': version},
+    'target': {'path': target},
+  };
 }
