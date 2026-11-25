@@ -118,6 +118,51 @@ class _LinuxProcessTable extends PosixProcessTable {
     ],
   );
 
+  /// The fields of a `/proc/<pid>/stat` text after `comm`, which may hold
+  /// spaces and parentheses: `[state, ppid, ...]`.
+  static List<String> _statFields(String stat) =>
+      stat.substring(stat.lastIndexOf(')') + 2).split(' ');
+
+  static bool _vanished(FileSystemException e) {
+    final code = e.osError?.errorCode;
+    return code == enoent || code == esrch;
+  }
+
+  /// Linux evidence of a full exit (design D2): `/proc/<pid>` gone, unless
+  /// `/proc` is mounted with `hidepid`; another start time; or one status
+  /// read of a zombie leader counted as the only thread.
+  @override
+  Set<int> confirmedExits(Map<int, int?> pids) {
+    bool hidden;
+    try {
+      hidden = procHidesPids(File('/proc/self/mountinfo').readAsStringSync());
+    } on FileSystemException {
+      hidden = true;
+    }
+    return {
+      for (final MapEntry(key: pid, value: known) in pids.entries)
+        if (_exitConfirmed(pid, known, hidden: hidden)) pid,
+    };
+  }
+
+  bool _exitConfirmed(int pid, int? known, {required bool hidden}) {
+    try {
+      if (known != null) {
+        final ticks = int.tryParse(
+          _statFields(File('/proc/$pid/stat').readAsStringSync())[19],
+        );
+        if (ticks != null && ticks != known) return true;
+      }
+      return linuxStatusConfirmsExit(
+        File('/proc/$pid/status').readAsStringSync(),
+      );
+    } on FileSystemException catch (e) {
+      return !hidden && _vanished(e);
+    } on RangeError {
+      return false; // a stat text we cannot parse proves nothing
+    }
+  }
+
   @override
   ProcessSnapshot? snapshot(int pid) {
     final String stat;
@@ -126,12 +171,10 @@ class _LinuxProcessTable extends PosixProcessTable {
       stat = File('/proc/$pid/stat').readAsStringSync();
       status = File('/proc/$pid/status').readAsStringSync();
     } on FileSystemException catch (e) {
-      final code = e.osError?.errorCode;
-      if (code == enoent || code == esrch) return null;
+      if (_vanished(e)) return null;
       throw const ProcessReadDenied();
     }
-    // "pid (comm) S ppid ..."; comm may hold spaces and parentheses.
-    final rest = stat.substring(stat.lastIndexOf(')') + 2).split(' ');
+    final rest = _statFields(stat);
     final state = rest[0];
     final ticks = int.parse(rest[19]); // field 22, starttime
     final uidMatch = RegExp(
@@ -403,6 +446,50 @@ class _MacProcessTable extends PosixProcessTable {
     throw const ProcessTableUnlistable('proc_listpids kept growing');
   }
 
+  /// macOS evidence of a full exit (design D2): one leaf `arg` 0 read per
+  /// pid with a known start time, then one complete listing after those
+  /// reads, decided by [macConfirmedExits]. Nothing here waits or reads
+  /// errno.
+  @override
+  Set<int> confirmedExits(Map<int, int?> pids) {
+    final read = <int, int>{
+      for (final MapEntry(key: pid, value: known) in pids.entries)
+        if (known != null) pid: ?_leafStartTime(pid),
+    };
+    Set<int>? listed;
+    try {
+      listed = listPids().toSet();
+    } on ProcessTableUnlistable {
+      listed = null;
+    }
+    return macConfirmedExits(pids: pids, readStartTimes: read, listed: listed);
+  }
+
+  /// The start time from a successful full `arg` 0 read, else null.
+  int? _leafStartTime(int pid) {
+    final buffer = calloc<Uint8>(_bsdInfoSize);
+    try {
+      final n = _procPidinfo(
+        pid,
+        _procPidtbsdinfo,
+        0,
+        buffer.cast<Void>(),
+        _bsdInfoSize,
+      );
+      if (n < _bsdInfoSize) return null;
+      return _startMicros(
+        ByteData.sublistView(buffer.asTypedList(_bsdInfoSize)),
+      );
+    } finally {
+      calloc.free(buffer);
+    }
+  }
+
+  /// `pbi_start_tvsec` and `pbi_start_tvusec` of a `proc_bsdinfo`, in µs.
+  static int _startMicros(ByteData info) =>
+      info.getUint64(120, Endian.host) * 1000000 +
+      info.getUint64(128, Endian.host);
+
   @override
   ProcessSnapshot? snapshot(int pid) {
     final buffer = calloc<Uint8>(_bsdInfoSize);
@@ -423,9 +510,7 @@ class _MacProcessTable extends PosixProcessTable {
       final data = ByteData.sublistView(buffer.asTypedList(_bsdInfoSize));
       final status = data.getUint32(4, Endian.host);
       final uid = data.getUint32(20, Endian.host);
-      final sec = data.getUint64(120, Endian.host);
-      final usec = data.getUint64(128, Endian.host);
-      final micros = sec * 1000000 + usec;
+      final micros = _startMicros(data);
       return ProcessSnapshot(
         startTime: micros,
         startedAt: DateTime.fromMicrosecondsSinceEpoch(micros),

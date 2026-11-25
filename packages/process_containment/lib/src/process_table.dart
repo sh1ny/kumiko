@@ -16,7 +16,10 @@ class ProcessSnapshot {
 
   final int uid;
 
-  /// Exited but not yet reaped: nothing of it runs, so it counts as gone.
+  /// Exited but not yet reaped. On Linux this is the state of the thread
+  /// group's leader only: other threads of the process can still run, and
+  /// start processes. The kill guard, spawn and unit listing read it as
+  /// exited; the marker scan asks [ProcessTable.confirmedExits] instead.
   final bool zombie;
 }
 
@@ -57,6 +60,23 @@ abstract interface class ProcessTable {
   /// The process's `NAME=value` environment entries. Throws [ProcessGone] or
   /// [ProcessReadDenied].
   List<String> environment(int pid);
+
+  /// The pids of [pids] (pid to start time, or null when unknown) whose full
+  /// exit the kernel confirms: no thread of the process remains, or the pid
+  /// now belongs to another process. Every other answer, including a refused
+  /// or failed read, leaves the pid out. No call behind it waits.
+  ///
+  /// A null or zombie snapshot alone is not that evidence, and neither is
+  /// the exit-in-progress flag, a macOS `proc_pidinfo` failure or errno, a
+  /// Linux `Threads:` count other than exactly 1, a stat state paired with a
+  /// separate `Threads:` read, or a Linux ENOENT while `/proc` is mounted
+  /// with `hidepid`. Linux ENOENT or ESRCH on `/proc/<pid>` is evidence only
+  /// without `hidepid` (issue #40, design D2, C3).
+  ///
+  /// Only the marker scan uses it. The kill guard, spawn and unit listing
+  /// keep their snapshot-based zombie handling, and the macOS errno binding
+  /// stays with issue #31 (C5).
+  Set<int> confirmedExits(Map<int, int?> pids);
 
   /// Sends `SIGKILL` to [pid] only while its start time is still
   /// [startTime]. True when the signal was sent or the process is gone;

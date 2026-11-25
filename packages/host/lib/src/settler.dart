@@ -320,5 +320,8 @@ class _NoKillTable implements ProcessTable {
   List<String> environment(int pid) => _inner.environment(pid);
 
   @override
+  Set<int> confirmedExits(Map<int, int?> pids) => _inner.confirmedExits(pids);
+
+  @override
   bool kill(int pid, int startTime) => false;
 }
