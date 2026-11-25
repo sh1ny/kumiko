@@ -5,10 +5,28 @@ import 'dart:typed_data';
 import 'package:host/src/agent/omp/omp_client.dart';
 import 'package:host/src/agent/omp/omp_driver.dart';
 import 'package:host/src/agent/runtime_driver.dart';
+import 'package:host/src/agent/tools/tool_catalog.dart';
 import 'package:host_protocol/host_protocol.dart';
 import 'package:test/test.dart';
 
 import 'support/omp_peer.dart';
+
+class _ManualTimer implements Timer {
+  _ManualTimer(this.callback);
+  final void Function() callback;
+  bool _active = true;
+  @override
+  bool get isActive => _active;
+  @override
+  int get tick => _active ? 0 : 1;
+  @override
+  void cancel() => _active = false;
+  void fire() {
+    if (!_active) throw StateError('registration timer is inactive');
+    _active = false;
+    callback();
+  }
+}
 
 void main() {
   late OmpPeer peer;
@@ -852,4 +870,117 @@ void main() {
     expect(starts.last.toolCallId, isNot(starts.first.toolCallId));
     expect(cards(events).last.status, 'completed');
   });
+
+  const facts = ToolRunFacts(
+    sessionId: 'saved-session',
+    role: ToolRole.coding,
+    runtime: 'omp',
+    adapter: 'omp-rpc',
+    version: '18.20.1',
+    target: '/immutable',
+  );
+
+  Json callback(String id) => {
+    'type': 'host_tool_call',
+    'id': id,
+    'toolCallId': 'activity-$id',
+    'toolName': ToolCatalog.sessionInfoName,
+    'arguments': <String, Object?>{},
+  };
+
+  Iterable<Json> toolReplies() =>
+      peer.writes.where((f) => f['type'] == 'host_tool_result');
+
+  Future<void> commandBarrier(String id) async {
+    final pending = peer.client.request('get_state');
+    peer.result(id);
+    await pending;
+  }
+
+  Future<void> bindTools(void Function() connected) async {
+    final registration = driver.registerHostTools(ToolRole.coding);
+    expect(peer.writes.last['type'], 'set_host_tools');
+    peer.result('k3', {
+      'toolNames': [ToolCatalog.sessionInfoName],
+    });
+    expect(await registration, isNull);
+    driver.bindHostTools(facts, onSucceeded: connected);
+  }
+
+  test('OMP: Late registration acknowledgement cannot enable tools', () async {
+    await readySession();
+    late _ManualTimer timer;
+    final result = runZoned(
+      () => driver.registerHostTools(ToolRole.coding),
+      zoneSpecification: ZoneSpecification(
+        createTimer: (self, parent, zone, duration, callback) =>
+            timer = _ManualTimer(callback),
+      ),
+    );
+    expect(peer.writes.last['type'], 'set_host_tools');
+    timer.fire();
+    expect(await result, contains('timed out'));
+    peer.result('k3', {
+      'toolNames': [ToolCatalog.sessionInfoName],
+    });
+    peer.send(callback('late'));
+    await commandBarrier('k4');
+    expect(toolReplies().single, containsPair('isError', true));
+    expect(
+      peer.writes.where((f) => f['type'] == 'set_host_tools'),
+      hasLength(1),
+    );
+  });
+
+  test('OMP: Withdrawn or failed write cannot mark a tool connected (withdrawn and full)', () async {
+    await readySession();
+    final connected = Completer<void>();
+    var uses = 0;
+    await bindTools(() {
+      uses++;
+      connected.complete();
+    });
+    final blocked = peer.blockedWrite = Completer<void>();
+    for (var n = 0; n < 8; n++) {
+      peer.send(callback('call-$n'));
+      peer.send({'type': 'host_tool_cancel', 'targetId': 'call-$n'});
+    }
+    peer.send(callback('excess'));
+    await commandBarrier('k4');
+    expect(toolReplies().map((f) => f['id']), [
+      for (var n = 0; n < 8; n++) 'call-$n',
+      'excess',
+    ]);
+    expect(
+      toolReplies().where((f) => f['isError'] == true).single['id'],
+      'excess',
+    );
+    expect(uses, 0);
+    peer.blockedWrite = null;
+    blocked.complete();
+    await commandBarrier('k5');
+    expect(uses, 0);
+    peer.send(callback('new'));
+    await connected.future;
+    expect(uses, 1);
+    expect(toolReplies().last['id'], 'new');
+  });
+
+  test(
+    'OMP: Withdrawn or failed write cannot mark a tool connected (failed)',
+    () async {
+      await readySession();
+      var uses = 0;
+      await bindTools(() => uses++);
+      final blocked = peer.blockedWrite = Completer<void>();
+      peer.send(callback('failed-write'));
+      await commandBarrier('k4');
+      expect(toolReplies().single['id'], 'failed-write');
+      peer.blockedWrite = null;
+      blocked.completeError(StateError('write failed'));
+      await peer.client.done;
+      expect(uses, 0);
+      expect(peer.client.failure, isA<OmpProtocolException>());
+    },
+  );
 }

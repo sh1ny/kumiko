@@ -5,7 +5,9 @@ import 'package:host_protocol/host_protocol.dart';
 
 import '../qualification.dart';
 import '../runtime_driver.dart';
+import '../tools/tool_catalog.dart';
 import 'omp_client.dart';
+import 'omp_host_tools.dart';
 import 'omp_tool_activity.dart';
 
 class OmpRuntimeDriver extends RuntimeDriver {
@@ -13,6 +15,7 @@ class OmpRuntimeDriver extends RuntimeDriver {
     client.normalizeNotification = _frame;
     unawaited(
       client.done.then((_) {
+        _hostTools.revoke();
         final turn = _turn;
         if (turn == null) return;
         _turn = null;
@@ -28,6 +31,7 @@ class OmpRuntimeDriver extends RuntimeDriver {
   static const continueUnavailable =
       'OMP Continue is not supported in this Kumiko version';
   final OmpClient client;
+  late final _hostTools = OmpHostTools(client);
   final String version;
   final _ready = Completer<void>();
   final _messages = <String, Set<int>>{};
@@ -46,7 +50,27 @@ class OmpRuntimeDriver extends RuntimeDriver {
   bool Function(String id)? hasPendingApproval;
 
   @override
-  void observeExit() => _nativeExited = true;
+  void observeExit() => stopNativeWrites();
+
+  /// Stop issuing replies before deliberately closing native stdin.
+  void stopNativeWrites() {
+    _nativeExited = true;
+    _hostTools.revoke();
+  }
+
+  bool get hostToolsRegistered => _hostTools.registered;
+
+  Future<String?> registerHostTools(ToolRole role) {
+    if (_session == null) throw StateError('OMP session identity not verified');
+    return _hostTools.register(role);
+  }
+
+  void bindHostTools(
+    ToolRunFacts facts, {
+    required void Function() onSucceeded,
+  }) => _hostTools.bind(facts, onSucceeded);
+
+  void revokeHostTools() => _hostTools.revoke();
 
   @override
   OmpClient get transport => client;
@@ -259,6 +283,10 @@ class OmpRuntimeDriver extends RuntimeDriver {
 
   Object? _frame(Json frame) {
     final type = frame['type'];
+    if (type == 'host_tool_call' || type == 'host_tool_cancel') {
+      _hostTools.receive(frame, inputClosed: _nativeExited);
+      return null;
+    }
     if (!_ready.isCompleted) {
       if (type == 'extension_ui_request') {
         return _interaction(frame, null, []);

@@ -687,7 +687,8 @@ class AgentSession {
     // started the bridge. The idle publication below carries the change.
     if (!_firstTurnEnded) {
       _firstTurnEnded = true;
-      if (_tools?.status == AgentToolsStatus.notYetUsed &&
+      if (client is! OmpRuntimeDriver &&
+          _tools?.status == AgentToolsStatus.notYetUsed &&
           !_toolsAuthenticated) {
         _tools = const AgentTools(AgentToolsStatus.notStarted);
       }
@@ -1391,6 +1392,7 @@ class AgentSession {
     _set(AgentState.closing);
     _deadline?.cancel();
     if (client case final OmpRuntimeDriver omp) {
+      omp.revokeHostTools();
       omp.draining = true;
       final cancellation = [
         for (final permission in _permissions.values)
@@ -1439,6 +1441,7 @@ class AgentSession {
 
   void fail(Object error) {
     if (_disposed || _terminal) return;
+    if (client case final OmpRuntimeDriver omp) omp.revokeHostTools();
     failure = error;
     _deadline?.cancel();
     _hasTurn = false;
@@ -1461,7 +1464,10 @@ class AgentSession {
     client.onPermission = null;
     client.onQuestion = null;
     client.onRetired = null;
-    if (client case final OmpRuntimeDriver omp) omp.hasPendingApproval = null;
+    if (client case final OmpRuntimeDriver omp) {
+      omp.revokeHostTools();
+      omp.hasPendingApproval = null;
+    }
     client.onTurnIdentity = null;
     client.onDelegatedChanged = null;
     client.onNativeTurnEnded = null;

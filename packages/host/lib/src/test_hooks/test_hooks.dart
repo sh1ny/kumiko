@@ -30,6 +30,8 @@ class TestHostExtension implements HostExtension {
     this.qualificationExecutable,
   });
 
+  static Future<T> _awaitOmpClose<T>(Future<T> event, Duration _) => event;
+
   /// Options from `KUMIKO_TEST_*` variables, which make timing deterministic:
   /// `UNIT_CAP`, `RECONCILE_DELAY_MS`, `RETRY_DELAY_MS`,
   /// `SHUTDOWN_DEADLINE_MS`, `WORKSPACE_CAP`, `RESOLVE_TIMEOUT_MS`,
@@ -38,6 +40,8 @@ class TestHostExtension implements HostExtension {
   /// `DRAFT_OPEN_HELD` (`1` gates the first draft open until
   /// `test/draft.releaseOpen`); `KUMIKO_TEST_NO_LIFECYCLE=1` withholds the
   /// `lifecycle` capability.
+  /// `KUMIKO_TEST_OMP_CLOSE_AWAITS_PEER=1` suspends the grace timer in
+  /// tests with an outer hang guard and explicit terminal and process-exit events.
   ///
   /// A test host runs a 2-minute draft deadline when `DRAFT_DEADLINE_MS` is
   /// missing: a hang guard, not a bound under test. A test that needs the
@@ -140,6 +144,9 @@ class TestHostExtension implements HostExtension {
         consoleCloseTimeout:
             millis('CONSOLE_CLOSE_TIMEOUT_MS') ??
             HostOptions.defaultConsoleCloseTimeout,
+        limitOmpClose: env['KUMIKO_TEST_OMP_CLOSE_AWAITS_PEER'] == '1'
+            ? _awaitOmpClose
+            : const HostOptions().limitOmpClose,
         toolEndpointFault: env['KUMIKO_TEST_TOOL_ENDPOINT_FAULT'],
         revokedSecretsKept:
             number('REVOKED_SECRETS_KEPT') ??

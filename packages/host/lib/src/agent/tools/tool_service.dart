@@ -165,16 +165,14 @@ class ToolGrant {
     }
   }
 
-  Map<String, Object?> _info(_Bound b) => {
-    'sessionId': b.sessionId,
-    'role': role.wire,
-    'runtime': runtime,
-    'adapter': {
-      'name': _adapterName ?? 'unknown',
-      'version': _adapterVersion ?? 'unknown',
-    },
-    'target': {'path': target},
-  };
+  ToolRunFacts _facts(_Bound b) => ToolRunFacts(
+    sessionId: b.sessionId,
+    role: role,
+    runtime: runtime,
+    adapter: _adapterName ?? 'unknown',
+    version: _adapterVersion ?? 'unknown',
+    target: target,
+  );
 }
 
 class _Call {
@@ -562,19 +560,13 @@ class ToolService {
       c.send(_error(id, -32000, 'session unavailable'));
       return;
     }
-    final name = params is Map ? params['name'] : null;
-    if (name is! String) {
-      c.send(_error(id, -32602, 'invalid params: missing tool name'));
-      return;
-    }
-    final tool = ToolCatalog.find(grant.role, name);
-    if (tool == null) {
-      c.send(_error(id, -32602, 'tool $name is not available'));
-      return;
-    }
-    final invalid = tool.validate((params as Map)['arguments']);
-    if (invalid != null) {
-      c.send(_error(id, -32602, 'invalid arguments: $invalid'));
+    final refusal = ToolCatalog.refusal(
+      grant.role,
+      params is Map ? params['name'] : null,
+      params is Map ? params['arguments'] : null,
+    );
+    if (refusal != null) {
+      c.send(_error(id, -32602, refusal));
       return;
     }
     if (c.inFlight.containsKey(id)) {
@@ -601,7 +593,7 @@ class ToolService {
       } finally {
         if (waiter != null) c.waiters.remove(waiter);
       }
-      final info = grant._info(bound);
+      final info = grant._facts(bound).sessionInfo();
       reply = _result(id, {
         'content': [
           {'type': 'text', 'text': jsonEncode(info)},

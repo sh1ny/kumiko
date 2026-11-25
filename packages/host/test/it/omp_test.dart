@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:domain/domain.dart';
 import 'package:host_protocol/host_protocol.dart';
 import 'package:test/test.dart';
 
@@ -132,6 +133,7 @@ void main() {
     expect(fixture.commands.map((c) => c['type']), [
       'set_event_filter',
       'get_state',
+      'set_host_tools',
     ]);
     expect(fixture.commands.first['events'], isNull);
     expect(fixture.commands.first['messageUpdates'], 'delta');
@@ -255,24 +257,50 @@ void main() {
     expect(error.message, contains('sessionId'));
   });
 
-  test('OMP: OMP run without tool delivery', () async {
-    final fixture = await openFixture();
-    final peer = await fixture.start();
-    expect(peer.started.tools?.status, AgentToolsStatus.unavailable);
-    expect(peer.started.tools?.reason, contains('not delivered to OMP'));
-    final stats = await fixture.desktop.connection.request(
-      'test/agent.stats',
-      {},
-    ) as Json;
-    expect(((stats['sessions'] as Json)[peer.id] as Json)['hasGrant'], isFalse);
-    expect(
-      fixture.reports
-          .where((r) => r['launch'] != null)
-          .every((r) => r['hasToolSecret'] == false),
-      isTrue,
-    );
-    expect(fixture.commands.toString(), isNot(contains('kumiko')));
-  });
+  test(
+    'OMP: Native registration injects no MCP configuration or grant',
+    () async {
+      final fixture = await openFixture();
+      final peer = await fixture.start();
+      expect(peer.started.tools?.status, AgentToolsStatus.notYetUsed);
+      final stats = await fixture.desktop.connection.request(
+        'test/agent.stats',
+        {},
+      ) as Json;
+      expect(
+        ((stats['sessions'] as Json)[peer.id] as Json)['hasGrant'],
+        isFalse,
+      );
+      expect(
+        fixture.reports
+            .where((r) => r['launch'] != null)
+            .every((r) => r['hasToolSecret'] == false),
+        isTrue,
+      );
+      final registration = fixture.commands.singleWhere(
+        (c) => c['type'] == 'set_host_tools',
+      );
+      final definition = (registration['tools']! as List).cast<Json>().single;
+      expect(definition, {
+        'name': 'kumiko_session_info',
+        'label': 'kumiko_session_info',
+        'description': contains('Read-only'),
+        'parameters': {
+          'type': 'object',
+          'properties': <String, Object?>{},
+          'additionalProperties': false,
+        },
+        'loadMode': 'essential',
+      });
+      final sent = jsonEncode(fixture.commands);
+      expect(
+        sent,
+        isNot(contains(RegExp(r'mcpServers|--mcp-bridge|KUMIKO_TOOL_SECRET'))),
+      );
+      expect(fixture.work.listSync(), isEmpty);
+      await peer.close();
+    },
+  );
 
   test('OMP: User-configured provider', () async {
     const canary = 'test-only-provider-canary';
@@ -311,6 +339,7 @@ void main() {
       peer.started.capabilities,
       unorderedEquals(['prompt', 'streaming', 'cancel']),
     );
+    expect(peer.started.tools?.status, AgentToolsStatus.notYetUsed);
   });
 
   // Keep the copy beside its bundled libraries. Never change the shared host.
@@ -627,6 +656,7 @@ void main() {
 
   test('OMP: Close cancels a displayed approval before ending input', () async {
     final fixture = await openFixture(
+      environment: {'KUMIKO_TEST_OMP_CLOSE_AWAITS_PEER': '1'},
       script: {
         'commands': {
           'prompt': [
@@ -674,6 +704,437 @@ void main() {
             .single['argv'],
         fixture.argv,
       );
+    },
+    timeout: const Timeout(Duration(minutes: 4)),
+  );
+
+  const infoTool = 'kumiko_session_info';
+  const guard = Duration(minutes: 2);
+
+  Json callTool(
+    String id, {
+    String name = infoTool,
+    Object? arguments = const <String, Object?>{},
+  }) => {
+    'type': 'host_tool_call',
+    'id': id,
+    'toolCallId': 'native-$id',
+    'toolName': name,
+    'arguments': arguments,
+  };
+
+  Iterable<Json> results(OmpFixture fixture) =>
+      fixture.commands.where((f) => f['type'] == 'host_tool_result');
+
+  Json info(Json frame) {
+    expect(frame['isError'], isNot(true));
+    final content = ((frame['result'] as Json)['content'] as List)
+        .cast<Json>()
+        .single;
+    expect(content['type'], 'text');
+    return jsonDecode(content['text']! as String) as Json;
+  }
+
+  void registered(AgentPeer peer) =>
+      expect(peer.started.tools?.status, AgentToolsStatus.notYetUsed);
+
+  Future<void> turnEnded(AgentPeer peer, {int after = 0}) async {
+    await peer.wait(
+      Method.agentTurnEnded,
+      where: (_) => peer.of(Method.agentTurnEnded).length > after,
+      within: guard,
+    );
+  }
+
+  test(
+    'OMP: Registered stays not yet used until a successful result',
+    () async {
+      final fixture = await openFixture(
+        script: {
+          'commands': {
+            'prompt': [
+              [accepted(), terminal('completed')],
+              [accepted(), callTool('info')],
+            ],
+            'host_tool_result': [
+              [terminal('completed')],
+            ],
+          },
+        },
+      );
+      final peer = await fixture.start();
+      registered(peer);
+      await peer.prompt('no tools');
+      await turnEnded(peer);
+      expect(
+        AgentTools.fromJsonField(peer.of(Method.agentState).last)?.status,
+        AgentToolsStatus.notYetUsed,
+      );
+      expect(results(fixture), isEmpty);
+      await peer.prompt('one tool');
+      await turnEnded(peer, after: 1);
+      expect(info(results(fixture).single)['sessionId'], peer.id);
+      await peer.wait(
+        Method.agentState,
+        where: (s) =>
+            AgentTools.fromJsonField(s)?.status == AgentToolsStatus.connected,
+        within: guard,
+      );
+      expect(
+        peer
+            .of(Method.agentState)
+            .map(AgentTools.fromJsonField)
+            .map((s) => s?.status),
+        isNot(contains(AgentToolsStatus.notStarted)),
+      );
+      expect(
+        peer.notifications.map((n) => n.method),
+        everyElement(isNot(contains('host_tool'))),
+      );
+      await peer.close();
+    },
+  );
+
+  test(
+    'OMP: Registered tool returns the bound saved session and original target',
+    () async {
+      final fixture = await openFixture(
+        script: {
+          'commands': {
+            'prompt': [
+              [accepted(), callTool('call')],
+            ],
+            'host_tool_result': [
+              [terminal('completed')],
+            ],
+          },
+        },
+      );
+      final other = tempDir('omp_other_target_');
+      addTearDown(() => deleteTree(other));
+      final peer = await fixture.start();
+      registered(peer);
+      final focus = (await fixture.desktop.openWorkspace(other.path))
+          .workspace
+          .id;
+      await fixture.desktop.saveWorkbench(
+        layoutToJson(
+          const LayoutDocument.initial().copyWith(selectedWorkspace: focus),
+        ),
+        1,
+      );
+      await peer.prompt();
+      await turnEnded(peer);
+      final row = agentRows(fixture.profile).single;
+      final reported = info(results(fixture).single);
+      expect(reported, {
+        'sessionId': row['id'],
+        'role': 'coding',
+        'runtime': 'omp',
+        'adapter': {'name': 'omp-rpc', 'version': '18.20.1'},
+        'target': {'path': row['target_path']},
+      });
+      expect(row['id'], peer.id);
+      expect(row['workspace_id'], fixture.workspace);
+      expect((reported['target'] as Json)['path'], isNot(other.path));
+      await peer.close();
+    },
+  );
+
+  test('OMP: Equal callback ids cannot cross run or target', () async {
+    final fixture = await openFixture(
+      script: {
+        'commands': {
+          'prompt': [
+            [accepted(), callTool('same')],
+          ],
+          'host_tool_result': [
+            [terminal('completed')],
+          ],
+        },
+      },
+    );
+    final other = tempDir('omp_second_target_');
+    addTearDown(() => deleteTree(other));
+    final secondary = (await fixture.desktop.openWorkspace(other.path))
+        .workspace
+        .id;
+    final first = await fixture.start();
+    final second = AgentPeer(fixture.desktop);
+    await second.start(secondary, runtime: 'scripted-omp');
+    await second.attach();
+    registered(first);
+    registered(second);
+    await first.prompt();
+    await turnEnded(first);
+    await second.prompt();
+    await turnEnded(second);
+    final answers = results(fixture).toList();
+    expect(answers.map((f) => f['id']), ['same', 'same']);
+    final expected = {
+      for (final row in agentRows(fixture.profile))
+        row['id']: row['target_path'],
+    };
+    for (final (row, peer) in [(answers[0], first), (answers[1], second)]) {
+      final reported = info(row);
+      expect(reported['sessionId'], peer.id);
+      expect((reported['target'] as Json)['path'], expected[peer.id]);
+    }
+    expect(expected.values.toSet(), hasLength(2));
+    await first.close();
+    await second.close();
+  });
+
+  test(
+    'OMP: Registration refusal and bad acknowledgement leave chat usable',
+    () async {
+      for (final (response, reason) in [
+        (
+          {
+            'type': 'response',
+            'id': r'$id',
+            'success': false,
+            'error': 'Tool name collision',
+          },
+          'collision',
+        ),
+        (
+          accepted({
+            'toolNames': ['different'],
+          }),
+          'acknowledgement',
+        ),
+      ]) {
+        final fixture = await openFixture(
+          script: {
+            'commands': {
+              'set_host_tools': [
+                [response],
+              ],
+              'prompt': [
+                [accepted(), callTool('blocked')],
+              ],
+              'host_tool_result': [
+                [terminal('completed')],
+              ],
+            },
+          },
+        );
+        final peer = await fixture.start();
+        expect(peer.started.tools?.status, AgentToolsStatus.unavailable);
+        expect(peer.started.tools?.reason, contains(reason));
+        await peer.prompt();
+        await turnEnded(peer);
+        expect(results(fixture).single, containsPair('isError', true));
+        expect(
+          fixture.commands.where((f) => f['type'] == 'set_host_tools'),
+          hasLength(1),
+        );
+        expect(
+          peer
+              .of(Method.agentState)
+              .map(AgentTools.fromJsonField)
+              .map((s) => s?.status),
+          isNot(contains(AgentToolsStatus.connected)),
+        );
+        await peer.close();
+      }
+    },
+  );
+
+  test(
+    'OMP: Unknown tool, invalid arguments and unbound callbacks are refused',
+    () async {
+      final fixture = await openFixture(
+        script: {
+          'commands': {
+            'set_host_tools': [
+              [
+                callTool('early'),
+                accepted({
+                  'toolNames': [infoTool],
+                }),
+              ],
+            ],
+            'prompt': [
+              [
+                accepted(),
+                callTool('unknown', name: 'not_a_kumiko_tool'),
+                callTool('wrong-run', arguments: {'sessionId': 'elsewhere'}),
+                callTool('bad-type', arguments: ['not', 'an', 'object']),
+              ],
+            ],
+            'host_tool_result': [
+              <Object?>[],
+              <Object?>[],
+              <Object?>[],
+              [terminal('completed')],
+            ],
+          },
+        },
+      );
+      final peer = await fixture.start();
+      registered(peer);
+      await peer.prompt();
+      await turnEnded(peer);
+      expect(results(fixture).map((f) => (f['id'], f['isError'])), [
+        ('early', true),
+        ('unknown', true),
+        ('wrong-run', true),
+        ('bad-type', true),
+      ]);
+      expect(
+        AgentTools.fromJsonField(peer.of(Method.agentState).last)?.status,
+        AgentToolsStatus.notYetUsed,
+      );
+      await peer.close();
+    },
+  );
+
+  test('OMP: Native tools work with the MCP endpoint down', () async {
+    final fixture = await openFixture(
+      environment: {
+        'KUMIKO_TEST_TOOL_ENDPOINT_FAULT': 'fixture endpoint unavailable',
+      },
+      script: {
+        'commands': {
+          'prompt': [
+            [accepted(), callTool('info')],
+          ],
+          'host_tool_result': [
+            [terminal('completed')],
+          ],
+        },
+      },
+    );
+    final peer = await fixture.start();
+    registered(peer);
+    await peer.prompt();
+    await turnEnded(peer);
+    expect(info(results(fixture).single)['sessionId'], peer.id);
+    await peer.wait(
+      Method.agentState,
+      where: (s) =>
+          AgentTools.fromJsonField(s)?.status == AgentToolsStatus.connected,
+      within: guard,
+    );
+    await peer.close();
+  });
+
+  test('OMP: Recorded tool failure leaves catalog unregistered', () async {
+    final fixture = await openFixture(
+      environment: {
+        'KUMIKO_TEST_TOOL_DELIVERY_FAILURES': jsonEncode([
+          ['omp-rpc', '18.20.1', 'known fixture failure'],
+        ]),
+      },
+    );
+    final peer = await fixture.start();
+    expect(peer.started.tools?.status, AgentToolsStatus.unavailable);
+    expect(peer.started.tools?.reason, contains('known fixture failure'));
+    expect(
+      fixture.commands.where((f) => f['type'] == 'set_host_tools'),
+      isEmpty,
+    );
+    await peer.close();
+  });
+
+  test('OMP: Close revokes native tool authority before EOF', () async {
+    final fixture = await openFixture(
+      environment: {'KUMIKO_TEST_OMP_CLOSE_AWAITS_PEER': '1'},
+      script: {
+        'commands': {
+          'prompt': [
+            [accepted()],
+          ],
+          'abort': [
+            [accepted(), callTool('late')],
+          ],
+          'host_tool_result': [
+            [terminal('aborted')],
+          ],
+        },
+      },
+    );
+    final peer = await fixture.start();
+    registered(peer);
+    await peer.prompt();
+    await peer.close();
+    expect(
+      results(fixture).single,
+      allOf(containsPair('id', 'late'), containsPair('isError', true)),
+    );
+    expect(fixture.reports.last['stdin'], 'eof');
+    expect(
+      peer
+          .of(Method.agentState)
+          .map(AgentTools.fromJsonField)
+          .map((s) => s?.status),
+      isNot(contains(AgentToolsStatus.connected)),
+    );
+  });
+
+  test(
+    'OMP: Callback waits for its own relay while another session can Stop',
+    () async {
+      final fixture = await openFixture(
+        script: {
+          'commands': {
+            'prompt': [
+              [
+                accepted(),
+                for (var n = 0; n < 24; n++)
+                  delta('x' * (64 * 1024), id: 'm$n'),
+                callTool('blocked'),
+              ],
+            ],
+            'host_tool_result': [
+              [terminal('completed')],
+            ],
+          },
+        },
+      );
+      final held = AgentPeer(fixture.desktop);
+      await held.start(fixture.workspace, runtime: 'scripted-omp');
+      await held.attach(credit: false);
+      await saveAgentFixture(
+        fixture.desktop,
+        fixture.work,
+        id: 'mixed-acp',
+        script: {'holdPrompt': true},
+      );
+      final other = AgentPeer(fixture.desktop);
+      await other.start(fixture.workspace, runtime: 'mixed-acp');
+      await other.attach();
+      registered(held);
+      expect(other.started.tools?.status, AgentToolsStatus.notYetUsed);
+      await held.prompt('hold relay');
+      await eventually(
+        () async {
+          final stats = await fixture.desktop.connection.request(
+            'test/agent.stats',
+            {},
+          ) as Json;
+          return ((stats['sessions'] as Json)[held.id] as Json)['paused'] ==
+              true;
+        },
+        within: guard,
+        reason: 'OMP relay did not backpressure its native reader',
+      );
+      expect(results(fixture), isEmpty);
+      await other.prompt('other run');
+      await other.call(Method.agentStop);
+      await other.wait(
+        Method.agentStopResult,
+        where: (result) => result['outcome'] == 'stopped',
+        within: guard,
+      );
+      expect(results(fixture), isEmpty);
+      fixture.desktop.connection.grantInitial(held.started.eventChannel);
+      await turnEnded(held);
+      expect(info(results(fixture).single)['sessionId'], held.id);
+      await held.close();
+      await other.close();
     },
     timeout: const Timeout(Duration(minutes: 4)),
   );
@@ -1038,7 +1499,7 @@ void main() {
     await peer.call(Method.agentStop);
     await sending;
     expect((await peer.wait(Method.agentStopResult))['outcome'], 'stopped');
-    expect(fixture.commands.map((c) => c['type']).toList().sublist(2), [
+    expect(fixture.commands.map((c) => c['type']).toList().sublist(3), [
       'prompt',
       'abort',
     ]);

@@ -100,13 +100,22 @@ Future<int> runOmpFixture(List<String> args) async {
           return status;
         }
       }
-    } else if (type == 'set_event_filter' || type == 'get_state') {
+    } else if (type == 'set_event_filter' ||
+        type == 'get_state' ||
+        type == 'set_host_tools') {
       final response = {
         'type': 'response',
         'id': id,
         'command': type,
         'success': true,
         if (type == 'get_state') 'data': {'sessionId': 'fixture-session'},
+        if (type == 'set_host_tools')
+          'data': {
+            'toolNames': [
+              for (final tool in (command['tools']! as List).cast<Json>())
+                tool['name'],
+            ],
+          },
       };
       stdout.writeln(jsonEncode(response));
       await stdout.flush();
