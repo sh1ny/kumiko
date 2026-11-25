@@ -1,4 +1,7 @@
-I can read the checkout but can’t write files with the available tools. The full replacement for `review.md` follows.# Review
+I couldn’t write `openspec/changes/fix-scan-exiting-pid/review.md` in place. The full replacement is below.
+
+```markdown
+# Round 1
 
 ## Metadata
 
@@ -30,7 +33,7 @@ None.
 
 ## Verdict
 
-VERDICT: APPROVE_WITH_CHANGES
+Round 1 verdict: APPROVE_WITH_CHANGES
 
 ## Required Changes
 
@@ -56,7 +59,7 @@ VERDICT: APPROVE_WITH_CHANGES
 
    **Verified.** T4 matches `_scanFailure`. D2 and the Context's Reasons item distinguish a scan-wide unreadable reason from a marker-specific survivor. Clearing the unreadable reason lets rows with neither a prior termination failure nor a matching survivor be cleaned (`settler.dart:108–112,136–147`).
 
-CHANGES_APPLIED: yes
+Round 1 changes applied: yes
 
 ## Rebuttals
 
@@ -91,3 +94,43 @@ CHANGES_APPLIED: yes
 - Suggestion 2: taken. The proposal and test map quote the rule wording, noting that #29 adds those rules to AGENTS.md, and the real-table test stays skipped on Windows.
 
   **Accepted.** The proposal and test map state the applicable rules without citing absent rule numbers. The fake cases remain unguarded, and the real-table smoke test retains its Windows skip.
+
+# Round 2
+
+## Metadata
+
+- **Round:** 2
+- **Prior round:** 1
+- **Reviewed:** The amended final-settle sentence in the checked-out spec delta for `e2e6955`, against D1, D2, the requirement and its scenarios, `runMarkerScan`, and `marker_scan_test.dart`. Source review only. No tests run; `git show` was unavailable.
+
+## Findings
+
+The amended sentence matches D1, D2, and `runMarkerScan`. It closes the gap by requiring the final settle when the second pass lists successfully, does not time out, and leaves an unread PID pending, provided the first settle left no unread PID unconfirmed. It forbids the settle otherwise. These are the four checks in `runMarkerScan` (`marker_scan.dart:159–175`). A marked survivor does not prevent the settle.
+
+“A process exits during the second pass” remains consistent: the PID contributes no failure if the final settle confirms its exit or reuse, and the scan runs no third pass. The polling test confirms the PID on its third check, after both the failed-read check and the first settle sweep, and asserts two pass listings (`marker_scan_test.dart:455–481`).
+
+“A live process cannot be inspected” retains the same failure order: unlistable, timeout, first-pass unreadable, then second-pass unreadable, in listing order within each pass. The tests cover a persistent second-pass refusal, first-pass precedence, second-pass listing order, and the skip paths for timeout and an empty pending list (`marker_scan_test.dart:518–614,673–697,758–773`). The amendment introduces no contradiction or new gap.
+
+### Critical (blocking)
+
+None.
+
+### Moderate
+
+None.
+
+### Suggestions
+
+None.
+
+## Required Changes
+
+None.
+
+VERDICT: APPROVE
+CHANGES_APPLIED: n/a
+
+## Rebuttals
+
+None.
+```
