@@ -11,6 +11,12 @@ import 'hang_guard.dart';
 /// Reads one PTY output handle on its own isolate (the shape of the host's
 /// reader isolate, design D3) and accumulates what arrives.
 class PtyReader {
+  /// A reader with no handle behind it, for testing [PtySession] itself: its
+  /// output has already ended when [ended] is true, and never ends otherwise.
+  PtyReader.detached({bool ended = false}) {
+    if (ended) _done.complete();
+  }
+
   /// With [keep] false the bytes are dropped instead of accumulated, for a
   /// drain that may see a lot of output.
   PtyReader(int handle, {bool keep = true}) {
@@ -117,11 +123,24 @@ String stripEscapes(String s) => s.replaceAll(_escapes, '');
 
 /// A fixture unit attached to a PTY with a reader running.
 class PtySession {
-  PtySession(this.unit, this.pty) : reader = PtyReader(pty.readHandle);
+  /// [reader], [drain] and [closeHandle] replace the real reader, the
+  /// end-of-output wait under [hangGuard] and [closePtyHandle]; only this
+  /// file's own tests pass them.
+  PtySession(
+    this.unit,
+    this.pty, {
+    PtyReader? reader,
+    Drain? drain,
+    void Function(int handle)? closeHandle,
+  }) : reader = reader ?? PtyReader(pty.readHandle),
+       _drain = drain ?? guarded,
+       _closeHandle = closeHandle ?? closePtyHandle;
 
   final ContainedUnit unit;
   final PtyHandles pty;
   final PtyReader reader;
+  final Drain _drain;
+  final void Function(int handle) _closeHandle;
   ConsoleCloser? _closer;
 
   void write(String text) {
@@ -143,36 +162,46 @@ class PtySession {
 
   /// Ends the unit, drains the reader and releases the handles.
   ///
-  /// If output does not end under [hangGuard], it still closes the write
-  /// handle and the Windows unit, leaves the read handle open (the reader
-  /// isolate may be blocked reading it), and then fails naming the unit.
+  /// If a step fails (output does not end under [hangGuard], the console does
+  /// not close, the unit does not terminate), it still closes the write handle
+  /// and the Windows unit, leaves the read handle open unless output ended
+  /// (the reader isolate may be blocked reading it), and then fails naming
+  /// the unit and the step's error.
   Future<void> dispose() async {
-    await unit.terminate();
-    await closeConsole();
-    Object? drainError;
+    Object? failure;
     try {
-      await guarded(
+      await unit.terminate();
+      await closeConsole();
+      await _drain(
         reader.done,
         'end of output after dispose',
         state: reader._show,
       );
-    } on StateError catch (e) {
-      drainError = e;
+    } on Object catch (e) {
+      failure = e;
     }
     if (reader.atEof) {
-      closePtyHandle(pty.readHandle);
+      _closeHandle(pty.readHandle);
     }
-    closePtyHandle(pty.writeHandle);
+    _closeHandle(pty.writeHandle);
     final u = unit;
     if (u is WindowsUnit) u.close();
-    if (drainError != null) {
+    if (failure != null) {
       throw StateError(
-        'PTY output of unit pid ${unit.pid} did not end after dispose: '
-        '$drainError',
+        'PTY session of unit pid ${unit.pid} was not disposed cleanly: '
+        '$failure',
       );
     }
   }
 }
+
+/// The end-of-output wait of [PtySession.dispose]: [guarded] unless a test
+/// replaces it.
+typedef Drain = Future<void> Function(
+  Future<void> done,
+  String what, {
+  String Function()? state,
+});
 
 /// Starts the fixture host [exe] with `--fixture <fixtureArgs>` as a PTY unit
 /// on the current OS.

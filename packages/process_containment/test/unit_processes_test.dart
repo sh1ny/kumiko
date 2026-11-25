@@ -181,15 +181,10 @@ void main() {
         'image names', () async {
       final (unit, session, probe) = await startSh('up-children');
       // The interactive shell runs the job in its own process group, which
-      // terminating the unit does not signal, and the job holds the PTY open.
-      // End the unit's other processes before the session is disposed (tear
-      // downs run last-registered first), also when an assertion fails.
-      addTearDown(() {
-        for (final pid in readUnitProcesses(probe).others) {
-          Process.killPid(pid, ProcessSignal.sigkill);
-        }
-      });
-      session.write('sleep 600 &\n');
+      // terminating the unit does not signal. Its stdio goes to /dev/null, so
+      // the job does not hold the PTY open and the output still ends at
+      // dispose.
+      session.write('sleep 600 </dev/null >/dev/null 2>&1 &\n');
       final r1 = await settle(
         probe,
         (r) => r.others.any((pid) => processImageName(pid) == 'sleep'),
