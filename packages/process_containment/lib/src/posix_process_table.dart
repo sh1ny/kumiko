@@ -141,30 +141,18 @@ class _LinuxProcessTable extends PosixProcessTable {
     }
     return {
       for (final MapEntry(key: pid, value: known) in pids.entries)
-        if (_exitConfirmed(pid, known, hidden: hidden)) pid,
+        if (linuxExitConfirmed(
+          known,
+          readStat: File('/proc/$pid/stat').readAsStringSync,
+          readStatus: File('/proc/$pid/status').readAsStringSync,
+          hidden: hidden,
+        ))
+          pid,
     };
   }
 
   @override
   Set<int> foreignPids(Set<int> pids) => const {};
-
-  bool _exitConfirmed(int pid, int? known, {required bool hidden}) {
-    try {
-      if (known != null) {
-        final ticks = int.tryParse(
-          _statFields(File('/proc/$pid/stat').readAsStringSync())[19],
-        );
-        if (ticks != null && ticks != known) return true;
-      }
-      return linuxStatusConfirmsExit(
-        File('/proc/$pid/status').readAsStringSync(),
-      );
-    } on FileSystemException catch (e) {
-      return !hidden && _vanished(e);
-    } on RangeError {
-      return false; // a stat text we cannot parse proves nothing
-    }
-  }
 
   @override
   ProcessSnapshot? snapshot(int pid) {
@@ -318,17 +306,49 @@ bool linuxStatusConfirmsExit(String status) {
   return zombie && threads.group(1) == '1';
 }
 
-/// Whether the `proc` mount at `/proc`, as `/proc/self/mountinfo` describes
+/// The Linux exit decision for one pid (design D2), from its
+/// `/proc/<pid>/stat` and `/proc/<pid>/status` reads.
+///
+/// With a [known] start time, another one in the stat means the pid was
+/// replaced. Otherwise one status read decides through
+/// [linuxStatusConfirmsExit]. A read that answers ENOENT or ESRCH confirms
+/// the exit only when no mount [hidden]s pids; any other read error, or a
+/// stat text that cannot be parsed, confirms nothing.
+bool linuxExitConfirmed(
+  int? known, {
+  required String Function() readStat,
+  required String Function() readStatus,
+  required bool hidden,
+}) {
+  try {
+    if (known != null) {
+      final stat = readStat();
+      final ticks = int.tryParse(
+        stat.substring(stat.lastIndexOf(')') + 2).split(' ')[19],
+      );
+      if (ticks != null && ticks != known) return true;
+    }
+    return linuxStatusConfirmsExit(readStatus());
+  } on FileSystemException catch (e) {
+    final code = e.osError?.errorCode;
+    return !hidden && (code == enoent || code == esrch);
+  } on RangeError {
+    return false; // a stat text we cannot parse proves nothing
+  }
+}
+
+/// Whether a `proc` mount at `/proc`, as `/proc/self/mountinfo` describes
 /// it, can hide a live process from us.
 ///
 /// With `hidepid` other than `0` or `off`, `/proc/<pid>` is visible only to
 /// a reader that may ptrace the process, so a live process of our own user
-/// answers ENOENT once it becomes non-dumpable. The last `proc` mount at
-/// `/proc` is the one in use. A mountinfo with no such mount, or one that
+/// answers ENOENT once it becomes non-dumpable. Row order does not show
+/// which of stacked mounts is in use, so any `proc` mount at `/proc` with
+/// such an option hides pids. A mountinfo with no such mount, or one that
 /// cannot be parsed, counts as hiding, so ENOENT is never trusted on a guess
 /// (issue #40, design D2).
 bool procHidesPids(String mountinfo) {
-  String? options;
+  var found = false;
   for (final line in const LineSplitter().convert(mountinfo)) {
     final separator = line.indexOf(' - ');
     if (separator < 0) continue;
@@ -336,15 +356,14 @@ bool procHidesPids(String mountinfo) {
     final fs = line.substring(separator + 3).split(' ');
     if (mount.length < 6 || fs.length < 3) continue;
     if (mount[4] != '/proc' || fs[0] != 'proc') continue;
-    options = '${mount[5]},${fs[2]}';
+    found = true;
+    for (final option in '${mount[5]},${fs[2]}'.split(',')) {
+      if (!option.startsWith('hidepid=')) continue;
+      final value = option.substring('hidepid='.length);
+      if (value != '0' && value != 'off') return true;
+    }
   }
-  if (options == null) return true;
-  for (final option in options.split(',')) {
-    if (!option.startsWith('hidepid=')) continue;
-    final value = option.substring('hidepid='.length);
-    if (value != '0' && value != 'off') return true;
-  }
-  return false;
+  return !found;
 }
 
 /// The macOS pids of [pids] (pid to known start time) whose full exit is

@@ -214,6 +214,10 @@ Future<_Pass> _pass(
       break;
     }
   }
+  // The last pid's exit check may have crossed the deadline.
+  if (!pass.timedOut && (expired?.call() ?? clock.elapsed >= timeout)) {
+    pass.timedOut = true;
+  }
   return pass;
 }
 

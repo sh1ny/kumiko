@@ -427,9 +427,34 @@ void main() {
         'confirm:90',
         'check',
         'confirm:91',
+        'check',
         'list',
+        'check',
       ]);
     });
+
+    test(
+      'an exit check past the deadline after the last pid times out',
+      () async {
+        // The last pid's exit check crosses the deadline: the clock is
+        // checked once more after it (pre-ship review round 3, F3).
+        var expired = false;
+        final table = FakeProcessTable(
+          pids: [92],
+          onSnapshot: (pid) => _snap(100 + pid),
+          onEnvironment: (_) => throw const ProcessReadDenied(),
+          onConfirmedExits: (_, _) {
+            expired = true;
+            return true;
+          },
+        );
+
+        final result = await scan(table, passExpired: () => expired);
+
+        expect(result.failure, 'scan-timeout');
+        expect(table.listCount, 1, reason: 'no second pass');
+      },
+    );
 
     test(
       'refusal first seen on the second pass yields scan-unreadable',
