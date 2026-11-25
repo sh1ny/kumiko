@@ -80,8 +80,9 @@ class _Pass {
 /// [oldestCreatedAt] minus 1 s for [markers], kills the matches with
 /// `SIGKILL`, and scans again (design D9). At most two passes of
 /// [passTimeout] each; [passExpiredForTesting] replaces the pass clock's
-/// check before each pid, and [settleExpiredForTesting] the settle clock's
-/// check before each sweep.
+/// check before each pid. [settleClockForTesting] replaces the monotonic
+/// time the settles read: each settle measures from its own start and
+/// starts no sweep once 1 s has passed.
 ///
 /// A process the first pass cannot read (a refused or null snapshot, a
 /// zombie, or a failed environment read) is *pending* unless
@@ -118,7 +119,7 @@ Future<MarkerScanResult> runMarkerScan({
   required DateTime oldestCreatedAt,
   Duration passTimeout = const Duration(seconds: 10),
   bool Function()? passExpiredForTesting,
-  bool Function()? settleExpiredForTesting,
+  Duration Function()? settleClockForTesting,
 }) async {
   Future<_Pass> pass() => _pass(
     table,
@@ -149,7 +150,7 @@ Future<MarkerScanResult> runMarkerScan({
     table,
     signalled,
     first.pending,
-    settleExpiredForTesting,
+    settleClockForTesting,
   );
   final second = await pass();
   // The settle after the final pass runs only when it can change the
@@ -166,7 +167,7 @@ Future<MarkerScanResult> runMarkerScan({
           table,
           const [],
           second.pending,
-          settleExpiredForTesting,
+          settleClockForTesting,
         )).firstOrNull
       : second.pending.keys.firstOrNull;
   return MarkerScanResult(
@@ -266,16 +267,23 @@ Future<List<int>> _settle(
   ProcessTable table,
   List<MarkedProcess> killed,
   Map<int, int?> pending,
-  bool Function()? expired,
+  Duration Function()? now,
 ) async {
-  final clock = Stopwatch()..start();
+  final Duration Function() elapsed;
+  if (now == null) {
+    final watch = Stopwatch()..start();
+    elapsed = () => watch.elapsed;
+  } else {
+    final start = now();
+    elapsed = () => now() - start;
+  }
   // Start time 0 is the macOS short read's placeholder: unknown.
   final dying = {
     for (final m in killed) m.pid: m.startTime == 0 ? null : m.startTime,
   };
   final waiting = Map.of(pending);
   while ((dying.isNotEmpty || waiting.isNotEmpty) &&
-      !(expired?.call() ?? clock.elapsed >= const Duration(seconds: 1))) {
+      elapsed() < const Duration(seconds: 1)) {
     final confirmed = table.confirmedExits({...dying, ...waiting});
     dying.removeWhere((pid, _) => confirmed.contains(pid));
     waiting.removeWhere((pid, _) => confirmed.contains(pid));

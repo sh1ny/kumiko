@@ -27,7 +27,6 @@ void main() {
     FakeProcessTable table, {
     Duration passTimeout = const Duration(seconds: 10),
     bool Function()? passExpired,
-    bool Function()? settleExpired,
     Set<String>? markers,
   }) => runMarkerScan(
     table: table,
@@ -35,15 +34,14 @@ void main() {
     oldestCreatedAt: created,
     passTimeout: passTimeout,
     passExpiredForTesting: passExpired,
-    settleExpiredForTesting: settleExpired,
+    // The settles read a fake monotonic clock that moves 400 ms on each
+    // exit check, so each settle's own 1 s deadline admits three sweeps and
+    // then stops them: time is counted in calls, never measured.
+    settleClockForTesting: () => Duration(
+      milliseconds:
+          400 * table.calls.where((c) => c.startsWith('confirm:')).length,
+    ),
   );
-
-  // A settle clock that expires at its (n+1)th check, counted across every
-  // settle of one scan: sweeps are counted, never timed.
-  bool Function() settleExpiresAfter(int sweeps) {
-    var checks = 0;
-    return () => ++checks > sweeps;
-  }
 
   test(
     'process gone or pid reused between list and read counts as gone',
@@ -436,7 +434,7 @@ void main() {
         onConfirmedExits: (pid, _) => pid == 50 || (pid == 52 && exited),
       );
 
-      final result = await scan(table, settleExpired: () => false);
+      final result = await scan(table);
 
       expect(result.failure, isNull, reason: '$result');
       final second = table.calls.lastIndexOf('list');
@@ -472,7 +470,7 @@ void main() {
             pid == 50 || table.confirmCalls[pid]! >= 3,
       );
 
-      final result = await scan(table, settleExpired: () => false);
+      final result = await scan(table);
 
       expect(result.failure, isNull, reason: '$result');
       expect(table.confirmCalls[52], 3);
@@ -500,11 +498,7 @@ void main() {
               pid == 50 || (pid == 52 && table.confirmCalls[pid]! >= 2),
         );
 
-        final result = await scan(
-          table,
-          markers: {marker, 'unit-b'},
-          settleExpired: () => false,
-        );
+        final result = await scan(table, markers: {marker, 'unit-b'});
 
         expect(result.unreadablePid, isNull, reason: '$result');
         expect(result.remaining.map((m) => (m.pid, m.marker)), [(55, marker)]);
@@ -532,15 +526,10 @@ void main() {
         onConfirmedExits: (pid, _) => pid == 50,
       );
 
-      // Each settle gets its own budget: the first expires after three
-      // sweeps over 20; a second settle, if one ran, would sweep 52 once
-      // before expiring, which the call count below would show.
-      final result = await scan(
-        table,
-        settleExpired: () => table.listCount == 1
-            ? table.confirmCalls[20]! >= 4
-            : table.confirmCalls[52]! >= 2,
-      );
+      // Each settle measures its own 1 s: the first sweeps 20 three times;
+      // a second settle, if one ran, would sweep 52 three times too, which
+      // the call count below would show.
+      final result = await scan(table);
 
       expect(result.failure, 'scan-unreadable:20');
       expect(table.confirmCalls[20], 4, reason: 'its read and three sweeps');
@@ -560,9 +549,13 @@ void main() {
           onConfirmedExits: (pid, _) => pid == 50,
         );
 
-        final result = await scan(table, settleExpired: settleExpiresAfter(3));
+        final result = await scan(table);
 
         expect(result.failure, 'scan-unreadable:53');
+        // Each was checked at its read, then swept until the settle's own
+        // 1 s deadline stopped new sweeps: the default bound expires.
+        expect(table.confirmCalls[53], 4);
+        expect(table.confirmCalls[52], 4);
       },
     );
 
@@ -585,13 +578,8 @@ void main() {
         },
       );
 
-      // A second settle, if one ran, would sweep 52 once and then expire.
-      final result = await scan(
-        table,
-        passExpired: () => expired,
-        settleExpired: () =>
-            table.listCount == 2 && table.confirmCalls[52]! >= 2,
-      );
+      // A second settle, if one ran, would sweep 52 again.
+      final result = await scan(table, passExpired: () => expired);
 
       expect(result.failure, 'scan-timeout');
       expect(table.confirmCalls[52], 1);
@@ -607,7 +595,7 @@ void main() {
         onConfirmedExits: (pid, _) => pid == 50,
       );
 
-      final result = await scan(table, settleExpired: () => false);
+      final result = await scan(table);
 
       expect(result.failure, isNull, reason: '$result');
       final second = table.calls.lastIndexOf('list');

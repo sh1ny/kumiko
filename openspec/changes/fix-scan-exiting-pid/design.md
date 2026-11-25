@@ -61,7 +61,7 @@ The marker scan is #40's design (archived at `openspec/changes/archive/2026-11-2
 
 ### D3: The race after the final listing is widened to the end of the final settle
 
-- **Choice:** A pid that the second pass could not read, and whose exit is confirmed only in the second settle, may have started a child after the final listing. The scan does not see that child. Like a pid that vanishes between the final listing and its read, this is left to OS-provided grouping (ADR 0001, #9). The window grows from "final listing to the pid's read" to "final listing to its confirmation", at most the rest of the second pass plus the 1 s settle.
+- **Choice:** A pid that the second pass could not read, and whose exit is confirmed only in the second settle, may have started a child after the final listing. The scan does not see that child. Like a pid that vanishes between the final listing and its read, this is left to OS-provided grouping (ADR 0001, #9). The window grows from "final listing to the pid's read" to "final listing to its confirmation": the rest of the second pass, then the settle, whose 1 s clock stops new sweeps without capping the window (D4).
   - This amends #40's D6, which the owner chose, and the spec's limit on descendants.
 - **Rejected:** **A third pass** (D1).
 - **Reversal cost:** low. #9 replaces the race, not this code.
