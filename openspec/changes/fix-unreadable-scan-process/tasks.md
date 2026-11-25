@@ -49,9 +49,9 @@ Further tests from the design's test map, with no scenario row of their own, are
 
 ## 5. Integration
 
-- [ ] 5.1 Run the WSL reproduction (the real scan in a loop for 60 s while shell loops start and end processes) against the changed code; record the scan count and every failure in the commit body. No `scan-unlistable` from a vanished entry and no `scan-unreadable` from an exiting process is expected; any other failure is investigated, not retried (rule 8).
-- [ ] 5.2 Run `mise run check`; it passes.
-- [ ] 5.3 Verify A1: the PR's CI is green on Windows, Ubuntu and macOS, including the host integration tests that failed with `scan-unreadable` and `cleanup unresolved`; record the run in the PR. A red macOS row naming `scan-unreadable` is investigated as design drift, not rerun.
+- [x] 5.1 Run the WSL reproduction (the real scan in a loop for 60 s while shell loops start and end processes) against the changed code; record the scan count and every failure in the commit body. No `scan-unlistable` from a vanished entry and no `scan-unreadable` from an exiting process is expected; any other failure is investigated, not retried (rule 8).
+- [x] 5.2 Run `mise run check`; it passes.
+- [x] 5.3 Verify A1: the PR's CI is green on Windows, Ubuntu and macOS, including the host integration tests that failed with `scan-unreadable` and `cleanup unresolved`; record the run in the PR. A red macOS row naming `scan-unreadable` is investigated as design drift, not rerun.
 
 ## Workflow follow-up
 
