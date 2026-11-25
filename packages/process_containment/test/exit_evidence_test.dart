@@ -278,6 +278,26 @@ void main() {
       expect(procHidesPids([hiding, mountinfo('rw')].join('\n')), isTrue);
     });
 
+    test('a row naming /proc that cannot be parsed counts as hiding', () {
+      // The unreadable row could be the stacked mount that hides pids, so it
+      // fails closed (design D2; pre-ship review round 5, F1).
+      for (final broken in [
+        '31 24 0:41 / /proc rw,relatime',
+        '31 24 0:41 / /proc rw,relatime shared:21 - proc',
+      ]) {
+        expect(
+          procHidesPids([mountinfo('rw'), broken].join('\n')),
+          isTrue,
+          reason: broken,
+        );
+      }
+      // A broken row that does not name /proc changes nothing.
+      expect(
+        procHidesPids([mountinfo('rw'), '31 24 0:41 / /run rw'].join('\n')),
+        isFalse,
+      );
+    });
+
     test('a mountinfo with no proc mount at /proc counts as hiding', () {
       expect(procHidesPids(mountinfo('rw', point: '/elsewhere')), isTrue);
       expect(procHidesPids(''), isTrue);

@@ -344,17 +344,26 @@ bool linuxExitConfirmed(
 /// a reader that may ptrace the process, so a live process of our own user
 /// answers ENOENT once it becomes non-dumpable. Row order does not show
 /// which of stacked mounts is in use, so any `proc` mount at `/proc` with
-/// such an option hides pids. A mountinfo with no such mount, or one that
-/// cannot be parsed, counts as hiding, so ENOENT is never trusted on a guess
-/// (issue #40, design D2).
+/// such an option hides pids. A mountinfo with no such mount, or with a row
+/// that names `/proc` and cannot be parsed, counts as hiding, so ENOENT is
+/// never trusted on a guess (issue #40, design D2).
 bool procHidesPids(String mountinfo) {
   var found = false;
   for (final line in const LineSplitter().convert(mountinfo)) {
+    // A row that names /proc but cannot be parsed could be the mount that
+    // hides pids, so it fails closed (pre-ship review round 5, F1).
+    final namesProc = line.split(' ').contains('/proc');
     final separator = line.indexOf(' - ');
-    if (separator < 0) continue;
+    if (separator < 0) {
+      if (namesProc) return true;
+      continue;
+    }
     final mount = line.substring(0, separator).split(' ');
     final fs = line.substring(separator + 3).split(' ');
-    if (mount.length < 6 || fs.length < 3) continue;
+    if (mount.length < 6 || fs.length < 3) {
+      if (namesProc) return true;
+      continue;
+    }
     if (mount[4] != '/proc' || fs[0] != 'proc') continue;
     found = true;
     for (final option in '${mount[5]},${fs[2]}'.split(',')) {
