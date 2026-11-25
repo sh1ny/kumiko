@@ -48,6 +48,12 @@ void main() {
 
   test('a waited-for child is confirmed', () async {
     final child = await Process.start('sleep', ['600']);
+    // Registered first, so a failed snapshot still ends and reaps the child
+    // (pre-ship review round 2, F3).
+    addTearDown(() async {
+      child.kill(ProcessSignal.sigkill);
+      await child.exitCode;
+    });
     final start = table.snapshot(child.pid)!.startTime;
     child.kill(ProcessSignal.sigkill);
     await child.exitCode; // reaped

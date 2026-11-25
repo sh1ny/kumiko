@@ -376,14 +376,24 @@ Set<int> macConfirmedExits({
 };
 
 /// The pids of [pids] absent from [ownListing], one complete macOS
-/// `proc_listpids(PROC_UID_ONLY, <our uid>)` listing, or none when that
-/// listing could not be made.
+/// `proc_listpids(PROC_UID_ONLY, <our uid>)` listing, and present in
+/// [laterListing], one complete `proc_listpids(PROC_ALL_PIDS)` listing made
+/// after it; none when either listing could not be made.
 ///
-/// The listing filters on each proc's credentials, which a zombie keeps
-/// until it is reaped, so our own zombies are in it and only another user's
-/// pids (or pids already reaped) are named (issue #40, design D1).
-Set<int> macForeignPids(Set<int> pids, {required Set<int>? ownListing}) =>
-    ownListing == null ? const {} : pids.difference(ownListing);
+/// The first listing filters on each proc's credentials, which a zombie
+/// keeps until it is reaped, so our own zombies are in it. A pid reaped
+/// before it is absent from the later listing too, so only a pid shown to
+/// exist under another user is named (issue #40, design D1).
+Set<int> macForeignPids(
+  Set<int> pids, {
+  required Set<int>? ownListing,
+  required Set<int>? laterListing,
+}) => ownListing == null || laterListing == null
+    ? const {}
+    : {
+        for (final pid in pids)
+          if (!ownListing.contains(pid) && laterListing.contains(pid)) pid,
+      };
 
 /// The snapshot the macOS short read gives once the full read was refused.
 ///
@@ -486,16 +496,21 @@ class _MacProcessTable extends PosixProcessTable {
   }
 
   /// The pids absent from one complete listing of our user's processes
-  /// (`PROC_UID_ONLY`), decided by [macForeignPids] (design D1).
+  /// (`PROC_UID_ONLY`) and present in a complete full listing made after
+  /// it, decided by [macForeignPids] (design D1).
   @override
   Set<int> foreignPids(Set<int> pids) {
-    Set<int>? own;
-    try {
-      own = _listPids(_procUidOnly, currentUid).toSet();
-    } on ProcessTableUnlistable {
-      own = null;
+    Set<int>? attempt(List<int> Function() list) {
+      try {
+        return list().toSet();
+      } on ProcessTableUnlistable {
+        return null;
+      }
     }
-    return macForeignPids(pids, ownListing: own);
+
+    final own = attempt(() => _listPids(_procUidOnly, currentUid));
+    final later = attempt(listPids);
+    return macForeignPids(pids, ownListing: own, laterListing: later);
   }
 
   /// The start time from a successful full `arg` 0 read, else null.

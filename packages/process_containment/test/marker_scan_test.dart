@@ -264,6 +264,23 @@ void main() {
       expect(table.confirmCalls.keys, containsAll([30, 31]));
     });
 
+    test('a zombie without confirmed exit stays pending when it leaves the '
+        'listing', () async {
+      // On its own, so the zombie alone must keep the scan unresolved
+      // (pre-ship review round 2, F2).
+      final table = FakeProcessTable(
+        pids: [31],
+        onList: (n) => n == 1 ? [31] : [],
+        onSnapshot: (_) => _snap(100, zombie: true),
+        onEnvironment: (pid) => fail('pid $pid was not readable'),
+      );
+
+      final result = await scan(table);
+
+      expect(result.failure, 'scan-unreadable:31');
+      expect(table.listCount, 2);
+    });
+
     test('out-of-population zombie is skipped without an exit check', () async {
       final before = created.subtract(const Duration(seconds: 2));
       final table = FakeProcessTable(

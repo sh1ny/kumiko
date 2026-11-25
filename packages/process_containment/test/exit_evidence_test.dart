@@ -107,16 +107,45 @@ void main() {
   });
 
   group('macOS foreign pids', () {
-    test("a pid absent from our user's listing is foreign", () {
-      expect(macForeignPids({10, 11, 12}, ownListing: {11, 99}), {10, 12});
-    });
+    test(
+      "a pid absent from our user's listing and still listed is foreign",
+      () {
+        expect(
+          macForeignPids(
+            {10, 11, 12},
+            ownListing: {11, 99},
+            laterListing: {10, 11, 12, 99},
+          ),
+          {10, 12},
+        );
+      },
+    );
 
     test('a pid listed under our user is not foreign', () {
-      expect(macForeignPids({11}, ownListing: {11}), isEmpty);
+      expect(
+        macForeignPids({11}, ownListing: {11}, laterListing: {11}),
+        isEmpty,
+      );
+    });
+
+    test("a pid reaped before our user's listing is not foreign", () {
+      // Absent from both listings: gone, not shown to be another user's
+      // (pre-ship review round 2, F1).
+      expect(
+        macForeignPids({10, 12}, ownListing: {99}, laterListing: {12, 99}),
+        {12},
+      );
     });
 
     test('a listing that threw names no pid', () {
-      expect(macForeignPids({10, 11}, ownListing: null), isEmpty);
+      expect(
+        macForeignPids({10, 11}, ownListing: null, laterListing: {10, 11}),
+        isEmpty,
+      );
+      expect(
+        macForeignPids({10, 11}, ownListing: const {}, laterListing: null),
+        isEmpty,
+      );
     });
   });
 

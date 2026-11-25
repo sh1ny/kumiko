@@ -52,7 +52,7 @@ None.
 - `host-process-cleanup`: "Stopping a unit confirms its processes are gone":
   - The scenario for a process that exits during the scan: a process that could not be read contributes no failure only when its full exit (or the reuse of its pid) is confirmed before the scan lists the processes again.
   - New scenarios cover a process that exits while the process table is listed, and a listing that cannot be completed.
-  - "A live process cannot be inspected": a process that could not be read, and whose exit was not confirmed in time, fails the scan, naming it, even if it disappears later. The unit's reported reason still follows the host's precedence (a termination failure first).
+  - "A live process cannot be inspected": a process that could not be read, and whose exit was not confirmed in time, fails the scan even if it disappears later. The scan names it unless a failure that takes precedence in the scan (`scan-unlistable` or `scan-timeout`) is reported instead, and the unit's reported reason still follows the host's precedence (a termination failure first).
 
 ## Impact
 
