@@ -108,6 +108,30 @@ void main() {
     expect(table.kills, [(30, 130)], reason: 'only the marked pid is killed');
   });
 
+  test('a killed zombie is waited for until its exit is confirmed', () async {
+    // After the kill the leader is a zombie whose threads are still
+    // exiting: not proof of exit. The settle keeps waiting for
+    // confirmedExits, which confirms it on its second sweep, so the second
+    // pass finds it confirmed (pre-ship review round 4, F1).
+    var alive = true;
+    var sweeps = 0;
+    final table = FakeProcessTable(
+      pids: [32],
+      onSnapshot: (_) => _snap(132, zombie: !alive),
+      onEnvironment: (_) => ['$unitMarkerVariable=$marker'],
+      onKill: (_, _) {
+        alive = false;
+        return true;
+      },
+      onConfirmedExits: (_, _) => !alive && ++sweeps >= 2,
+    );
+
+    final result = await scan(table);
+
+    expect(result.failure, isNull, reason: '$result');
+    expect(table.calls.take(4), ['list', 'confirm:32', 'confirm:32', 'list']);
+  });
+
   test(
     'marked process that survives SIGKILL leaves the unit unresolved',
     () async {

@@ -221,40 +221,31 @@ Future<_Pass> _pass(
   return pass;
 }
 
-/// Gives killed processes a moment to disappear, and pending pids a moment
-/// for their full exit to be confirmed, before the rescan: at most 1 s,
-/// polling every 10 ms, with one [ProcessTable.confirmedExits] call per
-/// sweep. Returns the pending pids still unconfirmed, in listing order.
+/// Gives killed processes and pending pids a moment for their full exit to
+/// be confirmed before the rescan: at most 1 s, polling every 10 ms, with
+/// one [ProcessTable.confirmedExits] call per sweep. A killed process is not
+/// taken as gone from a null snapshot or a zombie, which the second pass
+/// does not accept either (pre-ship review round 4, F1). Returns the
+/// pending pids still unconfirmed, in listing order.
 Future<List<int>> _settle(
   ProcessTable table,
   List<MarkedProcess> killed,
   Map<int, int?> pending,
 ) async {
   final clock = Stopwatch()..start();
-  var alive = killed;
+  // Start time 0 is the macOS short read's placeholder: unknown.
+  final dying = {
+    for (final m in killed) m.pid: m.startTime == 0 ? null : m.startTime,
+  };
   final waiting = Map.of(pending);
-  while ((alive.isNotEmpty || waiting.isNotEmpty) &&
+  while ((dying.isNotEmpty || waiting.isNotEmpty) &&
       clock.elapsed < const Duration(seconds: 1)) {
-    alive = [
-      for (final m in alive)
-        if (_aliveWithStartTime(table, m)) m,
-    ];
-    if (waiting.isNotEmpty) {
-      final confirmed = table.confirmedExits(waiting);
-      waiting.removeWhere((pid, _) => confirmed.contains(pid));
-    }
-    if (alive.isNotEmpty || waiting.isNotEmpty) {
+    final confirmed = table.confirmedExits({...dying, ...waiting});
+    dying.removeWhere((pid, _) => confirmed.contains(pid));
+    waiting.removeWhere((pid, _) => confirmed.contains(pid));
+    if (dying.isNotEmpty || waiting.isNotEmpty) {
       await Future<void>.delayed(const Duration(milliseconds: 10));
     }
   }
   return waiting.keys.toList();
-}
-
-bool _aliveWithStartTime(ProcessTable table, MarkedProcess m) {
-  try {
-    final s = table.snapshot(m.pid);
-    return s != null && !s.zombie && s.startTime == m.startTime;
-  } on ProcessReadDenied {
-    return true;
-  }
 }

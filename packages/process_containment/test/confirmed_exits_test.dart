@@ -7,6 +7,8 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:process_containment/process_containment.dart';
+import 'package:process_containment/src/posix_process_table.dart'
+    show procHidesPids;
 import 'package:test/test.dart';
 
 /// The real process table's exit evidence (issue #40, design D2), against
@@ -15,6 +17,12 @@ import 'package:test/test.dart';
 /// guard (rule 4).
 void main() {
   final table = PosixProcessTable();
+  // Under a Linux hidepid mount ENOENT confirms nothing (design D2), so a
+  // reaped child is confirmed only where /proc shows every pid (pre-ship
+  // review round 4, F3). The injected decision tests cover both mounts.
+  final procHidden =
+      Platform.isLinux &&
+      procHidesPids(File('/proc/self/mountinfo').readAsStringSync());
 
   /// Polls `ps` for [pid]'s [field] until [done] accepts it, failing loudly
   /// with what it waited for.
@@ -46,20 +54,24 @@ void main() {
     expect(table.confirmedExits({child.pid: null}), isEmpty);
   });
 
-  test('a waited-for child is confirmed', () async {
-    final child = await Process.start('sleep', ['600']);
-    // Registered first, so a failed snapshot still ends and reaps the child
-    // (pre-ship review round 2, F3).
-    addTearDown(() async {
+  test(
+    'a waited-for child is confirmed',
+    () async {
+      final child = await Process.start('sleep', ['600']);
+      // Registered first, so a failed snapshot still ends and reaps the child
+      // (pre-ship review round 2, F3).
+      addTearDown(() async {
+        child.kill(ProcessSignal.sigkill);
+        await child.exitCode;
+      });
+      final start = table.snapshot(child.pid)!.startTime;
       child.kill(ProcessSignal.sigkill);
-      await child.exitCode;
-    });
-    final start = table.snapshot(child.pid)!.startTime;
-    child.kill(ProcessSignal.sigkill);
-    await child.exitCode; // reaped
+      await child.exitCode; // reaped
 
-    expect(table.confirmedExits({child.pid: start}), {child.pid});
-  });
+      expect(table.confirmedExits({child.pid: start}), {child.pid});
+    },
+    skip: procHidden ? '/proc hides pids: ENOENT is not exit evidence' : false,
+  );
 
   test("only another user's pid is foreign", () async {
     final child = await Process.start('sleep', ['600']);
