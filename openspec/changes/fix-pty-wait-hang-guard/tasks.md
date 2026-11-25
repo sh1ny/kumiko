@@ -16,8 +16,8 @@ The change has no spec scenarios. It changes how long the existing tests wait be
 
 ## 2. `settle` and the explicit end-of-output waits (S1, D1, D3)
 
-- [ ] 2.1 In `test/unit_processes_test.dart`, `settle` polls every 100 ms until its condition holds, under `hangGuard`, and keeps its failure message naming the leader and the other processes. Update its doc comment ("or 15 s pass"). Verify: analyze clean.
-- [ ] 2.2 Replace the 15 s `reader.done` waits at `pty_test.dart:121`, `pty_test.dart:151` and `pty_windows_test.dart:146` with `hangGuard`. Remove `pty_test.dart`'s local `hangGuard` constant (`:232`) in favour of the shared one; leave `spawn_test.dart`'s alone (out of scope, S1). Verify: analyze clean.
+- [x] 2.1 In `test/unit_processes_test.dart`, `settle` polls every 100 ms until its condition holds, under `hangGuard`, and keeps its failure message naming the leader and the other processes. Update its doc comment ("or 15 s pass"). Verify: analyze clean.
+- [x] 2.2 Replace the 15 s `reader.done` waits at `pty_test.dart:121`, `pty_test.dart:151` and `pty_windows_test.dart:146` with `hangGuard`. Remove `pty_test.dart`'s local `hangGuard` constant (`:232`) in favour of the shared one; leave `spawn_test.dart`'s alone (out of scope, S1). Verify: analyze clean.
 
 ## 3. Integration
 

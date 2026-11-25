@@ -11,6 +11,7 @@ import 'package:process_containment/process_containment.dart';
 import 'package:test/test.dart';
 
 import 'support/fixture_harness.dart';
+import 'support/hang_guard.dart';
 import 'support/pty_session.dart';
 
 const _posixOnly = 'POSIX only';
@@ -118,7 +119,7 @@ void main() {
     expect(await s.unit.exitCode, 3);
     // ConPTY keeps its output pipe open until the console is closed.
     await s.closeConsole();
-    await s.reader.done.timeout(const Duration(seconds: 15));
+    await guarded(s.reader.done, 'end of output after the console closed');
     expect(s.reader.error, isNull);
   });
 
@@ -148,7 +149,7 @@ void main() {
     await reader.waitForText('after-42');
     send('exit\n');
     expect(await unit.exitCode, 0);
-    await reader.done.timeout(const Duration(seconds: 15));
+    await guarded(reader.done, 'end of output after bash exited');
   }, skip: Platform.isWindows ? _posixOnly : null);
 
   group('POSIX shim status pipe', () {
@@ -229,7 +230,6 @@ void main() {
   // start-time outcome is forced through the spawn's test-only parameters.
   group('POSIX PTY start time read', () {
     const esrchErrno = 3;
-    const hangGuard = Duration(minutes: 2);
     final processes = <Process>[];
 
     // Every spawned process is registered by the hook before the spawn can

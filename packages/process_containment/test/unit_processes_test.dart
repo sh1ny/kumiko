@@ -8,6 +8,7 @@ import 'package:process_containment/process_containment.dart';
 import 'package:test/test.dart';
 
 import 'support/fixture_harness.dart';
+import 'support/hang_guard.dart';
 import 'support/pty_session.dart';
 
 /// Unit process listing at the real containment boundary (change
@@ -26,13 +27,15 @@ void main() {
 
   tearDownAll(() => deleteTempDir(tmp));
 
-  /// Polls [read] until [done] holds for its result, or 15 s pass.
+  /// Polls the unit's processes every 100 ms until [done] holds for them.
+  /// `readUnitProcesses` has no change event to wait on. Under [hangGuard]
+  /// the poll fails naming the state it saw last.
   Future<UnitProcesses> settle(
     UnitProbe probe,
     bool Function(UnitProcesses r) done, {
     String? what,
   }) async {
-    final until = DateTime.now().add(const Duration(seconds: 15));
+    final until = DateTime.now().add(hangGuard);
     var r = readUnitProcesses(probe);
     while (!done(r) && DateTime.now().isBefore(until)) {
       await Future<void>.delayed(const Duration(milliseconds: 100));
@@ -40,7 +43,7 @@ void main() {
     }
     if (!done(r)) {
       fail(
-        'timed out waiting for ${what ?? 'state'}: leader ${r.leader} '
+        'hang guard: no ${what ?? 'state'} within $hangGuard: leader ${r.leader} '
         '${r.leaderName}, others ${r.others.map(_named).toList()}',
       );
     }
