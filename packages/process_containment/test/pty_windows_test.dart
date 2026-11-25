@@ -12,6 +12,7 @@ import 'package:test/test.dart';
 
 import 'support/fixture_harness.dart';
 import 'support/fixture_lines.dart';
+import 'support/hang_guard.dart';
 import 'support/pty_session.dart';
 
 final DynamicLibrary _kernel32 = DynamicLibrary.open('kernel32.dll');
@@ -143,7 +144,7 @@ void main() {
       isTrue,
       reason: 'ClosePseudoConsole returns while the reader drains',
     );
-    await reader.done.timeout(const Duration(seconds: 15));
+    await guarded(reader.done, 'end of output after the console closed');
     expect(reader.error, isNull);
     closePtyHandle(pty.readHandle);
     closePtyHandle(pty.writeHandle);

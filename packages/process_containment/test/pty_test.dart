@@ -11,6 +11,7 @@ import 'package:process_containment/process_containment.dart';
 import 'package:test/test.dart';
 
 import 'support/fixture_harness.dart';
+import 'support/hang_guard.dart';
 import 'support/pty_session.dart';
 
 const _posixOnly = 'POSIX only';
@@ -37,20 +38,41 @@ void main() {
     out = File(p.join(tmp.path, 'out${counter++}.txt'));
   });
 
+  // Every session and unit is released even when one dispose fails, and
+  // none stays registered for the next test; the first failure is rethrown.
   tearDown(() async {
-    for (final s in sessions) {
-      await s.dispose();
-    }
+    final toDispose = List.of(sessions);
+    final toEnd = List.of(units);
     sessions.clear();
-    for (final u in units) {
-      await u.terminate();
-      final pty = u.pty;
-      if (pty != null) {
-        closePtyHandle(pty.readHandle);
-        closePtyHandle(pty.writeHandle);
+    units.clear();
+    Object? failure;
+    StackTrace? failureStack;
+    for (final s in toDispose) {
+      try {
+        await s.dispose();
+      } catch (e, st) {
+        failure ??= e;
+        failureStack ??= st;
       }
     }
-    units.clear();
+    for (final u in toEnd) {
+      try {
+        final result = await u.terminate(killWait: hangGuard);
+        if (!result.terminated) {
+          throw StateError('unit ${u.pid} not terminated: ${result.reason}');
+        }
+      } catch (e, st) {
+        failure ??= e;
+        failureStack ??= st;
+      } finally {
+        final pty = u.pty;
+        if (pty != null) {
+          closePtyHandle(pty.readHandle);
+          closePtyHandle(pty.writeHandle);
+        }
+      }
+    }
+    if (failure != null) Error.throwWithStackTrace(failure, failureStack!);
   });
 
   Future<PtySession> start(
@@ -118,7 +140,11 @@ void main() {
     expect(await s.unit.exitCode, 3);
     // ConPTY keeps its output pipe open until the console is closed.
     await s.closeConsole();
-    await s.reader.done.timeout(const Duration(seconds: 15));
+    await guarded(
+      s.reader.done,
+      'end of output after the console closed',
+      state: s.reader.excerpt,
+    );
     expect(s.reader.error, isNull);
   });
 
@@ -148,7 +174,11 @@ void main() {
     await reader.waitForText('after-42');
     send('exit\n');
     expect(await unit.exitCode, 0);
-    await reader.done.timeout(const Duration(seconds: 15));
+    await guarded(
+      reader.done,
+      'end of output after bash exited',
+      state: reader.excerpt,
+    );
   }, skip: Platform.isWindows ? _posixOnly : null);
 
   group('POSIX shim status pipe', () {
@@ -229,7 +259,6 @@ void main() {
   // start-time outcome is forced through the spawn's test-only parameters.
   group('POSIX PTY start time read', () {
     const esrchErrno = 3;
-    const hangGuard = Duration(minutes: 2);
     final processes = <Process>[];
 
     // Every spawned process is registered by the hook before the spawn can

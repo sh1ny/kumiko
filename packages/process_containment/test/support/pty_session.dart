@@ -6,9 +6,17 @@ import 'dart:typed_data';
 
 import 'package:process_containment/process_containment.dart';
 
+import 'hang_guard.dart';
+
 /// Reads one PTY output handle on its own isolate (the shape of the host's
 /// reader isolate, design D3) and accumulates what arrives.
 class PtyReader {
+  /// A reader with no handle behind it, for testing [PtySession] itself: its
+  /// output has already ended when [ended] is true, and never ends otherwise.
+  PtyReader.detached({bool ended = false}) {
+    if (ended) _done.complete();
+  }
+
   /// With [keep] false the bytes are dropped instead of accumulated, for a
   /// drain that may see a lot of output.
   PtyReader(int handle, {bool keep = true}) {
@@ -56,12 +64,9 @@ class PtyReader {
   String get text =>
       stripEscapes(utf8.decode(_bytes.toBytes(), allowMalformed: true));
 
-  /// Completes with the text once [test] holds for it.
-  Future<String> waitFor(
-    bool Function(String text) test, {
-    Duration timeout = const Duration(seconds: 20),
-    String? what,
-  }) {
+  /// Completes with the text once [test] holds for it. Fails at once if
+  /// output ends first, and under [hangGuard] if neither happens.
+  Future<String> waitFor(bool Function(String text) test, {String? what}) {
     final completer = Completer<String>();
     void check() {
       if (completer.isCompleted) return;
@@ -69,30 +74,25 @@ class PtyReader {
         completer.complete(text);
       } else if (atEof) {
         completer.completeError(
-          StateError('output ended without ${what ?? 'match'}: ${_show()}'),
+          StateError('output ended without ${what ?? 'match'}: ${excerpt()}'),
         );
       }
     }
 
     _waiters.add(check);
     check();
-    return completer.future
-        .timeout(
-          timeout,
-          onTimeout: () => throw StateError(
-            'timed out waiting for ${what ?? 'match'}: ${_show()}',
-          ),
-        )
-        .whenComplete(() => _waiters.remove(check));
+    return guarded(
+      completer.future,
+      what ?? 'match',
+      state: excerpt,
+    ).whenComplete(() => _waiters.remove(check));
   }
 
-  Future<String> waitForText(String needle, {Duration? timeout}) => waitFor(
-    (t) => t.contains(needle),
-    what: needle,
-    timeout: timeout ?? const Duration(seconds: 20),
-  );
+  Future<String> waitForText(String needle) =>
+      waitFor((t) => t.contains(needle), what: needle);
 
-  String _show() =>
+  /// The last 600 characters of [text], JSON-quoted, for failure messages.
+  String excerpt() =>
       jsonEncode(text.length > 600 ? text.substring(text.length - 600) : text);
 }
 
@@ -124,11 +124,24 @@ String stripEscapes(String s) => s.replaceAll(_escapes, '');
 
 /// A fixture unit attached to a PTY with a reader running.
 class PtySession {
-  PtySession(this.unit, this.pty) : reader = PtyReader(pty.readHandle);
+  /// [reader] and [closeHandle] replace the real reader and
+  /// [closePtyHandle], and [disposeExpiry] fires the one hang guard of
+  /// [dispose] instead of its timer (see [guarded]). Only this file's own
+  /// tests pass them.
+  PtySession(
+    this.unit,
+    this.pty, {
+    PtyReader? reader,
+    this.disposeExpiry,
+    void Function(int handle)? closeHandle,
+  }) : reader = reader ?? PtyReader(pty.readHandle),
+       _closeHandle = closeHandle ?? closePtyHandle;
 
   final ContainedUnit unit;
   final PtyHandles pty;
   final PtyReader reader;
+  final Future<void>? disposeExpiry;
+  final void Function(int handle) _closeHandle;
   ConsoleCloser? _closer;
 
   void write(String text) {
@@ -137,25 +150,83 @@ class PtySession {
 
   /// Closes the pseudo-console (Windows) so its output pipe ends. Needed for
   /// EOF after the child exited: ConPTY keeps the pipe open until then.
-  Future<void> closeConsole() async {
+  /// [expiry] replaces the hang guard's timer (see [guarded]).
+  Future<void> closeConsole({Future<void>? expiry}) async {
     final hpcon = pty.console;
     if (hpcon == null || _closer != null) return;
     _closer = await ConsoleCloser.start(hpcon);
-    await _closer!.done.timeout(const Duration(seconds: 15));
+    await guarded(
+      _closer!.done,
+      'console close (ClosePseudoConsole)',
+      state: reader.excerpt,
+      expiry: expiry,
+    );
   }
 
   /// Ends the unit, drains the reader and releases the handles.
+  ///
+  /// One [hangGuard] covers the whole of dispose, not each step, so a unit
+  /// that will not end fails here, naming it, within about [hangGuard] and
+  /// well inside each test file's `@Timeout`. Termination waits for the unit
+  /// up to [hangGuard] instead of the units' own few-second defaults. Each
+  /// step runs even when an earlier one failed: terminate (a failed result or
+  /// a throw), closing the console, and the end of output; after the guard
+  /// expired the later waits fail at once. Then it closes the write handle
+  /// and the Windows unit, leaves the read handle open unless output ended
+  /// (the reader isolate may be blocked reading it), and fails naming the
+  /// unit and every failure.
   Future<void> dispose() async {
-    await unit.terminate();
-    await closeConsole();
-    await reader.done.timeout(const Duration(seconds: 15), onTimeout: () {});
-    if (reader.atEof) {
-      closePtyHandle(pty.readHandle);
+    final expired = Completer<void>();
+    void expire() {
+      if (!expired.isCompleted) expired.complete();
     }
-    closePtyHandle(pty.writeHandle);
+
+    final timer = disposeExpiry == null ? Timer(hangGuard, expire) : null;
+    disposeExpiry?.then((_) => expire());
+    final failures = <Object>[];
+    try {
+      final result = await _terminate();
+      if (!result.terminated) {
+        failures.add('terminate failed: ${result.reason}');
+      }
+    } on Object catch (e) {
+      failures.add('terminate threw: $e');
+    }
+    try {
+      await closeConsole(expiry: expired.future);
+    } on Object catch (e) {
+      failures.add(e);
+    }
+    try {
+      await guarded(
+        reader.done,
+        'end of output after dispose',
+        state: reader.excerpt,
+        expiry: expired.future,
+      );
+    } on Object catch (e) {
+      failures.add(e);
+    }
+    timer?.cancel();
+    if (reader.atEof) {
+      _closeHandle(pty.readHandle);
+    }
+    _closeHandle(pty.writeHandle);
     final u = unit;
     if (u is WindowsUnit) u.close();
+    if (failures.isNotEmpty) {
+      throw StateError(
+        'PTY session of unit pid ${unit.pid} was not disposed cleanly: '
+        '${failures.join('; ')}',
+      );
+    }
   }
+
+  Future<TerminationResult> _terminate() => switch (unit) {
+    final WindowsUnit u => u.terminate(wait: hangGuard),
+    final PosixUnit u => u.terminate(killWait: hangGuard),
+    final u => u.terminate(),
+  };
 }
 
 /// Starts the fixture host [exe] with `--fixture <fixtureArgs>` as a PTY unit

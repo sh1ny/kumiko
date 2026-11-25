@@ -8,6 +8,7 @@ import 'package:process_containment/process_containment.dart';
 import 'package:test/test.dart';
 
 import 'support/fixture_harness.dart';
+import 'support/hang_guard.dart';
 import 'support/pty_session.dart';
 
 /// Unit process listing at the real containment boundary (change
@@ -26,13 +27,15 @@ void main() {
 
   tearDownAll(() => deleteTempDir(tmp));
 
-  /// Polls [read] until [done] holds for its result, or 15 s pass.
+  /// Polls the unit's processes every 100 ms until [done] holds for them.
+  /// `readUnitProcesses` has no change event to wait on. Under [hangGuard]
+  /// the poll fails naming the state it saw last.
   Future<UnitProcesses> settle(
     UnitProbe probe,
     bool Function(UnitProcesses r) done, {
     String? what,
   }) async {
-    final until = DateTime.now().add(const Duration(seconds: 15));
+    final until = DateTime.now().add(hangGuard);
     var r = readUnitProcesses(probe);
     while (!done(r) && DateTime.now().isBefore(until)) {
       await Future<void>.delayed(const Duration(milliseconds: 100));
@@ -40,7 +43,7 @@ void main() {
     }
     if (!done(r)) {
       fail(
-        'timed out waiting for ${what ?? 'state'}: leader ${r.leader} '
+        'hang guard: no ${what ?? 'state'} within $hangGuard: leader ${r.leader} '
         '${r.leaderName}, others ${r.others.map(_named).toList()}',
       );
     }
@@ -119,7 +122,7 @@ void main() {
       );
       final session = PtySession(unit, unit.pty!);
       addTearDown(session.dispose);
-      await unit.exitCode.timeout(const Duration(seconds: 10));
+      await guarded(unit.exitCode, 'exit of cmd /c exit 0');
       final r = readUnitProcesses(
         UnitProbe(leaderPid: unit.pid, job: unit.jobHandle),
       );
@@ -177,7 +180,11 @@ void main() {
     test('a foreground program and a background job are listed with their '
         'image names', () async {
       final (unit, session, probe) = await startSh('up-children');
-      session.write('sleep 600 &\n');
+      // The interactive shell runs the job in its own process group, which
+      // terminating the unit does not signal. Its stdio goes to /dev/null, so
+      // the job does not hold the PTY open and the output still ends at
+      // dispose.
+      session.write('sleep 600 </dev/null >/dev/null 2>&1 &\n');
       final r1 = await settle(
         probe,
         (r) => r.others.any((pid) => processImageName(pid) == 'sleep'),
