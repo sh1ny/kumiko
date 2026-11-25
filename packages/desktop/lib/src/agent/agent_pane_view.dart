@@ -140,6 +140,14 @@ class _AgentPaneViewState extends State<AgentPaneView> {
               padding: const EdgeInsets.symmetric(horizontal: 8),
               child: Text(label, key: Key('agent-tools-$id')),
             ),
+          if (link.runtimeKind == 'omp')
+            const Padding(
+              padding: EdgeInsets.symmetric(horizontal: 8),
+              child: Text(
+                'OMP settings decide when tools ask. Kumiko only answers '
+                'supported one-shot approvals and does not sandbox OMP.',
+              ),
+            ),
           if (link.transcript.hiddenEntries > 0)
             Text(
               'Earlier messages hidden (${link.transcript.hiddenEntries} entries)',

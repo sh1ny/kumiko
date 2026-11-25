@@ -1789,7 +1789,6 @@ class AgentService {
         if (!_current(a)) return;
         final driver = a.io.client;
         if (driver is OmpRuntimeDriver) {
-          driver.draining = true;
           final pending = driver.pendingTurn;
           if (pending != null && !attachTimeout) {
             try {

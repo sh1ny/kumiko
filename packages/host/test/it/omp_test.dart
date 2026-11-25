@@ -386,6 +386,298 @@ void main() {
     },
   );
 
+  Json approval(String id, List<String> options) => {
+    'type': 'extension_ui_request',
+    'id': id,
+    'method': 'select',
+    'title': 'Allow tool: bash\nCommand: echo demo',
+    'options': options,
+  };
+
+  Future<Json> asked(AgentPeer peer, {String? except}) => peer.wait(
+    Method.agentPermissionRequested,
+    where: (request) => request['requestId'] != except,
+    within: const Duration(minutes: 2),
+  );
+
+  Future<Json> answer(AgentPeer peer, Json request, String label) =>
+      peer.call(Method.agentPermissionReply, {
+        'sessionId': peer.id,
+        'requestId': request['requestId'],
+        'optionId': (request['options'] as List<Object?>)
+            .cast<Json>()
+            .singleWhere((option) => option['name'] == label)['optionId'],
+      });
+
+  test(
+    'OMP: Explicit one-shot approval and denial round-trip exact values',
+    () async {
+      final fixture = await openFixture(
+        script: {
+          'commands': {
+            'prompt': [
+              [
+                accepted(),
+                approval('a1', [
+                  'Approve',
+                  'Approve bash for this session',
+                  'Deny',
+                ]),
+              ],
+              [
+                accepted(),
+                approval('a2', [
+                  'Approve File',
+                  'Always Approve File',
+                  'Approve Once',
+                  'Deny',
+                ]),
+              ],
+            ],
+            'extension_ui_response': [
+              [terminal('completed')],
+              [terminal('completed')],
+            ],
+          },
+        },
+      );
+      final peer = await fixture.start();
+      await peer.prompt('first');
+      final request = await asked(peer);
+      expect(request['preview'], contains('Command: echo demo'));
+      final options = (request['options'] as List<Object?>).cast<Json>();
+      expect(options.map((option) => option['name']), ['Approve', 'Deny']);
+      expect(
+        fixture.commands.where((row) => row['type'] == 'extension_ui_response'),
+        isEmpty,
+      );
+      await expectLater(
+        peer.call(Method.agentPermissionReply, {
+          'sessionId': peer.id,
+          'requestId': request['requestId'],
+          'optionId': 'Approve bash for this session',
+        }),
+        rpcCode(ErrorCode.invalidParams),
+      );
+      await answer(peer, request, 'Approve');
+      await expectLater(
+        answer(peer, request, 'Deny'),
+        rpcCode(ErrorCode.unknownRequest),
+      );
+      await peer.wait(
+        Method.agentTurnEnded,
+        within: const Duration(minutes: 2),
+      );
+      await peer.prompt('second');
+      final next = await asked(peer, except: request['requestId'] as String);
+      expect(
+        (next['options'] as List<Object?>).cast<Json>().map((o) => o['name']),
+        ['Approve Once', 'Deny'],
+      );
+      await answer(peer, next, 'Deny');
+      await peer.wait(
+        Method.agentPermissionResolved,
+        where: (value) => value['requestId'] == next['requestId'],
+        within: const Duration(minutes: 2),
+      );
+      await peer.close();
+      expect(
+        fixture.commands.where((row) => row['type'] == 'extension_ui_response'),
+        [
+          {'type': 'extension_ui_response', 'id': 'a1', 'value': 'Approve'},
+          {'type': 'extension_ui_response', 'id': 'a2', 'value': 'Deny'},
+        ],
+      );
+    },
+    timeout: const Timeout(Duration(minutes: 4)),
+  );
+
+  test('OMP: Withdrawal and turn end retire the exact approval', () async {
+    final fixture = await openFixture(
+      script: {
+        'commands': {
+          'prompt': [
+            [
+              accepted(),
+              approval('gone', ['Approve', 'Deny']),
+              {
+                'type': 'extension_ui_request',
+                'method': 'cancel',
+                'id': 'withdraw',
+                'targetId': 'gone',
+              },
+              approval('keep', ['Approve', 'Deny']),
+              approval('end', ['Approve', 'Deny']),
+            ],
+          ],
+          'extension_ui_response': [
+            [terminal('completed')],
+          ],
+        },
+      },
+    );
+    final peer = await fixture.start();
+    await peer.prompt();
+    final end = await peer.wait(
+      Method.agentPermissionRequested,
+      where: (_) => peer.of(Method.agentPermissionRequested).length == 3,
+      within: const Duration(minutes: 2),
+    );
+    final requests = peer.of(Method.agentPermissionRequested);
+    expect(requests, hasLength(3));
+    await expectLater(
+      answer(peer, requests.first, 'Approve'),
+      rpcCode(ErrorCode.unknownRequest),
+    );
+    await answer(peer, requests[1], 'Deny');
+    await peer.wait(Method.agentTurnEnded, within: const Duration(minutes: 2));
+    await expectLater(
+      answer(peer, end, 'Approve'),
+      rpcCode(ErrorCode.unknownRequest),
+    );
+    expect(
+      peer
+          .of(Method.agentPermissionResolved)
+          .where((r) => r['outcome'] == 'cancelled')
+          .map((r) => r['requestId']),
+      [requests.first['requestId'], end['requestId']],
+    );
+    await peer.close();
+    expect(
+      fixture.commands.where((f) => f['type'] == 'extension_ui_response'),
+      [
+        {'type': 'extension_ui_response', 'id': 'keep', 'value': 'Deny'},
+      ],
+    );
+  }, timeout: const Timeout(Duration(minutes: 4)));
+
+  for (final credit in [true, false]) {
+    test(
+      credit
+          ? 'OMP: Stop cancels the displayed request before abort'
+          : 'OMP: Approval and Stop use control without transcript credit',
+      () async {
+        final fixture = await openFixture(
+          script: {
+            'commands': {
+              'prompt': [
+                [
+                  accepted(),
+                  approval('held', ['Approve', 'Deny']),
+                ],
+                [
+                  accepted({'agentInvoked': false}),
+                ],
+              ],
+              'abort': [
+                [terminal('aborted'), accepted()],
+              ],
+            },
+          },
+        );
+        final peer = AgentPeer(fixture.desktop);
+        await peer.start(fixture.workspace, runtime: 'scripted-omp');
+        await peer.attach(credit: credit);
+        await peer.prompt('first');
+        final request = await asked(peer);
+        await peer.wait(
+          Method.agentState,
+          where: (s) => s['state'] == 'waitingApproval',
+          within: const Duration(minutes: 2),
+        );
+        if (!credit) expect(peer.events, isEmpty);
+        await peer.call(Method.agentStop);
+        expect(
+          (await peer.wait(
+            Method.agentStopResult,
+            within: const Duration(minutes: 2),
+          ))['outcome'],
+          'stopped',
+        );
+        await expectLater(
+          answer(peer, request, 'Approve'),
+          rpcCode(ErrorCode.unknownRequest),
+        );
+        await peer.prompt('second');
+        await peer.close();
+        final relevant = fixture.commands
+            .where(
+              (c) => [
+                'extension_ui_response',
+                'abort',
+                'prompt',
+              ].contains(c['type']),
+            )
+            .toList();
+        expect(relevant.map((c) => c['type']), [
+          'prompt',
+          'extension_ui_response',
+          'abort',
+          'prompt',
+        ]);
+        expect(relevant[1], {
+          'type': 'extension_ui_response',
+          'id': 'held',
+          'cancelled': true,
+        });
+      },
+      timeout: const Timeout(Duration(minutes: 4)),
+    );
+  }
+
+  test('OMP: Close cancels a displayed approval before ending input', () async {
+    final fixture = await openFixture(
+      script: {
+        'commands': {
+          'prompt': [
+            [
+              accepted(),
+              approval('close', ['Approve', 'Deny']),
+            ],
+          ],
+          'abort': [
+            [terminal('aborted'), accepted()],
+          ],
+        },
+      },
+    );
+    final peer = await fixture.start();
+    await peer.prompt();
+    await asked(peer);
+    await peer.close();
+    expect(
+      fixture.commands.where((c) => c['type'] == 'extension_ui_response'),
+      [
+        {'type': 'extension_ui_response', 'id': 'close', 'cancelled': true},
+      ],
+    );
+    expect(fixture.reports.last, {'stdin': 'eof'});
+  }, timeout: const Timeout(Duration(minutes: 4)));
+
+  test(
+    'OMP: Native approval policy stays in force without synthetic requests',
+    () async {
+      final fixture = await turns([
+        [accepted(), terminal('completed')],
+      ]);
+      final peer = await fixture.start();
+      await peer.prompt();
+      await peer.wait(
+        Method.agentTurnEnded,
+        within: const Duration(minutes: 2),
+      );
+      await peer.close();
+      expect(peer.of(Method.agentPermissionRequested), isEmpty);
+      expect(
+        fixture.reports
+            .where((record) => record['launch'] == 'root')
+            .single['argv'],
+        fixture.argv,
+      );
+    },
+    timeout: const Timeout(Duration(minutes: 4)),
+  );
+
   test('OMP: Admission precedes output', () async {
     final fixture = await turns([
       [
@@ -752,41 +1044,48 @@ void main() {
     ]);
   });
 
-  test('OMP: Tool approval requested', () async {
-    final fixture = await turns([
-      [
-        accepted(),
-        {
-          'type': 'extension_ui_request',
-          'id': 'approval',
-          'method': 'select',
-          'title': 'Allow tool?',
-        },
-        terminal('completed'),
-      ],
-    ]);
-    final peer = await fixture.start();
-    await peer.prompt();
-    final response = await waitFixture(fixture.report, (row) {
-      return (row['received'] as Json?)?['type'] == 'extension_ui_response';
-    });
-    expect(response['received'], {
-      'type': 'extension_ui_response',
-      'id': 'approval',
-      'cancelled': true,
-    });
-    await peer.wait(Method.agentTurnEnded);
-    await eventually(
-      () => peer.events.any(
-        (e) => e['kind'] == 'notice' && '${e['text']}'.contains('Allow tool?'),
-      ),
-    );
-    expect(peer.of(Method.agentPermissionRequested), isEmpty);
-    expect(
-      fixture.commands.where((c) => c['type'] == 'extension_ui_response'),
-      hasLength(1),
-    );
-  });
+  test(
+    'OMP: Malformed approval is declined without echoing its title',
+    () async {
+      final fixture = await turns([
+        [
+          accepted(),
+          {
+            'type': 'extension_ui_request',
+            'id': 'approval',
+            'method': 'select',
+            'title': 'Allow tool?',
+          },
+          terminal('completed'),
+        ],
+      ]);
+      final peer = await fixture.start();
+      await peer.prompt();
+      final response = await waitFixture(fixture.report, (row) {
+        return (row['received'] as Json?)?['type'] == 'extension_ui_response';
+      });
+      expect(response['received'], {
+        'type': 'extension_ui_response',
+        'id': 'approval',
+        'cancelled': true,
+      });
+      await peer.wait(Method.agentTurnEnded);
+      await eventually(
+        () => peer.events.any(
+          (e) => e['kind'] == 'notice' && '${e['text']}'.contains('declined'),
+        ),
+      );
+      expect(
+        peer.events.where((e) => '${e['text']}'.contains('Allow tool?')),
+        isEmpty,
+      );
+      expect(peer.of(Method.agentPermissionRequested), isEmpty);
+      expect(
+        fixture.commands.where((c) => c['type'] == 'extension_ui_response'),
+        hasLength(1),
+      );
+    },
+  );
 
   test('OMP: Continue on a saved OMP session', () async {
     final fixture = await openFixture();

@@ -9,7 +9,9 @@ class OmpPeer {
     client = OmpClient(
       input: input.stream,
       write: (bytes) {
-        writes.add(jsonDecode(utf8.decode(bytes)) as Json);
+        for (final line in const LineSplitter().convert(utf8.decode(bytes))) {
+          writes.add(jsonDecode(line) as Json);
+        }
         return blockedWrite?.future ?? Future.value();
       },
     );

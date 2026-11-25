@@ -2,6 +2,8 @@ import 'dart:async';
 import 'dart:typed_data';
 
 import 'package:host/src/agent/omp/omp_client.dart';
+import 'package:host/src/agent/omp/omp_driver.dart';
+import 'package:host/src/agent/runtime_driver.dart';
 import 'package:host_protocol/host_protocol.dart';
 import 'package:test/test.dart';
 
@@ -12,6 +14,56 @@ void main() {
   setUp(() {
     peer = OmpPeer();
     addTearDown(peer.dispose);
+  });
+
+  test('OMP: Busy approval and Stop admit no partial write', () async {
+    final driver = OmpRuntimeDriver(peer.client, '18.20.1');
+    driver.consumeNotification = (value) =>
+        (value as RuntimeDelivery).after?.call();
+    final initializing = driver.initialize();
+    peer.send({
+      'type': 'ready',
+      'supportedProtocolVersions': [1],
+    });
+    peer.result('k1');
+    await initializing;
+    final creating = driver.newSession('/fixture');
+    peer.result('k2', {'sessionId': 'fixture'});
+    await creating;
+    final (admission, terminal) = driver.admitPrompt('work', (_) {});
+    peer.result('k3');
+    await admission;
+    unawaited(terminal.then<void>((_) {}, onError: (Object _) {}));
+    final hold = peer.blockedWrite = Completer<void>();
+    final payload = List.filled(1024 * 1024 - 55, 'x').join();
+    final filled = peer.client.send({'type': 'test', 'value': payload});
+    final cancel = RuntimeReply('approval', {'cancelled': true});
+    final busy = throwsA(
+      isA<RpcException>().having((error) => error.reason, 'reason', 'busy'),
+    );
+    try {
+      expect(() => driver.reply('approval', {'value': 'Approve'}), busy);
+      expect(() => driver.cancelWithPermissions('fixture', [cancel]), busy);
+      expect(peer.writes.last['type'], 'test');
+    } finally {
+      hold.complete();
+      peer.blockedWrite = null;
+      await filled;
+    }
+    final abort = driver.cancelWithPermissions('fixture', [cancel]);
+    expect(peer.writes.sublist(peer.writes.length - 2), [
+      {'type': 'extension_ui_response', 'id': 'approval', 'cancelled': true},
+      {'type': 'abort', 'id': 'k4'},
+    ]);
+    peer.result('k4');
+    await abort;
+    expect(
+      driver.turnId,
+      'k3',
+      reason: 'abort acknowledgement is not completion',
+    );
+    peer.send({'type': 'prompt_result', 'id': 'k3', 'status': 'aborted'});
+    expect((await terminal).isCancelled, isTrue);
   });
 
   test(

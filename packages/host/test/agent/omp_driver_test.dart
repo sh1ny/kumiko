@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:typed_data';
 
@@ -189,16 +190,213 @@ void main() {
       'method': 'select',
       'title': 'Do not hide\u202e',
     });
-    await Future<void>(() {});
-    expect(peer.writes.last, {
-      'type': 'extension_ui_response',
-      'id': 'approval',
-      'cancelled': true,
-    });
-    expect(events.single, contains(r'Do not hide\u202e'));
+    final barrier = peer.client.request('get_state');
+    peer.result('k4');
+    await barrier;
+    expect(
+      peer.writes.singleWhere((f) => f['type'] == 'extension_ui_response'),
+      {'type': 'extension_ui_response', 'id': 'approval', 'cancelled': true},
+    );
+    expect(events.single, contains('not supported in Kumiko yet; declined'));
+    expect(events.single, isNot(contains('Do not hide')));
     peer.result('k3', {'agentInvoked': false});
     await admission;
     await terminal;
+  });
+
+  Json approval(String id, {String? title, List<String>? options}) => {
+    'type': 'extension_ui_request',
+    'id': id,
+    'method': 'select',
+    'title': title ?? 'Allow tool: bash\nCommand: echo test',
+    'options': options ?? ['Approve', 'Deny'],
+  };
+
+  test(
+    'OMP: Ambiguous or unrenderable approvals never offer authority',
+    () async {
+      await readySession();
+      recordOutput([]);
+      final offered = <RuntimePermission>[];
+      driver.onPermission = (request) {
+        offered.add(request);
+        return null;
+      };
+      final (admitted, ended) = driver.admitPrompt('work', (_) {});
+      peer.result('k3');
+      await admitted;
+      peer.send(approval('duplicate', options: ['Approve', 'Approve', 'Deny']));
+      peer.send(approval('unknown', options: ['Go ahead', 'Deny']));
+      peer.send(
+        approval('large', title: 'Allow tool: bash\n${'x' * (17 * 1024)}'),
+      );
+      peer.send(
+        approval('elided', title: 'Allow tool: bash\ncmd[…12ch elided…]'),
+      );
+      peer.send({...approval('marked'), 'selectionMarker': 'checkbox'});
+      final longGrant = 'Approve Directory: ${'x' * maxPermissionNameBytes}';
+      peer.send(
+        approval(
+          'large-option',
+          options: [longGrant, 'Always $longGrant', 'Approve Once', 'Deny'],
+        ),
+      );
+      peer.send(
+        approval('valid', title: 'Allow tool: bash\nCommand: a\u202eb'),
+      );
+      peer.send({'type': 'prompt_result', 'id': 'k3', 'status': 'completed'});
+      await ended;
+      expect(peer.writes.skip(3).map((f) => f['id']), [
+        'duplicate',
+        'unknown',
+        'large',
+        'elided',
+        'marked',
+        'large-option',
+      ]);
+      expect(peer.writes.skip(3).every((f) => f['cancelled'] == true), isTrue);
+      expect(offered.single.id, 'valid');
+      expect(offered.single.preview, contains(r'a\u202eb'));
+    },
+  );
+
+  test('OMP: Pre-admission, stopping and idle dialogs are declined', () async {
+    await readySession();
+    recordOutput([]);
+    final offered = <Object>[];
+    driver.onPermission = (request) {
+      offered.add(request.id);
+      return null;
+    };
+    final (admitted, ended) = driver.admitPrompt('work', (_) {});
+    peer.send(approval('pre'));
+    peer.result('k3');
+    await admitted;
+    final abort = driver.cancel('fixture');
+    peer.send(approval('stopping'));
+    peer.result('k4');
+    peer.send({'type': 'prompt_result', 'id': 'k3', 'status': 'aborted'});
+    await abort;
+    await ended;
+    peer.send(approval('idle'));
+    final barrier = peer.client.request('get_state');
+    peer.result('k5');
+    await barrier;
+    expect(offered, isEmpty);
+    expect(
+      peer.writes.where((f) => f['cancelled'] == true).map((f) => f['id']),
+      ['pre', 'stopping', 'idle'],
+    );
+  });
+
+  test('OMP: Non-approval dialogs cancel without accepting defaults', () async {
+    await readySession();
+    recordOutput([]);
+    final (admitted, ended) = driver.admitPrompt('work', (_) {});
+    peer.result('k3');
+    await admitted;
+    const methods = ['select', 'confirm', 'input', 'editor', 'ask', 'form'];
+    for (final method in methods) {
+      peer.send({
+        'type': 'extension_ui_request',
+        'id': method,
+        'method': method,
+        'title': 'Pick an editor',
+        'options': ['Approve', 'Deny'],
+      });
+    }
+    peer.send({'type': 'prompt_result', 'id': 'k3', 'status': 'completed'});
+    await ended;
+    expect(peer.writes.skip(3), [
+      for (final method in methods)
+        {'type': 'extension_ui_response', 'id': method, 'cancelled': true},
+    ]);
+  });
+
+  for (final type in ['extension_ui_request', 'prompt_result', null]) {
+    test('OMP: uncorrelatable $type overflow fails the turn', () async {
+      await readySession();
+      final (admitted, ended) = driver.admitPrompt('work', (_) {});
+      final failed = expectLater(ended, throwsA(isA<OmpProtocolException>()));
+      peer.result('k3');
+      await admitted;
+      peer.send({'type': 'rpc_frame_error', 'originalType': ?type});
+      // The next native response is a barrier, not a delay to let the peer run.
+      final barrier = peer.client.request('get_state');
+      peer.result('k4');
+      await expectLater(barrier, throwsA(isA<OmpProtocolException>()));
+      await failed;
+    });
+  }
+
+  test('OMP: duplicate live approval id fails without answering it', () async {
+    await readySession();
+    recordOutput([]);
+    final offered = Completer<void>();
+    driver.hasPendingApproval = (id) => id == 'same' && offered.isCompleted;
+    driver.onPermission = (_) {
+      offered.complete();
+      return null;
+    };
+    final (admitted, ended) = driver.admitPrompt('work', (_) {});
+    unawaited(ended.then<void>((_) {}, onError: (Object _) {}));
+    peer.result('k3');
+    await admitted;
+    peer.send(approval('same'));
+    final marker = peer.client.request('get_state');
+    peer.result('k4');
+    await marker;
+    expect(offered.isCompleted, isTrue);
+    final failed = expectLater(ended, throwsA(isA<OmpProtocolException>()));
+    peer.send(approval('same'));
+    final barrier = peer.client.request('get_state');
+    peer.result('k5');
+    await expectLater(barrier, throwsA(isA<OmpProtocolException>()));
+    await failed;
+    expect(
+      peer.writes.where((f) => f['type'] == 'extension_ui_response'),
+      isEmpty,
+    );
+  });
+
+  test('OMP: A same-chunk withdrawal retires only its exact request', () async {
+    await readySession();
+    recordOutput([]);
+    final pending = <Object>{};
+    driver.onPermission = (request) {
+      pending.add(request.id);
+      return null;
+    };
+    driver.onRetired = pending.remove;
+    driver.hasPendingApproval = pending.contains;
+    final (admitted, ended) = driver.admitPrompt('work', (_) {});
+    ended.ignore();
+    peer.input.add(
+      utf8.encode(
+        [
+          {'type': 'response', 'id': 'k3', 'success': true},
+          approval('keep'),
+          approval('gone'),
+          {
+            'type': 'extension_ui_request',
+            'method': 'cancel',
+            'id': 'keep',
+            'targetId': 'gone',
+          },
+        ].map((frame) => '${jsonEncode(frame)}\n').join(),
+      ),
+    );
+    final barrier = peer.client.request('get_state');
+    peer.result('k4');
+    await admitted;
+    await barrier;
+    expect(pending, {'keep'});
+    expect(
+      peer.writes.where((frame) => frame['type'] == 'extension_ui_response'),
+      isEmpty,
+    );
+    peer.send({'type': 'prompt_result', 'id': 'k3', 'status': 'completed'});
+    await ended;
   });
 
   test('OMP: Thinking and text interleave; one chunk commits first', () async {
@@ -370,15 +568,17 @@ void main() {
           'title': 'request $n',
         });
       }
-      await Future<void>(() {});
+      final barrier = peer.client.request('get_state');
+      peer.result('k4');
+      await barrier;
+      final replies = peer.writes.where(
+        (f) => f['type'] == 'extension_ui_response',
+      );
       expect(
-        peer.writes.skip(3).map((command) => command['id']),
+        replies.map((command) => command['id']),
         List.generate(10, (n) => 'ask$n'),
       );
-      expect(
-        peer.writes.skip(3).every((command) => command['cancelled'] == true),
-        isTrue,
-      );
+      expect(replies.every((command) => command['cancelled'] == true), isTrue);
       expect(events, hasLength(9));
       expect(events.last, contains('further OMP requests declined'));
     },

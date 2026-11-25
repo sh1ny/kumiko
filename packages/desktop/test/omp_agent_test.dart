@@ -116,6 +116,81 @@ void main() {
     expect(find.textContaining('Claude Code is not signed in'), findsNothing);
   });
 
+  AgentPermissionRequestedParams permission(String id) =>
+      AgentPermissionRequestedParams(
+        sessionId: id,
+        requestId: 'omp:permission-1',
+        title: 'OMP tool approval',
+        preview: 'Allow tool: bash\nCommand: echo demo',
+        options: const [
+          AgentPermissionOption(
+            optionId: 'choice-0',
+            name: 'Approve Once',
+            kind: 'allow_once',
+          ),
+          AgentPermissionOption(
+            optionId: 'choice-1',
+            name: 'Deny',
+            kind: 'reject_once',
+          ),
+        ],
+      );
+
+  uiTest('OMP: Permission card offers only one-shot Approve and Deny', (
+    tester,
+  ) async {
+    final host = _host();
+    final rig = await _chat(tester, host);
+    final id = session(rig);
+    host.agentState(id, AgentState.waitingApproval);
+    host.agentRequestSource.add(permission(id));
+    await flush(tester);
+    expect(
+      find.text('Allow tool: bash\nCommand: echo demo', findRichText: true),
+      findsOneWidget,
+    );
+    expect(find.text('Approve Once'), findsOneWidget);
+    expect(find.textContaining('Always Approve'), findsNothing);
+    expect(host.agentReplies, isEmpty);
+    await tester.tap(find.text('Deny'));
+    await flush(tester);
+    expect(host.agentReplies.single.optionId, 'choice-1');
+  });
+
+  uiTest('OMP: Withdrawn approval disables its choices', (tester) async {
+    final host = _host();
+    final rig = await _chat(tester, host);
+    final id = session(rig);
+    final request = permission(id);
+    host.agentState(id, AgentState.waitingApproval);
+    host.agentRequestSource.add(request);
+    await flush(tester);
+    host.agentResolvedSource.add(
+      AgentPermissionResolvedParams(
+        sessionId: id,
+        requestId: request.requestId,
+        outcome: AgentPermissionOutcome.cancelled,
+      ),
+    );
+    await flush(tester);
+    final choice = tester.widget<OutlinedButton>(
+      find.widgetWithText(OutlinedButton, 'Approve Once'),
+    );
+    expect(choice.onPressed, isNull);
+    expect(host.agentReplies, isEmpty);
+  });
+
+  uiTest('OMP: Approval guidance states native policy and limits', (
+    tester,
+  ) async {
+    await _chat(tester, _host());
+    expect(
+      find.textContaining('OMP settings decide when tools ask'),
+      findsOneWidget,
+    );
+    expect(find.textContaining('does not sandbox OMP'), findsOneWidget);
+  });
+
   uiTest('OMP: Continue on a saved OMP session', (tester) async {
     const reason = 'OMP Continue is not supported in this Kumiko version';
     final host = _host();
