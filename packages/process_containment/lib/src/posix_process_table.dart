@@ -112,16 +112,11 @@ class _LinuxProcessTable extends PosixProcessTable {
   }
 
   @override
-  List<int> listPids() {
-    try {
-      return [
-        for (final e in Directory('/proc').listSync(followLinks: false))
-          ?int.tryParse(e.uri.pathSegments.lastWhere((s) => s.isNotEmpty)),
-      ];
-    } on FileSystemException catch (e) {
-      throw ProcessTableUnlistable('${e.path}: ${e.osError}');
-    }
-  }
+  List<int> listPids() => listProcPids(
+    () => [
+      for (final e in Directory('/proc').listSync(followLinks: false)) e.path,
+    ],
+  );
 
   @override
   ProcessSnapshot? snapshot(int pid) {
@@ -229,6 +224,82 @@ final _ProcPidinfoDart _procPidinfo = libc
 final _SysctlDart _sysctl = libc.lookupFunction<_SysctlNative, _SysctlDart>(
   'sysctl',
 );
+
+/// The pids of a `/proc` listing that [list] makes, as the entries' paths.
+///
+/// A process that exits while `/proc` is listed can make the listing fail
+/// with ENOENT or ESRCH on its own `/proc/<pid>` entry. Only that failure is
+/// listed again, at most 8 times in all. Every other failure, or a vanished
+/// entry on all 8 attempts, throws [ProcessTableUnlistable], so the scan
+/// still fails closed (issue #40, design D4).
+List<int> listProcPids(List<String> Function() list) {
+  const attempts = 8;
+  final vanished = RegExp(r'^/proc/\d+/?$');
+  for (var attempt = 1; ; attempt++) {
+    try {
+      return [
+        for (final path in list())
+          ?int.tryParse(path.split('/').lastWhere((s) => s.isNotEmpty)),
+      ];
+    } on FileSystemException catch (e) {
+      final code = e.osError?.errorCode;
+      final retry =
+          (code == enoent || code == esrch) &&
+          vanished.hasMatch(e.path ?? '') &&
+          attempt < attempts;
+      if (!retry) throw ProcessTableUnlistable('${e.path}: ${e.osError}');
+    }
+  }
+}
+
+/// Whether one read of `/proc/<pid>/status` proves the process has fully
+/// exited: the leader is a zombie (`Z` or `X`) and the kernel still counts it
+/// as the group's only thread.
+///
+/// `State:` and `Threads:` come from the same read, which is generated from
+/// one task, so a sibling's `exec` cannot pair a dead leader's state with a
+/// live leader's count. A count of 0 means the read could not lock the
+/// signal state, which says nothing about the group, so only exactly 1
+/// confirms (issue #40, design D2).
+bool linuxStatusConfirmsExit(String status) {
+  final state = RegExp(r'^State:\s+(\S)', multiLine: true).firstMatch(status);
+  final threads = RegExp(
+    r'^Threads:\s+(\d+)\s*$',
+    multiLine: true,
+  ).firstMatch(status);
+  if (state == null || threads == null) return false;
+  final zombie = state.group(1) == 'Z' || state.group(1) == 'X';
+  return zombie && threads.group(1) == '1';
+}
+
+/// Whether the `proc` mount at `/proc`, as `/proc/self/mountinfo` describes
+/// it, can hide a live process from us.
+///
+/// With `hidepid` other than `0` or `off`, `/proc/<pid>` is visible only to
+/// a reader that may ptrace the process, so a live process of our own user
+/// answers ENOENT once it becomes non-dumpable. The last `proc` mount at
+/// `/proc` is the one in use. A mountinfo with no such mount, or one that
+/// cannot be parsed, counts as hiding, so ENOENT is never trusted on a guess
+/// (issue #40, design D2).
+bool procHidesPids(String mountinfo) {
+  String? options;
+  for (final line in const LineSplitter().convert(mountinfo)) {
+    final separator = line.indexOf(' - ');
+    if (separator < 0) continue;
+    final mount = line.substring(0, separator).split(' ');
+    final fs = line.substring(separator + 3).split(' ');
+    if (mount.length < 6 || fs.length < 3) continue;
+    if (mount[4] != '/proc' || fs[0] != 'proc') continue;
+    options = '${mount[5]},${fs[2]}';
+  }
+  if (options == null) return true;
+  for (final option in options.split(',')) {
+    if (!option.startsWith('hidepid=')) continue;
+    final value = option.substring('hidepid='.length);
+    if (value != '0' && value != 'off') return true;
+  }
+  return false;
+}
 
 /// The snapshot the macOS short read gives once the full read was refused.
 ///
