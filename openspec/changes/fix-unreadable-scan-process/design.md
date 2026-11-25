@@ -52,6 +52,10 @@ TIER: FULL
 
   The population filter runs before a snapshot makes a pid pending: a readable snapshot (zombie or not) with another uid, or a known start time before the window, is skipped as today. The macOS short info's placeholder start time 0 is not a known start time, so it excludes nothing.
 
+  A null snapshot gives no uid. On macOS every zombie of every user answers null (its `arg` 0 read fails), so without more evidence any zombie on the machine would fail the scan. Once a pass is read, the table therefore names, in one call, the null-snapshot pids it can show belong to another user (`foreignPids`, D2). Those are outside the population and are skipped. Our own zombies are not named, so they stay pending.
+  - **macOS:** the pids absent from one complete `proc_listpids(PROC_UID_ONLY, <our uid>)` listing, made after the reads. A zombie keeps its credentials until it is reaped, so our own zombie is listed (A3).
+  - **Linux:** none. A null Linux snapshot means `/proc/<pid>` is gone, which `confirmedExits` judges.
+
   A pid whose exit the recheck confirms is not pending, but it still counts as *not read*. With any pending pid, any not-read pid or any match, the scan settles, so the second listing always comes after the exit evidence. The settle waits, up to its existing 1 s, until every killed match is gone and every pending pid has a **confirmed full exit**.
   - A pending pid confirmed during the settle contributes no failure.
   - A pending pid not confirmed by the end of the settle is `scan-unreadable:<pid>`.
@@ -81,6 +85,7 @@ TIER: FULL
     - For each pid with a known start time, the existing leaf `proc_pidinfo(PROC_PIDTBSDINFO)` with `arg` 0 succeeds with another start time: the pid was replaced.
     - For the pids not confirmed so, one fresh `proc_listpids(PROC_ALL_PIDS)` listing is made after those reads. It lists live and zombie processes, so a pid absent from it has been reaped (A3). The listing must be complete: the existing sized listing, which retries a full buffer and throws when it cannot complete. A listing that throws confirms nothing.
     - Anything else is not confirmed. In particular, a zombie that its parent has not yet reaped is not confirmed. The cost is stated in D3: such a pid stays scan-unreadable after the 1 s settle.
+  - `ProcessTable` also gains `Set<int> foreignPids(Set<int> pids)`, the population evidence for null snapshots described in D1. It names a pid only on evidence that it belongs to another user, never waits, and names nothing when its listing fails.
   - The doc comment of `ProcessSnapshot.zombie` is corrected: on Linux it reports the leader's state, not that no thread runs. Callers keep their behaviour.
 - **Rejected:**
   - **A field on `ProcessSnapshot`.** It would change the snapshot that the kill guard, spawn and unit listing use for identity. The round-1 review found that leaks unknown identities.
@@ -90,6 +95,7 @@ TIER: FULL
   - **`Threads:` at most 1.** A count of 0 does not belong to a leader the kernel still counts (round-4 finding).
   - **Trusting ENOENT under `hidepid`.** A live process can be hidden (round-4 finding).
   - **A listing per pid on macOS.** It makes a sweep quadratic in the process count (round-4 finding).
+  - **Reading a macOS zombie's uid directly.** `proc_pidinfo` with `arg` 1 and `sysctl` `kern.proc.pid` both reach a zombie only through `proc_find_zombref`, which can wait (A3).
 - **Reversal cost:** low. One method; the host wrapper forwards it.
 - **Important:** yes. `ProcessTable` is shared with the host.
 - **Chosen by:** user (round-2 escalation: Linux thread count, macOS confirmed absence; round-3 escalation: one status read, absence from the listing; round-4 acceptance: no waiting call, a start-time difference or listing absence only)
@@ -144,8 +150,8 @@ TIER: FULL
 |---|---|---|---|---|---|---|
 | S1 | Fix the scan's handling of processes that exit during it | A process the first pass cannot read is cleared only by a confirmed full exit seen before the second listing | Exit flag; gone or readable in pass 2; deadline retry; serial tests; unreadable as gone | low | yes | user |
 | S2 | Vanished-entry listing in the same change | Fix here | Separate issue | low | no | agent |
-| D1 | When a pid the scan cannot read fails it | Population filter first; pending in pass 1; any not-read pid triggers pass 2; confirmed exit before the second listing clears it; pass 2 verifies only | Exit flag; clear in pass 2; new deadline; a third pass | low | yes | user |
-| D2 | Evidence of a full exit | `confirmedExits`: Linux gone (no `hidepid`), replaced, or one status read with `Z`/`X` and exactly 1 thread; macOS replaced (leaf `arg` 0 read) or absent from one complete `proc_listpids` per call. No waiting call, no errno | Snapshot field; macOS errno or `arg` 0 failure; zombie-aware `arg` 1; split stat/status reads; at most 1 thread; ENOENT under `hidepid`; a listing per pid | low | yes | user |
+| D1 | When a pid the scan cannot read fails it | Population filter first (macOS null snapshots: `foreignPids`); pending in pass 1; any not-read pid triggers pass 2; confirmed exit before the second listing clears it; pass 2 verifies only | Exit flag; clear in pass 2; new deadline; a third pass | low | yes | user |
+| D2 | Evidence of a full exit | `confirmedExits`: Linux gone (no `hidepid`), replaced, or one status read with `Z`/`X` and exactly 1 thread; macOS replaced (leaf `arg` 0 read) or absent from one complete `proc_listpids` per call. No waiting call, no errno | Snapshot field; macOS errno or `arg` 0 failure; zombie-aware `arg` 1; split stat/status reads; at most 1 thread; ENOENT under `hidepid`; a listing per pid; waiting for a zombie's uid | low | yes | user |
 | D3 | Settle and pass bounds | Unchanged; real cost stated, including an unreaped macOS zombie staying unreadable | Longer settle | low | no | agent |
 | D4 | Linux listing | Retry at most 8 times on a vanished `/proc/<n>` | Async list; FFI readdir | low | no | agent |
 | D5 | Environment errno | Unchanged (#31) | Leaf sysctl now | low | no | agent |
@@ -165,7 +171,8 @@ TIER: FULL
 - **A3:** XNU facts, from apple-oss-distributions/xnu (`bsd/kern/proc_info.c`, `bsd/kern/kern_exit.c`, `bsd/kern/kern_proc.c`; read only, no code taken). Not checked against this repository, because the source is external:
   - `exit1` holds every other thread and only then sets `P_LEXIT`. `proc_prepareexit` then marks the proc `P_REF_DEAD`, after which `proc_find` fails. `task_terminate_internal` follows, and the last thread to terminate calls `proc_exit`, which sets `p_stat` to `SZOMB`.
   - With `arg` 0, `proc_pidinfo` uses `proc_find` only and does not wait. With a non-zero `arg` it falls back to `proc_find_zombref`, which can sleep while another caller holds the zombie. This design does not use that path.
-  - `proc_listpids(PROC_ALL_PIDS)` walks `allproc` and then `zombproc`, the list a proc joins when it is marked `P_REF_DEAD`. A pid absent from both has been reaped.
+  - `proc_listpids(PROC_ALL_PIDS)` walks `allproc` and then `zombproc`, the list a proc joins when it is marked `P_REF_DEAD`. A pid absent from both has been reaped. It stops early only when the buffer is full, so a listing shorter than the buffer is complete.
+  - `PROC_UID_ONLY` filters on the proc's credentials (`kauth_cred_getuid`, skipping `NOCRED`). A zombie keeps its credentials until `reap_child_locked`, so it is listed under its user until it is reaped. `sysctl` `kern.proc.pid` reaches zombies through `proc_find_zombref`, as `arg` 1 does.
 
   Depends on it: D2 (macOS), task 2.x.
 - **A4:** In the WSL experiment, Dart's async `Directory('/proc').list` reported vanished entries as error events and finished the listing. That was observed, not cited. Nothing depends on it: D4 rejects that API.
@@ -191,6 +198,7 @@ TIER: FULL
 | A pending process is never confirmed | fake table: snapshot readable and environment denied throughout, never confirmed; `scan-unreadable:<pid>` | agent, unit |
 | A pending process disappears only during the second pass | fake table: unconfirmed through the settle, gone in pass 2; still `scan-unreadable:<pid>` | agent, unit |
 | A null or zombie snapshot whose exit is not confirmed | fake table: null (and, separately, zombie) never confirmed; pending; `scan-unreadable` | agent, unit |
+| A null snapshot of another user's pid | fake table: a null snapshot, never confirmed, named by `foreignPids`; skipped, the scan is clean, and `foreignPids` is called once per pass with the null-snapshot pids | agent, unit |
 | An out-of-population zombie | fake table: a zombie snapshot with another uid (and, separately, a start before the window), never confirmed; skipped, the scan is clean, and `confirmedExits` is never asked about it | agent, unit |
 | A refusal first seen on the second pass | fake table: a match triggers pass 2, where another pid is refused and not confirmed; `scan-unreadable` names it | agent, unit |
 | A child started before a confirmed exit | fake table: pending pid confirmed in the settle; the second listing holds a marked child; `marked-survivor` | agent, unit |
@@ -198,8 +206,8 @@ TIER: FULL
 | Scan precedence with an unconfirmed pid | fake table: a pid never confirmed, then the second listing fails; `scan-unlistable` (not clean) | agent, unit |
 | A process exits while the process table is listed | listing helper with an injected listing: a vanished `/proc/<n>` is retried and succeeds | agent, unit |
 | The process table cannot be listed | listing helper: 8 vanished-entry failures, or one other error, throw `ProcessTableUnlistable` | agent, unit |
-| Exit evidence decoding (D2) | pure functions on every OS. Linux: a status text with `Z` and 1 thread confirms; `Z` with 2 threads does not, `Z` with 0 threads does not, and neither does `R` with 1 thread (the live leader after an `exec`); the stat state is never consulted; mountinfo with `hidepid=2` (or `invisible`) on `/proc` makes ENOENT confirm nothing, `hidepid=0`/`off` or no option does not, and an unparseable mountinfo counts as `hidepid`. macOS: a different start time confirms, the same one does not; a pid absent from a complete listing confirms; a present pid, and any pid when the listing throws, does not | agent, unit |
-| Real tables (rule 10) | real `confirmedExits` on Linux and macOS: a live child is not confirmed; a waited-for child is confirmed (through absence). The unreaped zombie is synchronized: a shell starts a background child that blocks on its stdin, prints its pid and `exec`s into `sleep`; the test polls until the parent's name is `sleep`, releases the child, and polls the child's snapshot until it is a zombie (each poll bounded and failing loudly, rule 6). Then Linux confirms it (`Z`, 1 thread) and macOS does not (unreaped). The existing real-table scan tests stay | agent, integration |
+| Exit evidence decoding (D2) | pure functions on every OS. Linux: a status text with `Z` and 1 thread confirms; `Z` with 2 threads does not, `Z` with 0 threads does not, and neither does `R` with 1 thread (the live leader after an `exec`); the stat state is never consulted; mountinfo with `hidepid=2` (or `invisible`) on `/proc` makes ENOENT confirm nothing, `hidepid=0`/`off` or no option does not, and an unparseable mountinfo counts as `hidepid`. macOS: a different start time confirms, the same one does not; a pid absent from a complete listing confirms; a present pid, and any pid when the listing throws, does not. `macForeignPids`: a pid absent from our user's listing is named, a listed one is not, and none when the listing threw | agent, unit |
+| Real tables (rule 10) | real `confirmedExits` on Linux and macOS: a live child is not confirmed; a waited-for child is confirmed (through absence). The unreaped zombie is synchronized: a shell starts a background child that blocks on its stdin, prints its pid and `exec`s into `sleep`; the test polls until the parent's name is `sleep`, releases the child, and polls the child's snapshot until it is a zombie (each poll bounded and failing loudly, rule 6). Then Linux confirms it (`Z`, 1 thread). That case runs on Linux only: a real unreaped zombie of our own on macOS would fail every concurrent real scan (rule 9). Real `foreignPids`: on Linux it names nothing; on macOS it names pid 1 (`launchd`, root) and not a live child of ours. The existing real-table scan tests stay | agent, integration |
 
 The fake table's answers change on a call count, never after a delay (AGENTS.md rules 2 and 3).
 
@@ -259,6 +267,7 @@ flowchart LR
 | Queue / buffer / cache / transfer | Bound | At the bound | Timeout | At 10x / 100x |
 |---|---|---|---|---|
 | `/proc` listings per `listPids` | 8 | `ProcessTableUnlistable` | None: each is a synchronous directory read outside the pass clock. At most 16 per scan | Each costs one `/proc` read, which grows with the process count |
+| `foreignPids` listings (macOS) | One per pass that met a null snapshot | Its listing fails: no pid is named, so they stay pending | Outside the pass clock, like the other listings | One `proc_listpids` with the same sizing as the full listing |
 | Pending pids | The pids of one listing | — | The settle checks its 1 s clock before each sweep, so it can overrun by one whole sweep plus 10 ms | A sweep is one `confirmedExits` call: on Linux, a mountinfo read and up to 2 reads per pending pid; on macOS, one leaf `proc_pidinfo` per pending pid with a start time, plus one complete `proc_listpids` (a sizing call and at most four buffer attempts). Linear in the pending count plus one listing. Not measured |
 | Scan duration | Two passes, each stopped at 10 s between pids, plus the settle and the listings | `scan-timeout` | Nothing inside a synchronous step is interrupted. Each pass can overrun by one whole pid iteration (snapshot, environment read and exit check). The settle can overrun by one sweep. Up to 16 Linux listings run outside every clock | The pass clocks bound the per-pid loop at any process count. The listings, one iteration and one sweep grow with it |
 
@@ -270,7 +279,7 @@ This change adds no pass. It adds one settle and a second pass to a scan that me
 
 - **The exit is confirmed at the first recheck.** Gone at once; no settle is needed for it.
 - **The process is in exit, threads held, at the recheck.** On macOS the leaf read fails and the pid is still listed, so it is pending. The settle waits for its parent to reap it.
-- **An unreaped zombie on macOS.** Listed, so not confirmed: `scan-unreadable` unless its parent reaps it within the settle (D3).
+- **An unreaped zombie on macOS.** Another user's is skipped through `foreignPids`. Our own, of any age (its start time cannot be read without waiting), is listed, so not confirmed: `scan-unreadable` unless its parent reaps it within the settle (D3).
 - **`/proc` mounted with `hidepid`.** ENOENT confirms nothing; only a `Z`/`X` status with 1 thread or a start-time difference does. A process hidden from the start is not in the listing at all, as before this change.
 - **A Linux zombie leader with live threads.** `Threads:` is above 1, so it is pending, if its snapshot puts it in the population. It is confirmed only once the threads are gone.
 - **The exit is still not confirmed after the settle.** `scan-unreadable`, the same answer as before this change.
@@ -295,7 +304,8 @@ This change adds no pass. It adds one settle and a second pass to a scan that me
 - [The macOS cause is inferred (A1)] → D1 does not rely on it. The macOS CI runs of this change and of #29 are the check.
 - [A null or zombie snapshot is no longer skipped without evidence] → A scan can now fail where it used to pass silently. That pass was unsound: a process in exit, or a Linux zombie leader with live threads, could still start processes.
 - [Second-pass refusals] → Fail-closed. One exit during the second pass of a scan that had a match is enough.
-- [An unreaped macOS zombie is not confirmed] → It stays `scan-unreadable` after the 1 s settle unless its parent reaps it. Accepted by the owner in place of a call that can wait (round 4).
+- [An unreaped macOS zombie is not confirmed] → Our own user's stays `scan-unreadable` after the 1 s settle unless its parent reaps it, whatever its age, because its start time cannot be read without waiting. An application of the same user that leaves a zombie unreaped would keep unit cleanup unresolved until it is reaped. Accepted by the owner in place of a call that can wait (round 4); another user's zombie is skipped through `foreignPids`.
+- [A real unreaped zombie in a macOS test] → It would fail every real scan running at the same time, so the real unreaped-zombie case runs on Linux only (AGENTS.md rule 9). The macOS answer is covered by the decoding tests.
 - [`hidepid` on Linux] → ENOENT is not trusted, so a scan can fail where an exit was real. Fail-closed.
 - [The race after the final listing (D6)] → Left to OS grouping (#9), as ADR 0001 leaves descendant containment.
 
