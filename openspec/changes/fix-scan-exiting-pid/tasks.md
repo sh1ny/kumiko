@@ -30,8 +30,8 @@ The other tests from the design's test map have no scenario row of their own; th
 
 ## 2. Integration and evidence
 
-- [ ] 2.1 Run `mise run check` and `mise run test:host` (this change touches process containment); both pass.
-- [ ] 2.2 [evidence] Rerun the WSL scan diagnostic on the fixed code for 60 s under the same load as the issue #42 run, and record the scan count and the count of each reason → evidence/wsl-scan-diag.txt
+- [x] 2.1 Run `mise run check` and `mise run test:host` (this change touches process containment); both pass.
+- [x] 2.2 [evidence] Rerun the WSL scan diagnostic on the fixed code for 60 s under the same load as the issue #42 run, and record the scan count and the count of each reason → evidence/wsl-scan-diag.txt
 
 ## Workflow follow-up
 
