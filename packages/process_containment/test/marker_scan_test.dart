@@ -27,12 +27,25 @@ void main() {
     FakeProcessTable table, {
     Duration passTimeout = const Duration(seconds: 10),
     bool Function()? passExpired,
+    Set<String>? markers,
+    List<int>? settleClockReads,
   }) => runMarkerScan(
     table: table,
-    markers: {marker},
+    markers: markers ?? {marker},
     oldestCreatedAt: created,
     passTimeout: passTimeout,
     passExpiredForTesting: passExpired,
+    // The settles read a fake monotonic clock that moves 400 ms on each
+    // exit check, so each settle's own 1 s deadline admits three sweeps and
+    // then stops them: time is counted in calls, never measured. Each read
+    // records how many listings came before it.
+    settleClockForTesting: () {
+      settleClockReads?.add(table.listCount);
+      return Duration(
+        milliseconds:
+            400 * table.calls.where((c) => c.startsWith('confirm:')).length,
+      );
+    },
   );
 
   test(
@@ -394,17 +407,23 @@ void main() {
     );
 
     test('a process that exits after its failed read on the final pass is '
-        'unreadable', () async {
-      // Pass 2 refuses 52, which exits only once 53 has been read: a
-      // check deferred to the end of the pass would clear it (F2).
+        'cleared by the final settle', () async {
+      // Pass 2 refuses 52, which exits only once 53 has been read. Its
+      // first exit check runs at its own read, before 53 is read (#40's
+      // F2); the confirming check comes in the settle after the pass
+      // (issue #42, design D1).
       var killed = false;
       var exited = false;
       var secondPass = false;
-      final table = FakeProcessTable(
+      late final FakeProcessTable table;
+      table = FakeProcessTable(
         pids: [50, 52, 53],
         onSnapshot: (pid) {
           if (pid == 50) return killed ? null : _snap(150);
-          if (pid == 53 && secondPass) exited = true;
+          if (pid == 53 && secondPass) {
+            table.calls.add('read:53');
+            exited = true;
+          }
           return _snap(100 + pid);
         },
         onEnvironment: (pid) {
@@ -422,7 +441,175 @@ void main() {
 
       final result = await scan(table);
 
-      expect(result.failure, 'scan-unreadable:52');
+      expect(result.failure, isNull, reason: '$result');
+      final second = table.calls.lastIndexOf('list');
+      expect(table.calls.sublist(second), [
+        'list',
+        'confirm:50',
+        'confirm:52',
+        'read:53',
+        'confirm:52',
+      ]);
+    });
+
+    // Issue #42: a pid the second pass cannot read gets the same settle as
+    // the first pass's (design D1), only when that settle can change the
+    // result (D2). Answers change on call counts, never on time.
+    test('a process that exits during the second pass is cleared by the second '
+        'settle', () async {
+      var killed = false;
+      late final FakeProcessTable table;
+      table = FakeProcessTable(
+        pids: [50, 52],
+        onList: (n) => n == 1 ? [50, 52] : [52],
+        onSnapshot: (pid) => _snap(100 + pid),
+        onEnvironment: (pid) {
+          if (pid == 50) return ['$unitMarkerVariable=$marker'];
+          if (killed) throw const ProcessReadDenied();
+          return ['PATH=/bin'];
+        },
+        onKill: (_, _) => killed = true,
+        // 52 is confirmed neither at its read nor at the first sweep:
+        // only polling clears it.
+        onConfirmedExits: (pid, _) =>
+            pid == 50 || table.confirmCalls[pid]! >= 3,
+      );
+
+      final result = await scan(table);
+
+      expect(result.failure, isNull, reason: '$result');
+      expect(table.confirmCalls[52], 3);
+      expect(table.listCount, 2, reason: 'no third pass');
+      expect(table.kills, [(50, 150)]);
+    });
+
+    test(
+      'a survivor stays when the second settle clears an unread pid',
+      () async {
+        var killed = false;
+        late final FakeProcessTable table;
+        table = FakeProcessTable(
+          pids: [50, 52],
+          // 55, a child of the killed 50, carries unit-a's marker.
+          onList: (n) => n == 1 ? [50, 52] : [52, 55],
+          onSnapshot: (pid) => _snap(100 + pid),
+          onEnvironment: (pid) {
+            if (pid == 50 || pid == 55) return ['$unitMarkerVariable=$marker'];
+            if (killed) throw const ProcessReadDenied();
+            return ['PATH=/bin'];
+          },
+          onKill: (_, _) => killed = true,
+          onConfirmedExits: (pid, _) =>
+              pid == 50 || (pid == 52 && table.confirmCalls[pid]! >= 2),
+        );
+
+        final result = await scan(table, markers: {marker, 'unit-b'});
+
+        expect(result.unreadablePid, isNull, reason: '$result');
+        expect(result.remaining.map((m) => (m.pid, m.marker)), [(55, marker)]);
+        expect(result.failure, 'marked-survivor:55');
+        expect(table.kills, [
+          (50, 150),
+        ], reason: 'the second pass kills nothing');
+      },
+    );
+
+    test('a first-pass unconfirmed pid is named and the second settle does not '
+        'run', () async {
+      var killed = false;
+      late final FakeProcessTable table;
+      table = FakeProcessTable(
+        pids: [20, 50],
+        onList: (n) => n == 1 ? [20, 50] : [52],
+        onSnapshot: (pid) => _snap(100 + pid),
+        onEnvironment: (pid) {
+          if (pid == 50) return ['$unitMarkerVariable=$marker'];
+          if (pid == 52 && !killed) return ['PATH=/bin'];
+          throw const ProcessReadDenied();
+        },
+        onKill: (_, _) => killed = true,
+        onConfirmedExits: (pid, _) => pid == 50,
+      );
+
+      // Each settle measures its own 1 s: the first sweeps 20 three times;
+      // a second settle, if one ran, would sweep 52 three times too, which
+      // the call count below would show.
+      final result = await scan(table);
+
+      expect(result.failure, 'scan-unreadable:20');
+      expect(table.confirmCalls[20], 4, reason: 'its read and three sweeps');
+      expect(table.confirmCalls[52], 1, reason: 'only the check at its read');
+    });
+
+    test(
+      'two unconfirmed second-pass pids name the first in listing order',
+      () async {
+        final table = FakeProcessTable(
+          pids: [50],
+          onList: (n) => n == 1 ? [50] : [53, 52],
+          onSnapshot: (pid) => _snap(100 + pid),
+          onEnvironment: (pid) => pid == 50
+              ? ['$unitMarkerVariable=$marker']
+              : throw const ProcessReadDenied(),
+          onConfirmedExits: (pid, _) => pid == 50,
+        );
+
+        final result = await scan(table);
+
+        expect(result.failure, 'scan-unreadable:53');
+        // Each was checked at its read, then swept until the settle's own
+        // 1 s deadline stopped new sweeps: the default bound expires.
+        expect(table.confirmCalls[53], 4);
+        expect(table.confirmCalls[52], 4);
+      },
+    );
+
+    test('a second pass that times out runs no second settle', () async {
+      var expired = false;
+      late final FakeProcessTable table;
+      table = FakeProcessTable(
+        pids: [50],
+        onList: (n) => n == 1 ? [50] : [52, 53],
+        onSnapshot: (pid) => _snap(100 + pid),
+        onEnvironment: (pid) => switch (pid) {
+          50 => ['$unitMarkerVariable=$marker'],
+          52 => throw const ProcessReadDenied(),
+          _ => ['PATH=/bin'],
+        },
+        onConfirmedExits: (pid, _) {
+          // The deadline passes during 52's check at its read.
+          if (pid == 52) expired = true;
+          return pid == 50;
+        },
+      );
+
+      // A second settle, if one ran, would sweep 52 again.
+      final result = await scan(table, passExpired: () => expired);
+
+      expect(result.failure, 'scan-timeout');
+      expect(table.confirmCalls[52], 1);
+    });
+
+    test('a second pass that reads every pid runs no second settle', () async {
+      final table = FakeProcessTable(
+        pids: [50],
+        onList: (n) => n == 1 ? [50] : [53],
+        onSnapshot: (pid) => _snap(100 + pid),
+        onEnvironment: (pid) =>
+            pid == 50 ? ['$unitMarkerVariable=$marker'] : ['PATH=/bin'],
+        onConfirmedExits: (pid, _) => pid == 50,
+      );
+
+      final clockReads = <int>[];
+      final result = await scan(table, settleClockReads: clockReads);
+
+      expect(result.failure, isNull, reason: '$result');
+      final second = table.calls.lastIndexOf('list');
+      expect(table.calls.sublist(second), ['list']);
+      // Only the first settle read its clock: no settle started after the
+      // second listing, not even one with nothing to check.
+      expect(clockReads, isNotEmpty);
+      expect(clockReads, everyElement(1));
     });
 
     test('each exit check runs inside its own pid iteration', () async {

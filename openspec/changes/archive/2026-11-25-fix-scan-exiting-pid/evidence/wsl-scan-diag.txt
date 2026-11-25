@@ -1,0 +1,24 @@
+WSL scan diagnostic, issue #42 (evidence, not a gate)
+
+Setup: WSL2, kernel 6.18.33.2-microsoft-standard-WSL2, Flutter 3.47.9's Dart.
+The diagnostic wraps the real POSIX process table, runs the real
+runMarkerScan in a loop for 60 s and counts the results by reason. During
+the run, load scripts start and end processes for 75 s: two loops of
+`sh -c "sleep 0.01"`, a `dart --version` loop and a python3 loop that
+starts 8 threads per process. The diagnostic file is not committed.
+
+Before the fix (the #29 checkout, which has main at 1fc2596 merged, 2026-11-25):
+  scans=3570 {clean: 3559, scan-unreadable: 11}
+  All 11 pids were refused in the second pass, after the first pass had
+  left another pid unread. Each was a python3 process that was exiting
+  (state R with its environment refused, or already gone) and got exactly
+  one exit check, which answered false.
+
+After the fix (bugfix/fix-scan-exiting-pid at 91e103d, same load):
+  scans=2102 {clean: 2102}
+  No scan-unreadable result.
+
+The two runs completed different numbers of scans in 60 s (3570 and 2102).
+The fixed run also ran while `mise run test:host` was running on the
+Windows side of the same machine, and the second settle adds sweeps.
+These are counts from one run each, not a rate measurement.

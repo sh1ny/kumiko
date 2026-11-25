@@ -31,7 +31,11 @@ class MarkerScanResult {
   final bool timedOut;
 
   /// A process in the population that could not be read and whose full
-  /// exit was not confirmed before the scan listed the processes again.
+  /// exit was not confirmed in time: for the first pass, before the scan
+  /// listed the processes again; for the second, at its read or in the
+  /// settle after that pass. The first such pid of the first pass is named
+  /// before any of the second, each in listing order (issue #42, design
+  /// D2).
   final int? unreadablePid;
 
   /// Marked processes the scan sent `SIGKILL`.
@@ -76,7 +80,9 @@ class _Pass {
 /// [oldestCreatedAt] minus 1 s for [markers], kills the matches with
 /// `SIGKILL`, and scans again (design D9). At most two passes of
 /// [passTimeout] each; [passExpiredForTesting] replaces the pass clock's
-/// check before each pid.
+/// check before each pid. [settleClockForTesting] replaces the monotonic
+/// time the settles read: each settle measures from its own start and
+/// starts no sweep once 1 s has passed.
 ///
 /// A process the first pass cannot read (a refused or null snapshot, a
 /// zombie, or a failed environment read) is *pending* unless
@@ -86,27 +92,34 @@ class _Pass {
 /// [ProcessTable.foreignPids] names it. Every exit check runs at the pid's
 /// own failed read, inside the pass clock, never deferred to the end of the
 /// pass. A pending pid is cleared only by a confirmed exit before the
-/// second listing, at that check or while the scan settles for at most 1 s; it
+/// second listing, at that check or while the scan settles; it
 /// disappearing later clears nothing, and the settle's expiry is never an
 /// outcome in itself: an unconfirmed pid is `scan-unreadable` (issue #40,
 /// design D1, C1).
 ///
 /// Any match or pid not read, pending or not, makes the second pass run, so
 /// the second listing always comes after the exit evidence. The second
-/// pass only verifies: it kills nothing, a marked process there is a
-/// survivor, and a pid there that cannot be read and is not confirmed
-/// exited is unreadable (C2).
+/// pass only verifies: it kills nothing, and a marked process there is a
+/// survivor. A pid it cannot read is cleared only by
+/// [ProcessTable.confirmedExits], at its read or in the bounded settle
+/// after that pass, the same settle as the first pass's; otherwise it is
+/// unreadable. There is no third marker-scan pass (issue #42, design D1,
+/// C1). That settle runs only when the second pass listed, did not time
+/// out and left a pid pending, and the first settle left none unconfirmed
+/// (D2).
 ///
 /// A process can start a child after the final listing and vanish before
-/// it is read; the scan does not see that child. By the owner's decision
-/// that race is left to OS-provided grouping (ADR 0001, issue #9; design
-/// D6, C7).
+/// it is read, or have its exit confirmed only in the settle after the
+/// final pass; the scan does not see that child. By the owner's decision
+/// that race is left to OS-provided grouping (ADR 0001, issue #9; #40's
+/// design D6, widened by issue #42's D3).
 Future<MarkerScanResult> runMarkerScan({
   required ProcessTable table,
   required Set<String> markers,
   required DateTime oldestCreatedAt,
   Duration passTimeout = const Duration(seconds: 10),
   bool Function()? passExpiredForTesting,
+  Duration Function()? settleClockForTesting,
 }) async {
   Future<_Pass> pass() => _pass(
     table,
@@ -133,12 +146,34 @@ Future<MarkerScanResult> runMarkerScan({
     return const MarkerScanResult();
   }
 
-  final unconfirmed = await _settle(table, signalled, first.pending);
+  final unconfirmed = await _settle(
+    table,
+    signalled,
+    first.pending,
+    settleClockForTesting,
+  );
   final second = await pass();
+  // The settle after the final pass runs only when it can change the
+  // result: not after a failed listing or a timeout, which take
+  // precedence, nor when the first settle already left a pid unconfirmed,
+  // which is named first (issue #42, design D2).
+  final settles =
+      second.listed &&
+      !second.timedOut &&
+      unconfirmed.isEmpty &&
+      second.pending.isNotEmpty;
+  final lastUnconfirmed = settles
+      ? (await _settle(
+          table,
+          const [],
+          second.pending,
+          settleClockForTesting,
+        )).firstOrNull
+      : second.pending.keys.firstOrNull;
   return MarkerScanResult(
     listed: second.listed,
     timedOut: second.timedOut,
-    unreadablePid: unconfirmed.firstOrNull ?? second.pending.keys.firstOrNull,
+    unreadablePid: unconfirmed.firstOrNull ?? lastUnconfirmed,
     killed: killed,
     remaining: second.matches,
   );
@@ -222,7 +257,8 @@ Future<_Pass> _pass(
 }
 
 /// Gives killed processes and pending pids a moment for their full exit to
-/// be confirmed before the rescan: at most 1 s, polling every 10 ms, with
+/// be confirmed, after either pass: no new sweep after 1 s, polling every
+/// 10 ms, with
 /// one [ProcessTable.confirmedExits] call per sweep. A killed process is not
 /// taken as gone from a null snapshot or a zombie, which the second pass
 /// does not accept either (pre-ship review round 4, F1). Returns the
@@ -231,15 +267,23 @@ Future<List<int>> _settle(
   ProcessTable table,
   List<MarkedProcess> killed,
   Map<int, int?> pending,
+  Duration Function()? now,
 ) async {
-  final clock = Stopwatch()..start();
+  final Duration Function() elapsed;
+  if (now == null) {
+    final watch = Stopwatch()..start();
+    elapsed = () => watch.elapsed;
+  } else {
+    final start = now();
+    elapsed = () => now() - start;
+  }
   // Start time 0 is the macOS short read's placeholder: unknown.
   final dying = {
     for (final m in killed) m.pid: m.startTime == 0 ? null : m.startTime,
   };
   final waiting = Map.of(pending);
   while ((dying.isNotEmpty || waiting.isNotEmpty) &&
-      clock.elapsed < const Duration(seconds: 1)) {
+      elapsed() < const Duration(seconds: 1)) {
     final confirmed = table.confirmedExits({...dying, ...waiting});
     dying.removeWhere((pid, _) => confirmed.contains(pid));
     waiting.removeWhere((pid, _) => confirmed.contains(pid));
