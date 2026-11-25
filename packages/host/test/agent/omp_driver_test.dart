@@ -584,18 +584,272 @@ void main() {
     },
   );
 
-  test('OMP: Tool activity in a turn', () async {
+  void recordEvents(List<AgentEvent> events) {
+    driver.normalizeUpdate = (update) => encodeAgentEvent(
+      update.event ??
+          (update.kind == AgentEventKind.notice
+              ? AgentEvent.notice(update.text)
+              : AgentEvent.text(update.kind, update.text)),
+    );
+    driver.consumeNotification = (value) {
+      final delivery = value as RuntimeDelivery;
+      for (final line in delivery.lines) {
+        events.add(AgentEvent.fromJson(jsonDecode(utf8.decode(line)) as Json));
+      }
+      delivery.after?.call();
+    };
+  }
+
+  Json startTool(String id, String name, {Json? args}) => {
+    'type': 'tool_execution_start',
+    'toolCallId': id,
+    'toolName': name,
+    'args': args ?? {'path': '$id.txt'},
+  };
+
+  Json toolResult(
+    String id,
+    String name,
+    String text, {
+    bool progress = false,
+    Object? isError,
+    List<Json> extra = const [],
+  }) => {
+    'type': progress ? 'tool_execution_update' : 'tool_execution_end',
+    'toolCallId': id,
+    'toolName': name,
+    'isError': ?isError,
+    (progress ? 'partialResult' : 'result'): {
+      'content': [
+        {'type': 'text', 'text': text},
+        ...extra,
+      ],
+      'details': {'text': 'NOT AN OUTPUT BLOCK'},
+    },
+  };
+
+  void finishTurn(String id) =>
+      peer.send({'type': 'prompt_result', 'id': id, 'status': 'completed'});
+
+  Iterable<AgentEvent> cards(List<AgentEvent> events) => events.where(
+    (e) => e.kind == AgentEventKind.tool || e.kind == AgentEventKind.toolUpdate,
+  );
+
+  test(
+    'OMP: Root tool cards never absorb separately attributed child events',
+    () async {
+      await readySession();
+      final events = <AgentEvent>[];
+      recordEvents(events);
+      final (admission, terminal) = driver.admitPrompt('hello', (_) {});
+      peer.result('k3');
+      await admission;
+      peer.send(startTool('shared', 'read'));
+      peer.send({
+        ...toolResult('shared', 'read', 'child-only'),
+        'childSessionId': 'child',
+      });
+      peer.send({
+        'type': 'subagent_event',
+        'event': startTool('other', 'write'),
+      });
+      peer.send(toolResult('shared', 'read', 'root-only'));
+      finishTurn('k3');
+      await terminal;
+      final output = cards(events).toList();
+      expect(output.map((e) => e.kind), [
+        AgentEventKind.tool,
+        AgentEventKind.toolUpdate,
+      ]);
+      expect(output.first.toolCallId, output.last.toolCallId);
+      expect(output.last.status, 'completed');
+      expect(output.last.content.map((c) => c['text']), contains('root-only'));
+      expect(
+        jsonEncode(events.map((e) => e.toJson()).toList()),
+        isNot(contains('child-only')),
+      );
+    },
+  );
+
+  test(
+    'OMP: Interleaved calls replace snapshots and complete separately',
+    () async {
+      await readySession();
+      final events = <AgentEvent>[];
+      recordEvents(events);
+      final (admitted, completed) = driver.admitPrompt('one', (_) {});
+      peer.result('k3');
+      await admitted;
+      peer.send(startTool('x', 'read'));
+      peer.send(startTool('y', 'write'));
+      peer.send(toolResult('x', 'read', 'first snapshot', progress: true));
+      peer.send(toolResult('y', 'write', 'failed', isError: true));
+      peer.send({
+        'type': 'tool_stream_update',
+        'toolCallId': 'x',
+        'toolName': 'read',
+        'update': 'opaque',
+      });
+      peer.send(toolResult('x', 'read', 'final'));
+      finishTurn('k3');
+      await completed;
+      final output = cards(events).toList();
+      final ids = output.take(2).map((e) => e.toolCallId).toList();
+      expect(ids.toSet(), hasLength(2));
+      expect(output.map((e) => e.toolCallId), [
+        ids[0],
+        ids[1],
+        ids[0],
+        ids[1],
+        ids[0],
+      ]);
+      expect(output.map((e) => e.status), [
+        'in_progress',
+        'in_progress',
+        'in_progress',
+        'failed',
+        'completed',
+      ]);
+      expect(output.last.content.map((c) => c['text']), [
+        contains('x.txt'),
+        'final',
+      ]);
+      expect(output.last.locations, isEmpty);
+      expect(output.last.toolKind, isNull);
+      final (next, done) = driver.admitPrompt('two', (_) {});
+      peer.result('k4');
+      await next;
+      peer.send(startTool('x', 'read'));
+      peer.send(toolResult('x', 'read', 'second prompt'));
+      finishTurn('k4');
+      await done;
+      expect(cards(events).toList()[5].toolCallId, isNot(isIn(ids)));
+    },
+  );
+
+  test(
+    'OMP: Staged tool events follow acceptance and disappear on refusal',
+    () async {
+      await readySession();
+      final events = <AgentEvent>[];
+      recordEvents(events);
+      void accepted(bool _) =>
+          events.add(AgentEvent.text(AgentEventKind.user, 'prompt'));
+      final (admitted, completed) = driver.admitPrompt('one', accepted);
+      peer.send(startTool('early', 'read'));
+      peer.send(delta('text_delta', 'middle'));
+      peer.send(toolResult('early', 'read', 'result'));
+      finishTurn('k3');
+      peer.result('k3');
+      await admitted;
+      await completed;
+      expect(events.map((event) => event.kind), [
+        AgentEventKind.user,
+        AgentEventKind.tool,
+        AgentEventKind.agentText,
+        AgentEventKind.toolUpdate,
+      ]);
+      events.clear();
+      final (refused, failed) = driver.admitPrompt('two', accepted);
+      final refusal = expectLater(refused, throwsA(isA<OmpRemoteException>()));
+      final failure = expectLater(failed, throwsA(isA<OmpRemoteException>()));
+      peer.send(startTool('early', 'read'));
+      peer.send({
+        'type': 'response',
+        'id': 'k4',
+        'success': false,
+        'error': 'not admitted',
+      });
+      await refusal;
+      await failure;
+      expect(events, isEmpty);
+    },
+  );
+
+  test('OMP: Missing or oversized tool data', () async {
     await readySession();
-    final events = <String>[];
-    recordOutput(events);
-    final (admission, terminal) = driver.admitPrompt('hello', (_) {});
+    final events = <AgentEvent>[];
+    recordEvents(events);
+    final (admitted, completed) = driver.admitPrompt('one', (_) {});
     peer.result('k3');
-    for (var n = 0; n < 3; n++) {
-      peer.send({'type': 'tool_execution_start', 'toolCallId': 'tool$n'});
+    await admitted;
+    peer.send(toolResult('orphan', 'read', 'orphan payload'));
+    peer.send({
+      'type': 'rpc_frame_error',
+      'originalType': 'tool_execution_end',
+    });
+    peer.send(startTool('big', 'read', args: {'arg': 'z' * 12000}));
+    peer.send(toolResult('big', 'wrong-name', 'wrong tool'));
+    peer.send(
+      toolResult(
+        'big',
+        'read',
+        'r' * (maxAgentToolItemBytes + 100),
+        extra: [
+          {'type': 'image', 'data': 'ignored data'},
+        ],
+      ),
+    );
+    peer.send(startTool('missing', 'read'));
+    peer.send(toolResult('missing', 'read', 'invalid status', isError: 'true'));
+    for (var i = 0; i < 16; i++) {
+      peer.send(startTool('open-$i', 'write'));
     }
-    peer.send({'type': 'prompt_result', 'id': 'k3', 'status': 'completed'});
-    await admission;
-    await terminal;
-    expect(events.single, contains('OMP ran 3 tool calls'));
+    finishTurn('k3');
+    expect((await completed).stopReason, 'completed');
+    final output = cards(events).toList();
+    final starts = output.where((e) => e.kind == AgentEventKind.tool).toList();
+    expect(starts, hasLength(17), reason: 'only 16 calls can be open at once');
+    expect(starts.first.truncated, isTrue);
+    expect(
+      (starts.first.content.first['text']! as String).length,
+      lessThan(4200),
+    );
+    final big = output
+        .where((e) => e.toolCallId == starts.first.toolCallId)
+        .last;
+    expect(big.status, 'completed');
+    expect(big.truncated, isTrue);
+    expect(big.content[1]['text'], startsWith('rrrr'));
+    final missing = output
+        .where((e) => e.toolCallId == starts[1].toolCallId)
+        .last;
+    expect(missing.status, 'incomplete');
+    expect(events.where((e) => e.kind == AgentEventKind.notice), hasLength(1));
+    final wire = jsonEncode(events.map((e) => e.toJson()).toList());
+    for (final forbidden in [
+      'orphan payload',
+      'wrong tool',
+      'ignored data',
+      'invalid status',
+      'NOT AN OUTPUT BLOCK',
+    ]) {
+      expect(wire, isNot(contains(forbidden)));
+    }
+  });
+
+  test('OMP: Recent tool ids evict in arrival order without consuming open capacity', () async {
+    await readySession();
+    final events = <AgentEvent>[];
+    recordEvents(events);
+    final (admitted, completed) = driver.admitPrompt('one', (_) {});
+    peer.result('k3');
+    await admitted;
+    for (var i = 0; i <= 256; i++) {
+      peer.send(startTool('done-$i', 'read'));
+      peer.send(toolResult('done-$i', 'read', 'done'));
+    }
+    peer.send(startTool('done-1', 'not a new call'));
+    peer.send(startTool('done-0', 'new call'));
+    peer.send(toolResult('done-0', 'new call', 'last'));
+    finishTurn('k3');
+    await completed;
+    final starts = cards(events)
+        .where((e) => e.kind == AgentEventKind.tool)
+        .toList();
+    expect(starts, hasLength(258));
+    expect(starts.last.title, 'new call');
+    expect(starts.last.toolCallId, isNot(starts.first.toolCallId));
+    expect(cards(events).last.status, 'completed');
   });
 }

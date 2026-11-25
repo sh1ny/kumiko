@@ -191,6 +191,55 @@ void main() {
     expect(find.textContaining('does not sandbox OMP'), findsOneWidget);
   });
 
+  uiTest('OMP: Tool cards show separate final results', (tester) async {
+    final host = _host();
+    final rig = await _chat(tester, host);
+    final id = session(rig);
+    for (final (call, name) in [('first', 'read'), ('second', 'write')]) {
+      host.agentEvent(
+        id,
+        AgentEvent.tool(toolCallId: call, title: name, status: 'in_progress'),
+      );
+    }
+    void result(String call, String status, String text) {
+      host.agentEvent(
+        id,
+        AgentEvent.tool(
+          toolCallId: call,
+          update: true,
+          status: status,
+          content: [
+            {'type': 'text', 'text': text},
+          ],
+        ),
+      );
+    }
+
+    result('first', 'in_progress', 'work in progress');
+    await flush(tester);
+    expect(find.text('work in progress', findRichText: true), findsOneWidget);
+    result('second', 'failed', 'write failed');
+    result('first', 'completed', 'read finished');
+    await flush(tester);
+    for (final (name, text) in [
+      ('read', 'read finished'),
+      ('write', 'write failed'),
+    ]) {
+      final card = find.ancestor(
+        of: find.text(name, findRichText: true),
+        matching: find.byType(Card),
+      );
+      expect(
+        find.descendant(
+          of: card,
+          matching: find.text(text, findRichText: true),
+        ),
+        findsOneWidget,
+      );
+    }
+    expect(find.text('work in progress', findRichText: true), findsNothing);
+  });
+
   uiTest('OMP: Continue on a saved OMP session', (tester) async {
     const reason = 'OMP Continue is not supported in this Kumiko version';
     final host = _host();

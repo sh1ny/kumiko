@@ -6,6 +6,7 @@ import 'package:host_protocol/host_protocol.dart';
 import '../qualification.dart';
 import '../runtime_driver.dart';
 import 'omp_client.dart';
+import 'omp_tool_activity.dart';
 
 class OmpRuntimeDriver extends RuntimeDriver {
   OmpRuntimeDriver(this.client, this.version) {
@@ -16,6 +17,7 @@ class OmpRuntimeDriver extends RuntimeDriver {
         if (turn == null) return;
         _turn = null;
         _messages.clear();
+        _activity.reset();
         turn.terminal.completeError(
           client.failure ?? OmpProtocolException('transport closed'),
         );
@@ -30,6 +32,7 @@ class OmpRuntimeDriver extends RuntimeDriver {
   final _ready = Completer<void>();
   final _messages = <String, Set<int>>{};
   final _refusedPromptIds = <String>{};
+  final _activity = OmpToolActivity();
   Future<RuntimeIdentity>? _initializing;
   String? _session;
   _Turn? _turn;
@@ -173,6 +176,7 @@ class OmpRuntimeDriver extends RuntimeDriver {
             turn.agentInvoked = invoked;
             final lines = <Uint8List>[];
             for (final update in turn.staged) {
+              if (!invoked && update.event != null) continue;
               _addLines(lines, update);
             }
             turn.staged.clear();
@@ -190,6 +194,7 @@ class OmpRuntimeDriver extends RuntimeDriver {
             if (!turn.accepted && identical(_turn, turn)) {
               _turn = null;
               _messages.clear();
+              _activity.reset();
               final id = turn.id;
               if (id != null) {
                 // Some pre-dispatch errors also get a terminal frame on the
@@ -246,6 +251,7 @@ class OmpRuntimeDriver extends RuntimeDriver {
     if (!identical(_turn, turn)) return;
     _turn = null;
     _messages.clear();
+    _activity.reset();
     _idleNotices = 0;
     onNativeTurnEnded?.call(_session!, turn.id!, result);
     turn.terminal.complete(result);
@@ -313,8 +319,17 @@ class OmpRuntimeDriver extends RuntimeDriver {
             type.startsWith('auto_compaction_') ||
             type.startsWith('manual_compaction_'))) {
       _update(lines, turn, AgentEventKind.notice, 'OMP $type');
-    } else if (turn != null && type == 'tool_execution_start') {
-      turn.tools++;
+    } else if (type == 'tool_execution_start' ||
+        type == 'tool_execution_update' ||
+        type == 'tool_execution_end') {
+      if (!draining) {
+        final event = _activity.frame(
+          type as String,
+          frame,
+          active: turn != null,
+        );
+        if (event != null) _toolEvent(lines, turn, event);
+      }
     } else if (turn != null &&
         (type == 'message_start' ||
             type == 'message_update' ||
@@ -341,14 +356,25 @@ class OmpRuntimeDriver extends RuntimeDriver {
 
   Object? _frameError(Json frame, _Turn? turn, List<Uint8List> lines) {
     switch (frame['originalType']) {
+      case 'tool_execution_start' ||
+          'tool_execution_update' ||
+          'tool_execution_end':
+        final event = _activity.omitted(active: turn != null);
+        if (!draining && event != null) _toolEvent(lines, turn, event);
+        return _delivery(lines);
+      case 'tool_stream_update' ||
+          'subagent_lifecycle' ||
+          'subagent_progress' ||
+          'subagent_event':
+        return null;
       case 'message_start' ||
           'message_update' ||
           'message_end' ||
-          'notice' ||
-          'tool_execution_start' ||
-          'tool_execution_update' ||
-          'tool_execution_end' ||
-          'tool_stream_update':
+          'agent_start' ||
+          'agent_end' ||
+          'turn_start' ||
+          'turn_end' ||
+          'notice':
         final count = turn == null ? _idleNotices++ : turn.notices++;
         if (count < 8) {
           _update(
@@ -610,11 +636,26 @@ class OmpRuntimeDriver extends RuntimeDriver {
     }
   }
 
-  void _stage(_Turn turn, RuntimeUpdate? update) {
+  void _toolEvent(List<Uint8List> lines, _Turn? turn, AgentEvent event) {
+    final update = RuntimeUpdate(event.kind, '', event: event);
+    if (turn != null && !turn.accepted) {
+      // Stage projected fields, never the native frame. Charge for encoded
+      // content and its bounded metadata before the prompt is admitted.
+      var bytes = 192 + jsonStringContentBytes(event.title ?? event.text ?? '');
+      for (final block in event.content) {
+        bytes += 32 + jsonStringContentBytes(block['text']! as String);
+      }
+      _stage(turn, update, eventBytes: bytes);
+    } else {
+      _addLines(lines, update);
+    }
+  }
+
+  void _stage(_Turn turn, RuntimeUpdate? update, {int? eventBytes}) {
     turn.earlyCount++;
-    turn.earlyBytes += update == null
-        ? 4096
-        : jsonStringContentBytes(update.text) + 64;
+    turn.earlyBytes +=
+        eventBytes ??
+        (update == null ? 4096 : jsonStringContentBytes(update.text) + 64);
     if (turn.earlyCount > 64 || turn.earlyBytes > 256 * 1024) {
       throw OmpProtocolException(
         'OMP output before admission exceeds staging limit',
@@ -633,13 +674,10 @@ class OmpRuntimeDriver extends RuntimeDriver {
     _Turn turn,
     RuntimeTurnResult result,
   ) {
-    if (turn.tools > 0) {
-      _update(
-        lines,
-        turn,
-        AgentEventKind.notice,
-        'OMP ran ${turn.tools} tool calls; tool activity is not shown in Kumiko yet',
-      );
+    if (turn.agentInvoked && !draining) {
+      for (final event in _activity.finish()) {
+        _toolEvent(lines, turn, event);
+      }
     }
     return RuntimeDelivery(lines, 0, null, () => _end(turn, result));
   }
@@ -652,7 +690,7 @@ class _Turn {
   String? id;
   bool accepted = false;
   bool agentInvoked = false;
-  int earlyCount = 0, earlyBytes = 0, tools = 0, notices = 0;
+  int earlyCount = 0, earlyBytes = 0, notices = 0;
   final staged = <RuntimeUpdate>[];
   final terminal = Completer<RuntimeTurnResult>();
   RuntimeTurnResult? earlyEnd;

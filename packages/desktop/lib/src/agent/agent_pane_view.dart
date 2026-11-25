@@ -429,6 +429,8 @@ class _AgentPaneViewState extends State<AgentPaneView> {
     }
     if (entry.kind == AgentEventKind.tool ||
         entry.kind == AgentEventKind.toolUpdate) {
+      final title = fields['title'] ?? 'Tool';
+      final kind = fields['toolKind'];
       return Card(
         key: ValueKey(entry),
         child: Padding(
@@ -436,9 +438,7 @@ class _AgentPaneViewState extends State<AgentPaneView> {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              SelectableText(
-                '${fields['title'] ?? 'Tool'} · ${fields['toolKind'] ?? 'tool'}',
-              ),
+              SelectableText(kind == null ? '$title' : '$title · $kind'),
               Text(entry.statuses.join(' → ')),
               for (final location in (fields['locations'] as List? ?? const []))
                 SelectableText(

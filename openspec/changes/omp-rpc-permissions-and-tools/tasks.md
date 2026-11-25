@@ -15,7 +15,7 @@ Red rows cover new or changed behavior. Green rows carry forward tests from the 
 | agent-runtimes → Runtime capabilities are claimed only from evidence | OMP follows minimum-version compatibility | `packages/host/test/it/omp_test.dart` | OMP: OMP follows minimum-version compatibility | red |
 | agent-sessions → Replies and tool activity stream into the chat | Streamed reply | `packages/host/test/it/agent_test.dart` | 40 scripted chunks arrive as ordered agentText events before turnEnded and idle | green |
 | agent-sessions → Replies and tool activity stream into the chat | Tool call progresses | `packages/desktop/test/agent_test.dart` | tool updates preserve title status history and sparse content in one card | green |
-| agent-sessions → Replies and tool activity stream into the chat | Oversized tool output | `packages/desktop/test/agent_test.dart`; `packages/host/test/agent/omp_driver_test.dart` | replacement tool output clears obsolete loss markers while sparse status preserves them; OMP: Missing or oversized tool data | red |
+| agent-sessions → Replies and tool activity stream into the chat | Oversized tool output | `packages/desktop/test/agent_test.dart`; `packages/host/test/agent/omp_driver_test.dart` | replacement tool output clears obsolete loss markers while sparse status preserves them; OMP: Missing or oversized tool data | green |
 | agent-sessions → Replies and tool activity stream into the chat | Unknown update kind | `packages/host/test/it/agent_test.dart` | unknown update is ignored and later tool plan and text events stay ordered | green |
 | agent-sessions → Permission requests are answered only by an explicit choice | Allow once | `packages/host/test/it/agent_test.dart` | permissionReply yes delivers explicit optionId and resolved replies write nothing | green |
 | agent-sessions → Permission requests are answered only by an explicit choice | Pane moved while a request is pending | `packages/desktop/test/agent_test.dart` | moving a running chat pane keeps link transcript session and pending permissions and sends nothing | green |
@@ -65,11 +65,11 @@ Red rows cover new or changed behavior. Green rows carry forward tests from the 
 | omp-sessions → OMP interactive requests are declined until supported | Non-approval dialogs remain unavailable | `packages/host/test/agent/omp_driver_test.dart` | OMP: Non-approval dialogs cancel without accepting defaults | green |
 | omp-sessions → OMP interactive requests are declined until supported | Open URL request | `packages/host/test/agent/omp_driver_test.dart` | OMP: Open URL request needs no response | green |
 | omp-sessions → OMP interactive requests are declined until supported | Native policy remains in force | `packages/host/test/it/omp_test.dart`; `packages/desktop/test/omp_agent_test.dart` | OMP: Native approval policy stays in force without synthetic requests; OMP: Approval guidance states native policy and limits | green |
-| omp-sessions → OMP features not yet supported are visibly unavailable | Tool activity in a turn | `packages/host/test/agent/omp_driver_test.dart` | OMP: Root tool cards never absorb separately attributed child events | red |
+| omp-sessions → OMP features not yet supported are visibly unavailable | Tool activity in a turn | `packages/host/test/agent/omp_driver_test.dart` | OMP: Root tool cards never absorb separately attributed child events | green |
 | omp-sessions → OMP features not yet supported are visibly unavailable | Continue on a saved OMP session | `packages/host/test/it/omp_test.dart`; `packages/desktop/test/omp_agent_test.dart` | OMP: Continue on a saved OMP session | green |
-| omp-sessions → OMP root tool events update the corresponding card | Interleaved calls complete separately | `packages/host/test/agent/omp_driver_test.dart`; `packages/desktop/test/omp_agent_test.dart` | OMP: Interleaved calls replace snapshots and complete separately; OMP: Tool cards show separate final results | red |
-| omp-sessions → OMP root tool events update the corresponding card | Early activity waits for admission | `packages/host/test/agent/omp_driver_test.dart` | OMP: Staged tool events follow acceptance and disappear on refusal | red |
-| omp-sessions → OMP root tool events update the corresponding card | Missing or oversized tool data | `packages/host/test/agent/omp_driver_test.dart` | OMP: Missing or oversized tool data | red |
+| omp-sessions → OMP root tool events update the corresponding card | Interleaved calls complete separately | `packages/host/test/agent/omp_driver_test.dart`; `packages/desktop/test/omp_agent_test.dart` | OMP: Interleaved calls replace snapshots and complete separately; OMP: Tool cards show separate final results | green |
+| omp-sessions → OMP root tool events update the corresponding card | Early activity waits for admission | `packages/host/test/agent/omp_driver_test.dart` | OMP: Staged tool events follow acceptance and disappear on refusal | green |
+| omp-sessions → OMP root tool events update the corresponding card | Missing or oversized tool data | `packages/host/test/agent/omp_driver_test.dart` | OMP: Missing or oversized tool data | green |
 
 ## 1. Record architecture and check the input contract
 
@@ -84,8 +84,8 @@ Red rows cover new or changed behavior. Green rows carry forward tests from the 
 
 ## 3. Show bounded OMP root tool activity
 
-- [ ] 3.1 Write the failing tool event tests in the map. Include ordered early admission/refusal, interleaved snapshots, distinct local ids across prompt reuse, mismatched/orphan frames, tool-frame `rpc_frame_error`, open-cap overflow, a closed-id eviction followed by a valid new card, clipped text and a missing native terminal frame. In the pane show separate cards and replacement final output. Replace the obsolete OMP count-notice assertion with the new contract. Confirm the test files fail on that missing behavior.
-- [ ] 3.2 Implement D3 with the shared event codec and display bounds. Carry C4 and C5 in `omp-sessions`. Continue to emit only reported root execution facts. Verify 3.1 and the carried reply, diff and unknown-update scenarios pass; flip this group's red rows green.
+- [x] 3.1 Write the failing tool event tests in the map. Include ordered early admission/refusal, interleaved snapshots, distinct local ids across prompt reuse, mismatched/orphan frames, tool-frame `rpc_frame_error`, open-cap overflow, a closed-id eviction followed by a valid new card, clipped text and a missing native terminal frame. In the pane show separate cards and replacement final output. Replace the obsolete OMP count-notice assertion with the new contract. Confirm the test files fail on that missing behavior.
+- [x] 3.2 Implement D3 with the shared event codec and display bounds. Carry C4 and C5 in `omp-sessions`. Continue to emit only reported root execution facts. Verify 3.1 and the carried reply, diff and unknown-update scenarios pass; flip this group's red rows green.
 
 ## 4. Deliver native Kumiko tools
 
