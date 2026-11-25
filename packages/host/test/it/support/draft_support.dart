@@ -157,13 +157,22 @@ Future<List<String>> seedSessions(Directory profile, int count) async {
 File draftsFile(Directory profile) =>
     File(joinPath(profile.path, 'drafts.sqlite'));
 
+/// How long [draftRow] waits for the host's lock on `drafts.sqlite` before it
+/// fails loudly: a hang guard, never an expected outcome.
+const _draftReadHangGuard = Duration(minutes: 2);
+
 /// The `draft` row of [session], read beside the running host; empty when
 /// there is none.
+///
+/// `drafts.sqlite` uses a rollback journal, so the host's worker can hold the
+/// lock while this reads. The read waits for the lock to be released (AGENTS.md
+/// rule 2); the busy timeout is only a hang guard (rule 4).
 Map<String, Object?> draftRow(Directory profile, String session) {
   final file = draftsFile(profile);
   if (!file.existsSync()) return {};
   final db = sql.sqlite3.open(file.path, mode: sql.OpenMode.readOnly);
   try {
+    db.execute('PRAGMA busy_timeout = ${_draftReadHangGuard.inMilliseconds}');
     final rows = db.select('SELECT * FROM draft WHERE session_id = ?', [
       session,
     ]);
