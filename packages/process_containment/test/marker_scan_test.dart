@@ -28,6 +28,7 @@ void main() {
     Duration passTimeout = const Duration(seconds: 10),
     bool Function()? passExpired,
     Set<String>? markers,
+    List<int>? settleClockReads,
   }) => runMarkerScan(
     table: table,
     markers: markers ?? {marker},
@@ -36,11 +37,15 @@ void main() {
     passExpiredForTesting: passExpired,
     // The settles read a fake monotonic clock that moves 400 ms on each
     // exit check, so each settle's own 1 s deadline admits three sweeps and
-    // then stops them: time is counted in calls, never measured.
-    settleClockForTesting: () => Duration(
-      milliseconds:
-          400 * table.calls.where((c) => c.startsWith('confirm:')).length,
-    ),
+    // then stops them: time is counted in calls, never measured. Each read
+    // records how many listings came before it.
+    settleClockForTesting: () {
+      settleClockReads?.add(table.listCount);
+      return Duration(
+        milliseconds:
+            400 * table.calls.where((c) => c.startsWith('confirm:')).length,
+      );
+    },
   );
 
   test(
@@ -595,11 +600,16 @@ void main() {
         onConfirmedExits: (pid, _) => pid == 50,
       );
 
-      final result = await scan(table);
+      final clockReads = <int>[];
+      final result = await scan(table, settleClockReads: clockReads);
 
       expect(result.failure, isNull, reason: '$result');
       final second = table.calls.lastIndexOf('list');
       expect(table.calls.sublist(second), ['list']);
+      // Only the first settle read its clock: no settle started after the
+      // second listing, not even one with nothing to check.
+      expect(clockReads, isNotEmpty);
+      expect(clockReads, everyElement(1));
     });
 
     test('each exit check runs inside its own pid iteration', () async {

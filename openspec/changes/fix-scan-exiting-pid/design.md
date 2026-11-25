@@ -54,7 +54,7 @@ The marker scan is #40's design (archived at `openspec/changes/archive/2026-11-2
   When the second pass also found a marked survivor, the settle still runs. One scan serves several units, and `scan-unreadable` fails every row of it, while a survivor fails only the row whose marker it carries (`packages/host/lib/src/settler.dart:136-147`). Clearing the unreadable pid lets the other units of the batch be cleaned; the survivor's own unit stays unresolved, now with `marked-survivor`.
   
   `unreadablePid` is chosen as today, extended: the first pid left unconfirmed by the first settle, in listing order; else the first left unconfirmed by the second settle (or, when it did not run, the first pending pid of the second pass), in listing order. The `MarkerScanResult.unreadablePid` doc comment, which describes only the first pass (`packages/process_containment/lib/src/marker_scan.dart:33-35`), is updated with the `runMarkerScan` one.
-- **Rejected:** **Always settling after the second pass.** It adds up to 1 s to scans whose answer cannot change.
+- **Rejected:** **Always settling after the second pass.** It adds a settle (sweeps until its 1 s clock stops new ones) to scans whose answer cannot change.
 - **Reversal cost:** low
 - **Important:** no
 - **Chosen by:** agent
@@ -71,7 +71,7 @@ The marker scan is #40's design (archived at `openspec/changes/archive/2026-11-2
 ### D4: The bounds stay; the architecture row counts the settles
 
 - **Choice:** The numbers stay: two passes whose 10 s clocks start after each pass's listing, each followed by a settle whose 1 s clock stops new sweeps from starting. None of these clocks interrupts synchronous work: a pass can overrun by one pid's reads and exit check, and a settle by one sweep plus its 10 ms delay, as the first settle already can. The second settle adds one more such overrun. The architecture's shutdown row says that each pass's 10 s clock starts after its opening listing; that when a settle runs after a pass, its 1 s clock stops new sweeps, and an admitted sweep and its 10 ms delay can finish after it; and that these clocks are checked between synchronous steps.
-  - The shutdown deadline is cooperative: `shutdown` awaits `endUnits` with `Future.timeout`, which neither interrupts a running sweep nor cancels `endUnits`, so an ending that finishes after the deadline can still record its outcome (`packages/host/lib/src/unit_manager.dart:502-529`). That is true today; the second settle adds up to 1 s plus one sweep and its 10 ms delay to the work that can run past it. This change adds no cancellation.
+  - The shutdown deadline is cooperative: `shutdown` awaits `endUnits` with `Future.timeout`, which neither interrupts a running sweep nor cancels `endUnits`, so an ending that finishes after the deadline can still record its outcome (`packages/host/lib/src/unit_manager.dart:502-529`). That is true today; the second settle adds sweeps until its 1 s clock stops new ones, plus the overrun of the last sweep and its 10 ms delay, to the work that can run past it. This change adds no cancellation.
 - **Rejected:** **A shorter second settle.** The race it absorbs is the same as the first settle's, and a second bound would be a second number to justify.
 - **Reversal cost:** low
 - **Important:** no
@@ -132,7 +132,7 @@ sequenceDiagram
 
 | Component | Fails / dies mid-operation → | Recovery | Retry safe? | Who finds out |
 |---|---|---|---|---|
-| Settle 2 | An exit is not confirmed within 1 s | `scan-unreadable:<pid>`, as before this change | Yes, read-only | User: the workspace is *cleanup unresolved* |
+| Settle 2 | An exit is not confirmed in a sweep that starts before the 1 s clock stops new ones | `scan-unreadable:<pid>`, as before this change | Yes, read-only | User: the workspace is *cleanup unresolved* |
 | `confirmedExits` in settle 2 | A read fails or is refused | Not confirmed, so the scan fails closed | Yes, read-only | User, through `scan-unreadable:<pid>` |
 
 ## Resource Bounds (FULL)
@@ -145,7 +145,7 @@ sequenceDiagram
 ## Flow & State Gaps (FULL)
 
 - **A pid exits during the second pass and is confirmed in settle 2.** Clean for that pid (D1). A child it started after the final listing is not seen (D3).
-- **A pid refused in pass 2 is never confirmed within 1 s** (for example, a macOS zombie its parent does not reap). `scan-unreadable`, as today.
+- **A pid refused in pass 2 is not confirmed before settle 2's clock stops new sweeps** (for example, a macOS zombie its parent does not reap). `scan-unreadable`, as today.
 - **Settle 1 left a pid unconfirmed.** It is reported; settle 2 does not run (D2).
 - **Pass 2 times out or cannot list.** That reason is reported; settle 2 does not run (D2).
 - **Pass 2 finds a survivor and an unread pid.** Settle 2 runs. If it confirms the pid, the reason is `marked-survivor`; otherwise `scan-unreadable`, by the existing precedence.
@@ -162,9 +162,9 @@ sequenceDiagram
 
 ## Risks / Trade-offs
 
-- [The widened race window (D3)] → Left to OS grouping (#9), as ADR 0001 leaves descendant containment. It applies only to a process that exits during the second pass after starting a child after the final listing.
+- [The widened race window (D3)] → Left to OS grouping (#9), as ADR 0001 leaves descendant containment. It applies to a process that pass 2 could not read and whose exit is confirmed only after the final listing, in the rest of pass 2 or in settle 2, and that started a child in that window: for example, a parent alive at its pass-2 read that starts a child and exits before a later settle sweep. The window runs from the final listing to that pid's confirmed exit (D3).
 - [The macOS cause is inferred (A1)] → D1 does not depend on it. The macOS CI runs are the check.
-- [Up to 1 s more per scan that meets a pass-2 race] → Only those scans, and only when the result can change (D2).
+- [A second settle per scan that meets a pass-2 race] → Its 1 s clock stops new sweeps; it does not cap elapsed time, so the last sweep and its 10 ms delay can finish after it (D4). Only those scans, and only when the result can change (D2).
 - [#40's F2 test changes its expectation] → Its scenario is the one the owner's decision now clears. A new test keeps a never-confirmed pass-2 pid failing the scan.
 
 ## ADRs

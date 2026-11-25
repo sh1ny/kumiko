@@ -2,7 +2,7 @@
 
 ## Why
 
-The marker scan can leave a unit *cleanup unresolved* because an unrelated process happened to be exiting during the scan's second pass (issue #42). The second pass reads every recent process of the current user, as the first does. When it cannot read a process, it checks once, at that read, whether the process has fully exited. A process caught mid-exit is not confirmed by that one check, so the scan fails with `scan-unreadable:<pid>`, although the process is gone a moment later. The first pass already absorbs the same race: its unread pids get a settle of up to 1 s (issue #40). The second pass has none.
+The marker scan can leave a unit *cleanup unresolved* because an unrelated process happened to be exiting during the scan's second pass (issue #42). The second pass reads every recent process of the current user, as the first does. When it cannot read a process, it checks once, at that read, whether the process has fully exited. A process caught mid-exit is not confirmed by that one check, so the scan fails with `scan-unreadable:<pid>`, although the process is gone a moment later. The first pass already absorbs the same race: its unread pids get a settle whose 1 s clock stops new sweeps (issue #40). The second pass has none.
 
 Evidence:
 - **CI, macOS, PR #29 at 91638f5:** `reconcile_test` "killed host's units cleaned or unresolved" left both units `unresolved` with `scan-unreadable:5985`, a pid that belonged to neither unit. This test always has matches (the killed units), so it always runs the second pass. Main's last run was green.
@@ -42,7 +42,7 @@ DECISION_MAKING: autonomous
 
 ### S1: Give the second pass the same settle as the first
 
-- **Choice:** After the second pass, a pid it could not read gets up to 1 s for its full exit to be confirmed, as pass 1's pending pids do. This amends #40's D1 (the second pass only verifies, with one check per pid at its read) and D6 (the race after the final listing).
+- **Choice:** After the second pass, a pid it could not read gets a settle whose 1 s clock stops new sweeps for its full exit, as pass 1's pending pids do; the clock does not cap elapsed time. This amends #40's D1 (the second pass only verifies, with one check per pid at its read) and D6 (the race after the final listing).
 - **Rejected:**
   - **A bounded third pass** after that settle, to look for children of the pids confirmed in it. It breaks the two-pass bound (#40's D9), and the third pass has the same race with nothing after it.
   - **Keeping #40's rule.** `reconcile_test` stays flaky on a busy machine, #29 stays blocked, and a real cleanup can be left unresolved by any process exiting at the wrong moment.
