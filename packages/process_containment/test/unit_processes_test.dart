@@ -122,7 +122,7 @@ void main() {
       );
       final session = PtySession(unit, unit.pty!);
       addTearDown(session.dispose);
-      await unit.exitCode.timeout(const Duration(seconds: 10));
+      await guarded(unit.exitCode, 'exit of cmd /c exit 0');
       final r = readUnitProcesses(
         UnitProbe(leaderPid: unit.pid, job: unit.jobHandle),
       );

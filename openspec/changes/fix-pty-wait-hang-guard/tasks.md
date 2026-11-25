@@ -21,9 +21,9 @@ The change has no spec scenarios. It changes how long the existing tests wait be
 
 ## 3. Integration
 
-- [ ] 3.1 Check the scope is complete: `grep -n "seconds: 1[05]\|seconds: 20" packages/process_containment/test/support/pty_session.dart packages/process_containment/test/unit_processes_test.dart` finds nothing, and the three `reader.done.timeout` lines named in 2.2 use `hangGuard`. Remaining short budgets in `pty_windows_test.dart` (the 20 s and 10 s polls, the 5 s closer and Ctrl+C bounds) are #28's, not this change's.
-- [ ] 3.2 Run the three files on Windows: `mise exec -- dart test test/pty_test.dart test/pty_windows_test.dart test/unit_processes_test.dart` in `packages/process_containment`. They pass, and no test fails in `dispose` (A1).
-- [ ] 3.3 `mise run check` passes, and `mise run test:host` passes apart from failures already filed against other tests (AGENTS.md: the change touches process containment's tests). The macOS and Linux runs of the PR check A1 on POSIX.
+- [x] 3.1 Check the scope is complete: `grep -n "seconds: 1[05]\|seconds: 20" packages/process_containment/test/support/pty_session.dart packages/process_containment/test/unit_processes_test.dart` finds nothing (it found one more in scope, the 10 s `unit.exitCode` wait of "a unit whose processes all ended reads leader gone", which covers a cmd start too; it now waits under `hangGuard`), and the three `reader.done.timeout` lines named in 2.2 use `hangGuard`. Remaining short budgets in `pty_windows_test.dart` (the 20 s and 10 s polls, the 5 s closer and Ctrl+C bounds) are #28's, not this change's.
+- [x] 3.2 Run the three files on Windows: `mise exec -- dart test test/pty_test.dart test/pty_windows_test.dart test/unit_processes_test.dart` in `packages/process_containment`. They pass, and no test fails in `dispose` (A1).
+- [x] 3.3 `mise run check` passes, and `mise run test:host` passes apart from failures already filed against other tests (AGENTS.md: the change touches process containment's tests). The macOS and Linux runs of the PR check A1 on POSIX.
 
 ## Workflow follow-up
 
