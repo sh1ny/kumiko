@@ -38,12 +38,24 @@ void main() {
     out = File(p.join(tmp.path, 'out${counter++}.txt'));
   });
 
+  // Every session and unit is released even when one dispose fails, and
+  // none stays registered for the next test; the first failure is rethrown.
   tearDown(() async {
-    for (final s in sessions) {
-      await s.dispose();
-    }
+    final toDispose = List.of(sessions);
+    final toEnd = List.of(units);
     sessions.clear();
-    for (final u in units) {
+    units.clear();
+    Object? failure;
+    StackTrace? failureStack;
+    for (final s in toDispose) {
+      try {
+        await s.dispose();
+      } catch (e, st) {
+        failure ??= e;
+        failureStack ??= st;
+      }
+    }
+    for (final u in toEnd) {
       await u.terminate();
       final pty = u.pty;
       if (pty != null) {
@@ -51,7 +63,7 @@ void main() {
         closePtyHandle(pty.writeHandle);
       }
     }
-    units.clear();
+    if (failure != null) Error.throwWithStackTrace(failure, failureStack!);
   });
 
   Future<PtySession> start(

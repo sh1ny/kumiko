@@ -8,8 +8,10 @@ import 'dart:async';
 /// a slow runner. Its expiry is never an outcome: a wait that reaches it fails
 /// and names what it was waiting for.
 ///
-/// Two minutes stays below each test file's own `@Timeout`, so a hung wait
-/// reports its own message before the runner's generic timeout does.
+/// Two minutes is below each test file's own `@Timeout`, the outer hang
+/// guard. A hung wait reports itself first unless the test's earlier steps
+/// already used most of that timeout; then the runner's timeout, which names
+/// the test, ends it instead. Neither expiry is an expected outcome.
 const hangGuard = Duration(minutes: 2);
 
 /// Waits for [future] under [hangGuard]. If the guard expires first, throws a

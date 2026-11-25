@@ -134,7 +134,11 @@ class PtySession {
     final hpcon = pty.console;
     if (hpcon == null || _closer != null) return;
     _closer = await ConsoleCloser.start(hpcon);
-    await guarded(_closer!.done, 'console close (ClosePseudoConsole)');
+    await guarded(
+      _closer!.done,
+      'console close (ClosePseudoConsole)',
+      state: reader._show,
+    );
   }
 
   /// Ends the unit, drains the reader and releases the handles.
@@ -147,7 +151,11 @@ class PtySession {
     await closeConsole();
     Object? drainError;
     try {
-      await guarded(reader.done, 'end of output after dispose');
+      await guarded(
+        reader.done,
+        'end of output after dispose',
+        state: reader._show,
+      );
     } on StateError catch (e) {
       drainError = e;
     }
