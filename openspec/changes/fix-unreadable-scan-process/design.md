@@ -52,9 +52,11 @@ TIER: FULL
 
   The population filter runs before a snapshot makes a pid pending: a readable snapshot (zombie or not) with another uid, or a known start time before the window, is skipped as today. The macOS short info's placeholder start time 0 is not a known start time, so it excludes nothing.
 
-  A null snapshot gives no uid. On macOS every zombie of every user answers null (its `arg` 0 read fails), so without more evidence any zombie on the machine would fail the scan. Once a pass is read, the table therefore names, in one call, the null-snapshot pids it can show belong to another user (`foreignPids`, D2). Those are outside the population and are skipped. Our own zombies are not named, so they stay pending.
-  - **macOS:** the pids absent from one complete `proc_listpids(PROC_UID_ONLY, <our uid>)` listing, made after the reads. A zombie keeps its credentials until it is reaped, so our own zombie is listed (A3).
+  A null snapshot gives no uid. On macOS every zombie of every user answers null (its `arg` 0 read fails), so without more evidence any zombie on the machine would fail the scan. When `confirmedExits` does not confirm a null-snapshot pid, the table is asked whether it can show that the pid belongs to another user (`foreignPids`, D2). A pid it names is outside the population and is not pending. Our own zombies are not named, so they stay pending. A named pid still counts as *not read*: a pid reaped between the two listings is absent from our user's listing too, so naming it is no evidence that it never belonged to us (pre-ship review F1).
+  - **macOS:** the pids absent from one complete `proc_listpids(PROC_UID_ONLY, <our uid>)` listing, made after the exit check. A zombie keeps its credentials until it is reaped, so our own zombie is listed (A3).
   - **Linux:** none. A null Linux snapshot means `/proc/<pid>` is gone, which `confirmedExits` judges.
+
+  Every exit check runs at the pid's own failed read, inside the pass's iteration for that pid: first `confirmedExits` for the pid, then, for a null snapshot it does not confirm, `foreignPids`. No check is deferred to the end of the pass, so on the final pass a process that is alive at its failed read and exits while later pids are read is not cleared (pre-ship review F2), and the pass clock covers every check (F3).
 
   A pid whose exit the recheck confirms is not pending, but it still counts as *not read*. With any pending pid, any not-read pid or any match, the scan settles, so the second listing always comes after the exit evidence. The settle waits, up to its existing 1 s, until every killed match is gone and every pending pid has a **confirmed full exit**.
   - A pending pid confirmed during the settle contributes no failure.
@@ -81,7 +83,7 @@ TIER: FULL
     `State:` and `Threads:` come from the same read, which is one task. A sibling's `exec`, which takes over the leader's pid, therefore cannot pair a dead leader's state with a live leader's count (A2). The stat state is not used. A count of 0 is not accepted: one read of a leader that the kernel still counts must show 1.
 
     **`hidepid`.** With `/proc` mounted with `hidepid` other than `0` or `off`, a live process of the same user can turn invisible (ENOENT) when it becomes non-dumpable (A2). The check reads `/proc/self/mountinfo` on each call, and if the `proc` mount at `/proc` has such an option, ENOENT and ESRCH confirm nothing. A mountinfo that cannot be read or parsed is treated the same way.
-  - **macOS**, per call. No errno is read, and no call waits:
+  - **macOS**, per call. No errno is taken as evidence (a listing that fails reads it only for its diagnostic), and no call waits:
     - For each pid with a known start time, the existing leaf `proc_pidinfo(PROC_PIDTBSDINFO)` with `arg` 0 succeeds with another start time: the pid was replaced.
     - For the pids not confirmed so, one fresh `proc_listpids(PROC_ALL_PIDS)` listing is made after those reads. It lists live and zombie processes, so a pid absent from it has been reaped (A3). The listing must be complete: the existing sized listing, which retries a full buffer and throws when it cannot complete. A listing that throws confirms nothing.
     - Anything else is not confirmed. In particular, a zombie that its parent has not yet reaped is not confirmed. The cost is stated in D3: such a pid stays scan-unreadable after the 1 s settle.
@@ -186,7 +188,7 @@ TIER: FULL
 - **C5:** The kill guard, spawn and unit listing keep their snapshot-based zombie handling, and the macOS errno binding stays with #31. Kind: scope boundary. Destination: `doc comment: packages/process_containment/lib/src/process_table.dart ProcessTable.confirmedExits`
 - **C6:** A process found to be exiting is not, by itself, a reason for an unresolved unit. A pid that the scan cannot read and whose exit is not confirmed is a reason, as is every other cleanup condition. Kind: invariant. Destination: `spec: specs/host-process-cleanup/spec.md → Requirement: Stopping a unit confirms its processes are gone`
 - **C7:** The race where a pid starts a child after the final listing and vanishes before its read is outside the scan. By the owner's decision it is left to OS grouping (ADR 0001, #9). Kind: deliberate gap. Destination: `doc comment: packages/process_containment/lib/src/marker_scan.dart runMarkerScan`
-- **C8:** On macOS, `confirmedExits` makes no call that can wait and reads no errno: a start-time difference from the leaf `arg` 0 read, or absence from one complete `proc_listpids` made after those reads. An unreaped zombie is not confirmed. Kind: invariant. Destination: `doc comment: packages/process_containment/lib/src/posix_process_table.dart macConfirmedExits`
+- **C8:** On macOS, `confirmedExits` makes no call that can wait and takes no errno as evidence: a start-time difference from the leaf `arg` 0 read, or absence from one complete `proc_listpids` made after those reads. An unreaped zombie is not confirmed. Kind: invariant. Destination: `doc comment: packages/process_containment/lib/src/posix_process_table.dart macConfirmedExits`
 
 ## Test map
 
@@ -198,7 +200,10 @@ TIER: FULL
 | A pending process is never confirmed | fake table: snapshot readable and environment denied throughout, never confirmed; `scan-unreadable:<pid>` | agent, unit |
 | A pending process disappears only during the second pass | fake table: unconfirmed through the settle, gone in pass 2; still `scan-unreadable:<pid>` | agent, unit |
 | A null or zombie snapshot whose exit is not confirmed | fake table: null (and, separately, zombie) never confirmed; pending; `scan-unreadable` | agent, unit |
-| A null snapshot of another user's pid | fake table: a null snapshot, never confirmed, named by `foreignPids`; skipped, the scan is clean, and `foreignPids` is called once per pass with the null-snapshot pids | agent, unit |
+| A null snapshot of another user's pid | fake table: a null snapshot, never confirmed, named by `foreignPids`; skipped, the scan is clean, `foreignPids` is asked only after `confirmedExits`, and the second pass still runs | agent, unit |
+| A null-snapshot pid named foreign after it was reaped | fake table: a null snapshot named by `foreignPids`, and a marked child in the second listing; `marked-survivor` names the child (F1) | agent, unit |
+| A process that exits after its failed read on the final pass | fake table: pass 2 refuses a pid that exits only once a later pid is read; `scan-unreadable` names it (F2) | agent, unit |
+| Exit checks inside the pass clock | fake table: the expiry check is logged; each `confirmedExits` call follows the check of its own pid (F3) | agent, unit |
 | An out-of-population zombie | fake table: a zombie snapshot with another uid (and, separately, a start before the window), never confirmed; skipped, the scan is clean, and `confirmedExits` is never asked about it | agent, unit |
 | A refusal first seen on the second pass | fake table: a match triggers pass 2, where another pid is refused and not confirmed; `scan-unreadable` names it | agent, unit |
 | A child started before a confirmed exit | fake table: pending pid confirmed in the settle; the second listing holds a marked child; `marked-survivor` | agent, unit |
@@ -267,7 +272,7 @@ flowchart LR
 | Queue / buffer / cache / transfer | Bound | At the bound | Timeout | At 10x / 100x |
 |---|---|---|---|---|
 | `/proc` listings per `listPids` | 8 | `ProcessTableUnlistable` | None: each is a synchronous directory read outside the pass clock. At most 16 per scan | Each costs one `/proc` read, which grows with the process count |
-| `foreignPids` listings (macOS) | One per pass that met a null snapshot | Its listing fails: no pid is named, so they stay pending | Outside the pass clock, like the other listings | One `proc_listpids` with the same sizing as the full listing |
+| Exit checks in a pass | One `confirmedExits` call per unread pid, and one `foreignPids` call per null snapshot it does not confirm | A failed macOS listing confirms or names nothing, so the pid stays pending | Inside the pid's iteration, so inside the pass clock | Linux: a mountinfo read and up to 2 reads per call. macOS: one complete `proc_listpids` per call (a sizing call and at most four buffer attempts). Linear in the unread count times the process count on macOS. Not measured |
 | Pending pids | The pids of one listing | — | The settle checks its 1 s clock before each sweep, so it can overrun by one whole sweep plus 10 ms | A sweep is one `confirmedExits` call: on Linux, a mountinfo read and up to 2 reads per pending pid; on macOS, one leaf `proc_pidinfo` per pending pid with a start time, plus one complete `proc_listpids` (a sizing call and at most four buffer attempts). Linear in the pending count plus one listing. Not measured |
 | Scan duration | Two passes, each stopped at 10 s between pids, plus the settle and the listings | `scan-timeout` | Nothing inside a synchronous step is interrupted. Each pass can overrun by one whole pid iteration (snapshot, environment read and exit check). The settle can overrun by one sweep. Up to 16 Linux listings run outside every clock | The pass clocks bound the per-pid loop at any process count. The listings, one iteration and one sweep grow with it |
 
