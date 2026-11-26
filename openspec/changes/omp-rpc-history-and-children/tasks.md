@@ -109,8 +109,10 @@ Red names the new or changed assertion to write before production code. Green na
 
 ## 6. Verify the complete change
 
-- [ ] 6.1 Run the affected host driver, shared session, protocol and desktop test files. Run `pwsh -NoProfile -File F:/Dev/Orca/Workspace/Mastermind/tools/gaming-check.ps1` before heavy work. With the gate clear, run `mise run check` and `mise run test:host`. When gaming, do not run the heavy commands locally; wait or rely on CI only where the same checks run on this exact PR head. Report which checks ran where. Tests use occurrence and order, injected deadlines, and real-time waits only as generous hang guards.
-- [ ] 6.2 Verify project behavior against the deltas, including old-peer and older-store safeguards. Run `openspec validate omp-rpc-history-and-children --strict` and verify scenario coverage and group trailers. Use the fixture-driven desktop view tests to check the parent/child split and exit flow. Confirm no OMP runtime qualification evidence was added and the parked direction is unchanged.
+- [x] 6.1 Run the affected host driver, shared session, protocol and desktop test files. Run `pwsh -NoProfile -File F:/Dev/Orca/Workspace/Mastermind/tools/gaming-check.ps1` before heavy work. With the gate clear, run `mise run check` and `mise run test:host`. When gaming, do not run the heavy commands locally; wait or rely on CI only where the same checks run on this exact PR head. Report which checks ran where. Tests use occurrence and order, injected deadlines, and real-time waits only as generous hang guards.
+- [x] 6.2 Verify project behavior against the deltas, including old-peer and older-store safeguards. Run `openspec validate omp-rpc-history-and-children --strict` and verify scenario coverage and group trailers. Use the fixture-driven desktop view tests to check the parent/child split and exit flow. Confirm no OMP runtime qualification evidence was added and the parked direction is unchanged.
+
+Windows verification: the gaming check was clear. `mise run check` and `mise run test:host` passed (1,275 host tests, 31 skipped); the affected Flutter widgets and OMP peer tests passed. Strict OpenSpec validation passed and all 72 delta scenarios have evidence in the table. Real-runtime qualification remains in M2 change 5.
 
 ## Workflow follow-up
 
