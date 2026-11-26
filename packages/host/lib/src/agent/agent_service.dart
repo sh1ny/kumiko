@@ -357,6 +357,9 @@ class _Agent {
   bool attached = false;
   bool ending = false;
   bool closeRequested = false;
+  Future<OmpHistoryWarning?>? ompGrace;
+  bool ompCloseRecorded = false;
+  OmpHistoryWarning? ompHistoryWarning;
 
   /// A prompt is committing its draft removal; no second prompt starts.
   bool sending = false;
@@ -652,7 +655,7 @@ class AgentService {
   }
 
   void _available() {
-    if (_disposed) {
+    if (_disposed || units.shuttingDown) {
       throw RpcException(ErrorCode.shuttingDown, 'the host is shutting down');
     }
   }
@@ -1687,7 +1690,7 @@ class AgentService {
         // leaving no failed write to reveal that it abandoned this channel.
         if (a.exited || a.closeFailed) {
           _forget(a);
-        } else if (!a.ending) {
+        } else if (!a.ending && !connection.isClosed) {
           _beginClose(a, attachTimeout: true);
         }
       }),
@@ -2007,53 +2010,41 @@ class AgentService {
     _forget(a);
   }
 
+  void _prepareClose(_Agent a) {
+    a.ending = true;
+    _revoke(a.grant);
+    a.attachTimer?.cancel();
+    a.relay.close();
+    a.session.beginClosing();
+  }
+
   void _beginClose(_Agent a, {bool attachTimeout = false}) {
-    if (!_current(a) || a.ending || a.exited) return;
+    if (!_current(a) || a.ending || a.exited || connection.isClosed) return;
     final running = switch (a.session.state) {
       AgentState.running ||
       AgentState.waitingApproval ||
       AgentState.stopping => true,
       _ => false,
     };
-    a.ending = true;
-    _revoke(a.grant);
-    a.attachTimer?.cancel();
-    a.session.beginClosing();
-    a.relay.close();
+    _prepareClose(a);
+    final driver = a.io.client;
+    final graceful = driver is OmpRuntimeDriver && a.attached;
+    if (graceful) {
+      a.ompGrace = Future(() => _runOmpGrace(a, driver));
+    }
     // Schedule on the event queue, not a microtask: the close result is
     // written before an idle unit can settle and publish its exit.
     unawaited(
       Future<void>(() async {
         if (!_current(a)) return;
-        final driver = a.io.client;
-        if (driver is OmpRuntimeDriver) {
-          final pending = driver.pendingTurn;
-          if (pending != null && !attachTimeout) {
-            try {
-              await options.limitOmpClose(pending, const Duration(seconds: 2));
-            } on Object {
-              // Close still owns stdin and containment.
-            }
-          }
-          driver.stopNativeWrites();
-          try {
-            const grace = Duration(seconds: 2);
-            final clock = Stopwatch()..start();
-            await options.limitOmpClose(
-              a.io.launch.pipes!.stdin.close(),
-              grace,
-            );
-            await options.limitOmpClose(
-              a.io.launch.unit.exitCode,
-              grace - clock.elapsed,
-            );
-          } on Object {
-            // The unit is still settled below even when EOF is not enough.
-          }
-        } else if (running && !attachTimeout) {
+        if (graceful) {
+          final warning = await a.ompGrace!;
+          _recordOmpClose(a, warning);
+        } else if (driver is! OmpRuntimeDriver && running && !attachTimeout) {
           await Future<void>.delayed(const Duration(seconds: 2));
         }
         if (!_current(a)) return;
+        if (connection.isClosed && units.shuttingDown) return;
         final outcome = await _end(a.io);
         await a.io.client.close();
         if (outcome.cleaned) {
@@ -2071,6 +2062,7 @@ class AgentService {
               reason: AgentExitReason.closed,
               eventCount: a.relay.eventCount,
               status: a.io.status,
+              historyUnconfirmed: _ompHistoryPeer ? a.ompHistoryWarning : null,
             ).toJson(),
           );
           if (attachTimeout || a.consumerClosed) _forget(a);
@@ -2082,6 +2074,7 @@ class AgentService {
             AgentCloseFailedParams(
               sessionId: a.record.id,
               reason: outcome.reason ?? 'cleanup-unresolved',
+              historyUnconfirmed: _ompHistoryPeer ? a.ompHistoryWarning : null,
             ).toJson(),
           );
           _forget(a);
@@ -2095,12 +2088,107 @@ class AgentService {
             AgentCloseFailedParams(
               sessionId: a.record.id,
               reason: 'agent-io-close-failed',
+              historyUnconfirmed: _ompHistoryPeer ? a.ompHistoryWarning : null,
             ).toJson(),
           );
           _forget(a);
         }
       }),
     );
+  }
+
+  Future<OmpHistoryWarning?> _runOmpGrace(
+    _Agent a,
+    OmpRuntimeDriver driver,
+  ) async {
+    if (!_current(a)) return OmpHistoryWarning.nativeEofUnconfirmed;
+    const grace = Duration(seconds: 2);
+    if (driver.waitForCloseQuiescence() case final work?) {
+      try {
+        await options.limitOmpClose(work, grace);
+      } on TimeoutException {
+        // Even unconfirmed cancellation gets the independent EOF grace.
+      }
+    }
+    if (!_current(a)) return OmpHistoryWarning.nativeEofUnconfirmed;
+    final client = driver.client;
+    final couldObserve = a.io.status == null && !client.isClosed;
+    driver.stopNativeWrites();
+    if (couldObserve) client.expectShutdownEof();
+    int? status;
+    try {
+      await options.limitOmpClose(
+        Future.wait<void>([
+          a.io.launch.pipes!.stdin.close(),
+          client.done,
+          a.io.launch.unit.exitCode.then<void>((code) => status = code),
+        ]),
+        grace,
+      );
+    } on TimeoutException {
+      return OmpHistoryWarning.nativeEofUnconfirmed;
+    } on Object {
+      return OmpHistoryWarning.nativeTransportFailed;
+    }
+    if (client.failure != null) return OmpHistoryWarning.nativeTransportFailed;
+    if (!client.shutdownEofObserved) {
+      return OmpHistoryWarning.nativeEofUnconfirmed;
+    }
+    if (status != 0) return OmpHistoryWarning.nativeExitNonzero;
+    return a.record.ompSessionFile == null
+        ? OmpHistoryWarning.noNativePersistence
+        : null;
+  }
+
+  void _recordOmpClose(_Agent a, OmpHistoryWarning? warning) {
+    if (!_current(a) || a.ompCloseRecorded) return;
+    a.ompCloseRecorded = true;
+    a.ompHistoryWarning = warning;
+    // Replay may still be pending on desktop credit. Let verified OMP shut
+    // down, but an interrupted Continue does not clear an earlier warning.
+    if (warning == null && a.restoring) return;
+    if (warning?.name == a.record.historyUnconfirmed) return;
+    try {
+      store.execute(
+        'UPDATE agent_session SET omp_history_unconfirmed = ? WHERE id = ?',
+        [warning?.name, a.record.id],
+      );
+    } on SqliteException {
+      a.ompHistoryWarning = OmpHistoryWarning.storeWriteFailed;
+      units.log.event('omp-history-warning', code: 'store-write-failed');
+    }
+  }
+
+  /// Ordinary `app/quit` followed by input EOF authorizes the same native
+  /// phase as confirmed close. A channel abandoned by a lost desktop does not.
+  Future<void> gracefulOmpQuit(Duration budget) async {
+    final roots = [
+      for (final a in _agents.values)
+        if (a.attached &&
+            !a.exited &&
+            !a.closeFailed &&
+            a.io.client is OmpRuntimeDriver &&
+            (!a.ending || a.ompGrace != null))
+          a,
+    ];
+    for (final a in roots) {
+      if (!a.ending) {
+        _prepareClose(a);
+        a.ompGrace = _runOmpGrace(a, a.io.client as OmpRuntimeDriver);
+      }
+    }
+    await Future.wait([for (final a in roots) _finishOmpQuit(a, budget)]);
+  }
+
+  Future<void> _finishOmpQuit(_Agent a, Duration budget) async {
+    final OmpHistoryWarning? warning;
+    try {
+      warning = await options.limitOmpClose(a.ompGrace!, budget);
+    } on TimeoutException {
+      _recordOmpClose(a, OmpHistoryWarning.nativeEofUnconfirmed);
+      return;
+    }
+    _recordOmpClose(a, warning);
   }
 
   Future<UnitOutcome> _end(_AgentIO io) => io.ending ??= () async {
@@ -2172,7 +2260,7 @@ class AgentService {
   }
 
   Future<void> _finishFailure(_Agent a, Object error) async {
-    if (!_current(a) || a.ending) return;
+    if (!_current(a) || a.ending || connection.isClosed) return;
     final restoring = a.restoring;
     a.ending = true;
     _revoke(a.grant);

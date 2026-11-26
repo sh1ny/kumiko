@@ -2674,6 +2674,20 @@ class AgentTurnEndedParams {
 
 enum AgentExitReason { closed, ended, failed }
 
+/// OMP's persistence evidence, independent of contained process settlement.
+enum OmpHistoryWarning {
+  noNativePersistence,
+  nativeEofUnconfirmed,
+  nativeExitNonzero,
+  nativeTransportFailed,
+  storeWriteFailed,
+}
+
+OmpHistoryWarning? _ompHistoryWarning(Json json) =>
+    json['historyUnconfirmed'] == null
+    ? null
+    : _enum(OmpHistoryWarning.values, json, 'historyUnconfirmed');
+
 class AgentExitedParams {
   const AgentExitedParams({
     required this.sessionId,
@@ -2683,6 +2697,7 @@ class AgentExitedParams {
     this.error,
     this.resumeReason,
     this.message,
+    this.historyUnconfirmed,
   });
   factory AgentExitedParams.fromJson(Json json) => AgentExitedParams(
     sessionId: _req<String>(json, 'sessionId'),
@@ -2692,6 +2707,7 @@ class AgentExitedParams {
     error: _opt<String>(json, 'error'),
     resumeReason: _opt<String>(json, 'resumeReason'),
     message: _opt<String>(json, 'message'),
+    historyUnconfirmed: _ompHistoryWarning(json),
   );
   final String sessionId;
   final AgentExitReason reason;
@@ -2704,6 +2720,7 @@ class AgentExitedParams {
   final String? error;
   final String? resumeReason;
   final String? message;
+  final OmpHistoryWarning? historyUnconfirmed;
   Json toJson() => {
     'sessionId': sessionId,
     'reason': reason.name,
@@ -2712,6 +2729,7 @@ class AgentExitedParams {
     'error': ?error,
     'resumeReason': ?resumeReason,
     'message': ?message,
+    'historyUnconfirmed': ?historyUnconfirmed?.name,
   };
 }
 
@@ -2731,19 +2749,23 @@ class AgentCloseFailedParams {
     required this.sessionId,
     required this.reason,
     this.message,
+    this.historyUnconfirmed,
   });
   factory AgentCloseFailedParams.fromJson(Json json) => AgentCloseFailedParams(
     sessionId: _req<String>(json, 'sessionId'),
     reason: _req<String>(json, 'reason'),
     message: _opt<String>(json, 'message'),
+    historyUnconfirmed: _ompHistoryWarning(json),
   );
   final String sessionId;
   final String reason;
   final String? message;
+  final OmpHistoryWarning? historyUnconfirmed;
   Json toJson() => {
     'sessionId': sessionId,
     'reason': reason,
     'message': ?message,
+    'historyUnconfirmed': ?historyUnconfirmed?.name,
   };
 }
 

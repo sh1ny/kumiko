@@ -45,6 +45,7 @@ OMP start SHALL require the `agent` and `omp` capabilities from both peers. With
 - **WHEN** both peers advertise agent and omp but one does not advertise omp-history
 - **THEN** OMP start and ordinary root controls remain usable, Continue and child chat viewing report unavailable on a desktop that supports them, and the host sends no OMP child event that the older peer cannot decode
 - **AND** the host still reports known active child counts or incomplete activity through the existing delegated summary, so the older peer can warn about closing or quitting
+- **AND** the host omits the OMP `historyUnconfirmed` field from `agent/records`, `agent/exited` and `agent/closeFailed`; containment results are unchanged.
 
 ## ADDED Requirements
 

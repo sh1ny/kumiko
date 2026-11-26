@@ -43,7 +43,7 @@ class OmpClient implements RuntimeTransport {
       normalize: _decode,
       consume: _consume,
       protocolError: OmpProtocolException.new,
-      onEof: () => _fail(OmpProtocolException('native output closed')),
+      onEof: _outputEnded,
       onError: _fail,
     )..start();
   }
@@ -54,6 +54,21 @@ class OmpClient implements RuntimeTransport {
   final _done = Completer<void>();
   int _issued = 0;
   Object? _failure;
+  bool _shutdownEofExpected = false;
+  bool _shutdownEofObserved = false;
+
+  /// An ordinary EOF is otherwise a transport failure on a live run.
+  void expectShutdownEof() => _shutdownEofExpected = true;
+  bool get shutdownEofObserved => _shutdownEofObserved;
+
+  void _outputEnded() {
+    if (_shutdownEofExpected) {
+      _shutdownEofObserved = true;
+      _close();
+    } else {
+      _fail(OmpProtocolException('native output closed'));
+    }
+  }
 
   /// When installed by the driver, reduce event payloads before releasing the
   /// large-line permit and awaiting bounded consumption.

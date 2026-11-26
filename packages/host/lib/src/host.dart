@@ -555,25 +555,31 @@ class Host {
     await _startup;
     if (_stopping) return;
     final units = _units;
+    final quit = _quitAnnounced && reason.kind == CloseReason.inputClosed;
+    final clock = Stopwatch()..start();
+    Duration remaining() => options.shutdownDeadline - clock.elapsed;
+    if (units != null) units.shuttingDown = true;
+    // Leave the rest of the shared deadline to containment. Do not give a
+    // short configured shutdown budget entirely to the native phase.
+    final half = remaining() ~/ 2;
+    const nativeGrace = Duration(seconds: 4);
+    final graceful = quit
+        ? _agents?.gracefulOmpQuit(half < nativeGrace ? half : nativeGrace)
+        : null;
     // No new tool connection once the desktop is gone; the socket file goes.
     await _toolEndpoint?.close();
     _terminals?.dispose();
+    await graceful;
     _agents?.dispose();
     if (units != null) {
       _log?.event('shutdown', code: reason.kind);
-      await _cleanup?.reconciliation?.timeout(
-        options.shutdownDeadline,
-        onTimeout: () {},
-      );
-      await units.shutdown(options.shutdownDeadline);
+      await _cleanup?.reconciliation?.timeout(remaining(), onTimeout: () {});
+      await units.shutdown(remaining());
       await _agents?.finishShutdown();
     }
     // A quit needs both: the desktop said so, and then closed its input. Any
     // other end (broken pipe, violation, overflow) is not recorded as one.
-    await _finish(
-      code,
-      quit: _quitAnnounced && reason.kind == CloseReason.inputClosed,
-    );
+    await _finish(code, quit: quit);
   }
 
   Future<void> _finish(int code, {bool quit = false}) async {

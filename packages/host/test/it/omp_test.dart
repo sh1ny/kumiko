@@ -4,6 +4,7 @@ import 'dart:io';
 
 import 'package:domain/domain.dart';
 import 'package:host_protocol/host_protocol.dart';
+import 'package:sqlite3/sqlite3.dart';
 import 'package:test/test.dart';
 
 import 'support/omp_support.dart';
@@ -1980,17 +1981,284 @@ void main() {
     expect(agentRows(profile).single['native_session_id'], 'original');
   });
 
-  for (final hangAfterEof in [false, true]) {
-    final scenario = hangAfterEof ? 'OMP does not exit' : 'Orderly close';
-    test('OMP: $scenario', () async {
-      final fixture = await openFixture(
-        script: {if (hangAfterEof) 'eofDelayMs': 20000},
+  Future<OmpFixture> closingFixture({
+    Json script = const {},
+    Json commands = const {},
+    bool persist = true,
+    bool manual = false,
+    bool historyPeer = true,
+  }) async {
+    final profile = tempDir('omp_close_profile');
+    final work = tempDir('omp_close_work');
+    addTearDown(() => deleteTree(profile));
+    addTearDown(() => deleteTree(work));
+    final history = File(joinPath(work.path, 'private-session.jsonl'));
+    if (persist) {
+      history.writeAsStringSync(
+        '${jsonEncode({'type': 'session', 'id': 'fixture-session', 'cwd': work.path})}\n',
       );
+    }
+    final fixture = OmpFixture(
+      profile,
+      work,
+      script: {
+        ...script,
+        'commands': {
+          ...commands,
+          'get_state': [
+            [
+              {
+                'type': 'response',
+                'id': r'$id',
+                'success': true,
+                'data': {
+                  'sessionId': 'fixture-session',
+                  'isSettled': true,
+                  'hasPendingAsyncWork': false,
+                  if (persist) 'sessionFile': history.path,
+                },
+              },
+            ],
+          ],
+        },
+      },
+    );
+    await fixture.open(
+      caps: {
+        ...ompCaps,
+        Capability.lifecycle,
+        if (historyPeer) Capability.ompHistory,
+      },
+      quitTimeout: const Duration(minutes: 3),
+      environment: {
+        'KUMIKO_TEST_SHUTDOWN_DEADLINE_MS': '120000',
+        if (manual)
+          'KUMIKO_TEST_OMP_CLOSE_MANUAL': '1'
+        else
+          'KUMIKO_TEST_OMP_CLOSE_AWAITS_PEER': '1',
+      },
+    );
+    return fixture;
+  }
+
+  const hangGuard = Timeout(Duration(minutes: 4));
+  for (final (name, script, persist, reason) in <(String, Json, bool, String?)>[
+    ('Orderly close', {}, true, null),
+    (
+      'Nonzero disposal reports an unconfirmed history save with cleaned containment',
+      {'eofExit': 9},
+      true,
+      'nativeExitNonzero',
+    ),
+    (
+      'No native persistence does not claim a save',
+      {},
+      false,
+      'noNativePersistence',
+    ),
+    (
+      'Malformed native output after EOF does not confirm a save',
+      {
+        'eofFrames': ['not JSON'],
+      },
+      true,
+      'nativeTransportFailed',
+    ),
+  ]) {
+    test('OMP: $name', () async {
+      final fixture = await closingFixture(script: script, persist: persist);
       final peer = await fixture.start();
       await peer.close();
       expect(fixture.reports.last['stdin'], 'eof');
       expect(LedgerView(fixture.profile).units(), isEmpty);
-      expect(agentRows(fixture.profile), hasLength(1));
-    });
+      final exit = peer.of(Method.agentExited).single;
+      expect(exit['status'], script['eofExit'] ?? 0);
+      expect(exit['historyUnconfirmed'], reason);
+      expect(
+        agentRows(fixture.profile).single['omp_history_unconfirmed'],
+        reason,
+      );
+      final records = AgentRecordsResult.fromJson(
+        await peer.call(Method.agentRecords, {
+          'sessionIds': [peer.id],
+        }),
+      );
+      expect(records.records[peer.id]?.historyUnconfirmed, reason);
+      expect(
+        jsonEncode(records.toJson()),
+        isNot(contains('private-session.jsonl')),
+      );
+    }, timeout: hangGuard);
   }
+
+  test('OMP: OMP does not exit', () async {
+    final fixture = await closingFixture(
+      manual: true,
+      script: {'holdEof': true},
+    );
+    final peer = await fixture.start();
+    final close = peer.close();
+    await waitFixture(fixture.report, (row) => row['stdin'] == 'eof');
+    final expired = await peer.call('test/omp.expireGrace', {});
+    expect(expired['expired'], 1);
+    await close;
+    expect(LedgerView(fixture.profile).units(), isEmpty);
+    expect(
+      peer.of(Method.agentExited).single['historyUnconfirmed'],
+      'nativeEofUnconfirmed',
+    );
+    expect(
+      agentRows(fixture.profile).single['omp_history_unconfirmed'],
+      'nativeEofUnconfirmed',
+    );
+  }, timeout: hangGuard);
+
+  test('OMP: Old desktop receives no history outcome fields', () async {
+    final fixture = await closingFixture(
+      script: {'eofExit': 9},
+      historyPeer: false,
+    );
+    final peer = await fixture.start();
+    await peer.close();
+    expect(
+      peer.of(Method.agentExited).single,
+      isNot(contains('historyUnconfirmed')),
+    );
+    final records = await peer.call(Method.agentRecords, {
+      'sessionIds': [peer.id],
+    });
+    expect(jsonEncode(records), isNot(contains('historyUnconfirmed')));
+    expect(
+      agentRows(fixture.profile).single['omp_history_unconfirmed'],
+      'nativeExitNonzero',
+    );
+  }, timeout: hangGuard);
+
+  test(
+    'OMP: Failed warning write is not reported as a saved history',
+    () async {
+      final fixture = await closingFixture(script: {'eofExit': 9});
+      final peer = await fixture.start();
+      final db = sqlite3.open(joinPath(fixture.profile.path, 'kumiko.db'));
+      try {
+        db.execute('''
+        CREATE TRIGGER refuse_history_warning
+        BEFORE UPDATE OF omp_history_unconfirmed ON agent_session
+        BEGIN SELECT RAISE(FAIL, 'private store error'); END
+      ''');
+      } finally {
+        db.close();
+      }
+      await peer.close();
+      final exit = peer.of(Method.agentExited).single;
+      expect(exit['historyUnconfirmed'], 'storeWriteFailed');
+      expect(jsonEncode(exit), isNot(contains('private store error')));
+      expect(LedgerView(fixture.profile).units(), isEmpty);
+      expect(
+        agentRows(fixture.profile).single['omp_history_unconfirmed'],
+        isNull,
+      );
+    },
+    timeout: hangGuard,
+  );
+
+  test(
+    'OMP: Announced EOF closes idle and active fixture units before settlement',
+    () async {
+      final fixture = await closingFixture(
+        script: {'isolateReports': true},
+        commands: {
+          'prompt': [
+            [accepted()],
+          ],
+          'abort': [
+            [
+              {...terminal('aborted'), 'sessionSettled': true},
+              accepted(),
+            ],
+          ],
+        },
+      );
+      final idle = await fixture.start();
+      final active = await fixture.start();
+      await active.prompt();
+      await active.wait(
+        Method.agentState,
+        where: (p) => p['state'] == 'running',
+        within: const Duration(minutes: 2),
+      );
+      expect(agentRows(fixture.profile).map((r) => r['id']), [
+        idle.id,
+        active.id,
+      ]);
+      await fixture.desktop.announceQuit();
+      expect(fixture.reports.where((r) => r['stdin'] == 'eof'), isEmpty);
+      final quit = await fixture.desktop.session.quit();
+      expect(quit.timedOut, isFalse);
+      expect(quit.exitCode, 0);
+      expect(fixture.reports.where((r) => r['stdin'] == 'eof'), hasLength(2));
+      expect(fixture.commands.where((c) => c['type'] == 'abort'), hasLength(1));
+      expect(LedgerView(fixture.profile).units(), isEmpty);
+      expect(
+        LedgerView(fixture.profile).instances().single['exit_kind'],
+        'quit',
+      );
+      expect(
+        agentRows(fixture.profile).map((r) => r['omp_history_unconfirmed']),
+        [null, null],
+      );
+    },
+    timeout: hangGuard,
+  );
+
+  test(
+    'OMP: Quit persists an unconfirmed save separately from ledger state',
+    () async {
+      final fixture = await closingFixture(script: {'eofExit': 8});
+      final peer = await fixture.start();
+      await fixture.desktop.announceQuit();
+      final quit = await fixture.desktop.session.quit();
+      expect(quit.timedOut, isFalse);
+      expect(quit.exitCode, 0);
+      final ledger = LedgerView(fixture.profile);
+      expect(ledger.units(), isEmpty);
+      expect(ledger.instances().single['closed_cleanly'], 1);
+      expect(
+        agentRows(fixture.profile).single['omp_history_unconfirmed'],
+        'nativeExitNonzero',
+      );
+      final reopened = await Desktop.start(
+        fixture.profile,
+        capabilities: {
+          ...testCapabilities,
+          ...ompCaps,
+          Capability.ompHistory,
+          Capability.lifecycle,
+        },
+      );
+      addTearDown(reopened.dispose);
+      await reopened.waitState();
+      final records = AgentRecordsResult.fromJson(
+        (await reopened.connection.request(Method.agentRecords, {
+          'sessionIds': [peer.id],
+        })) as Json,
+      );
+      expect(records.records[peer.id]?.historyUnconfirmed, 'nativeExitNonzero');
+      expect((await reopened.previousExit()).kind, PreviousExitKind.quit);
+      expect(LedgerView(fixture.profile).units(), isEmpty);
+    },
+    timeout: hangGuard,
+  );
+
+  test('OMP: Unannounced disconnect skips OMP grace and keeps the unexpected-exit outcome', () async {
+    final fixture = await closingFixture(script: {'holdEof': true});
+    await fixture.start();
+    final quit = await fixture.desktop.session.quit();
+    expect(quit.timedOut, isFalse);
+    expect(quit.exitCode, 0);
+    expect(fixture.reports.where((r) => r['stdin'] == 'eof'), isEmpty);
+    final ledger = LedgerView(fixture.profile);
+    expect(ledger.units(), isEmpty);
+    expect(ledger.instances().single['exit_kind'], isNull);
+  }, timeout: hangGuard);
 }

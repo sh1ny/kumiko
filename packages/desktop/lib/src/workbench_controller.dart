@@ -183,6 +183,7 @@ class WorkbenchController extends ChangeNotifier {
     agents = AgentController(
       removePane: removePane,
       splitOmpChild: _splitOmpChild,
+      reportMessage: _showMessage,
       savePaneState: (id, state) {
         final d = _layout;
         if (d != null && d.pane(id) != null) _commit(d.setPaneState(id, state));
@@ -1244,6 +1245,11 @@ class WorkbenchController extends ChangeNotifier {
     _message = 'The workspace is being removed.';
     notifyListeners();
     return true;
+  }
+
+  void _showMessage(String message) {
+    _message = message;
+    notifyListeners();
   }
 
   void dismissMessage() {

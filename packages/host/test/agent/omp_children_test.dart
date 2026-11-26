@@ -233,6 +233,46 @@ void main() {
     expect(states.last.delegated?.hasWork, isFalse);
   });
 
+  test('OMP: Close waits for yielded native and delegated work', () async {
+    final id = await prompt();
+    peer.send(lifecycle('worker', 'started'));
+    peer.send({
+      'type': 'prompt_result',
+      'id': id,
+      'status': 'completed',
+      'sessionSettled': false,
+    });
+    await turnFinished.future;
+    session.beginClosing();
+    final quiesced = driver.waitForCloseQuiescence();
+    expect(quiesced, isNotNull);
+    var settled = false;
+    unawaited(quiesced!.then((_) => settled = true));
+    final controls = peer.writes.where(
+      (c) => c['type'] == 'abort' || c['type'] == 'cancel_subagent',
+    );
+    expect(controls.map((c) => c['type']), ['abort', 'cancel_subagent']);
+    for (final c in controls) {
+      peer.result(c['id']! as String, {'cancelled': true});
+    }
+    await barrier();
+    expect(
+      settled,
+      isFalse,
+      reason: 'command replies do not settle native work',
+    );
+    peer.send(lifecycle('worker', 'aborted'));
+    await barrier();
+    expect(
+      settled,
+      isFalse,
+      reason: 'native work remains after child cancellation',
+    );
+    peer.send({'type': 'session_settled'});
+    await quiesced;
+    expect(settled, isTrue);
+  }, timeout: const Timeout(Duration(minutes: 2)));
+
   for (final finish in ['aborted', 'completed']) {
     test(
       'OMP: Root Stop waits for the addressed child terminal cancellation ($finish)',

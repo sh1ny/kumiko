@@ -18,6 +18,8 @@ class OmpRuntimeDriver extends RuntimeDriver {
     client.normalizeNotification = _frame;
     unawaited(
       client.done.then((_) {
+        _closeQuiescence?.complete();
+        _closeQuiescence = null;
         _hostTools.revoke();
         _replay = null;
         _children = null;
@@ -54,6 +56,7 @@ class OmpRuntimeDriver extends RuntimeDriver {
   Future<void>? _backgroundAbort;
   final _cancelledChildren = <String>{};
   bool _historyReading = false;
+  Completer<void>? _closeQuiescence;
   String? _session;
   _Turn? _turn;
   int _idleNotices = 0;
@@ -119,7 +122,24 @@ class OmpRuntimeDriver extends RuntimeDriver {
       for (final child in children.known)
         if (child.cancellable) child.key: child.ticket,
   };
-  Future<RuntimeTurnResult>? get pendingTurn => _turn?.terminal.future;
+
+  /// A yielded prompt is not enough: OMP may still own deferred or child work.
+  Future<void>? waitForCloseQuiescence() {
+    if (client.isClosed || !_hasWork) return null;
+    return (_closeQuiescence ??= Completer<void>()).future;
+  }
+
+  bool get _hasWork =>
+      _turn != null ||
+      _nativeWork ||
+      (_children?.active ?? 0) != 0 ||
+      _children?.incomplete == true;
+
+  void _checkCloseQuiescence() {
+    if (_closeQuiescence == null || _hasWork) return;
+    _closeQuiescence!.complete();
+    _closeQuiescence = null;
+  }
 
   Future<void> configureChildren({required bool views}) async {
     final children = _children = OmpChildren(runId, views: views);
@@ -283,6 +303,7 @@ class OmpRuntimeDriver extends RuntimeDriver {
         (wasActive != active || wasIncomplete != children.incomplete)) {
       onDelegatedChanged?.call();
     }
+    _checkCloseQuiescence();
   }
 
   Future<void> waitReady() async {
@@ -575,6 +596,7 @@ class OmpRuntimeDriver extends RuntimeDriver {
                 );
               }
               turn.terminal.completeError(error, stack);
+              _checkCloseQuiescence();
               if (error is TimeoutException) client.fail(error);
             }
             if (!turn.accepted) Error.throwWithStackTrace(error, stack);
@@ -657,6 +679,7 @@ class OmpRuntimeDriver extends RuntimeDriver {
     _idleNotices = 0;
     onNativeTurnEnded?.call(_session!, turn.id!, result);
     turn.terminal.complete(result);
+    _checkCloseQuiescence();
   }
 
   Object? _frame(Json frame) {
@@ -734,6 +757,7 @@ class OmpRuntimeDriver extends RuntimeDriver {
       onRetired?.call(RuntimeRetired(_session, turn.id));
       return _terminalDelivery(lines, turn, result);
     }
+    if (draining) return null;
     if (type == 'notice') {
       final message = frame['message'];
       if (message is String) {
@@ -779,6 +803,7 @@ class OmpRuntimeDriver extends RuntimeDriver {
     if (children.active != count || children.incomplete != wasIncomplete) {
       onDelegatedChanged?.call();
     }
+    _checkCloseQuiescence();
     return _delivery(lines);
   }
 

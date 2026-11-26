@@ -77,9 +77,18 @@ class AgentLink {
             'The saved OMP native session file is unavailable.',
           _ => 'This OMP conversation cannot be continued.',
         };
-  String? get historyWarning => _historyUnconfirmed == null
-      ? null
-      : 'OMP history save was not confirmed.';
+  String? get historyWarning => switch (_historyUnconfirmed) {
+    null => null,
+    'noNativePersistence' =>
+      'OMP history is unavailable: this run did not use a native session file.',
+    'nativeExitNonzero' =>
+      'OMP history save was not confirmed: OMP exited with an error.',
+    'nativeTransportFailed' =>
+      'OMP history save was not confirmed: communication with OMP failed.',
+    'storeWriteFailed' =>
+      'Kumiko could not record whether OMP saved its history.',
+    _ => 'OMP history save was not confirmed before cleanup.',
+  };
   String? runId;
   String? turnId;
   final Map<String, AgentEvent> _ompChildren = {};
@@ -359,11 +368,13 @@ class AgentController extends ChangeNotifier implements ViewCloser {
     required this.savePaneState,
     required this.focusPane,
     this.splitOmpChild,
+    this.reportMessage,
   });
   final void Function(String paneId) removePane;
   final void Function(String paneId, Json state) savePaneState;
   final void Function(String paneId) focusPane;
   final String? Function(String parentPaneId, Json state)? splitOmpChild;
+  final void Function(String)? reportMessage;
   final Map<String, OmpChildView> _childViews = {};
   int _nextChildToken = 0;
   OmpChildView? childViewOf(String paneId) => _childViews[paneId];
@@ -767,6 +778,12 @@ class AgentController extends ChangeNotifier implements ViewCloser {
     link._exit = null;
     link.errorCode = event.reason;
     _disablePermissions(link);
+    _endChildren(link);
+    if (link._ompHistoryNegotiated &&
+        link.runtimeKind == 'omp' &&
+        event.historyUnconfirmed != null) {
+      link._historyUnconfirmed = event.historyUnconfirmed!.name;
+    }
     final failure =
         'Agent termination not confirmed: ${event.reason}${event.message == null ? '' : ': ${event.message}'}';
     link.closeFailure = failure;
@@ -1859,7 +1876,7 @@ class AgentController extends ChangeNotifier implements ViewCloser {
       if (!running && unsaved == null) continue;
       warnings[id] = [
         if (running) agentCloseWarning,
-        if (link?.delegatedWork == true) link!.delegatedLabel!,
+        if (running && link?.delegatedWork == true) exitWork(id)!,
         if (unsaved != null && link!.prompt.text.isEmpty)
           'Draft not saved: $unsaved. The cleared draft stays stored and '
               'returns when the session reopens.'
@@ -1947,6 +1964,9 @@ class AgentController extends ChangeNotifier implements ViewCloser {
   String? exitWork(String paneId) {
     final link = _links[paneId];
     if (link == null || !_warnsOnClose(paneId)) return null;
+    if (link.runtimeKind == 'omp' && link.delegated?.incomplete == true) {
+      return 'OMP may still be working. ${link.delegatedLabel}';
+    }
     if (link.delegatedWork) return link.delegatedLabel;
     if (link.state == AgentState.waitingApproval) {
       return 'waiting for a permission reply';
@@ -2019,6 +2039,11 @@ class AgentController extends ChangeNotifier implements ViewCloser {
     final dismiss =
         link.closeRequested && event.reason == AgentExitReason.closed;
     link.closeRequested = false;
+    if (link._ompHistoryNegotiated &&
+        link.runtimeKind == 'omp' &&
+        event.reason == AgentExitReason.closed) {
+      link._historyUnconfirmed = event.historyUnconfirmed?.name;
+    }
     // A session stopped from the exit dialog keeps its pane and its record.
     if (link.exitStop && event.reason == AgentExitReason.closed) {
       link.saved = link.known;
@@ -2045,7 +2070,10 @@ class AgentController extends ChangeNotifier implements ViewCloser {
         _drainExited(host, link);
       }
     }
-    if (dismiss) removePane(link.paneId);
+    if (dismiss) {
+      removePane(link.paneId);
+      if (link.historyWarning case final warning?) reportMessage?.call(warning);
+    }
     _changed();
   }
 
@@ -2095,7 +2123,9 @@ class AgentController extends ChangeNotifier implements ViewCloser {
             if (!_current(host, generation) || !_owns(link)) return;
             final record = records.records[exit.sessionId];
             link._continueUnavailable = record?.continueUnavailable;
-            link._historyUnconfirmed = record?.historyUnconfirmed;
+            if (exit.historyUnconfirmed != OmpHistoryWarning.storeWriteFailed) {
+              link._historyUnconfirmed = record?.historyUnconfirmed;
+            }
           } on RpcException catch (error) {
             if (_current(host, generation) && _owns(link)) {
               link.error = _describe(error);

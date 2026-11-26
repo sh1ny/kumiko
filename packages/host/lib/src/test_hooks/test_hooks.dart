@@ -30,6 +30,8 @@ class TestHostExtension implements HostExtension {
     this.qualificationExecutable,
   });
 
+  _TestOmpGrace? _ompGrace;
+
   static Future<T> _awaitOmpClose<T>(Future<T> event, Duration _) => event;
 
   /// Options from `KUMIKO_TEST_*` variables, which make timing deterministic:
@@ -42,6 +44,8 @@ class TestHostExtension implements HostExtension {
   /// `lifecycle` capability.
   /// `KUMIKO_TEST_OMP_CLOSE_AWAITS_PEER=1` suspends the grace timer in
   /// tests with an outer hang guard and explicit terminal and process-exit events.
+  /// `KUMIKO_TEST_OMP_CLOSE_MANUAL=1` uses the same waits but allows an
+  /// integration test to expire them explicitly after native EOF.
   ///
   /// A test host runs a 2-minute draft deadline when `DRAFT_DEADLINE_MS` is
   /// missing: a hang guard, not a bound under test. A test that needs the
@@ -69,6 +73,9 @@ class TestHostExtension implements HostExtension {
     final runtimePath = env['KUMIKO_TEST_RUNTIME_PATH'];
     final candidates = env['KUMIKO_TEST_QUALIFIED_ADAPTERS'];
     final failures = env['KUMIKO_TEST_TOOL_DELIVERY_FAILURES'];
+    final ompGrace = env['KUMIKO_TEST_OMP_CLOSE_MANUAL'] == '1'
+        ? _TestOmpGrace()
+        : null;
     return TestHostExtension(
       qualificationNativeHome: env['KUMIKO_TEST_CODEX_AUDIT_HOME'],
       qualificationExecutable:
@@ -144,9 +151,11 @@ class TestHostExtension implements HostExtension {
         consoleCloseTimeout:
             millis('CONSOLE_CLOSE_TIMEOUT_MS') ??
             HostOptions.defaultConsoleCloseTimeout,
-        limitOmpClose: env['KUMIKO_TEST_OMP_CLOSE_AWAITS_PEER'] == '1'
-            ? _awaitOmpClose
-            : const HostOptions().limitOmpClose,
+        limitOmpClose:
+            ompGrace?.limit ??
+            (env['KUMIKO_TEST_OMP_CLOSE_AWAITS_PEER'] == '1'
+                ? _awaitOmpClose
+                : const HostOptions().limitOmpClose),
         toolEndpointFault: env['KUMIKO_TEST_TOOL_ENDPOINT_FAULT'],
         revokedSecretsKept:
             number('REVOKED_SECRETS_KEPT') ??
@@ -172,7 +181,7 @@ class TestHostExtension implements HostExtension {
                   )),
         },
       ),
-    );
+    ).._ompGrace = ompGrace;
   }
 
   static const Duration _draftHangGuard = Duration(minutes: 2);
@@ -307,6 +316,9 @@ class TestHostExtension implements HostExtension {
           'activityReads': host.faults.activityReads,
           'inputBuffers': host.terminals.inputBufferSnapshot(),
         };
+      case 'test/omp.expireGrace':
+        EmptyParams.fromJson(params);
+        return {'expired': _ompGrace?.expire() ?? 0};
       case 'test/draft.stats':
         EmptyParams.fromJson(params);
         return host.agents.draftSnapshot();
@@ -368,6 +380,28 @@ class TestHostExtension implements HostExtension {
 
   /// Test channels' producers by channel id, for `test/channel.stats`.
   final Map<int, _Producer> _producers = {};
+}
+
+final class _TestOmpGrace {
+  final _blocked = <Completer<Never>>{};
+
+  Future<T> limit<T>(Future<T> event, Duration _) async {
+    final release = Completer<Never>();
+    _blocked.add(release);
+    try {
+      return await Future.any<T>([event, release.future]);
+    } finally {
+      _blocked.remove(release);
+    }
+  }
+
+  int expire() {
+    final pending = _blocked.where((wait) => !wait.isCompleted).toList();
+    for (final wait in pending) {
+      wait.completeError(TimeoutException('manually expired OMP close grace'));
+    }
+    return pending.length;
+  }
 }
 
 SpawnIdentityForTesting? _spawnIdentity(String? value) => switch (value) {

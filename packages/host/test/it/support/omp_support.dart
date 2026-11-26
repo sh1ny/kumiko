@@ -47,11 +47,13 @@ class OmpFixture {
     Map<String, String> profileEnvironment = const {},
     List<String>? profileArgs,
     String? executable,
+    Duration? quitTimeout,
   }) async {
     writeScript();
     desktop = await Desktop.start(
       profile,
       capabilities: {...testCapabilities, ...caps},
+      quitTimeout: quitTimeout ?? defaultQuitTimeout,
       environment: {
         'KUMIKO_TEST_RUNTIME_PATH': '',
         'KUMIKO_TEST_SHELL_PATH': '',
@@ -88,7 +90,13 @@ class OmpFixture {
     return peer;
   }
 
-  List<Json> get reports => fixtureReports(report);
+  List<Json> get reports => script['isolateReports'] != true
+      ? fixtureReports(report)
+      : [
+          for (final file in report.parent.listSync().whereType<File>())
+            if (file.path.startsWith('${report.path}.'))
+              ...fixtureReports(file),
+        ];
 
   List<Json> get commands => [
     for (final row in reports)

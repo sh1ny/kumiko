@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 
+import 'package:desktop/src/agent/agent_controller.dart' show agentCloseWarning;
 import 'package:domain/domain.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -273,6 +274,54 @@ void main() {
     return host;
   }
 
+  uiTest('OMP: Saved parent shows a previous unconfirmed save', (tester) async {
+    final host = savedOmp(history: true);
+    host.agentRecordMap['saved'] = AgentRecord.fromJson({
+      'known': true,
+      'workspaceAvailable': true,
+      'historyUnconfirmed': 'nativeExitNonzero',
+    });
+    final rig = await pumpRig(tester, host);
+    expect(
+      find.text(
+        'OMP history save was not confirmed: OMP exited with an error.',
+      ),
+      findsOneWidget,
+    );
+    expect(agents(rig).linkOf('saved-pane')!.canContinue, isTrue);
+    expect(host.agentStarts, isEmpty);
+    expect(host.agentContinues, isEmpty);
+  });
+
+  uiTest('OMP: A close warning survives dismissal of the agent pane', (
+    tester,
+  ) async {
+    final host = _host(supportsHistory: true);
+    final rig = await _chat(tester, host);
+    final root = chat(rig);
+    final id = session(rig);
+    await tester.tap(key('close-pane-${root.id}'));
+    await flush(tester);
+    expect(host.agentCloses, [id]);
+    expect(find.text(agentCloseWarning), findsNothing);
+    host.agentExitSource.add(
+      AgentExitedParams.fromJson({
+        'sessionId': id,
+        'reason': 'closed',
+        'eventCount': 0,
+        'historyUnconfirmed': 'nativeExitNonzero',
+      }),
+    );
+    await flush(tester);
+    expect(rig.layout.pane(root.id), isNull);
+    expect(
+      find.text(
+        'OMP history save was not confirmed: OMP exited with an error.',
+      ),
+      findsOneWidget,
+    );
+  });
+
   for (final history in [false, true]) {
     uiTest(
       'OMP: ${history ? 'Missing locator' : 'Old peer'} disables Continue before a request',
@@ -370,6 +419,60 @@ void main() {
   }
 
   const queued = AgentChildHistoryResult(AgentChildHistoryStatus.queued);
+
+  for (final incomplete in [false, true]) {
+    uiTest(
+      incomplete ? 'OMP: Unsettled idle chat warns before close' : 'OMP: Close idle root with running child; work may end before confirmation',
+      (tester) async {
+        final host = _host(supportsHistory: true);
+        final rig = await children(tester, host, incomplete ? 0 : 1);
+        final id = session(rig);
+        final root = chat(rig);
+        if (incomplete) {
+          host.agentStateSource.add(
+            AgentStateParams(
+              sessionId: id,
+              seq: 11,
+              state: AgentState.idle,
+              runId: run,
+              delegated: const AgentDelegated(incomplete: true),
+            ),
+          );
+          await flush(tester);
+        }
+        await tester.tap(key('close-pane-${root.id}'));
+        await flush(tester);
+        expect(key('close-warning'), findsOneWidget);
+        expect(
+          inside(
+            'close-warning',
+            find.textContaining(
+              incomplete ? 'OMP may still be working' : '1 active child',
+            ),
+          ),
+          findsOneWidget,
+        );
+        expect(host.agentCloses, isEmpty);
+        host.agentStateSource.add(
+          AgentStateParams(
+            sessionId: id,
+            seq: 12,
+            state: AgentState.idle,
+            runId: run,
+            delegated: const AgentDelegated(),
+          ),
+        );
+        await flush(tester);
+        await tester.tap(key('close-warning-confirm'));
+        await flush(tester);
+        expect(host.agentCloses, [id]);
+        expect(host.agentStops, isEmpty);
+        host.agentExit(id);
+        await flush(tester);
+        expect(rig.layout.pane(root.id), isNull);
+      },
+    );
+  }
 
   uiTest(
     'OMP: Child pane opens within its parent tab and moves and closes without stopping work',
