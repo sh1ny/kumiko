@@ -796,7 +796,7 @@ class OmpRuntimeDriver extends RuntimeDriver {
     final lines = <Uint8List>[];
     for (final event in children.receive(type, payload, (key, ticket, result) {
       _cancelledChildren.remove(key);
-      onNativeTurnEnded?.call(key, ticket, result);
+      if (result != null) onNativeTurnEnded?.call(key, ticket, result);
     })) {
       if (!draining) lines.addAll(encodeAgentEvent(event));
     }

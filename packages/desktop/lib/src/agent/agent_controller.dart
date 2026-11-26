@@ -152,9 +152,20 @@ class AgentLink {
   AgentState state = AgentState.ended;
   AgentDelegated? delegated;
   bool get delegatedWork => delegated?.hasWork ?? false;
-  String? get delegatedLabel => delegated == null
-      ? null
-      : 'Delegated activity: ${delegated!.activeChildren} active child${delegated!.activeChildren == 1 ? "" : "ren"}, ${delegated!.waitingRequests} waiting requests${delegated!.incomplete ? "; incomplete" : ""}${delegated!.nativeWork ? "; OMP still working" : ""}${delegated!.childVisibilityUnavailable ? "; subagent activity unavailable" : ""}';
+  String? get delegatedLabel {
+    final activity = delegated;
+    if (activity == null) return null;
+    final uncertainty =
+        runtimeKind == 'omp' && (activity.incomplete || activity.nativeWork)
+        ? '; OMP may still be working'
+        : activity.incomplete
+        ? '; incomplete'
+        : '';
+    final count = activity.activeChildren;
+    return 'Delegated activity: $count active child${count == 1 ? '' : 'ren'}, '
+        '${activity.waitingRequests} waiting requests$uncertainty'
+        '${activity.childVisibilityUnavailable ? '; subagent activity unavailable' : ''}';
+  }
 
   /// Stores this session's composer text on the host (design D3).
   late final DraftSaver draft;
@@ -1964,9 +1975,6 @@ class AgentController extends ChangeNotifier implements ViewCloser {
   String? exitWork(String paneId) {
     final link = _links[paneId];
     if (link == null || !_warnsOnClose(paneId)) return null;
-    if (link.runtimeKind == 'omp' && link.delegated?.incomplete == true) {
-      return 'OMP may still be working. ${link.delegatedLabel}';
-    }
     if (link.delegatedWork) return link.delegatedLabel;
     if (link.state == AgentState.waitingApproval) {
       return 'waiting for a permission reply';

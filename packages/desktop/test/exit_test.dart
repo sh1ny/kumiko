@@ -428,6 +428,14 @@ void main() {
       );
       await flush(tester);
       expect(_item(root.paneId), findsOneWidget);
+      expect(
+        inside(
+          'exit-item-${root.paneId}',
+          find.textContaining('OMP may still be working'),
+        ),
+        findsOneWidget,
+        reason: 'native work remains after the parent yields',
+      );
       _ompState(env, root, 8);
       await flush(tester);
       expect(_item(root.paneId), findsNothing);

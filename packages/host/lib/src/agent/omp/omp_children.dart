@@ -117,7 +117,7 @@ final class OmpChildren {
   Iterable<AgentEvent> receive(
     String type,
     Object? body,
-    void Function(String key, String ticket, RuntimeTurnResult result) onEnded,
+    void Function(String key, String ticket, RuntimeTurnResult? result) onEnded,
   ) sync* {
     if (body is! Json) {
       incomplete = true;
@@ -185,14 +185,17 @@ final class OmpChildren {
       }
       return;
     }
-    if (!child.active || !_mergeIdentity(child, body)) return;
+    if (!child.active) return;
     final ticket = child.ticket;
-    child.status = status! as String;
-    active--;
-    _completed.add(id);
-    if (_completed.length > _completedLimit) {
-      _byNativeId.remove(_completed.removeFirst());
+    if (!_mergeIdentity(child, body)) {
+      // Reclaim the slot, but never use this frame to prove which activation
+      // ended. Keep the quarantined key and uncertainty until native settlement.
+      _retire(child, 'unknown');
+      onEnded(child.key, ticket, null);
+      if (views && attached) yield lifecycle(child);
+      return;
     }
+    _retire(child, status! as String);
     if (views && attached) {
       for (final event in _tools.finish(scope: child.key)) {
         yield event.forOmpChild(rootId: runId, childKey: child.key);
@@ -210,12 +213,24 @@ final class OmpChildren {
     });
   }
 
+  void _retire(OmpChild child, String status) {
+    child.status = status;
+    active--;
+    _completed.add(child.id);
+    if (_completed.length > _completedLimit) {
+      _byNativeId.remove(_completed.removeFirst());
+    }
+  }
+
   OmpChild? _observe(String id, Json facts, {required bool allowRevive}) {
     final existing = _byNativeId[id];
     if (existing != null) {
       if (!existing.active && !allowRevive) return null;
       final formerFile = existing.file;
-      if (!_mergeIdentity(existing, facts)) return existing;
+      if (!_mergeIdentity(existing, facts)) {
+        if (allowRevive) incomplete = true;
+        return existing;
+      }
       if (existing.active) return existing;
       // An id alone is not proof a later activation is the same child.
       if (formerFile == null ||

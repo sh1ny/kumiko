@@ -273,6 +273,62 @@ void main() {
     expect(settled, isTrue);
   }, timeout: const Timeout(Duration(minutes: 2)));
 
+  for (final conflictBeforeEnd in [false, true]) {
+    test(
+      'OMP: A terminal conflict releases an active slot without confirming Stop ($conflictBeforeEnd)',
+      () async {
+        final id = await prompt();
+        peer.send(lifecycle('worker', 'started'));
+        peer.send({
+          'type': 'prompt_result',
+          'id': id,
+          'status': 'completed',
+          'sessionSettled': false,
+        });
+        await turnFinished.future;
+        session.stop();
+        for (final command in peer.writes.where(
+          (c) => c['type'] == 'abort' || c['type'] == 'cancel_subagent',
+        )) {
+          peer.result(command['id']! as String, {'cancelled': true});
+        }
+        if (conflictBeforeEnd) {
+          peer.send(lifecycle('worker', 'started', locator: file('different')));
+        }
+        peer.send(lifecycle('worker', 'aborted', locator: file('different')));
+        await barrier();
+        expect(states.last.delegated?.activeChildren, 0);
+        expect(states.last.delegated?.incomplete, isTrue);
+        expect(
+          events.lastWhere((e) => e['kind'] == 'child')['status'],
+          'unknown',
+        );
+        expect(stopped, isEmpty);
+
+        final quiesced = driver.waitForCloseQuiescence();
+        expect(quiesced, isNotNull);
+        peer.send({'type': 'session_settled'});
+        await quiesced!;
+        expect(states.last.delegated?.hasWork, isFalse);
+        expect(
+          stopped,
+          isEmpty,
+          reason: 'a conflicting terminal frame did not identify the ticket',
+        );
+        deadline.fire();
+        expect(stopped.single.outcome, AgentStopOutcome.notConfirmed);
+
+        for (var i = 0; i < 16; i++) {
+          peer.send(lifecycle('replacement-$i', 'started'));
+        }
+        await barrier();
+        expect(states.last.delegated?.activeChildren, 16);
+        expect(states.last.delegated?.incomplete, isFalse);
+      },
+      timeout: const Timeout(Duration(minutes: 2)),
+    );
+  }
+
   for (final finish in ['aborted', 'completed']) {
     test(
       'OMP: Root Stop waits for the addressed child terminal cancellation ($finish)',
