@@ -14,10 +14,14 @@ const _enter = LogicalKeyboardKey.enter;
 const _up = LogicalKeyboardKey.arrowUp;
 const _shift = LogicalKeyboardKey.shiftLeft;
 
-void _windowsTest(String name, Future<void> Function(WidgetTester) body) {
+void _platformTest(
+  String name,
+  Future<void> Function(WidgetTester) body, {
+  TargetPlatform platform = TargetPlatform.windows,
+}) {
   uiTest(name, (tester) async {
     final previous = debugDefaultTargetPlatformOverride;
-    debugDefaultTargetPlatformOverride = TargetPlatform.windows;
+    debugDefaultTargetPlatformOverride = platform;
     try {
       await body(tester);
     } finally {
@@ -112,7 +116,7 @@ Future<void> _sendByButton(WidgetTester tester, Rig rig, String text) async {
 void main() {
   for (final kind in ['claude-code', 'codex', 'omp']) {
     group(kind, () {
-      _windowsTest('Enter sends the draft once', (tester) async {
+      _platformTest('Enter sends the draft once', (tester) async {
         final host = _runtimeHost(kind);
         final rig = await _open(tester, host, kind: kind);
         const text = '  first\nsecond  ';
@@ -144,7 +148,7 @@ void main() {
     });
   }
 
-  _windowsTest('Enter leaves blank and streaming drafts untouched', (
+  _platformTest('Enter leaves blank and streaming drafts untouched', (
     tester,
   ) async {
     final host = agentHost();
@@ -177,45 +181,97 @@ void main() {
     expect(host.agentPrompts.map((p) => p.text), ['first', 'next']);
   });
 
-  _windowsTest('Enter leaves IME confirmation to the input method', (
+  const nonWindows = [TargetPlatform.linux, TargetPlatform.macOS];
+  for (final platform in [TargetPlatform.windows, ...nonWindows]) {
+    group(platform.name, () {
+      _platformTest('Enter leaves IME confirmation to the input method', (
+        tester,
+      ) async {
+        final host = agentHost();
+        final rig = await _open(tester, host);
+        await tester.showKeyboard(_prompt(rig));
+        const composing = TextEditingValue(
+          text: 'nihon',
+          selection: TextSelection.collapsed(offset: 5),
+          composing: TextRange(start: 0, end: 5),
+        );
+        tester.testTextInput.updateEditingValue(composing);
+        await tester.pump();
+        final keyPlatform = platform.name.toLowerCase();
+        // Windows would insert a newline for unclaimed raw Enter. GTK and
+        // AppKit need the unclaimed key for their input methods.
+        final claimsRawEnter = platform == TargetPlatform.windows;
+        expect(
+          await tester.sendKeyEvent(_enter, platform: keyPlatform),
+          claimsRawEnter,
+        );
+        await tester.pump();
+        await tester.sendKeyDownEvent(_shift, platform: keyPlatform);
+        try {
+          expect(
+            await tester.sendKeyEvent(_enter, platform: keyPlatform),
+            claimsRawEnter,
+          );
+        } finally {
+          await tester.sendKeyUpEvent(_shift, platform: keyPlatform);
+        }
+        await tester.pump();
+        expect(host.agentPrompts, isEmpty);
+        expect(_value(tester, rig), composing);
+
+        tester.testTextInput.updateEditingValue(
+          const TextEditingValue(
+            text: '日本',
+            selection: TextSelection.collapsed(offset: 2),
+          ),
+        );
+        await tester.pump();
+        await tester.sendKeyEvent(_enter, platform: keyPlatform);
+        await tester.pump();
+        expect(host.agentPrompts.map((p) => p.text), ['日本']);
+      }, platform: platform);
+    });
+  }
+
+  _platformTest('Modified Enter does not send or claim the key', (
     tester,
   ) async {
     final host = agentHost();
     final rig = await _open(tester, host);
-    await tester.showKeyboard(_prompt(rig));
-    const composing = TextEditingValue(
-      text: 'nihon',
-      selection: TextSelection.collapsed(offset: 5),
-      composing: TextRange(start: 0, end: 5),
-    );
-    tester.testTextInput.updateEditingValue(composing);
-    await tester.pump();
-    // An unhandled raw Windows Enter would fall through to the engine's
-    // multiline newline path. IME-processed keys never reach this handler.
-    expect(await tester.sendKeyEvent(_enter, platform: 'windows'), isTrue);
-    await tester.pump();
-    await tester.sendKeyDownEvent(_shift, platform: 'windows');
-    try {
-      expect(await tester.sendKeyEvent(_enter, platform: 'windows'), isTrue);
-    } finally {
-      await tester.sendKeyUpEvent(_shift, platform: 'windows');
+    await tester.enterText(_prompt(rig), 'draft');
+    for (final modifier in [
+      LogicalKeyboardKey.controlLeft,
+      LogicalKeyboardKey.altLeft,
+      LogicalKeyboardKey.metaLeft,
+    ]) {
+      await tester.sendKeyDownEvent(modifier, platform: 'windows');
+      try {
+        expect(await tester.sendKeyEvent(_enter, platform: 'windows'), isFalse);
+      } finally {
+        await tester.sendKeyUpEvent(modifier, platform: 'windows');
+      }
+      await tester.pump();
+      expect(host.agentPrompts, isEmpty);
+      expect(_value(tester, rig).text, 'draft');
     }
-    await tester.pump();
-    expect(host.agentPrompts, isEmpty);
-    expect(_value(tester, rig), composing);
-
-    tester.testTextInput.updateEditingValue(
-      const TextEditingValue(
-        text: '日本',
-        selection: TextSelection.collapsed(offset: 2),
-      ),
-    );
-    await tester.pump();
     await _press(tester, _enter);
-    expect(host.agentPrompts.map((p) => p.text), ['日本']);
+    expect(host.agentPrompts.single.text, 'draft');
   });
 
-  _windowsTest('Shift+Enter replaces the selection with a line break', (
+  _platformTest('Numpad Enter sends the draft', (tester) async {
+    final host = agentHost();
+    final rig = await _open(tester, host);
+    await tester.enterText(_prompt(rig), 'keypad draft');
+    // Flutter's Linux test key map distinguishes keypad and main Enter.
+    await tester.sendKeyEvent(
+      LogicalKeyboardKey.numpadEnter,
+      platform: 'linux',
+    );
+    await tester.pump();
+    expect(host.agentPrompts.single.text, 'keypad draft');
+  }, platform: TargetPlatform.linux);
+
+  _platformTest('Shift+Enter replaces the selection with a line break', (
     tester,
   ) async {
     final host = agentHost();
@@ -244,7 +300,7 @@ void main() {
     expect(host.agentPrompts.single.text, 'a\nd');
   });
 
-  _windowsTest('Up recalls only the latest accepted prompt', (tester) async {
+  _platformTest('Up recalls only the latest accepted prompt', (tester) async {
     final host = agentHost();
     final rig = await _open(tester, host);
     await _sendByButton(tester, rig, 'older');
@@ -261,7 +317,7 @@ void main() {
     expect(host.agentPrompts.map((p) => p.text), ['older', 'last\nprompt']);
   });
 
-  _windowsTest('Up skips a host-refused prompt', (tester) async {
+  _platformTest('Up skips a host-refused prompt', (tester) async {
     final host = agentHost();
     final rig = await _open(tester, host);
     await _sendByButton(tester, rig, 'accepted');
@@ -285,7 +341,7 @@ void main() {
     expect(host.agentPrompts.map((p) => p.text), ['accepted', 'refused']);
   });
 
-  _windowsTest('Up does not reuse another conversation or restored history', (
+  _platformTest('Up does not reuse another conversation or restored history', (
     tester,
   ) async {
     const restored = 'restored';
@@ -335,7 +391,7 @@ void main() {
     expect(_value(tester, rig).text, 'other conversation');
   });
 
-  _windowsTest('Up uses native caret movement when the draft is nonempty', (
+  _platformTest('Up uses native caret movement when the draft is nonempty', (
     tester,
   ) async {
     final host = agentHost();
