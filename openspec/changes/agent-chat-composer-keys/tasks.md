@@ -26,7 +26,14 @@ Widget verification for 1.2 and 1.3: Enter, Shift+Enter, recall, and the Windows
 
 ## 2. Native Windows IME verification
 
-- [ ] 2.1 [user] On the Windows release build for this PR, verify A1 with Microsoft Japanese IME and Microsoft Pinyin. Confirm a candidate with Enter and observe no send and no line break. Press Enter again and observe one send. Record both IMEs, the Windows build, the tested commit, and each outcome before archive.
+- [x] 2.1 [user] On the Windows release build for this PR, verify A1 with Microsoft Japanese IME and Microsoft Pinyin. Confirm a candidate with Enter and observe no send and no line break. Press Enter again and observe one send. Record both IMEs, the Windows build, the tested commit, and each outcome before archive.
+
+The owner tested the [Windows CI release artifact](https://github.com/sh1ny/kumiko/actions/runs/45815090122/artifacts/15117230855) at `076fe312b0de69058e604ecc42b11355f5fe17dc` on their own PC. Windows 11 Pro 26H2, build 26300.9974, was read from the registry. The owner authorized recording their result and ticking this task (Ormy item 83, event `e2539`).
+
+| Input method | Owner's result |
+|---|---|
+| Microsoft Japanese IME | Passed. Enter confirmed the candidate without sending; a second Enter sent once. |
+| Microsoft Pinyin | Passed. Enter confirmed the candidate without sending; a second Enter sent once. |
 
 ## Workflow follow-up
 
