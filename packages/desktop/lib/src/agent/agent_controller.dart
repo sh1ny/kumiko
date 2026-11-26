@@ -142,7 +142,7 @@ class AgentLink {
   bool get delegatedWork => delegated?.hasWork ?? false;
   String? get delegatedLabel => delegated == null
       ? null
-      : 'Delegated activity: ${delegated!.activeChildren} active child${delegated!.activeChildren == 1 ? "" : "ren"}, ${delegated!.waitingRequests} waiting requests${delegated!.incomplete ? "; incomplete" : ""}';
+      : 'Delegated activity: ${delegated!.activeChildren} active child${delegated!.activeChildren == 1 ? "" : "ren"}, ${delegated!.waitingRequests} waiting requests${delegated!.incomplete ? "; incomplete" : ""}${delegated!.nativeWork ? "; OMP still working" : ""}${delegated!.childVisibilityUnavailable ? "; subagent activity unavailable" : ""}';
 
   /// Stores this session's composer text on the host (design D3).
   late final DraftSaver draft;
@@ -628,6 +628,12 @@ class AgentController extends ChangeNotifier implements ViewCloser {
               q.request.parentThreadId == null &&
               q.request.turnId != event.turnId,
         );
+      }
+      if (link.runtimeKind == 'omp' &&
+          link._ompHistoryNegotiated &&
+          event.runId != null) {
+        if (link.runId != null && link.runId != event.runId) return;
+        link.runId = event.runId;
       }
       link.seq = event.seq;
       link.state = event.state;
@@ -1325,11 +1331,15 @@ class AgentController extends ChangeNotifier implements ViewCloser {
     link.hostLost = false;
     _bySession[link.sessionId!] = link;
     link._events = host
-        .attachAgent(link.sessionId!, channel)
+        .attachAgent(link.sessionId!, channel, omp: link.runtimeKind == 'omp')
         .listen(
           (event) {
             if (!_current(host, generation) || !_owns(link)) return;
-            link.transcript.add(event);
+            if (link.runtimeKind != 'omp' ||
+                !event.isChild ||
+                event.kind == AgentEventKind.child) {
+              link.transcript.add(event);
+            }
             link._receivedEvents++;
             // The host put a natively rejected steer back in the stored
             // draft; an unedited composer shows it again.

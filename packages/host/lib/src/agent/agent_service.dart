@@ -1246,6 +1246,9 @@ class AgentService {
           stage = 'session';
           final native = await driver.newSession(target.path);
           _available();
+          stage = 'subagents';
+          await driver.configureChildren(views: _ompHistoryPeer);
+          _available();
           stage = 'tools/config';
           final reason = await _configureOmpTools(driver, adapter);
           if (driver.isClosed) {
@@ -1273,6 +1276,9 @@ class AgentService {
           'resume',
           if (mode == AgentContinueMode.load) 'load',
         ], null);
+        _available();
+        stage = 'subagents';
+        await driver.configureChildren(views: _ompHistoryPeer);
         _available();
         stage = 'tools/config';
         toolsUnavailableReason = await _configureOmpTools(
@@ -1500,7 +1506,11 @@ class AgentService {
     a.session = AgentSession(
       sessionId: record.id,
       driver: io.client,
-      runId: record.runtimeKind == 'codex' ? a.runId : null,
+      runId:
+          record.runtimeKind == 'codex' ||
+              (record.runtimeKind == 'omp' && _ompHistoryPeer)
+          ? a.runId
+          : null,
       claims: claims,
       nativeSessionId: record.nativeSessionId,
       tools: toolsUnavailableReason != null
@@ -1686,7 +1696,17 @@ class AgentService {
       Future<void>(() {
         if (!_current(a)) return;
         a.session.publishState();
-        if (a.mode != null && !a.ending && !a.exited) unawaited(_restore(a));
+        if (!a.ending && !a.exited) {
+          if (a.mode != null) {
+            unawaited(_restore(a));
+          } else if (a.io.client case final OmpRuntimeDriver driver) {
+            unawaited(
+              driver.attachChildren().onError((Object error, _) async {
+                if (_current(a) && !a.ending) await _finishFailure(a, error);
+              }),
+            );
+          }
+        }
         final exit = a.exitNotification;
         if (earlyExit && exit != null) {
           _notify(a, Method.agentExited, exit.toJson());
@@ -1712,6 +1732,8 @@ class AgentService {
           );
         }
         await a.relay.flush();
+        if (!_current(a) || a.ending) return;
+        await driver.attachChildren();
       } else if (a.mode == AgentContinueMode.load) {
         await a.session.replayStarted();
         if (!_current(a) || a.ending) return;
@@ -1739,6 +1761,33 @@ class AgentService {
     } on Object catch (error) {
       if (_current(a) && !a.ending) await _finishFailure(a, error);
     }
+  }
+
+  Future<AgentChildHistoryResult> childHistory(AgentChildHistoryParams params) {
+    requireOmpCapabilities(connection.negotiated!.capabilities);
+    final a = _requireRun(params.sessionId, params.runId);
+    final driver = a.io.client;
+    if (driver is! OmpRuntimeDriver || !_ompHistoryPeer) {
+      throw RpcException(
+        ErrorCode.methodNotAvailable,
+        'OMP child history is unavailable.',
+      );
+    }
+    return driver.childHistory(
+      params,
+      inspect: (path) => workspaces.resolver.inspect<int?>(
+        () => inspectOmpChildFile(path),
+        busy: null,
+        timedOut: null,
+      ),
+      current: () =>
+          _current(a) &&
+          !a.ending &&
+          !a.exited &&
+          a.attached &&
+          !a.consumerClosed &&
+          !a.restoring,
+    );
   }
 
   /// Validates, commits the removal of the draft the prompt carries, and only
@@ -1854,6 +1903,10 @@ class AgentService {
 
   _Agent _extensionRun(String sessionId, String runId) {
     _requireCodexPeer();
+    return _requireRun(sessionId, runId);
+  }
+
+  _Agent _requireRun(String sessionId, String runId) {
     final a = _require(sessionId);
     if (a.ending || a.runId != runId) {
       throw RpcException(

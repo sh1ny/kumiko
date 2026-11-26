@@ -135,6 +135,8 @@ void main() {
     expect(fixture.commands.map((c) => c['type']), [
       'set_event_filter',
       'get_state',
+      'set_subagent_subscription',
+      'get_subagents',
       'set_host_tools',
     ]);
     expect(fixture.commands.first['events'], isNull);
@@ -1141,6 +1143,180 @@ void main() {
     timeout: const Timeout(Duration(minutes: 4)),
   );
 
+  test('OMP: Older peer starts with conservative delegated activity and no child frames', () async {
+    final fixture = await openFixture(
+      script: {
+        'commands': {
+          'get_subagents': [
+            [
+              accepted({
+                'subagents': [
+                  {'id': 'native-worker', 'status': 'running'},
+                ],
+              }),
+            ],
+          ],
+        },
+      },
+    );
+    final root = await fixture.start();
+    final state = await root.wait(
+      Method.agentState,
+      where: (state) => state['state'] == 'idle',
+      within: guard,
+    );
+    expect(AgentStateParams.fromJson(state).delegated?.activeChildren, 1);
+    expect(state['runId'], isNull);
+    expect(root.events.where((event) => event['threadId'] != null), isEmpty);
+  });
+
+  test(
+    'OMP: Child history waits for credit without blocking control',
+    () async {
+      final profile = tempDir('omp_child_credit_profile');
+      final work = tempDir('omp_child_credit_work');
+      addTearDown(() => deleteTree(profile));
+      addTearDown(() => deleteTree(work));
+      final childFile = File(joinPath(work.path, 'child-private.jsonl'));
+      final header = {
+        'type': 'session',
+        'id': 'child-native-session',
+        'cwd': work.path,
+      };
+      final entry = {
+        'type': 'message',
+        'message': {
+          'role': 'assistant',
+          'content': [
+            {'type': 'text', 'text': 'earlier subagent answer'},
+          ],
+        },
+      };
+      childFile.writeAsStringSync(
+        '${jsonEncode(header)}\n${jsonEncode(entry)}\n',
+      );
+      final fixture = OmpFixture(
+        profile,
+        work,
+        script: {
+          'commands': {
+            'get_subagents': [
+              [
+                accepted({
+                  'subagents': [
+                    {
+                      'id': 'worker',
+                      'status': 'running',
+                      'sessionFile': childFile.path,
+                    },
+                  ],
+                }),
+              ],
+            ],
+            'get_subagent_messages': [
+              [
+                accepted({
+                  'sessionFile': childFile.path,
+                  'fromByte': 0,
+                  'nextByte': childFile.lengthSync(),
+                  'reset': false,
+                  'entries': [header, entry],
+                }),
+              ],
+            ],
+            'prompt': [
+              [
+                accepted(),
+                for (var n = 0; n < 8; n++)
+                  delta('x' * (64 * 1024), id: 'credit$n'),
+              ],
+            ],
+          },
+        },
+      );
+      await fixture.open(caps: {...ompCaps, 'omp-history'});
+      final root = await fixture.start();
+      final state = await root.wait(
+        Method.agentState,
+        where: (s) => s['state'] == 'idle',
+        within: guard,
+      );
+      expect(state['runId'], isA<String>());
+      await eventually(
+        () => root.events.any((e) => e['kind'] == 'child'),
+        within: guard,
+        reason: 'no child opened on the root channel',
+      );
+      final childKey = root.events.singleWhere(
+        (e) => e['kind'] == 'child',
+      )['threadId'];
+      root.data!.pause();
+      try {
+        await root.prompt();
+        await eventually(
+          () async {
+            final stats = await root.call('test/agent.stats', {});
+            final rootStats = (stats['sessions'] as Json)[root.id] as Json;
+            return rootStats['channelQueuedBytes'] == channelWindow;
+          },
+          within: guard,
+          reason: 'root channel did not exhaust desktop credit',
+        );
+        final request = {
+          'sessionId': root.id,
+          'runId': state['runId'],
+          'childKey': childKey,
+          'viewToken': 'current-view',
+        };
+        await expectLater(
+          root.call('agent/childHistory', {
+            ...request,
+            'runId': 'previous-run',
+          }),
+          rpcCode(ErrorCode.staleRun),
+        );
+        expect(
+          fixture.commands.where((c) => c['type'] == 'get_subagent_messages'),
+          isEmpty,
+        );
+        final result = await root.call('agent/childHistory', request);
+        expect(result, containsPair('status', 'queued'));
+        expect(jsonEncode(result), isNot(contains(childFile.path)));
+        expect(
+          root.events.where((event) => event['viewToken'] == 'current-view'),
+          isEmpty,
+        );
+        final records = await root.call(Method.agentRecords, {
+          'sessionIds': [root.id],
+        });
+        expect(records['records'], contains(root.id));
+      } finally {
+        root.data!.resume();
+      }
+      await eventually(
+        () => root.events.any(
+          (e) => e['viewToken'] == 'current-view' && e['phase'] == 'end',
+        ),
+        within: guard,
+        reason: 'child history did not follow the root credit',
+      );
+      final replay = root.events.where((e) => e['viewToken'] == 'current-view');
+      expect(replay.map((e) => e['threadId']), everyElement(childKey));
+      expect(replay.map((e) => e['text']), contains('earlier subagent answer'));
+      expect(
+        jsonEncode(replay.toList()),
+        isNot(contains('child-private.jsonl')),
+      );
+      expect(
+        fixture.commands.singleWhere(
+          (c) => c['type'] == 'get_subagent_messages',
+        ),
+        containsPair('sessionFile', childFile.path),
+      );
+    },
+    timeout: const Timeout(Duration(minutes: 4)),
+  );
+
   test('OMP: Admission precedes output', () async {
     final fixture = await turns([
       [
@@ -1501,10 +1677,12 @@ void main() {
     await peer.call(Method.agentStop);
     await sending;
     expect((await peer.wait(Method.agentStopResult))['outcome'], 'stopped');
-    expect(fixture.commands.map((c) => c['type']).toList().sublist(3), [
-      'prompt',
-      'abort',
-    ]);
+    expect(
+      fixture.commands
+          .map((c) => c['type'])
+          .skipWhile((type) => type != 'prompt'),
+      ['prompt', 'abort'],
+    );
   });
 
   test(

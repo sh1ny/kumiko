@@ -55,6 +55,7 @@ abstract final class Method {
   static const String runtimeSetDefault = 'runtime/setDefault';
   static const String agentStart = 'agent/start';
   static const String agentContinue = 'agent/continue';
+  static const String agentChildHistory = 'agent/childHistory';
   static const String agentAttach = 'agent/attach';
   static const String agentPrompt = 'agent/prompt';
   static const String agentSteer = 'agent/steer';
@@ -131,6 +132,7 @@ const Map<String, String> methodCapability = {
   Method.runtimeSetDefault: Capability.agent,
   Method.agentStart: Capability.agent,
   Method.agentContinue: Capability.agent,
+  Method.agentChildHistory: Capability.ompHistory,
   Method.agentAttach: Capability.agent,
   Method.agentPrompt: Capability.agent,
   Method.agentSteer: Capability.agentExtensionsV1,
@@ -2046,6 +2048,60 @@ class AgentStartResult {
   };
 }
 
+const maxAgentChildKeyBytes = 128;
+
+class AgentChildHistoryParams {
+  const AgentChildHistoryParams({
+    required this.sessionId,
+    required this.runId,
+    required this.childKey,
+    required this.viewToken,
+  });
+  factory AgentChildHistoryParams.fromJson(Json json) {
+    String key(String name) {
+      final value = _req<String>(json, name);
+      if (value.isEmpty ||
+          value.length > maxAgentChildKeyBytes ||
+          jsonStringContentBytes(value) > maxAgentChildKeyBytes) {
+        throw RpcException(
+          ErrorCode.invalidParams,
+          'invalid child history $name',
+        );
+      }
+      return value;
+    }
+
+    return AgentChildHistoryParams(
+      sessionId: key('sessionId'),
+      runId: key('runId'),
+      childKey: key('childKey'),
+      viewToken: key('viewToken'),
+    );
+  }
+
+  final String sessionId, runId, childKey, viewToken;
+  Json toJson() => {
+    'sessionId': sessionId,
+    'runId': runId,
+    'childKey': childKey,
+    'viewToken': viewToken,
+  };
+}
+
+enum AgentChildHistoryStatus { queued, unavailable }
+
+class AgentChildHistoryResult {
+  const AgentChildHistoryResult(this.status, {this.reason});
+  factory AgentChildHistoryResult.fromJson(Json json) =>
+      AgentChildHistoryResult(
+        _enum(AgentChildHistoryStatus.values, json, 'status'),
+        reason: _opt<String>(json, 'reason'),
+      );
+  final AgentChildHistoryStatus status;
+  final String? reason;
+  Json toJson() => {'status': status.name, 'reason': ?reason};
+}
+
 enum AgentContinueMode { load, resume }
 
 class AgentContinueResult {
@@ -2287,6 +2343,8 @@ class AgentDelegated {
     this.activeChildren = 0,
     this.waitingRequests = 0,
     this.incomplete = false,
+    this.nativeWork = false,
+    this.childVisibilityUnavailable = false,
   });
   factory AgentDelegated.fromJson(Json json) {
     final active = _req<int>(json, 'activeChildren');
@@ -2301,16 +2359,22 @@ class AgentDelegated {
       activeChildren: active,
       waitingRequests: waiting,
       incomplete: _req<bool>(json, 'incomplete'),
+      nativeWork: _opt<bool>(json, 'nativeWork') ?? false,
+      childVisibilityUnavailable:
+          _opt<bool>(json, 'childVisibilityUnavailable') ?? false,
     );
   }
   final int activeChildren, waitingRequests;
-  final bool incomplete;
-  bool get hasWork => activeChildren > 0 || waitingRequests > 0 || incomplete;
+  final bool incomplete, nativeWork, childVisibilityUnavailable;
+  bool get hasWork =>
+      activeChildren > 0 || waitingRequests > 0 || incomplete || nativeWork;
   Json toJson() {
     final json = <String, Object?>{
       'activeChildren': activeChildren,
       'waitingRequests': waitingRequests,
       'incomplete': incomplete,
+      if (nativeWork) 'nativeWork': true,
+      if (childVisibilityUnavailable) 'childVisibilityUnavailable': true,
     };
     AgentDelegated.fromJson(json);
     return json;

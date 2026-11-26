@@ -69,13 +69,21 @@ class AgentEvent {
   factory AgentEvent.turn(String stopReason) =>
       AgentEvent._(AgentEventKind.turn, {'stopReason': stopReason});
 
-  factory AgentEvent.fromJson(Json json) {
+  factory AgentEvent.fromJson(Json json, {bool allowOmpChildEvents = false}) {
     final name = json['kind'];
     final kind = AgentEventKind.values.where((k) => k.name == name).firstOrNull;
     if (kind == null) throw const FormatException('unknown agent event kind');
     final identities = ['rootThreadId', 'threadId', 'parentThreadId'];
+    final ompChild =
+        allowOmpChildEvents &&
+        json['threadId'] != json['rootThreadId'] &&
+        json['rootThreadId'] is String &&
+        json['threadId'] is String;
     if (kind == AgentEventKind.child || identities.any(json.containsKey)) {
       for (final key in identities) {
+        if (ompChild && key == 'parentThreadId' && !json.containsKey(key)) {
+          continue;
+        }
         final value = json[key];
         if (value is! String ||
             value.isEmpty ||
@@ -83,6 +91,21 @@ class AgentEvent {
           throw FormatException('invalid agent event $key');
         }
       }
+    }
+    if (json.containsKey('viewToken')) {
+      final token = json['viewToken'];
+      if (!ompChild ||
+          token is! String ||
+          token.isEmpty ||
+          token.length > maxAgentChildKeyBytes ||
+          jsonStringContentBytes(token) > maxAgentChildKeyBytes) {
+        throw const FormatException('invalid OMP child view token');
+      }
+    }
+    if (ompChild &&
+        kind == AgentEventKind.child &&
+        (json['ordinal'] is! int || (json['ordinal']! as int) <= 0)) {
+      throw const FormatException('invalid OMP child ordinal');
     }
     void string(String key, {bool mandatory = true}) {
       if ((!mandatory && !json.containsKey(key)) || json[key] is String) return;
@@ -135,12 +158,40 @@ class AgentEvent {
     return AgentEvent._(kind, fields);
   }
 
+  /// Adds attribution for a verified OMP child on a negotiated stream.
+  AgentEvent forOmpChild({
+    required String rootId,
+    required String childKey,
+    String? viewToken,
+  }) => AgentEvent._(kind, {
+    ..._fields,
+    'rootThreadId': rootId,
+    'threadId': childKey,
+    'viewToken': ?viewToken,
+  });
+
+  factory AgentEvent.ompChildLifecycle({
+    required String rootId,
+    required String childKey,
+    required int ordinal,
+    required String status,
+  }) => AgentEvent._(AgentEventKind.child, {
+    'rootThreadId': rootId,
+    'threadId': childKey,
+    'ordinal': ordinal,
+    'status': status,
+    'text': 'Subagent $ordinal',
+  });
+
   final AgentEventKind kind;
   final Json _fields;
   String? get text => _fields['text'] as String?;
   String? get rootThreadId => _fields['rootThreadId'] as String?;
   String? get threadId => _fields['threadId'] as String?;
   String? get parentThreadId => _fields['parentThreadId'] as String?;
+  String? get viewToken => _fields['viewToken'] as String?;
+  int? get childOrdinal => _fields['ordinal'] as int?;
+  bool get isChild => threadId != null && rootThreadId != threadId;
   String? get toolCallId => _fields['toolCallId'] as String?;
   String? get title => _fields['title'] as String?;
   String? get status => _fields['status'] as String?;
@@ -367,6 +418,9 @@ Json? _boundItem(Json item, int limit) {
 /// live input. Oversize/malformed input and EOF mid-line throw FormatException;
 /// the controller must fail/close the affected session, not the connection.
 class AgentEventDecoder {
+  AgentEventDecoder({this.allowOmpChildEvents = false});
+
+  final bool allowOmpChildEvents;
   final Uint8List _buffer = Uint8List(maxAgentEventBytes);
   int _length = 0;
   bool _closed = false;
@@ -383,7 +437,10 @@ class AgentEventDecoder {
         if (decoded is! Json) {
           throw const FormatException('agent event must be an object');
         }
-        final event = AgentEvent.fromJson(decoded);
+        final event = AgentEvent.fromJson(
+          decoded,
+          allowOmpChildEvents: allowOmpChildEvents,
+        );
         _validateBounds(event, _length);
         result.add(event);
         _length = 0;

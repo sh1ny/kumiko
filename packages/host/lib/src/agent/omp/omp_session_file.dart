@@ -8,8 +8,10 @@ import 'package:process_containment/process_containment.dart';
 
 const ompLocatorUnavailable = 'omp-locator-unavailable';
 const ompLocatorMismatch = 'omp-locator-mismatch';
+const maxOmpChildHistoryBytes = 256 * 1024;
 const _headerBytes = 8 * 1024;
 final _controls = RegExp(r'[\x00-\x1f]');
+final _elidedPath = RegExp(r'…\[\d+ (?:chars|items) elided for RPC frame\]');
 final _windowsDrive = RegExp(r'^[a-zA-Z]:[/\\]');
 final _windowsDevice = RegExp(
   r'^(?:CON|PRN|AUX|NUL|COM[1-9¹²³]|LPT[1-9¹²³])(?:\.|$)',
@@ -22,7 +24,8 @@ String? ompSessionPath(Object? value) {
       !p.isAbsolute(value) ||
       value.length > 4096 ||
       jsonStringContentBytes(value) > 4096 ||
-      _controls.hasMatch(value)) {
+      _controls.hasMatch(value) ||
+      _elidedPath.hasMatch(value)) {
     return null;
   }
   final components = p.split(value).skip(1);
@@ -48,6 +51,33 @@ String? ompSessionPath(Object? value) {
 bool sameOmpSessionPath(String expected, Object? actual) {
   final path = ompSessionPath(actual);
   return path != null && p.equals(path, expected);
+}
+
+Future<int?> inspectOmpChildFile(String path) => Isolate.run(() {
+  try {
+    final stat = _regularFile(path);
+    if (stat == null || stat.size < 1 || stat.size > maxOmpChildHistoryBytes) {
+      return null;
+    }
+    final file = File(path).openSync();
+    file.closeSync();
+    return stat.size;
+  } on FileSystemException {
+    return null;
+  }
+});
+
+FileStat? _regularFile(String path) {
+  if (FileSystemEntity.typeSync(path, followLinks: false) !=
+      FileSystemEntityType.file) {
+    return null;
+  }
+  final stat = FileStat.statSync(path);
+  if (stat.type != FileSystemEntityType.file ||
+      (!Platform.isWindows && (stat.mode & 0xf000) != 0x8000)) {
+    return null;
+  }
+  return stat;
 }
 
 /// Only the passive flags understood by the pinned native CLI can accompany
@@ -101,14 +131,7 @@ bool supportsOmpContinue(List<String> args) {
 Future<String?> probeOmpSessionFile(String path, String id, String target) =>
     Isolate.run(() {
       try {
-        if (FileSystemEntity.typeSync(path, followLinks: false) !=
-            FileSystemEntityType.file) {
-          return ompLocatorUnavailable;
-        }
-        if (!Platform.isWindows &&
-            (FileStat.statSync(path).mode & 0xf000) != 0x8000) {
-          return ompLocatorUnavailable;
-        }
+        if (_regularFile(path) == null) return ompLocatorUnavailable;
         final file = File(path).openSync();
         try {
           final prefix = file.readSync(_headerBytes);

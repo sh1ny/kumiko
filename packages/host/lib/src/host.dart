@@ -481,6 +481,10 @@ class Host {
         return (await _agents!.continueSession(
           AgentContinueParams.fromJson(params),
         )).toJson();
+      case Method.agentChildHistory:
+        return (await _agents!.childHistory(
+          AgentChildHistoryParams.fromJson(params),
+        )).toJson();
       case Method.agentRecords:
         return (await _agents!.records(AgentRecordsParams.fromJson(params)))
             .toJson();

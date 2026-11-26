@@ -102,13 +102,23 @@ Future<int> runOmpFixture(List<String> args) async {
       }
     } else if (type == 'set_event_filter' ||
         type == 'get_state' ||
+        type == 'set_subagent_subscription' ||
+        type == 'get_subagents' ||
         type == 'set_host_tools') {
       final response = {
         'type': 'response',
         'id': id,
         'command': type,
         'success': true,
-        if (type == 'get_state') 'data': {'sessionId': 'fixture-session'},
+        if (type == 'get_state')
+          'data': {
+            'sessionId': 'fixture-session',
+            'isSettled': true,
+            'hasPendingAsyncWork': false,
+          },
+        if (type == 'set_subagent_subscription')
+          'data': {'level': command['level']},
+        if (type == 'get_subagents') 'data': {'subagents': <Object?>[]},
         if (type == 'set_host_tools')
           'data': {
             'toolNames': [

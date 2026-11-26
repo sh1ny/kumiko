@@ -108,10 +108,7 @@ class OmpClient implements RuntimeTransport {
     Object? Function(Object? data)? onSuccess,
     Object? Function(Object? data)? decodeData,
   }) {
-    if (isClosed) throw _closedError();
-    if (_pending.length >= 32) {
-      throw RpcException('busy', '32 OMP commands pending');
-    }
+    _checkCapacity(1);
     final next = _issued + 1;
     final id = 'k$next';
     final command = {...fields, 'type': type, 'id': id};
@@ -131,17 +128,72 @@ class OmpClient implements RuntimeTransport {
           beforeWrite: () {
             onIssued?.call(id);
             _issued = next;
-            final timer = Timer(timeout, () {
-              final expired = _pending.remove(id);
-              expired?.result.completeError(
-                TimeoutException('OMP $type timed out', timeout),
-              );
-            });
-            _pending[id] = _Pending(result, timer, onSuccess, decodeData);
+            _track(
+              id,
+              type,
+              timeout,
+              result,
+              onSuccess: onSuccess,
+              decodeData: decodeData,
+            );
           },
         )
         .ignore();
     return result.future;
+  }
+
+  /// Installs all correlations only once the complete write is admitted.
+  (Future<void>, List<Future<Object?>>) admitBatch(
+    List<(String, Json)> commands, {
+    required Iterable<Json> before,
+    required Duration timeout,
+  }) {
+    _checkCapacity(commands.length);
+    final bytes = BytesBuilder(copy: false);
+    for (final reply in before) {
+      bytes.add(_encode(reply));
+    }
+    final first = _issued + 1;
+    final results = <Completer<Object?>>[];
+    for (var i = 0; i < commands.length; i++) {
+      final (type, fields) = commands[i];
+      bytes.add(_encode({...fields, 'type': type, 'id': 'k${first + i}'}));
+      results.add(Completer<Object?>());
+    }
+    final admission = _writer.admit(
+      bytes.takeBytes(),
+      beforeWrite: () {
+        _issued += commands.length;
+        for (var i = 0; i < commands.length; i++) {
+          _track('k${first + i}', commands[i].$1, timeout, results[i]);
+        }
+      },
+    );
+    return (admission, [for (final result in results) result.future]);
+  }
+
+  void _checkCapacity(int count) {
+    if (isClosed) throw _closedError();
+    if (_pending.length + count > 32) {
+      throw RpcException(ErrorCode.busy, 'OMP command capacity is 32');
+    }
+  }
+
+  void _track(
+    String id,
+    String type,
+    Duration timeout,
+    Completer<Object?> result, {
+    Object? Function(Object? data)? onSuccess,
+    Object? Function(Object? data)? decodeData,
+  }) {
+    final timer = Timer(timeout, () {
+      _pending
+          .remove(id)
+          ?.result
+          .completeError(TimeoutException('OMP $type timed out', timeout));
+    });
+    _pending[id] = _Pending(result, timer, onSuccess, decodeData);
   }
 
   /// Writes an uncorrelated frame. A busy writer refuses synchronously.

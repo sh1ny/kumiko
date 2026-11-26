@@ -2,17 +2,19 @@ import 'dart:typed_data';
 
 import 'package:host_protocol/host_protocol.dart';
 
+import 'omp_session_file.dart';
 import 'omp_tool_activity.dart';
 
 /// Stages one native snapshot. No raw message or arbitrary extension payload
 /// survives response decode. The same projection accepts child message entries.
 final class OmpHistory {
-  OmpHistory(String runId, {this.maxBytes = 1024 * 1024})
+  OmpHistory(String runId, {this.maxBytes = 1024 * 1024, this.attribute})
     : _tools = OmpToolActivity(cardPrefix: '$runId-history');
 
   static const pageSize = 50;
   static const maxPages = 32;
   final int maxBytes;
+  final AgentEvent Function(AgentEvent)? attribute;
   final OmpToolActivity _tools;
   final _cursors = <String>{};
   final lines = <Uint8List>[];
@@ -20,6 +22,57 @@ final class OmpHistory {
   int _seen = 0;
   int _bytes = 0;
   bool _omitted = false;
+
+  static List<Uint8List>? childSnapshot(
+    Object? data, {
+    required String path,
+    required int inspectedSize,
+    required String root,
+    required String child,
+    required String token,
+  }) {
+    if (data is! Json ||
+        data['sessionFile'] != path ||
+        data['fromByte'] != 0 ||
+        data['reset'] != false ||
+        data['nextByte'] is! int ||
+        data['entries'] is! List<Object?>) {
+      return null;
+    }
+    final next = data['nextByte']! as int;
+    final entries = data['entries']! as List<Object?>;
+    if (next <= 0 || next > maxOmpChildHistoryBytes || entries.isEmpty) {
+      return null;
+    }
+    final header = entries.first;
+    if (header is! Json ||
+        header['type'] != 'session' ||
+        header['id'] is! String ||
+        (header['id']! as String).isEmpty) {
+      return null;
+    }
+    final snapshot = OmpHistory(
+      '$child:$token',
+      maxBytes: maxOmpChildHistoryBytes,
+      attribute: (event) =>
+          event.forOmpChild(rootId: root, childKey: child, viewToken: token),
+    );
+    if (!snapshot._append(AgentEvent.replay(AgentReplayPhase.start))) {
+      return null;
+    }
+    for (var i = 1; i < entries.length; i++) {
+      final entry = entries[i];
+      if (entry is! Json || entry['type'] is! String) return null;
+      if (entry['type'] == 'message' && !snapshot.add(entry['message'])) {
+        return null;
+      }
+    }
+    snapshot._omitted |= next < inspectedSize;
+    return snapshot.finish() &&
+            snapshot._append(AgentEvent.replay(AgentReplayPhase.end))
+        ? snapshot.lines
+        : null;
+  }
 
   /// Null is an invalid page; a record containing a null cursor is complete.
   ({String? cursor})? page(Object? data) {
@@ -135,7 +188,7 @@ final class OmpHistory {
           ));
 
   bool _append(AgentEvent event) {
-    for (final line in encodeAgentEvent(event)) {
+    for (final line in encodeAgentEvent(attribute?.call(event) ?? event)) {
       _bytes += line.length;
       if (_bytes > maxBytes) return false;
       lines.add(line);

@@ -115,7 +115,14 @@ abstract interface class HostLink {
   /// Registers the bounded decoder before attach, then grants channel credit.
   /// A single synchronous consumer owns this stream; cancelling releases the
   /// local channel. The host's session channel is freed with [releaseAgent].
-  Stream<AgentEvent> attachAgent(String sessionId, int eventChannel);
+  Stream<AgentEvent> attachAgent(
+    String sessionId,
+    int eventChannel, {
+    bool omp = false,
+  });
+  Future<AgentChildHistoryResult> agentChildHistory(
+    AgentChildHistoryParams params,
+  );
   Future<void> promptAgent(AgentPromptParams params);
   Future<void> steerAgent(AgentSteerParams params);
   Future<void> answerAgentQuestion(AgentQuestionAnswerParams params);

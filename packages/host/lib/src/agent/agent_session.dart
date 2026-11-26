@@ -208,6 +208,8 @@ class AgentSession {
     return AgentDelegated(
       activeChildren: facts.activeChildren,
       incomplete: facts.incomplete,
+      nativeWork: facts.nativeWork,
+      childVisibilityUnavailable: facts.childVisibilityUnavailable,
       waitingRequests:
           _permissions.values
               .where(

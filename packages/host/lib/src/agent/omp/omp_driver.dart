@@ -6,6 +6,7 @@ import 'package:host_protocol/host_protocol.dart';
 import '../qualification.dart';
 import '../runtime_driver.dart';
 import '../tools/tool_catalog.dart';
+import 'omp_children.dart';
 import 'omp_client.dart';
 import 'omp_host_tools.dart';
 import 'omp_history.dart';
@@ -18,6 +19,8 @@ class OmpRuntimeDriver extends RuntimeDriver {
     unawaited(
       client.done.then((_) {
         _hostTools.revoke();
+        _replay = null;
+        _children = null;
         final turn = _turn;
         if (turn == null) return;
         _turn = null;
@@ -46,6 +49,11 @@ class OmpRuntimeDriver extends RuntimeDriver {
   String? get sessionFile => _sessionFile;
   String? _sessionFile;
   Future<RuntimeIdentity>? _initializing;
+  OmpChildren? _children;
+  bool _nativeWork = false;
+  Future<void>? _backgroundAbort;
+  final _cancelledChildren = <String>{};
+  bool _historyReading = false;
   String? _session;
   _Turn? _turn;
   int _idleNotices = 0;
@@ -91,9 +99,191 @@ class OmpRuntimeDriver extends RuntimeDriver {
   @override
   String? get interruptionReason => _interruption;
   @override
-  Map<String, String> get activeNativeTurns =>
-      _session != null && turnId != null ? {_session!: turnId!} : const {};
+  AgentDelegated? get delegated {
+    final children = _children;
+    if (children == null) return null;
+    return AgentDelegated(
+      activeChildren: children.active,
+      incomplete: children.incomplete || (!_showChildEvents && _nativeWork),
+      nativeWork: _showChildEvents && _nativeWork,
+      childVisibilityUnavailable: _showChildEvents && !children.available,
+    );
+  }
+
+  bool get _showChildEvents => _children?.views == true;
+
+  @override
+  Map<String, String> get activeNativeTurns => {
+    if (_session != null && turnId != null) _session!: turnId!,
+    if (_children case final children?)
+      for (final child in children.known)
+        if (child.cancellable) child.key: child.ticket,
+  };
   Future<RuntimeTurnResult>? get pendingTurn => _turn?.terminal.future;
+
+  Future<void> configureChildren({required bool views}) async {
+    final children = _children = OmpChildren(runId, views: views);
+    final level = views ? 'events' : 'progress';
+    const timeout = Duration(seconds: 10);
+    try {
+      final subscribed = await client.command(
+        'set_subagent_subscription',
+        fields: {'level': level},
+        timeout: timeout,
+      );
+      if (subscribed is! Json || subscribed['level'] != level) {
+        children.unavailable();
+        return;
+      }
+      final seeded = await client.command(
+        'get_subagents',
+        timeout: timeout,
+        decodeData: (data) {
+          children.seed(data);
+          return true;
+        },
+      );
+      if (seeded != true) children.unavailable();
+    } on OmpRemoteException {
+      children.unavailable();
+    } on TimeoutException {
+      children.unavailable();
+    }
+  }
+
+  Future<void> attachChildren() async {
+    final children = _children;
+    if (children == null || !children.views || children.attached || draining) {
+      return;
+    }
+    children.attached = true;
+    await _deliverReplay([
+      for (final child in children.known)
+        ...encodeAgentEvent(children.lifecycle(child)),
+    ]);
+  }
+
+  Future<AgentChildHistoryResult> childHistory(
+    AgentChildHistoryParams params, {
+    required Future<int?> Function(String) inspect,
+    required bool Function() current,
+  }) async {
+    final children = _children;
+    if (children == null ||
+        !children.views ||
+        !children.attached ||
+        params.runId != runId ||
+        !current()) {
+      throw RpcException(
+        ErrorCode.staleRun,
+        'The OMP root run is no longer current.',
+      );
+    }
+    final child = children.byKey(params.childKey);
+    if (child == null) {
+      throw RpcException(
+        ErrorCode.unknownSession,
+        'The OMP subagent is not available on this run.',
+      );
+    }
+    final path = child.file;
+    if (path == null) {
+      return const AgentChildHistoryResult(
+        AgentChildHistoryStatus.unavailable,
+        reason: 'no-native-file',
+      );
+    }
+    if (_historyReading) {
+      throw RpcException(
+        ErrorCode.busy,
+        'A subagent history read is already in progress.',
+      );
+    }
+    _historyReading = true;
+    final ticket = child.ticket;
+    bool sameChild() =>
+        !draining &&
+        !isClosed &&
+        current() &&
+        identical(children.byKey(params.childKey), child) &&
+        ticket == child.ticket &&
+        path == child.file;
+    final clock = Stopwatch()..start();
+    const budget = Duration(seconds: 10);
+    var queued = false;
+    try {
+      final size = await inspect(path);
+      if (size == null) {
+        return const AgentChildHistoryResult(
+          AgentChildHistoryStatus.unavailable,
+          reason: 'native-file-unavailable',
+        );
+      }
+      final remaining = budget - clock.elapsed;
+      if (!sameChild() || remaining <= Duration.zero) {
+        return const AgentChildHistoryResult(
+          AgentChildHistoryStatus.unavailable,
+          reason: 'stale-child',
+        );
+      }
+      final response = await client.command(
+        'get_subagent_messages',
+        fields: {'sessionFile': path, 'fromByte': 0},
+        timeout: remaining,
+        decodeData: (data) => OmpHistory.childSnapshot(
+          data,
+          path: path,
+          inspectedSize: size,
+          root: runId,
+          child: child.key,
+          token: params.viewToken,
+        ),
+      );
+      if (response is! List<Uint8List> || !sameChild()) {
+        return const AgentChildHistoryResult(
+          AgentChildHistoryStatus.unavailable,
+          reason: 'native-snapshot-unavailable',
+        );
+      }
+      queued = true;
+      _deliverReplay(response)
+          .whenComplete(() => _historyReading = false)
+          .ignore();
+      return const AgentChildHistoryResult(AgentChildHistoryStatus.queued);
+    } on OmpRemoteException {
+      return const AgentChildHistoryResult(
+        AgentChildHistoryStatus.unavailable,
+        reason: 'native-reading-refused',
+      );
+    } on OmpProtocolException {
+      return const AgentChildHistoryResult(
+        AgentChildHistoryStatus.unavailable,
+        reason: 'native-transport-closed',
+      );
+    } on TimeoutException {
+      return const AgentChildHistoryResult(
+        AgentChildHistoryStatus.unavailable,
+        reason: 'native-read-timed-out',
+      );
+    } finally {
+      if (!queued) _historyReading = false;
+    }
+  }
+
+  void _setNativeWork(bool active) {
+    final children = _children;
+    final wasIncomplete = children?.incomplete;
+    final wasActive = _nativeWork;
+    _nativeWork = active;
+    if (!active) {
+      _backgroundAbort = null;
+      children?.settled();
+    }
+    if (children != null &&
+        (wasActive != active || wasIncomplete != children.incomplete)) {
+      onDelegatedChanged?.call();
+    }
+  }
 
   Future<void> waitReady() async {
     await Future.any([
@@ -167,10 +357,13 @@ class OmpRuntimeDriver extends RuntimeDriver {
             jsonStringContentBytes(id) > 4096) {
           return null;
         }
+        final settled =
+            data['isSettled'] == true && data['hasPendingAsyncWork'] != true;
+        _setNativeWork(!settled);
         return (
           id,
           ompSessionPath(data['sessionFile']),
-          data['isSettled'] == true && data['hasPendingAsyncWork'] != true,
+          settled,
           _historyEpoch,
         );
       },
@@ -397,25 +590,63 @@ class OmpRuntimeDriver extends RuntimeDriver {
   /// A busy refusal leaves Stop and all of its pending approvals unchanged.
   @override
   Future<void> cancelWithPermissions(String id, Iterable<Object> requests) {
+    if (_nativeExited || client.isClosed) return Future.value();
     final turn = _turn;
-    if (turn?.id == null || _nativeExited || client.isClosed) {
-      return Future.value();
+    final children = _children;
+    final newChildren = [
+      if (children != null)
+        for (final child in children.known)
+          if (child.cancellable && !_cancelledChildren.contains(child.key))
+            child,
+    ];
+    final root = turn?.id != null
+        ? turn!.abort == null
+        : _nativeWork && children != null && _backgroundAbort == null;
+    if (!root && newChildren.isEmpty && requests.isEmpty) {
+      return turn?.abort ?? _backgroundAbort ?? Future.value();
     }
-    return turn!.abort ??= client
-        .admitCommand(
-          'abort',
-          before: requests.cast<RuntimeReply>().map(
-            (reply) => _interactionReply(reply.id, reply.result),
-          ),
-          timeout: const Duration(seconds: 10),
-        )
-        .then<void>(
+    final commands = [
+      if (root) ('abort', const <String, Object?>{}),
+      for (final child in newChildren)
+        ('cancel_subagent', <String, Object?>{'subagentId': child.id}),
+    ];
+    final (admission, replies) = client.admitBatch(
+      commands,
+      before: requests.cast<RuntimeReply>().map(
+        (reply) => _interactionReply(reply.id, reply.result),
+      ),
+      timeout: const Duration(seconds: 10),
+    );
+    for (final child in newChildren) {
+      _cancelledChildren.add(child.key);
+    }
+    final completed =
+        Future.wait<void>([
+          admission,
+          for (var i = 0; i < replies.length; i++)
+            replies[i].then<void>((result) {
+              if (commands[i].$1 == 'cancel_subagent' &&
+                  (result is! Json || result['cancelled'] != true)) {
+                throw OmpProtocolException(
+                  'OMP did not accept a subagent cancellation',
+                );
+              }
+            }),
+        ]).then<void>(
           (_) {},
           onError: (Object error) {
-            _interruption = error.toString();
-            throw error;
+            _interruption = 'OMP did not confirm cancellation admission.';
+            throw OmpProtocolException(_interruption!);
           },
         );
+    if (root) {
+      if (turn != null) {
+        turn.abort = completed;
+      } else {
+        _backgroundAbort = completed;
+      }
+    }
+    return completed;
   }
 
   void _end(_Turn turn, RuntimeTurnResult result) {
@@ -455,6 +686,16 @@ class OmpRuntimeDriver extends RuntimeDriver {
         type == 'message_update' ||
         type == 'session_info_update') {
       _historyEpoch++;
+      if (type == 'agent_start' || type == 'turn_start') _setNativeWork(true);
+    }
+    if (type == 'session_settled') {
+      _setNativeWork(false);
+      return null;
+    }
+    if (type == 'subagent_lifecycle' ||
+        type == 'subagent_progress' ||
+        type == 'subagent_event') {
+      return _childFrame(type! as String, frame['payload']);
     }
     final turn = _turn;
     final lines = <Uint8List>[];
@@ -477,6 +718,8 @@ class OmpRuntimeDriver extends RuntimeDriver {
           turn.earlyEnd != null) {
         throw OmpProtocolException('unexpected OMP prompt result');
       }
+      final settled = frame['sessionSettled'];
+      if (settled is bool) _setNativeWork(!settled);
       final result = switch (frame['status']) {
         'completed' => const RuntimeTurnResult('completed'),
         'aborted' => const RuntimeTurnResult('cancelled', isCancelled: true),
@@ -521,6 +764,24 @@ class OmpRuntimeDriver extends RuntimeDriver {
     return _delivery(lines);
   }
 
+  Object? _childFrame(String type, Object? payload) {
+    final children = _children;
+    if (children == null) return null;
+    final wasIncomplete = children.incomplete;
+    final count = children.active;
+    final lines = <Uint8List>[];
+    for (final event in children.receive(type, payload, (key, ticket, result) {
+      _cancelledChildren.remove(key);
+      onNativeTurnEnded?.call(key, ticket, result);
+    })) {
+      if (!draining) lines.addAll(encodeAgentEvent(event));
+    }
+    if (children.active != count || children.incomplete != wasIncomplete) {
+      onDelegatedChanged?.call();
+    }
+    return _delivery(lines);
+  }
+
   static RuntimeTurnResult _promptError(Object? payload) {
     final message = payload is Json ? payload['message'] : payload;
     final code = payload is Json ? payload['code'] : null;
@@ -548,11 +809,10 @@ class OmpRuntimeDriver extends RuntimeDriver {
         final event = _activity.omitted(active: turn != null);
         if (event != null) _toolEvent(lines, turn, event);
         return _delivery(lines);
-      case 'tool_stream_update' ||
-          'subagent_lifecycle' ||
-          'subagent_progress' ||
-          'subagent_event':
+      case 'tool_stream_update':
         return null;
+      case 'subagent_lifecycle' || 'subagent_progress' || 'subagent_event':
+        return _childFrame(frame['originalType']! as String, null);
       case 'message_start' ||
           'message_update' ||
           'message_end' ||
