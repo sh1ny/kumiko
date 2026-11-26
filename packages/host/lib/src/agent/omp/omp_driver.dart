@@ -5,6 +5,7 @@ import 'package:host_protocol/host_protocol.dart';
 
 import '../qualification.dart';
 import '../runtime_driver.dart';
+import '../tool_secret_redaction.dart';
 import '../tools/tool_catalog.dart';
 import 'omp_children.dart';
 import 'omp_client.dart';
@@ -14,7 +15,12 @@ import 'omp_session_file.dart';
 import 'omp_tool_activity.dart';
 
 class OmpRuntimeDriver extends RuntimeDriver {
-  OmpRuntimeDriver(this.client, this.version, {this.runId = 'omp'}) {
+  OmpRuntimeDriver(
+    this.client,
+    this.version, {
+    this.runId = 'omp',
+    this._toolSecrets,
+  }) {
     client.normalizeNotification = _frame;
     unawaited(
       client.done.then((_) {
@@ -36,6 +42,7 @@ class OmpRuntimeDriver extends RuntimeDriver {
   }
 
   final String runId;
+  final Iterable<String> Function()? _toolSecrets;
   static const rootCapabilities = ['prompt', 'streaming', 'cancel'];
   final OmpClient client;
   late final _hostTools = OmpHostTools(client);
@@ -257,6 +264,7 @@ class OmpRuntimeDriver extends RuntimeDriver {
           root: runId,
           child: child.key,
           token: params.viewToken,
+          encode: _encodeVisibleEvent,
         ),
       );
       if (response is! List<Uint8List> || !sameChild()) {
@@ -410,7 +418,7 @@ class OmpRuntimeDriver extends RuntimeDriver {
       return AgentContinueMode.resume;
     }
 
-    final snapshot = OmpHistory(runId);
+    final snapshot = OmpHistory(runId, encode: _encodeVisibleEvent);
     final clock = Stopwatch()..start();
     const budget = Duration(seconds: 60);
     const identityGrace = Duration(seconds: 10);
@@ -798,13 +806,34 @@ class OmpRuntimeDriver extends RuntimeDriver {
       _cancelledChildren.remove(key);
       if (result != null) onNativeTurnEnded?.call(key, ticket, result);
     })) {
-      if (!draining) lines.addAll(encodeAgentEvent(event));
+      if (!draining) lines.addAll(_encodeVisibleEvent(event));
     }
     if (children.active != count || children.incomplete != wasIncomplete) {
       onDelegatedChanged?.call();
     }
     _checkCloseQuiescence();
     return _delivery(lines);
+  }
+
+  Iterable<Uint8List> _encodeVisibleEvent(AgentEvent event) {
+    if (event.kind == AgentEventKind.replay ||
+        event.kind == AgentEventKind.child) {
+      return encodeAgentEvent(event);
+    }
+    final secrets = _toolSecrets?.call();
+    if (secrets == null || secrets.isEmpty) return encodeAgentEvent(event);
+    final wire = event.toJson();
+    String redact(String text) => redactToolSecrets(text, secrets);
+    // Redact presentation fields, not the host-generated routing identities,
+    // tool card IDs or the desktop's replay token.
+    for (final key in const ['text', 'title', 'content', 'locations']) {
+      if (wire[key] case final value?) {
+        wire[key] = redactToolJson(value, redact);
+      }
+    }
+    return encodeAgentEvent(
+      AgentEvent.fromJson(wire, allowOmpChildEvents: true),
+    );
   }
 
   static RuntimeTurnResult _promptError(Object? payload) {

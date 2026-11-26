@@ -126,6 +126,7 @@ class _AgentIO {
     String? codexVersion,
     String? ompVersion,
     required String runId,
+    required Iterable<String> Function() ompToolSecrets,
     List<(String, String, List<String>)> qualified = qualifiedAdapters,
     Set<CodexAuthSignal> authSignals = const {},
   }) : client = ompVersion != null
@@ -136,6 +137,7 @@ class _AgentIO {
                ),
                ompVersion,
                runId: runId,
+               toolSecrets: ompToolSecrets,
              )
            : codexVersion == null
            ? AcpRuntimeDriver(
@@ -1151,6 +1153,7 @@ class AgentService {
         codexVersion: codexVersion,
         ompVersion: ompVersion,
         runId: runId,
+        ompToolSecrets: () => _secretsFor(null),
         qualified: qualifiedAdaptersOverride ?? qualifiedAdapters,
         authSignals: options.codexAuthSignatures,
       );

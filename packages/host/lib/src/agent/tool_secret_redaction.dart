@@ -38,3 +38,15 @@ String redactToolSecrets(
   }
   return result;
 }
+
+/// Applies the same boundary policy inside projected adapter content.
+Object? redactToolJson(Object? value, String Function(String) redact) =>
+    switch (value) {
+      final String s => redact(s),
+      final Map<Object?, Object?> m => <String, Object?>{
+        for (final e in m.entries)
+          e.key! as String: redactToolJson(e.value, redact),
+      },
+      final List<Object?> l => [for (final v in l) redactToolJson(v, redact)],
+      _ => value,
+    };

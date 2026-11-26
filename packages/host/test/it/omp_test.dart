@@ -1318,6 +1318,216 @@ void main() {
     timeout: const Timeout(Duration(minutes: 4)),
   );
 
+  test(
+    'OMP: Child output and saved history redact live and revoked grants',
+    () async {
+      final profile = tempDir('omp_redaction_profile');
+      final work = tempDir('omp_redaction_work');
+      addTearDown(() => deleteTree(profile));
+      addTearDown(() => deleteTree(work));
+      final native = File(joinPath(work.path, 'omp-root.jsonl'));
+      final child = File(joinPath(work.path, 'omp-child.jsonl'));
+      Json header(String id) => {'type': 'session', 'id': id, 'cwd': work.path};
+      native.writeAsStringSync('${jsonEncode(header('original'))}\n');
+      final state = accepted({
+        'sessionId': 'original',
+        'sessionFile': native.path,
+        'isSettled': true,
+        'hasPendingAsyncWork': false,
+      });
+      final commands = <String, Object?>{
+        'get_state': [
+          [state],
+          [state],
+        ],
+      };
+      final fixture = OmpFixture(profile, work, script: {'commands': commands});
+      await fixture.open(
+        caps: {...ompCaps, Capability.ompHistory},
+        profileArgs: ['--mode', 'rpc', '--offline'],
+      );
+      final original = await fixture.start();
+      await original.close();
+
+      Future<String> grantSecret(String id, {required bool revoke}) async {
+        final report = await saveAgentFixture(
+          fixture.desktop,
+          work,
+          id: id,
+          script: {'reportLaunch': true},
+        );
+        final session = AgentPeer(fixture.desktop);
+        await session.start(fixture.workspace, runtime: id);
+        final launch = await waitFixture(
+          report,
+          (r) => r.containsKey('newCwd'),
+        );
+        final servers = (launch['mcpServers']! as List<Object?>)
+            .whereType<Json>();
+        final env = (servers.single['env']! as List<Object?>).whereType<Json>();
+        final secret =
+            env.singleWhere(
+                  (entry) => entry['name'] == 'KUMIKO_TOOL_SECRET',
+                )['value']!
+                as String;
+        if (revoke) await session.close();
+        return secret;
+      }
+
+      final revoked = await grantSecret('revoked-grant', revoke: true);
+      final live = await grantSecret('live-grant', revoke: false);
+      Json text(String value) => {'type': 'text', 'text': value};
+      Json assistant(String value) => {
+        'role': 'assistant',
+        'content': [text(value)],
+      };
+      Json childEvent(Json event) => {
+        'type': 'subagent_event',
+        'payload': {'id': 'worker', 'event': event},
+      };
+      final entry = {
+        'type': 'message',
+        'message': assistant('child replay $live'),
+      };
+      child.writeAsStringSync(
+        '${jsonEncode(header('child'))}\n${jsonEncode(entry)}\n',
+      );
+      commands.addAll({
+        'get_messages_page': [
+          [
+            accepted({
+              'messages': [assistant('root replay $revoked')],
+              'totalMessages': 1,
+            }),
+          ],
+        ],
+        'get_subagents': [
+          [
+            accepted({
+              'subagents': [
+                {
+                  'id': 'worker',
+                  'status': 'running',
+                  'sessionFile': child.path,
+                },
+              ],
+            }),
+          ],
+        ],
+        'get_subagent_messages': [
+          [
+            accepted({
+              'sessionFile': child.path,
+              'fromByte': 0,
+              'nextByte': child.lengthSync(),
+              'reset': false,
+              'entries': [header('child'), entry],
+            }),
+          ],
+        ],
+        'prompt': [
+          [
+            accepted(),
+            childEvent({
+              'type': 'message_end',
+              'message': assistant('child live $live'),
+            }),
+            childEvent({
+              'type': 'tool_execution_start',
+              'toolCallId': 'inspect',
+              'toolName': 'read',
+              'args': {'value': live},
+            }),
+            childEvent({
+              'type': 'tool_execution_end',
+              'toolCallId': 'inspect',
+              'toolName': 'read',
+              'result': {
+                'content': [text('tool output $revoked')],
+              },
+              'isError': false,
+            }),
+            {...terminal('completed'), 'sessionSettled': true},
+          ],
+        ],
+      });
+      fixture.writeScript();
+      final continued = AgentContinueResult.fromJson(
+        await original.call(Method.agentContinue),
+      );
+      expect(continued.mode, AgentContinueMode.load);
+      final root = AgentPeer(fixture.desktop)
+        ..started = AgentStartResult(
+          sessionId: original.id,
+          eventChannel: continued.eventChannel,
+          adapter: continued.adapter,
+          capabilities: continued.capabilities,
+        );
+      await root.attach();
+      final idle = await root.wait(
+        Method.agentState,
+        where: (s) => s['state'] == 'idle',
+        within: guard,
+      );
+      await eventually(
+        () => root.events.any((e) => e['kind'] == 'child'),
+        within: guard,
+        reason: 'no child announced on the restored root',
+      );
+      final childKey = root.events.singleWhere(
+        (e) => e['kind'] == 'child',
+      )['threadId'];
+      expect(
+        await root.call(Method.agentChildHistory, {
+          'sessionId': root.id,
+          'runId': idle['runId'],
+          'childKey': childKey,
+          'viewToken': 'current-view',
+        }),
+        containsPair('status', 'queued'),
+      );
+      await root.prompt();
+      await eventually(
+        () =>
+            root.events.any(
+              (e) => e['viewToken'] == 'current-view' && e['phase'] == 'end',
+            ) &&
+            root.events.any(
+              (e) => e['threadId'] == childKey && e['status'] == 'completed',
+            ),
+        within: guard,
+        reason: 'the child replay and live tool result did not arrive',
+      );
+      final events = jsonEncode(root.events);
+      expect(
+        events.contains(live) || events.contains(revoked),
+        isFalse,
+        reason: 'A known grant secret reached the desktop transcript',
+      );
+      expect(
+        root.events.where((e) => e['threadId'] == null).map((e) => e['text']),
+        contains('root replay <redacted>'),
+      );
+      expect(
+        root.events
+            .where(
+              (e) =>
+                  e['threadId'] == childKey && e['viewToken'] == 'current-view',
+            )
+            .map((e) => e['text']),
+        contains('child replay <redacted>'),
+      );
+      expect(
+        root.events
+            .where((e) => e['threadId'] == childKey && e['viewToken'] == null)
+            .map((e) => e['text']),
+        contains('child live <redacted>'),
+      );
+      expect(events, contains('tool output <redacted>'));
+    },
+    timeout: const Timeout(Duration(minutes: 4)),
+  );
+
   test('OMP: Admission precedes output', () async {
     final fixture = await turns([
       [

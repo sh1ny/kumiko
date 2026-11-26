@@ -8,13 +8,13 @@ import 'omp_tool_activity.dart';
 /// Stages one native snapshot. No raw message or arbitrary extension payload
 /// survives response decode. The same projection accepts child message entries.
 final class OmpHistory {
-  OmpHistory(String runId, {this.maxBytes = 1024 * 1024, this.attribute})
+  OmpHistory(String runId, {this.maxBytes = 1024 * 1024, required this.encode})
     : _tools = OmpToolActivity(cardPrefix: '$runId-history');
 
   static const pageSize = 50;
   static const maxPages = 32;
   final int maxBytes;
-  final AgentEvent Function(AgentEvent)? attribute;
+  final Iterable<Uint8List> Function(AgentEvent) encode;
   final OmpToolActivity _tools;
   final _cursors = <String>{};
   final lines = <Uint8List>[];
@@ -30,6 +30,7 @@ final class OmpHistory {
     required String root,
     required String child,
     required String token,
+    required Iterable<Uint8List> Function(AgentEvent) encode,
   }) {
     if (data is! Json ||
         data['sessionFile'] != path ||
@@ -54,8 +55,9 @@ final class OmpHistory {
     final snapshot = OmpHistory(
       '$child:$token',
       maxBytes: maxOmpChildHistoryBytes,
-      attribute: (event) =>
-          event.forOmpChild(rootId: root, childKey: child, viewToken: token),
+      encode: (event) => encode(
+        event.forOmpChild(rootId: root, childKey: child, viewToken: token),
+      ),
     );
     if (!snapshot._append(AgentEvent.replay(AgentReplayPhase.start))) {
       return null;
@@ -188,7 +190,7 @@ final class OmpHistory {
           ));
 
   bool _append(AgentEvent event) {
-    for (final line in encodeAgentEvent(attribute?.call(event) ?? event)) {
+    for (final line in encode(event)) {
       _bytes += line.length;
       if (_bytes > maxBytes) return false;
       lines.add(line);

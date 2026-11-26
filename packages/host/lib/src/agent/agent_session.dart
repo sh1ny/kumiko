@@ -12,6 +12,7 @@ import 'omp/omp_client.dart';
 import 'omp/omp_driver.dart';
 import 'qualification.dart';
 import 'runtime_driver.dart';
+import 'tool_secret_redaction.dart';
 
 abstract interface class AgentDeadline {
   void cancel();
@@ -576,14 +577,7 @@ class AgentSession {
 
   /// [_redact] applied to every string in adapter JSON before any of it
   /// reaches the transcript or the desktop.
-  Object? _redactJson(Object? value) => switch (value) {
-    final String s => _redact(s),
-    final Map<Object?, Object?> m => <String, Object?>{
-      for (final e in m.entries) e.key! as String: _redactJson(e.value),
-    },
-    final List<Object?> l => [for (final v in l) _redactJson(v)],
-    _ => value,
-  };
+  Object? _redactJson(Object? value) => redactToolJson(value, _redact);
 
   Future<void> _consume(Object value) async {
     if (value is RuntimeDelivery) {
