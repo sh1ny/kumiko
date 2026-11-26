@@ -30,6 +30,7 @@ import 'executable_resolver.dart';
 import 'native_version_probe.dart';
 import 'omp/omp_client.dart';
 import 'omp/omp_driver.dart';
+import 'omp/omp_session_file.dart';
 import 'omp/version_probe.dart';
 import 'qualification.dart';
 import 'qualified_adapters.dart';
@@ -66,6 +67,8 @@ class AgentSessionRecord {
     required this.target,
     required this.createdAt,
     required this.updatedAt,
+    this.ompSessionFile,
+    this.historyUnconfirmed,
   });
   final String id;
   final String runtimeKind;
@@ -75,6 +78,8 @@ class AgentSessionRecord {
   final AgentTarget target;
   final String createdAt;
   final String updatedAt;
+  final String? ompSessionFile;
+  final String? historyUnconfirmed;
 }
 
 class _StderrRing {
@@ -120,6 +125,7 @@ class _AgentIO {
     this.launch, {
     String? codexVersion,
     String? ompVersion,
+    required String runId,
     List<(String, String, List<String>)> qualified = qualifiedAdapters,
     Set<CodexAuthSignal> authSignals = const {},
   }) : client = ompVersion != null
@@ -129,6 +135,7 @@ class _AgentIO {
                  write: launch.pipes!.stdin.write,
                ),
                ompVersion,
+               runId: runId,
              )
            : codexVersion == null
            ? AcpRuntimeDriver(
@@ -199,6 +206,7 @@ class AgentEventRelay {
   }
 
   int _offset = 0;
+  Future<void>? _lastWrite;
   ChannelWriter? _writer;
   Completer<void>? _space;
   bool _pumping = false;
@@ -242,6 +250,14 @@ class AgentEventRelay {
     await _admit();
   }
 
+  /// OMP Continue does not admit Send before replay crosses the channel.
+  Future<void> flush() async {
+    while (!_closed && !_sealed && _queue.isNotEmpty) {
+      await (_space ??= Completer<void>()).future;
+    }
+    if (!_closed && !_sealed) await _lastWrite;
+  }
+
   void attach(ChannelWriter writer) {
     _writer = writer;
     _pump();
@@ -269,14 +285,16 @@ class AgentEventRelay {
         final count = min(writer.room, line.length - _offset);
         // This fits the writer's window now: no waiting write retains an
         // additional event buffer outside our byte accounting.
-        writer
-            .write(Uint8List.sublistView(line, _offset, _offset + count))
-            .then<void>(
-              (_) {},
-              onError: (Object error, StackTrace stack) {
-                if (!_closed) onFailure?.call(error);
-              },
-            );
+        final write = writer.write(
+          Uint8List.sublistView(line, _offset, _offset + count),
+        );
+        _lastWrite = write;
+        write.then<void>(
+          (_) {},
+          onError: (Object error, StackTrace stack) {
+            if (!_closed) onFailure?.call(error);
+          },
+        );
         _offset += count;
         _bytes -= count;
         if (_offset == line.length) {
@@ -759,6 +777,8 @@ class AgentService {
         ),
         createdAt: r['created_at'] as String,
         updatedAt: r['updated_at'] as String,
+        ompSessionFile: r['omp_session_file'] as String?,
+        historyUnconfirmed: r['omp_history_unconfirmed'] as String?,
       );
     } on SqliteException {
       throw RpcException(
@@ -790,18 +810,27 @@ class AgentService {
     final result = record == null
         ? null
         : await workspaces.resolver.resolve(record.target.path, queue: false);
+    final omp = record?.runtimeKind == 'omp' && _ompHistoryPeer;
     return MapEntry(
       id,
       AgentRecord(
         known: record != null,
         targetPath: record?.target.path,
         adapterVersion: record?.adapter.version,
+        continueUnavailable: omp && record!.ompSessionFile == null
+            ? ompLocatorUnavailable
+            : null,
+        historyUnconfirmed: omp ? record!.historyUnconfirmed : null,
         workspaceAvailable:
             result is ResolveFound &&
             result.directory.id == record!.target.identity,
       ),
     );
   }
+
+  bool get _ompHistoryPeer =>
+      connection.negotiated?.capabilities.contains(Capability.ompHistory) ==
+      true;
 
   Future<void> _checkContinueTarget(AgentTarget saved) async {
     final result = await workspaces.resolver.resolve(saved.path, queue: false);
@@ -852,10 +881,19 @@ class AgentService {
       );
     }
     if (record.runtimeKind == 'omp') {
-      throw RpcException(
-        ErrorCode.methodNotAvailable,
-        OmpRuntimeDriver.continueUnavailable,
-      );
+      requireOmpCapabilities(connection.negotiated!.capabilities);
+      if (!_ompHistoryPeer) {
+        throw RpcException(
+          ErrorCode.methodNotAvailable,
+          'OMP Continue requires omp-history',
+        );
+      }
+      if (ompSessionPath(record.ompSessionFile) == null) {
+        throw _resumeUnavailable(
+          ompLocatorUnavailable,
+          'The saved OMP native session file is unavailable.',
+        );
+      }
     }
     if (record.runtimeKind == 'codex') {
       _requireCodexPeer();
@@ -959,6 +997,14 @@ class AgentService {
       _requireCodexPeer();
     }
     final omp = profile.runtimeKind == 'omp';
+    final resumeFile = omp ? saved?.ompSessionFile : null;
+    if (resumeFile != null && !supportsOmpContinue(profile.args)) {
+      throw RpcException(
+        ErrorCode.noRuntimeProfile,
+        'Choose an OMP RPC profile with compatible Continue options.',
+        {'resumeReason': 'omp-profile-incompatible'},
+      );
+    }
     if (omp) requireOmpCapabilities(connection.negotiated!.capabilities);
     if (!supportedRuntimeKinds.contains(profile.runtimeKind)) {
       throw RpcException(
@@ -1023,6 +1069,30 @@ class AgentService {
         );
       }
     }
+    if (resumeFile != null) {
+      final failure = await workspaces.resolver.inspect<String?>(
+        () => probeOmpSessionFile(
+          resumeFile,
+          saved!.nativeSessionId,
+          target.identity,
+        ),
+        busy: ErrorCode.busy,
+        timedOut: ompLocatorUnavailable,
+      );
+      if (failure == ErrorCode.busy) {
+        throw RpcException(
+          ErrorCode.busy,
+          'The host is resolving too many paths.',
+        );
+      }
+      if (failure != null) {
+        throw _resumeUnavailable(
+          failure,
+          'The saved OMP native session file could not be verified.',
+        );
+      }
+      await _checkContinueTarget(target);
+    }
     _available();
     final reservation = connection.reserveChannels(1);
     _AgentIO? io;
@@ -1030,6 +1100,7 @@ class AgentService {
     String? toolsUnavailableReason;
     _Agent? live;
     var stage = 'spawn';
+    final runId = _newId();
     try {
       // The grant exists before the adapter starts, so a bridge that races
       // `session/new` can authenticate and wait for the record. Without an
@@ -1062,7 +1133,11 @@ class AgentService {
         target: target.path,
         expectedIdentity: target.identity,
         kind: 'agent',
-        argv: [executable, ...profile.args],
+        argv: [
+          executable,
+          ...profile.args,
+          if (resumeFile != null) ...['--resume', resumeFile],
+        ],
         workingDirectory: target.path,
         environment: _launchEnvironment(profile, executable),
         inheritParentEnvironment: profile.runtimeKind != 'codex',
@@ -1072,6 +1147,7 @@ class AgentService {
         launch,
         codexVersion: codexVersion,
         ompVersion: ompVersion,
+        runId: runId,
         qualified: qualifiedAdaptersOverride ?? qualifiedAdapters,
         authSignals: options.codexAuthSignatures,
       );
@@ -1098,7 +1174,7 @@ class AgentService {
       }
       final initialization = await io.client.initialize();
       _available();
-      final claims = initialization.claims;
+      var claims = initialization.claims;
       final adapter = AgentAdapter(
         name: initialization.name,
         version: initialization.version,
@@ -1146,6 +1222,10 @@ class AgentService {
             target: target,
             createdAt: now,
             updatedAt: now,
+            ompSessionFile: switch (startingIo.client) {
+              final OmpRuntimeDriver driver => driver.sessionFile,
+              _ => null,
+            },
           );
           stage = 'record';
           _insert(record);
@@ -1153,6 +1233,7 @@ class AgentService {
             record: record,
             io: startingIo,
             reservation: reservation,
+            runId: runId,
             claims: claims,
             grant: grant,
             mcpServers: mcpServers,
@@ -1166,16 +1247,12 @@ class AgentService {
           final native = await driver.newSession(target.path);
           _available();
           stage = 'tools/config';
-          final reason =
-              _deliveryFailure(adapter) ??
-              await driver.registerHostTools(ToolRole.coding);
+          final reason = await _configureOmpTools(driver, adapter);
           if (driver.isClosed) {
             throw driver.failure ??
                 OmpProtocolException('OMP tool transport closed');
           }
-          toolsUnavailableReason = reason == null
-              ? null
-              : clampUtf8(_redact(reason), 4096);
+          toolsUnavailableReason = reason;
           created(native);
         } else {
           stage = 'session/new';
@@ -1185,6 +1262,38 @@ class AgentService {
             onCreated: created,
           );
         }
+      } else if (io.client case final OmpRuntimeDriver driver) {
+        stage = 'history';
+        final mode = await driver.prepareContinue(
+          saved.nativeSessionId,
+          resumeFile!,
+        );
+        claims = AdapterClaims([
+          ...OmpRuntimeDriver.rootCapabilities,
+          'resume',
+          if (mode == AgentContinueMode.load) 'load',
+        ], null);
+        _available();
+        stage = 'tools/config';
+        toolsUnavailableReason = await _configureOmpTools(
+          driver,
+          adapter,
+          reopening: true,
+        );
+        if (driver.isClosed) {
+          throw OmpProtocolException('OMP tool transport closed');
+        }
+        _available();
+        a = _registerNativeSession(
+          record: saved,
+          io: io,
+          reservation: reservation,
+          runId: runId,
+          claims: claims,
+          mode: mode,
+          toolsUnavailableReason: toolsUnavailableReason,
+        );
+        live = a;
       } else {
         if (!claims.canLoad && !claims.canResume) {
           throw _resumeUnavailable(
@@ -1202,6 +1311,7 @@ class AgentService {
           record: saved,
           io: io,
           reservation: reservation,
+          runId: runId,
           claims: claims,
           mode: claims.canLoad
               ? AgentContinueMode.load
@@ -1240,6 +1350,12 @@ class AgentService {
         throw RpcException(
           ErrorCode.workspaceUnavailable,
           'the workspace target changed while the adapter was starting',
+        );
+      }
+      if (resumeFile != null && error is! RpcException) {
+        throw _resumeUnavailable(
+          'omp-native-reopen-unverified',
+          'OMP could not verify the saved conversation ($stage).',
         );
       }
       if (error is RpcException) {
@@ -1338,10 +1454,25 @@ class AgentService {
     }
   }
 
+  Future<String?> _configureOmpTools(
+    OmpRuntimeDriver driver,
+    AgentAdapter adapter, {
+    bool reopening = false,
+  }) async {
+    final recorded = _deliveryFailure(adapter);
+    if (recorded != null) return clampUtf8(_redact(recorded), 4096);
+    final reason = await driver.registerHostTools(ToolRole.coding);
+    if (reason == null) return null;
+    return reopening
+        ? 'OMP tool registration was unavailable for the continued run.'
+        : clampUtf8(_redact(reason), 4096);
+  }
+
   _Agent _registerNativeSession({
     required AgentSessionRecord record,
     required _AgentIO io,
     required ChannelReservation reservation,
+    required String runId,
     required AdapterClaims claims,
     AgentContinueMode? mode,
     ToolGrant? grant,
@@ -1352,7 +1483,7 @@ class AgentService {
       record: record,
       io: io,
       reservation: reservation,
-      runId: _newId(),
+      runId: runId,
       mode: mode,
       grant: grant,
       mcpServers: mcpServers,
@@ -1489,7 +1620,7 @@ class AgentService {
       store.execute('BEGIN IMMEDIATE');
       try {
         store.execute(
-          'INSERT INTO agent_session(id, runtime_kind, runtime_profile_id, adapter_name, adapter_version, native_session_id, role, target_host, target_path, target_identity, workspace_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+          'INSERT INTO agent_session(id, runtime_kind, runtime_profile_id, adapter_name, adapter_version, native_session_id, role, target_host, target_path, target_identity, workspace_id, created_at, updated_at, omp_session_file) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
           [
             r.id,
             r.runtimeKind,
@@ -1504,6 +1635,7 @@ class AgentService {
             r.target.workspaceId,
             r.createdAt,
             r.updatedAt,
+            r.ompSessionFile,
           ],
         );
         store.execute('COMMIT');
@@ -1567,7 +1699,20 @@ class AgentService {
 
   Future<void> _restore(_Agent a) async {
     try {
-      if (a.mode == AgentContinueMode.load) {
+      if (a.io.client case final OmpRuntimeDriver driver) {
+        if (a.mode == AgentContinueMode.load) {
+          await driver.loadSession(
+            a.record.nativeSessionId,
+            a.record.target.path,
+          );
+        } else {
+          await driver.resumeSession(
+            a.record.nativeSessionId,
+            a.record.target.path,
+          );
+        }
+        await a.relay.flush();
+      } else if (a.mode == AgentContinueMode.load) {
         await a.session.replayStarted();
         if (!_current(a) || a.ending) return;
         await a.io.client.loadSession(

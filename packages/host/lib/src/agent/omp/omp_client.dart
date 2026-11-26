@@ -81,6 +81,7 @@ class OmpClient implements RuntimeTransport {
     Duration timeout = const Duration(seconds: 60),
     void Function(String id)? onIssued,
     Object? Function(Object? data)? onSuccess,
+    Object? Function(Object? data)? decodeData,
   }) {
     try {
       return admitCommand(
@@ -89,6 +90,7 @@ class OmpClient implements RuntimeTransport {
         timeout: timeout,
         onIssued: onIssued,
         onSuccess: onSuccess,
+        decodeData: decodeData,
       );
     } on Object catch (error, stack) {
       return Future.error(error, stack);
@@ -104,6 +106,7 @@ class OmpClient implements RuntimeTransport {
     Duration timeout = const Duration(seconds: 60),
     void Function(String id)? onIssued,
     Object? Function(Object? data)? onSuccess,
+    Object? Function(Object? data)? decodeData,
   }) {
     if (isClosed) throw _closedError();
     if (_pending.length >= 32) {
@@ -134,7 +137,7 @@ class OmpClient implements RuntimeTransport {
                 TimeoutException('OMP $type timed out', timeout),
               );
             });
-            _pending[id] = _Pending(result, timer, onSuccess);
+            _pending[id] = _Pending(result, timer, onSuccess, decodeData);
           },
         )
         .ignore();
@@ -178,7 +181,12 @@ class OmpClient implements RuntimeTransport {
     pending.timer.cancel();
     if (success) {
       try {
-        final data = frame['data'];
+        final decodeData = pending.decodeData;
+        final data = decodeData == null
+            ? frame['data']
+            : bytes.length >= 1024 * 1024
+            ? null
+            : decodeData(frame['data']);
         final delivery = pending.onSuccess?.call(data);
         pending.result.complete(data);
         return delivery;
@@ -232,9 +240,10 @@ class OmpClient implements RuntimeTransport {
 }
 
 class _Pending {
-  _Pending(this.result, this.timer, this.onSuccess);
+  _Pending(this.result, this.timer, this.onSuccess, this.decodeData);
 
   final Completer<Object?> result;
   final Timer timer;
   final Object? Function(Object? data)? onSuccess;
+  final Object? Function(Object? data)? decodeData;
 }

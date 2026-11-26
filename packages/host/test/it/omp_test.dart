@@ -97,6 +97,7 @@ void main() {
     Set<String> caps = ompCaps,
     Map<String, String> environment = const {},
     String? executable,
+    List<String>? profileArgs,
   }) async {
     final profile = tempDir('omp_host_profile');
     final work = tempDir('omp_host_work');
@@ -107,6 +108,7 @@ void main() {
       caps: caps,
       environment: environment,
       executable: executable,
+      profileArgs: profileArgs,
     );
     return fixture;
   }
@@ -1548,7 +1550,7 @@ void main() {
     },
   );
 
-  test('OMP: Continue on a saved OMP session', () async {
+  test('OMP: Older peer cannot Continue a saved OMP session', () async {
     final fixture = await openFixture();
     final peer = await fixture.start();
     await peer.close();
@@ -1566,6 +1568,238 @@ void main() {
       'probe',
       'root',
     ]);
+  });
+
+  test(
+    'OMP: Upgraded peer gets a record-specific missing locator refusal',
+    () async {
+      final fixture = await openFixture(caps: {...ompCaps, 'omp-history'});
+      final peer = await fixture.start();
+      await peer.close();
+      final before = agentRows(fixture.profile);
+      final record = await peer.call(Method.agentRecords, {
+        'sessionIds': [peer.id],
+      });
+      expect(jsonEncode(record), contains('omp-locator-unavailable'));
+      await expectLater(
+        peer.call(Method.agentContinue),
+        throwsA(
+          isA<RpcException>()
+              .having((e) => e.reason, 'error', ErrorCode.resumeUnavailable)
+              .having(
+                (e) => e.data,
+                'reason',
+                containsPair('resumeReason', 'omp-locator-unavailable'),
+              ),
+        ),
+      );
+      expect(agentRows(fixture.profile), before);
+      expect(fixture.reports.where((r) => r['launch'] == 'root'), hasLength(1));
+    },
+  );
+
+  test('OMP: Continue verifies the original file and restores native pages before Send', () async {
+    final profile = tempDir('omp_resume_profile');
+    final work = tempDir('omp_resume_work');
+    addTearDown(() => deleteTree(profile));
+    addTearDown(() => deleteTree(work));
+    final history = File(joinPath(profile.path, 'native-history.jsonl'));
+    final header = {'type': 'session', 'id': 'original', 'cwd': work.path};
+    const title =
+        '{"type":"title","v":1,"title":"private","updatedAt":"","pad":"';
+    history.writeAsStringSync(
+      '$title${' ' * (256 - title.length - 3)}"}\n${jsonEncode(header)}\n',
+    );
+    Json response(Json data) => {
+      'type': 'response',
+      'id': r'$id',
+      'success': true,
+      'data': data,
+    };
+    final fixture = OmpFixture(
+      profile,
+      work,
+      script: {
+        'commands': {
+          'get_state': [
+            [
+              response({
+                'sessionId': 'original',
+                'sessionFile': history.path,
+                'isSettled': true,
+                'hasPendingAsyncWork': false,
+              }),
+            ],
+            [
+              response({
+                'sessionId': 'original',
+                'sessionFile': history.path,
+                'isSettled': true,
+                'hasPendingAsyncWork': false,
+              }),
+            ],
+          ],
+          'get_messages_page': [
+            [
+              response({
+                'totalMessages': 3,
+                'nextCursor': 'next',
+                'messages': [
+                  {'role': 'user', 'content': 'old question'},
+                ],
+              }),
+            ],
+            [
+              response({
+                'totalMessages': 3,
+                'messages': [
+                  {
+                    'role': 'assistant',
+                    'content': [
+                      {'type': 'text', 'text': 'old answer'},
+                      {
+                        'type': 'toolCall',
+                        'id': 'check',
+                        'name': 'read',
+                        'arguments': {'key': 'value'},
+                      },
+                      {'type': 'image', 'data': 'private-unsupported-content'},
+                    ],
+                  },
+                  {
+                    'role': 'toolResult',
+                    'toolCallId': 'check',
+                    'toolName': 'read',
+                    'isError': true,
+                    'content': [
+                      {'type': 'text', 'text': 'read failed'},
+                    ],
+                  },
+                ],
+              }),
+            ],
+          ],
+        },
+      },
+    );
+    await fixture.open(
+      caps: {...ompCaps, 'omp-history'},
+      profileArgs: ['--mode', 'rpc', '--thinking=low', '--offline'],
+    );
+    final old = await fixture.start();
+    await old.close();
+    final saved = agentRows(profile).single;
+    expect(saved['omp_session_file'], history.path);
+    await old.call(
+      Method.runtimeSave,
+      RuntimeSaveParams(
+        RuntimeProfile(
+          id: 'unsafe-omp',
+          name: 'Unsafe OMP',
+          runtimeKind: 'omp',
+          executable: testHostExecutable(),
+          args: ['--mode', 'rpc', '--continue'],
+        ),
+      ).toJson(),
+    );
+    await expectLater(
+      old.call(Method.agentContinue, {
+        'sessionId': old.id,
+        'runtimeProfileId': 'unsafe-omp',
+      }),
+      rpcCode(ErrorCode.noRuntimeProfile),
+    );
+    expect(fixture.reports.map((r) => r['launch']).whereType<String>(), [
+      'probe',
+      'root',
+    ]);
+    final originalScript = fixture.scriptFile.readAsStringSync();
+    fixture.scriptFile.writeAsStringSync(
+      jsonEncode({
+        'reportFile': fixture.report.path,
+        'startupStderr': 'internal startup path: ${history.path}',
+        'commands': {
+          'get_state': [
+            [
+              response({
+                'sessionId': 'wrong-native-id',
+                'sessionFile': history.path,
+                'isSettled': true,
+                'hasPendingAsyncWork': false,
+              }),
+            ],
+          ],
+        },
+      }),
+    );
+    await expectLater(
+      old.call(Method.agentContinue),
+      throwsA(
+        isA<RpcException>()
+            .having((e) => e.reason, 'code', ErrorCode.resumeUnavailable)
+            .having(
+              (e) => jsonEncode([e.message, e.data]),
+              'diagnostic',
+              isNot(contains('native-history.jsonl')),
+            ),
+      ),
+    );
+    expect(LedgerView(profile).units(), isEmpty);
+    expect(agentRows(profile).single, saved);
+    fixture.scriptFile.writeAsStringSync(originalScript);
+    final continued = AgentContinueResult.fromJson(
+      await old.call(Method.agentContinue),
+    );
+    expect(continued.mode, AgentContinueMode.load);
+    final peer = AgentPeer(fixture.desktop)
+      ..started = AgentStartResult(
+        sessionId: old.id,
+        eventChannel: continued.eventChannel,
+        adapter: continued.adapter,
+        capabilities: continued.capabilities,
+      );
+    await peer.attach(credit: false);
+    await expectLater(peer.prompt(), rpcCode(ErrorCode.turnRunning));
+    peer.notifications.clear();
+    fixture.desktop.connection.grantInitial(continued.eventChannel);
+    await peer.wait(Method.agentState, where: (p) => p['state'] == 'idle');
+    await eventually(
+      () =>
+          peer.events.any((e) => e['kind'] == 'replay' && e['phase'] == 'end'),
+      within: const Duration(minutes: 2),
+      reason: 'the verified snapshot did not cross the event channel',
+    );
+    expect(
+      peer.events.map((e) => e['text']).whereType<String>(),
+      containsAllInOrder(['old question', 'old answer']),
+    );
+    final eventJson = jsonEncode(peer.events);
+    expect(eventJson, contains('read failed'));
+    expect(
+      eventJson,
+      contains('Some recorded OMP content could not be shown.'),
+    );
+    expect(eventJson, isNot(contains('private-unsupported-content')));
+    expect(eventJson, isNot(contains('native-history.jsonl')));
+    expect(fixture.commands.where((c) => c['type'] == 'prompt'), isEmpty);
+    expect(
+      fixture.commands
+          .where((c) => c['type'] == 'get_messages_page')
+          .last['cursor'],
+      'next',
+    );
+    final resumedArgv =
+        fixture.reports.where((r) => r['launch'] == 'root').last['argv']!
+            as List;
+    expect(resumedArgv.take(6), [
+      '--mode',
+      'rpc',
+      '--thinking=low',
+      '--offline',
+      '--resume',
+      history.path,
+    ]);
+    expect(agentRows(profile).single['native_session_id'], 'original');
   });
 
   for (final hangAfterEof in [false, true]) {

@@ -90,6 +90,7 @@ abstract final class Capability {
   static const String agent = 'agent';
   static const String codex = 'codex';
   static const String omp = 'omp';
+  static const String ompHistory = 'omp-history';
   static const String agentExtensionsV1 = 'agent-extensions-v1';
 
   /// `app/quit` and `app/previousExit` (app-exit-and-reopen D1, D5).
@@ -2226,22 +2227,30 @@ class AgentRecord {
     required this.workspaceAvailable,
     this.targetPath,
     this.adapterVersion,
+    this.continueUnavailable,
+    this.historyUnconfirmed,
   });
   factory AgentRecord.fromJson(Json json) => AgentRecord(
     known: _req<bool>(json, 'known'),
     workspaceAvailable: _req<bool>(json, 'workspaceAvailable'),
     targetPath: _opt<String>(json, 'targetPath'),
     adapterVersion: _opt<String>(json, 'adapterVersion'),
+    continueUnavailable: _opt<String>(json, 'continueUnavailable'),
+    historyUnconfirmed: _opt<String>(json, 'historyUnconfirmed'),
   );
   final bool known;
   final bool workspaceAvailable;
   final String? targetPath;
   final String? adapterVersion;
+  final String? continueUnavailable;
+  final String? historyUnconfirmed;
   Json toJson() => {
     'known': known,
     'workspaceAvailable': workspaceAvailable,
     'targetPath': ?targetPath,
     'adapterVersion': ?adapterVersion,
+    'continueUnavailable': ?continueUnavailable,
+    'historyUnconfirmed': ?historyUnconfirmed,
   };
 }
 

@@ -212,6 +212,18 @@ class _AgentPaneViewState extends State<AgentPaneView> {
                 ),
               ),
             ),
+          if (link.known &&
+              link.phase == AgentLinkPhase.ended &&
+              link.continueUnavailable != null)
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 12),
+              child: Text(link.continueUnavailable!),
+            ),
+          if (link.historyWarning case final warning?)
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 12),
+              child: Text(warning),
+            ),
           if (link.stopLabel != null)
             Padding(
               padding: const EdgeInsets.symmetric(horizontal: 12),

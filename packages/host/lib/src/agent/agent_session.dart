@@ -841,8 +841,10 @@ class AgentSession {
         ),
       );
     }
-    final omp = client is OmpRuntimeDriver;
-    final id = '${omp ? sessionId : runId}:permission-${++_requestId}';
+    final ompRun = client is OmpRuntimeDriver
+        ? (client as OmpRuntimeDriver).runId
+        : null;
+    final id = '${ompRun ?? runId}:permission-${++_requestId}';
     final options = <String, Object?>{};
     final display = <AgentPermissionOption>[];
     for (var i = 0; i < request.choices.length; i++) {
@@ -874,7 +876,7 @@ class AgentSession {
       }
     }
     final preview = request.preview == null ? null : _redact(request.preview!);
-    if (omp && preview != request.preview) {
+    if (ompRun != null && preview != request.preview) {
       _observeWrite(client.reply(request.id, request.cancellation));
       return encodeAgentEvent(
         AgentEvent.notice(

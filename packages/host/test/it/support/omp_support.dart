@@ -45,6 +45,7 @@ class OmpFixture {
     Set<String> caps = ompCaps,
     Map<String, String> environment = const {},
     Map<String, String> profileEnvironment = const {},
+    List<String>? profileArgs,
     String? executable,
   }) async {
     writeScript();
@@ -69,8 +70,12 @@ class OmpFixture {
           name: 'Scripted OMP',
           runtimeKind: 'omp',
           executable: executable ?? testHostExecutable(),
-          args: argv,
-          env: profileEnvironment,
+          args: profileArgs ?? argv,
+          env: {
+            ...profileEnvironment,
+            if (profileArgs != null)
+              'KUMIKO_TEST_OMP_ROOT_SCRIPT': scriptFile.path,
+          },
         ),
       ),
     );

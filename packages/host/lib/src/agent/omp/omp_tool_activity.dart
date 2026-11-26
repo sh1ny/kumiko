@@ -7,6 +7,9 @@ import 'package:host_protocol/host_protocol.dart';
 /// objects. Reset at each terminal result or refused admission; card IDs never
 /// repeat during the run.
 final class OmpToolActivity {
+  OmpToolActivity({this.cardPrefix = 'omp'});
+
+  final String cardPrefix;
   static const _maxOpen = 16;
   static const _maxClosed = 256;
   static const _identityBytes = 256;
@@ -62,7 +65,7 @@ final class OmpToolActivity {
           ? _arguments(frame['args'])
           : (null, false);
       final tool = _Tool(
-        'omp-tool-${++_nextCard}',
+        '$cardPrefix-tool-${++_nextCard}',
         toolName,
         arguments,
         clipped,

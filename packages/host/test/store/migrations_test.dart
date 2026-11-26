@@ -267,7 +267,11 @@ void main() {
       final unitBefore = rows(old, 'unit');
       old.close();
 
-      final store = Store.open(profile, lock);
+      final store = Store.open(
+        profile,
+        lock,
+        migrations: schemaMigrations.take(6).toList(),
+      );
       addTearDown(store.close);
 
       expect(store.userVersion, 6);
@@ -364,7 +368,11 @@ void main() {
     });
 
     test('v5-only reader refuses v6 with database bytes unchanged', () {
-      Store.open(profile, lock).close();
+      Store.open(
+        profile,
+        lock,
+        migrations: schemaMigrations.take(6).toList(),
+      ).close();
       final before = dbFile().readAsBytesSync();
       expect(
         () => Store.open(profile, lock, migrations: v5()),
@@ -378,12 +386,54 @@ void main() {
     });
   });
 
+  test(
+    'v6 OMP records migrate without inferring history and v6 refuses v7',
+    () {
+      final v6 = schemaMigrations.take(6).toList();
+      final old = Store.open(profile, lock, migrations: v6);
+      old.execute(
+        "INSERT INTO agent_session VALUES ('old', 'omp', NULL, 'omp-rpc', "
+        "'18.20.1', 'native', 'coding', 'local', '/old', 'identity', NULL, 'a', 'b')",
+      );
+      final before = old.select('SELECT * FROM agent_session').single.values;
+      old.close();
+
+      final migrated = Store.open(profile, lock);
+      try {
+        expect(migrated.userVersion, 7);
+        expect(migrated.select('SELECT * FROM agent_session').single.values, [
+          ...before,
+          null,
+          null,
+        ]);
+        migrated.execute(
+          'UPDATE agent_session SET omp_session_file = ? WHERE id = ?',
+          ['/private/native.jsonl', 'old'],
+        );
+      } finally {
+        migrated.close();
+      }
+      final bytesBeforeRefusal = dbFile().readAsBytesSync();
+      expect(
+        () => Store.open(profile, lock, migrations: v6),
+        throwsA(isA<StoreNewer>().having((e) => e.storeVersion, 'version', 7)),
+      );
+      expect(dbFile().readAsBytesSync(), bytesBeforeRefusal);
+      final reopened = Store.open(profile, lock);
+      addTearDown(reopened.close);
+      expect(reopened.select('SELECT * FROM agent_session').single.values, [
+        ...before,
+        '/private/native.jsonl',
+        null,
+      ]);
+    },
+  );
+
   test('fresh store created at current version', () {
     final store = Store.open(profile, lock);
     addTearDown(store.close);
 
     expect(store.userVersion, currentSchemaVersion);
-    expect(currentSchemaVersion, 6);
     expect(store.pragma('journal_mode'), 'wal');
     expect(store.pragma('synchronous'), 2); // FULL
     final tables = store
@@ -481,13 +531,16 @@ void main() {
       () => Store.open(profile, lock, migrations: steps),
       throwsA(
         isA<StoreMigrationFailed>()
-            .having((e) => e.fromVersion, 'from', 7)
-            .having((e) => e.toVersion, 'to', 8),
+            .having((e) => e.fromVersion, 'from', currentSchemaVersion + 1)
+            .having((e) => e.toVersion, 'to', currentSchemaVersion + 2),
       ),
     );
     final db = sqlite3.open(dbFile().path);
     addTearDown(db.close);
-    expect(db.select('PRAGMA user_version').single.values.first, 7);
+    expect(
+      db.select('PRAGMA user_version').single.values.first,
+      currentSchemaVersion + 1,
+    );
   });
 
   test('newer user_version is refused unchanged', () {
@@ -504,7 +557,11 @@ void main() {
         isA<StoreNewer>()
             .having((e) => e.code, 'code', 'store-newer')
             .having((e) => e.storeVersion, 'store', 9)
-            .having((e) => e.supportedVersion, 'supported', 6),
+            .having(
+              (e) => e.supportedVersion,
+              'supported',
+              currentSchemaVersion,
+            ),
       ),
     );
 

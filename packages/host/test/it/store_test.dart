@@ -40,7 +40,7 @@ void main() {
     expect(instance['desktop_pid'], pid);
     final db = sql.sqlite3.open(dbPath(profile), mode: sql.OpenMode.readOnly);
     addTearDown(db.close);
-    expect(db.select('PRAGMA user_version').single.values.first, 6);
+    expect(db.select('PRAGMA user_version').single.values.first, 7);
   });
 
   test('hello reports store-migration-failed', () async {
@@ -79,7 +79,7 @@ void main() {
 
     expect(error.reason, ErrorCode.storeNewer);
     expect(error.data['storeVersion'], 99);
-    expect(error.data['supportedVersion'], 6);
+    expect(error.data['supportedVersion'], 7);
     expect(error.data['path'], dbPath(profile));
     expect(File(dbPath(profile)).readAsBytesSync(), before);
   });

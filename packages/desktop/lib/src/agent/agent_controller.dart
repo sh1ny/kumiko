@@ -27,6 +27,9 @@ bool _nativePeer(HostLink? host) =>
       Capability.agentExtensionsV1,
     ].every(host.hello.capabilities.contains);
 
+bool _ompHistoryPeer(HostLink? host) =>
+    host?.hello.capabilities.contains(Capability.ompHistory) == true;
+
 class NativeQuestion {
   NativeQuestion(this.request);
   final AgentQuestionRequestedParams request;
@@ -60,6 +63,22 @@ class AgentLink {
   String runtimeName;
   String runtimeKind = 'claude-code';
   bool _nativeControlsNegotiated = false;
+  bool _ompHistoryNegotiated = false;
+  String? _continueUnavailable;
+  String? _historyUnconfirmed;
+  String? get continueUnavailable => runtimeKind != 'omp'
+      ? null
+      : !_ompHistoryNegotiated
+      ? 'OMP Continue requires an omp-history connection.'
+      : switch (_continueUnavailable) {
+          null => null,
+          'omp-locator-unavailable' =>
+            'The saved OMP native session file is unavailable.',
+          _ => 'This OMP conversation cannot be continued.',
+        };
+  String? get historyWarning => _historyUnconfirmed == null
+      ? null
+      : 'OMP history save was not confirmed.';
   String? runId;
   String? turnId;
   int nativeSeq = -1;
@@ -265,7 +284,11 @@ class AgentLink {
           state == AgentState.waitingApproval ||
           delegatedWork);
   bool get canContinue =>
-      connected && known && phase == AgentLinkPhase.ended && !_draining;
+      connected &&
+      known &&
+      phase == AgentLinkPhase.ended &&
+      !_draining &&
+      continueUnavailable == null;
   // Native restoration retains resume-unavailable as the outer diagnostic.
   bool get requiresAuthentication =>
       errorCode == ErrorCode.authRequired ||
@@ -377,7 +400,8 @@ class AgentController extends ChangeNotifier implements ViewCloser {
           onDraftChanged: _changed,
         )
         ..draftStorageDisabled = _draftsDisabled
-        .._nativeControlsNegotiated = _nativePeer(_host);
+        .._nativeControlsNegotiated = _nativePeer(_host)
+        .._ompHistoryNegotiated = _ompHistoryPeer(_host);
 
   Future<AgentDraftSaveResult> _saveDraft(AgentDraftSaveParams params) async {
     final host = _host;
@@ -571,6 +595,7 @@ class AgentController extends ChangeNotifier implements ViewCloser {
     _host = host;
     for (final link in _links.values) {
       link._nativeControlsNegotiated = _nativePeer(host);
+      link._ompHistoryNegotiated = _ompHistoryPeer(host);
     }
     final generation = _generation;
     void listen<T>(Stream<T> source, void Function(T) receive) {
@@ -845,6 +870,8 @@ class AgentController extends ChangeNotifier implements ViewCloser {
           if (record == null) continue;
           link.known = record.known;
           link.saved = record.known;
+          link._continueUnavailable = record.continueUnavailable;
+          link._historyUnconfirmed = record.historyUnconfirmed;
         }
       } on RpcException catch (e) {
         if (!_current(host, generation)) return;
@@ -1895,6 +1922,24 @@ class AgentController extends ChangeNotifier implements ViewCloser {
           final events = link._events;
           link._events = null;
           await events?.cancel();
+          if (!_owns(link) ||
+              link.runtimeKind != 'omp' ||
+              !link._ompHistoryNegotiated) {
+            return;
+          }
+          try {
+            final records = await host.agentRecords([exit.sessionId]);
+            if (!_current(host, generation) || !_owns(link)) return;
+            final record = records.records[exit.sessionId];
+            link._continueUnavailable = record?.continueUnavailable;
+            link._historyUnconfirmed = record?.historyUnconfirmed;
+          } on RpcException catch (error) {
+            if (_current(host, generation) && _owns(link)) {
+              link.error = _describe(error);
+            }
+          } on ConnectionClosedException {
+            if (_current(host, generation)) detach();
+          }
         }().whenComplete(() {
           if (_current(host, generation)) {
             link._releasing = null;

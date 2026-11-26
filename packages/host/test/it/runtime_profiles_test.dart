@@ -347,7 +347,10 @@ void main() {
       await d.session.quit();
       final db = sqlite3.open(joinPath(profile.path, 'kumiko.db'));
       db.execute(
-        "INSERT INTO agent_session VALUES ('s', 'claude-code', 'u', 'adapter', '0.99.1', 'native', 'coding', 'local', '/target', 'identity', NULL, 'a', 'a')",
+        'INSERT INTO agent_session (id, runtime_kind, runtime_profile_id, '
+        'adapter_name, adapter_version, native_session_id, role, target_host, '
+        'target_path, target_identity, workspace_id, created_at, updated_at) VALUES '
+        "('s', 'claude-code', 'u', 'adapter', '0.99.1', 'native', 'coding', 'local', '/target', 'identity', NULL, 'a', 'a')",
       );
       db.close();
       final before = rows('agent_session');

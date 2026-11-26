@@ -13,7 +13,7 @@ const _profile = RuntimeProfile(
   executable: '/omp',
 );
 
-FakeHostLink _host({bool supportsOmp = true}) {
+FakeHostLink _host({bool supportsOmp = true, bool supportsHistory = false}) {
   final host = FakeHostLink(
     hello: helloResult(
       capabilities: {
@@ -21,6 +21,7 @@ FakeHostLink _host({bool supportsOmp = true}) {
         Capability.terminal,
         Capability.agent,
         if (supportsOmp) Capability.omp,
+        if (supportsHistory) 'omp-history',
       },
     ),
   );
@@ -240,19 +241,80 @@ void main() {
     expect(find.text('work in progress', findRichText: true), findsNothing);
   });
 
-  uiTest('OMP: Continue on a saved OMP session', (tester) async {
-    const reason = 'OMP Continue is not supported in this Kumiko version';
-    final host = _host();
-    final rig = await _chat(tester, host);
-    host.agentExit(session(rig));
-    await flush(tester);
-    agents(rig).linkOf(chat(rig).id)!.saved = true;
-    host.agentContinueAnswers.add(
-      RpcException(ErrorCode.methodNotAvailable, reason),
+  FakeHostLink savedOmp({required bool history, String? unavailable}) {
+    final host = _host(supportsHistory: history);
+    host.storedLayout = jsonOf(
+      docOf([
+        tabOf(
+          'saved-tab',
+          paneOf(
+            'saved-pane',
+            kind: 'agent-chat',
+            ws: 'A',
+            item: 'saved-item',
+            state: {
+              'sessionId': 'saved',
+              'runtimeName': 'OMP',
+              'runtimeKind': 'omp',
+            },
+          ),
+        ),
+      ], selected: 'A'),
     );
-    await tester.tap(key('agent-continue-${chat(rig).id}'));
+    host.agentRecordMap['saved'] = AgentRecord.fromJson({
+      'known': true,
+      'workspaceAvailable': true,
+      'continueUnavailable': ?unavailable,
+    });
+    return host;
+  }
+
+  for (final history in [false, true]) {
+    uiTest(
+      'OMP: ${history ? 'Missing locator' : 'Old peer'} disables Continue before a request',
+      (tester) async {
+        final host = savedOmp(
+          history: history,
+          unavailable: history ? 'omp-locator-unavailable' : null,
+        );
+        final rig = await pumpRig(tester, host);
+        expect(agents(rig).linkOf('saved-pane')!.canContinue, isFalse);
+        expect(
+          find.textContaining(history ? 'native session file' : 'omp-history'),
+          findsOneWidget,
+        );
+        expect(host.agentContinues, isEmpty);
+      },
+    );
+  }
+
+  uiTest('OMP: Explicit Continue loads the saved chat, without sending', (
+    tester,
+  ) async {
+    final host = savedOmp(history: true);
+    final rig = await pumpRig(tester, host);
+    expect(host.agentContinues, isEmpty);
+    expect(agents(rig).linkOf('saved-pane')!.canContinue, isTrue);
+    host.agentContinueAnswers.add(
+      const AgentContinueResult(
+        eventChannel: 121,
+        adapter: AgentAdapter(name: 'omp-rpc', version: '18.20.1'),
+        capabilities: ['load'],
+        mode: AgentContinueMode.load,
+      ),
+    );
+    await tester.tap(key('agent-continue-saved-pane'));
     await flush(tester);
-    expect(find.textContaining(reason), findsOneWidget);
-    expect(host.agentStarts, hasLength(1));
+    host.agentEvent('saved', AgentEvent.replay(AgentReplayPhase.start));
+    host.agentEvent(
+      'saved',
+      AgentEvent.text(AgentEventKind.agentText, 'The old answer.'),
+    );
+    host.agentEvent('saved', AgentEvent.replay(AgentReplayPhase.end));
+    await flush(tester);
+    expect(find.text('The old answer.', findRichText: true), findsOneWidget);
+    expect(host.agentContinues.single.sessionId, 'saved');
+    expect(host.agentStarts, isEmpty);
+    expect(host.agentPrompts, isEmpty);
   });
 }

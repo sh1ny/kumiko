@@ -8,10 +8,12 @@ import '../runtime_driver.dart';
 import '../tools/tool_catalog.dart';
 import 'omp_client.dart';
 import 'omp_host_tools.dart';
+import 'omp_history.dart';
+import 'omp_session_file.dart';
 import 'omp_tool_activity.dart';
 
 class OmpRuntimeDriver extends RuntimeDriver {
-  OmpRuntimeDriver(this.client, this.version) {
+  OmpRuntimeDriver(this.client, this.version, {this.runId = 'omp'}) {
     client.normalizeNotification = _frame;
     unawaited(
       client.done.then((_) {
@@ -28,15 +30,21 @@ class OmpRuntimeDriver extends RuntimeDriver {
     );
   }
 
-  static const continueUnavailable =
-      'OMP Continue is not supported in this Kumiko version';
+  final String runId;
+  static const rootCapabilities = ['prompt', 'streaming', 'cancel'];
   final OmpClient client;
   late final _hostTools = OmpHostTools(client);
   final String version;
   final _ready = Completer<void>();
   final _messages = <String, Set<int>>{};
   final _refusedPromptIds = <String>{};
-  final _activity = OmpToolActivity();
+  late final _activity = OmpToolActivity(cardPrefix: runId);
+  List<Uint8List>? _replay;
+  int _historyEpoch = 0;
+  int? _replayEpoch;
+  String? _historyUnavailable;
+  String? get sessionFile => _sessionFile;
+  String? _sessionFile;
   Future<RuntimeIdentity>? _initializing;
   String? _session;
   _Turn? _turn;
@@ -118,11 +126,7 @@ class OmpRuntimeDriver extends RuntimeDriver {
     return RuntimeIdentity(
       'omp-rpc',
       version,
-      AdapterClaims(const [
-        'prompt',
-        'streaming',
-        'cancel',
-      ], continueUnavailable),
+      AdapterClaims(rootCapabilities, 'omp-locator-unavailable'),
     );
   }
 
@@ -132,19 +136,131 @@ class OmpRuntimeDriver extends RuntimeDriver {
     List<Json> mcpServers = const [],
     void Function(String)? onCreated,
   }) async {
-    final Object? state;
+    final (String, String?, bool, int)? state;
     try {
-      state = await client.request('get_state');
-    } on Object catch (error) {
+      state = await _getIdentity();
+    } on OmpRemoteException catch (error) {
       throw OmpProtocolException('get_state: $error');
+    } on TimeoutException {
+      throw OmpProtocolException('get_state timed out');
     }
-    final id = state is Json ? state['sessionId'] : null;
-    if (id is! String || id.isEmpty || jsonStringContentBytes(id) > 4096) {
-      throw OmpProtocolException('invalid OMP sessionId');
-    }
+    if (state == null) throw OmpProtocolException('invalid OMP sessionId');
+    final (id, path, _, _) = state;
     _session = id;
+    _sessionFile = path;
     onCreated?.call(id);
     return id;
+  }
+
+  Future<(String, String?, bool, int)?> _getIdentity({
+    Duration timeout = const Duration(seconds: 60),
+  }) async {
+    final state = await client.command(
+      'get_state',
+      timeout: timeout,
+      decodeData: (data) {
+        if (data is! Json) return null;
+        final id = data['sessionId'];
+        if (id is! String ||
+            id.isEmpty ||
+            id.length > 4096 ||
+            jsonStringContentBytes(id) > 4096) {
+          return null;
+        }
+        return (
+          id,
+          ompSessionPath(data['sessionFile']),
+          data['isSettled'] == true && data['hasPendingAsyncWork'] != true,
+          _historyEpoch,
+        );
+      },
+    );
+    return state as (String, String?, bool, int)?;
+  }
+
+  /// Called only for a native process launched with the stored exact file.
+  Future<AgentContinueMode> prepareContinue(String id, String file) async {
+    ({bool settled, int epoch}) verify((String, String?, bool, int)? state) {
+      if (state case (final nativeId, final path?, final settled, final epoch)
+          when nativeId == id && sameOmpSessionPath(file, path)) {
+        return (settled: settled, epoch: epoch);
+      }
+      throw OmpProtocolException('OMP did not confirm the saved conversation');
+    }
+
+    final start = verify(await _getIdentity());
+    _session = id;
+    _sessionFile = file;
+    if (!start.settled) {
+      _historyUnavailable = 'OMP was not idle while opening the session';
+      return AgentContinueMode.resume;
+    }
+
+    final snapshot = OmpHistory(runId);
+    final clock = Stopwatch()..start();
+    const budget = Duration(seconds: 60);
+    const identityGrace = Duration(seconds: 10);
+    var complete = false;
+    String? cursor;
+    try {
+      for (
+        var i = 0;
+        i < OmpHistory.maxPages && _historyEpoch == start.epoch;
+        i++
+      ) {
+        final remaining = budget - identityGrace - clock.elapsed;
+        if (remaining <= Duration.zero) break;
+        final page = await client.command(
+          'get_messages_page',
+          fields: {'limit': OmpHistory.pageSize, 'cursor': ?cursor},
+          timeout: remaining,
+          decodeData: snapshot.page,
+        );
+        if (page is! ({String? cursor})) break;
+        cursor = page.cursor;
+        if (cursor == null) {
+          complete = snapshot.finish();
+          break;
+        }
+      }
+    } on OmpRemoteException catch (error) {
+      _historyUnavailable = switch (error.code) {
+        'session_busy' ||
+        'stale_cursor' => 'OMP history changed while it was read',
+        _ => 'OMP could not return history within the supported transport',
+      };
+    } on TimeoutException {
+      _historyUnavailable = 'OMP history did not answer within the read limit';
+    }
+    // The one snapshot budget also covers its final identity check.
+    final remaining = budget - clock.elapsed;
+    if (remaining <= Duration.zero) {
+      throw OmpProtocolException(
+        'OMP history exceeded the identity verification budget',
+      );
+    }
+    final end = verify(
+      await _getIdentity(
+        timeout: remaining < identityGrace ? remaining : identityGrace,
+      ),
+    );
+    if (complete &&
+        end.settled &&
+        start.epoch == end.epoch &&
+        end.epoch == _historyEpoch) {
+      _replay = snapshot.lines;
+      _replayEpoch = end.epoch;
+      return AgentContinueMode.load;
+    }
+    _historyUnavailable ??=
+        'OMP history was unavailable, changed, or exceeded the replay limit';
+    return AgentContinueMode.resume;
+  }
+
+  Future<void> _deliverReplay(Iterable<Uint8List> lines) async {
+    await client.consumeNotification?.call(
+      RuntimeDelivery(lines, 0, null, null),
+    );
   }
 
   @override
@@ -152,14 +268,43 @@ class OmpRuntimeDriver extends RuntimeDriver {
     String id,
     String cwd, {
     List<Json> mcpServers = const [],
-  }) => throw RpcException(ErrorCode.methodNotAvailable, continueUnavailable);
+  }) async {
+    _requireReopened(id);
+    final replay = _replay;
+    _replay = null;
+    if (replay == null || _historyEpoch != _replayEpoch) {
+      _historyUnavailable = 'OMP history changed before attachment';
+      await resumeSession(id, cwd);
+      return;
+    }
+    await _deliverReplay([
+      ...encodeAgentEvent(AgentEvent.replay(AgentReplayPhase.start)),
+      ...replay,
+      ...encodeAgentEvent(AgentEvent.replay(AgentReplayPhase.end)),
+    ]);
+  }
 
   @override
   Future<void> resumeSession(
     String id,
     String cwd, {
     List<Json> mcpServers = const [],
-  }) => loadSession(id, cwd, mcpServers: mcpServers);
+  }) async {
+    _requireReopened(id);
+    await _deliverReplay(
+      encodeAgentEvent(
+        AgentEvent.notice(
+          'earlier messages not shown: ${_historyUnavailable ?? 'OMP history is unavailable'}',
+        ),
+      ),
+    );
+  }
+
+  void _requireReopened(String id) {
+    if (id != _session || isClosed) {
+      throw OmpProtocolException('OMP saved conversation is unavailable');
+    }
+  }
 
   @override
   Future<void> reply(Object id, Json result) =>
@@ -303,6 +448,13 @@ class OmpRuntimeDriver extends RuntimeDriver {
       }
       _ready.complete();
       return null;
+    }
+    if (type == 'agent_start' ||
+        type == 'turn_start' ||
+        type == 'message_start' ||
+        type == 'message_update' ||
+        type == 'session_info_update') {
+      _historyEpoch++;
     }
     final turn = _turn;
     final lines = <Uint8List>[];
