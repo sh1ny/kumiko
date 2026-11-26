@@ -211,6 +211,21 @@ void main() {
     expect(session.isLost, isFalse);
   });
 
+  test('quit keeps reading while the host finishes its last write', () async {
+    final session = await _launcher(
+      'write-at-eof',
+      helloTimeout: const Duration(minutes: 2),
+      quitTimeout: const Duration(minutes: 2),
+    ).start();
+    addTearDown(session.quit);
+
+    final result = await session.quit();
+
+    expect(result.timedOut, isFalse);
+    expect(result.exitCode, 0, reason: session.stderrTail);
+    expect(session.isLost, isFalse);
+  }, timeout: Timeout(const Duration(minutes: 5)));
+
   test('quit kills a host that outlives the deadline', () async {
     final session = await _launcher(
       'no-exit',

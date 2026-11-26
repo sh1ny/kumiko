@@ -2253,9 +2253,10 @@ void main() {
   test('OMP: Unannounced disconnect skips OMP grace and keeps the unexpected-exit outcome', () async {
     final fixture = await closingFixture(script: {'holdEof': true});
     await fixture.start();
-    final quit = await fixture.desktop.session.quit();
+    final session = fixture.desktop.session;
+    final quit = await session.quit();
     expect(quit.timedOut, isFalse);
-    expect(quit.exitCode, 0);
+    expect(quit.exitCode, 0, reason: session.stderrTail);
     expect(fixture.reports.where((r) => r['stdin'] == 'eof'), isEmpty);
     final ledger = LedgerView(fixture.profile);
     expect(ledger.units(), isEmpty);
