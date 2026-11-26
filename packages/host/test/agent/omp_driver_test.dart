@@ -967,6 +967,64 @@ void main() {
     expect(events.map((e) => e.text).join(), isNot(contains(hidden)));
   });
 
+  test('OMP: Reused native approval id cannot accept the last run permission token', () async {
+    Future<(AgentSession, OmpPeer, AgentPermissionRequestedParams)> awaiting(
+      String runId,
+    ) async {
+      final local = OmpPeer();
+      addTearDown(local.dispose);
+      final runtime = OmpRuntimeDriver(local.client, '18.20.1', runId: runId);
+      final initializing = runtime.initialize();
+      local.send({
+        'type': 'ready',
+        'supportedProtocolVersions': [1],
+      });
+      local.result((await local.commandAt(0))['id']! as String);
+      await initializing;
+      final created = runtime.newSession('/fixture');
+      local.result((await local.commandAt(1))['id']! as String, {
+        'sessionId': 'native',
+      });
+      await created;
+      final offered = Completer<AgentPermissionRequestedParams>();
+      final session = AgentSession(
+        sessionId: 'same-saved-record',
+        driver: runtime,
+        onState: (_) {},
+        onPermissionRequested: offered.complete,
+        onPermissionResolved: (_) {},
+        onStopResult: (_) {},
+        onTurnEnded: (_) {},
+        enqueueEvents: (_) {},
+      )..ready(nativeSessionId: 'native');
+      addTearDown(session.dispose);
+      final prompt = session.acceptPrompt('work')!;
+      local.result((await local.commandAt(2))['id']! as String);
+      await prompt;
+      local.send(approval('native-approval'));
+      return (session, local, await offered.future);
+    }
+
+    final (old, _, stale) = await awaiting('before-reopen');
+    old.dispose();
+    final (current, peer, offer) = await awaiting('after-reopen');
+    final before = peer.writes.length;
+    expect(
+      () => current.permissionReply(
+        stale.requestId,
+        stale.options.first.optionId,
+      ),
+      throwsA(isA<RpcException>()),
+    );
+    expect(peer.writes, hasLength(before));
+    current.permissionReply(offer.requestId, offer.options.first.optionId);
+    expect(await peer.commandAt(before), {
+      'type': 'extension_ui_response',
+      'id': 'native-approval',
+      'value': 'Approve',
+    });
+  });
+
   const facts = ToolRunFacts(
     sessionId: 'saved-session',
     role: ToolRole.coding,

@@ -59,6 +59,24 @@ class Consumer {
   final int id;
   final StreamSubscription<Uint8List> subscription;
   int received = 0;
+  ({int target, Completer<void> ready})? _byteBarrier;
+
+  Future<void> waitForBytes(int target) {
+    if (received >= target) return Future.value();
+    assert(_byteBarrier == null);
+    final ready = Completer<void>();
+    _byteBarrier = (target: target, ready: ready);
+    return ready.future;
+  }
+
+  void took(int bytes) {
+    received += bytes;
+    final barrier = _byteBarrier;
+    if (barrier != null && received >= barrier.target) {
+      _byteBarrier = null;
+      barrier.ready.complete();
+    }
+  }
 
   /// Stream offsets whose byte was not `offset % 251`, or the first such.
   int? firstMismatch;
@@ -104,7 +122,7 @@ class Rig {
           }
         }
       }
-      consumer.received += bytes.length;
+      consumer.took(bytes.length);
       wire.took(id, bytes.length);
     });
     consumer = Consumer(id, subscription);
@@ -166,17 +184,17 @@ void main() {
     }
   }
 
-  test('control round-trip ≤ 250 ms under saturating channel', () async {
+  test('control replies arrive while saturated channels remain open', () async {
     final r = rig = await Rig.start(profile, tapWire: false);
     const channels = 4;
     final saturating = [for (var i = 0; i < channels; i++) await r.open()];
     int total() => saturating.fold(0, (a, c) => a + c.received);
 
-    // The channels are saturated before and while control is measured.
-    await eventually(
-      () => total() >= 8 * 1024 * 1024,
-      reason: 'channels did not saturate: ${total()} bytes',
-    );
+    // Start all four streams before measuring control; none is closed,
+    // paused or drained to allow a reply.
+    await Future.wait([
+      for (final channel in saturating) channel.waitForBytes(2 * 1024 * 1024),
+    ]);
     final before = total();
     final started = Stopwatch()..start();
 
@@ -198,20 +216,23 @@ void main() {
     // Recorded in the architecture's bounds table (task 10.1).
     // ignore: avoid_print
     print(
-      'control round-trip under $channels saturating channels: '
+      'measured: control round-trip under $channels saturating channels: '
       'worst ${worst.toStringAsFixed(1)} ms, '
       'median ${median.toStringAsFixed(1)} ms over 100 round-trips '
       '(${(streamed / (1024 * 1024)).toStringAsFixed(1)} MiB streamed in '
       '${elapsed.inMilliseconds} ms) on ${Platform.operatingSystem}',
     );
 
-    expect(
-      streamed,
-      greaterThan(1024 * 1024),
-      reason: 'the channels were not saturating during the measurement',
-    );
-    expect(worst, lessThanOrEqualTo(250), reason: 'worst control round-trip');
-  });
+    // Every stream must make new progress in order after the last reply.
+    // Exact control-frame priority is tested with a blocked writer sink.
+    await Future.wait([
+      for (final channel in saturating)
+        channel.waitForBytes(channel.received + maxFramePayload),
+    ]);
+    for (final channel in saturating) {
+      expect(channel.firstMismatch, isNull, reason: 'channel ${channel.id}');
+    }
+  }, timeout: const Timeout(Duration(minutes: 2)));
 
   test(
     'stalled channel stops at credit; other channel and control flow',

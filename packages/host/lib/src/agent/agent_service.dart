@@ -30,6 +30,7 @@ import 'executable_resolver.dart';
 import 'native_version_probe.dart';
 import 'omp/omp_client.dart';
 import 'omp/omp_driver.dart';
+import 'omp/omp_session_file.dart';
 import 'omp/version_probe.dart';
 import 'qualification.dart';
 import 'qualified_adapters.dart';
@@ -66,6 +67,8 @@ class AgentSessionRecord {
     required this.target,
     required this.createdAt,
     required this.updatedAt,
+    this.ompSessionFile,
+    this.historyUnconfirmed,
   });
   final String id;
   final String runtimeKind;
@@ -75,6 +78,8 @@ class AgentSessionRecord {
   final AgentTarget target;
   final String createdAt;
   final String updatedAt;
+  final String? ompSessionFile;
+  final String? historyUnconfirmed;
 }
 
 class _StderrRing {
@@ -120,6 +125,8 @@ class _AgentIO {
     this.launch, {
     String? codexVersion,
     String? ompVersion,
+    required String runId,
+    required Iterable<String> Function() ompToolSecrets,
     List<(String, String, List<String>)> qualified = qualifiedAdapters,
     Set<CodexAuthSignal> authSignals = const {},
   }) : client = ompVersion != null
@@ -129,6 +136,8 @@ class _AgentIO {
                  write: launch.pipes!.stdin.write,
                ),
                ompVersion,
+               runId: runId,
+               toolSecrets: ompToolSecrets,
              )
            : codexVersion == null
            ? AcpRuntimeDriver(
@@ -199,6 +208,7 @@ class AgentEventRelay {
   }
 
   int _offset = 0;
+  Future<void>? _lastWrite;
   ChannelWriter? _writer;
   Completer<void>? _space;
   bool _pumping = false;
@@ -242,6 +252,14 @@ class AgentEventRelay {
     await _admit();
   }
 
+  /// OMP Continue does not admit Send before replay crosses the channel.
+  Future<void> flush() async {
+    while (!_closed && !_sealed && _queue.isNotEmpty) {
+      await (_space ??= Completer<void>()).future;
+    }
+    if (!_closed && !_sealed) await _lastWrite;
+  }
+
   void attach(ChannelWriter writer) {
     _writer = writer;
     _pump();
@@ -269,14 +287,16 @@ class AgentEventRelay {
         final count = min(writer.room, line.length - _offset);
         // This fits the writer's window now: no waiting write retains an
         // additional event buffer outside our byte accounting.
-        writer
-            .write(Uint8List.sublistView(line, _offset, _offset + count))
-            .then<void>(
-              (_) {},
-              onError: (Object error, StackTrace stack) {
-                if (!_closed) onFailure?.call(error);
-              },
-            );
+        final write = writer.write(
+          Uint8List.sublistView(line, _offset, _offset + count),
+        );
+        _lastWrite = write;
+        write.then<void>(
+          (_) {},
+          onError: (Object error, StackTrace stack) {
+            if (!_closed) onFailure?.call(error);
+          },
+        );
         _offset += count;
         _bytes -= count;
         if (_offset == line.length) {
@@ -339,6 +359,9 @@ class _Agent {
   bool attached = false;
   bool ending = false;
   bool closeRequested = false;
+  Future<OmpHistoryWarning?>? ompGrace;
+  bool ompCloseRecorded = false;
+  OmpHistoryWarning? ompHistoryWarning;
 
   /// A prompt is committing its draft removal; no second prompt starts.
   bool sending = false;
@@ -634,7 +657,7 @@ class AgentService {
   }
 
   void _available() {
-    if (_disposed) {
+    if (_disposed || units.shuttingDown) {
       throw RpcException(ErrorCode.shuttingDown, 'the host is shutting down');
     }
   }
@@ -759,6 +782,8 @@ class AgentService {
         ),
         createdAt: r['created_at'] as String,
         updatedAt: r['updated_at'] as String,
+        ompSessionFile: r['omp_session_file'] as String?,
+        historyUnconfirmed: r['omp_history_unconfirmed'] as String?,
       );
     } on SqliteException {
       throw RpcException(
@@ -790,18 +815,27 @@ class AgentService {
     final result = record == null
         ? null
         : await workspaces.resolver.resolve(record.target.path, queue: false);
+    final omp = record?.runtimeKind == 'omp' && _ompHistoryPeer;
     return MapEntry(
       id,
       AgentRecord(
         known: record != null,
         targetPath: record?.target.path,
         adapterVersion: record?.adapter.version,
+        continueUnavailable: omp && record!.ompSessionFile == null
+            ? ompLocatorUnavailable
+            : null,
+        historyUnconfirmed: omp ? record!.historyUnconfirmed : null,
         workspaceAvailable:
             result is ResolveFound &&
             result.directory.id == record!.target.identity,
       ),
     );
   }
+
+  bool get _ompHistoryPeer =>
+      connection.negotiated?.capabilities.contains(Capability.ompHistory) ==
+      true;
 
   Future<void> _checkContinueTarget(AgentTarget saved) async {
     final result = await workspaces.resolver.resolve(saved.path, queue: false);
@@ -852,10 +886,19 @@ class AgentService {
       );
     }
     if (record.runtimeKind == 'omp') {
-      throw RpcException(
-        ErrorCode.methodNotAvailable,
-        OmpRuntimeDriver.continueUnavailable,
-      );
+      requireOmpCapabilities(connection.negotiated!.capabilities);
+      if (!_ompHistoryPeer) {
+        throw RpcException(
+          ErrorCode.methodNotAvailable,
+          'OMP Continue requires omp-history',
+        );
+      }
+      if (ompSessionPath(record.ompSessionFile) == null) {
+        throw _resumeUnavailable(
+          ompLocatorUnavailable,
+          'The saved OMP native session file is unavailable.',
+        );
+      }
     }
     if (record.runtimeKind == 'codex') {
       _requireCodexPeer();
@@ -959,6 +1002,14 @@ class AgentService {
       _requireCodexPeer();
     }
     final omp = profile.runtimeKind == 'omp';
+    final resumeFile = omp ? saved?.ompSessionFile : null;
+    if (resumeFile != null && !supportsOmpContinue(profile.args)) {
+      throw RpcException(
+        ErrorCode.noRuntimeProfile,
+        'Choose an OMP RPC profile with compatible Continue options.',
+        {'resumeReason': 'omp-profile-incompatible'},
+      );
+    }
     if (omp) requireOmpCapabilities(connection.negotiated!.capabilities);
     if (!supportedRuntimeKinds.contains(profile.runtimeKind)) {
       throw RpcException(
@@ -1023,6 +1074,30 @@ class AgentService {
         );
       }
     }
+    if (resumeFile != null) {
+      final failure = await workspaces.resolver.inspect<String?>(
+        () => probeOmpSessionFile(
+          resumeFile,
+          saved!.nativeSessionId,
+          target.identity,
+        ),
+        busy: ErrorCode.busy,
+        timedOut: ompLocatorUnavailable,
+      );
+      if (failure == ErrorCode.busy) {
+        throw RpcException(
+          ErrorCode.busy,
+          'The host is resolving too many paths.',
+        );
+      }
+      if (failure != null) {
+        throw _resumeUnavailable(
+          failure,
+          'The saved OMP native session file could not be verified.',
+        );
+      }
+      await _checkContinueTarget(target);
+    }
     _available();
     final reservation = connection.reserveChannels(1);
     _AgentIO? io;
@@ -1030,6 +1105,7 @@ class AgentService {
     String? toolsUnavailableReason;
     _Agent? live;
     var stage = 'spawn';
+    final runId = _newId();
     try {
       // The grant exists before the adapter starts, so a bridge that races
       // `session/new` can authenticate and wait for the record. Without an
@@ -1062,7 +1138,11 @@ class AgentService {
         target: target.path,
         expectedIdentity: target.identity,
         kind: 'agent',
-        argv: [executable, ...profile.args],
+        argv: [
+          executable,
+          ...profile.args,
+          if (resumeFile != null) ...['--resume', resumeFile],
+        ],
         workingDirectory: target.path,
         environment: _launchEnvironment(profile, executable),
         inheritParentEnvironment: profile.runtimeKind != 'codex',
@@ -1072,6 +1152,8 @@ class AgentService {
         launch,
         codexVersion: codexVersion,
         ompVersion: ompVersion,
+        runId: runId,
+        ompToolSecrets: () => _secretsFor(null),
         qualified: qualifiedAdaptersOverride ?? qualifiedAdapters,
         authSignals: options.codexAuthSignatures,
       );
@@ -1098,7 +1180,7 @@ class AgentService {
       }
       final initialization = await io.client.initialize();
       _available();
-      final claims = initialization.claims;
+      var claims = initialization.claims;
       final adapter = AgentAdapter(
         name: initialization.name,
         version: initialization.version,
@@ -1146,6 +1228,10 @@ class AgentService {
             target: target,
             createdAt: now,
             updatedAt: now,
+            ompSessionFile: switch (startingIo.client) {
+              final OmpRuntimeDriver driver => driver.sessionFile,
+              _ => null,
+            },
           );
           stage = 'record';
           _insert(record);
@@ -1153,6 +1239,7 @@ class AgentService {
             record: record,
             io: startingIo,
             reservation: reservation,
+            runId: runId,
             claims: claims,
             grant: grant,
             mcpServers: mcpServers,
@@ -1165,17 +1252,16 @@ class AgentService {
           stage = 'session';
           final native = await driver.newSession(target.path);
           _available();
+          stage = 'subagents';
+          await driver.configureChildren(views: _ompHistoryPeer);
+          _available();
           stage = 'tools/config';
-          final reason =
-              _deliveryFailure(adapter) ??
-              await driver.registerHostTools(ToolRole.coding);
+          final reason = await _configureOmpTools(driver, adapter);
           if (driver.isClosed) {
             throw driver.failure ??
                 OmpProtocolException('OMP tool transport closed');
           }
-          toolsUnavailableReason = reason == null
-              ? null
-              : clampUtf8(_redact(reason), 4096);
+          toolsUnavailableReason = reason;
           created(native);
         } else {
           stage = 'session/new';
@@ -1185,6 +1271,41 @@ class AgentService {
             onCreated: created,
           );
         }
+      } else if (io.client case final OmpRuntimeDriver driver) {
+        stage = 'history';
+        final mode = await driver.prepareContinue(
+          saved.nativeSessionId,
+          resumeFile!,
+        );
+        claims = AdapterClaims([
+          ...OmpRuntimeDriver.rootCapabilities,
+          'resume',
+          if (mode == AgentContinueMode.load) 'load',
+        ], null);
+        _available();
+        stage = 'subagents';
+        await driver.configureChildren(views: _ompHistoryPeer);
+        _available();
+        stage = 'tools/config';
+        toolsUnavailableReason = await _configureOmpTools(
+          driver,
+          adapter,
+          reopening: true,
+        );
+        if (driver.isClosed) {
+          throw OmpProtocolException('OMP tool transport closed');
+        }
+        _available();
+        a = _registerNativeSession(
+          record: saved,
+          io: io,
+          reservation: reservation,
+          runId: runId,
+          claims: claims,
+          mode: mode,
+          toolsUnavailableReason: toolsUnavailableReason,
+        );
+        live = a;
       } else {
         if (!claims.canLoad && !claims.canResume) {
           throw _resumeUnavailable(
@@ -1202,6 +1323,7 @@ class AgentService {
           record: saved,
           io: io,
           reservation: reservation,
+          runId: runId,
           claims: claims,
           mode: claims.canLoad
               ? AgentContinueMode.load
@@ -1240,6 +1362,12 @@ class AgentService {
         throw RpcException(
           ErrorCode.workspaceUnavailable,
           'the workspace target changed while the adapter was starting',
+        );
+      }
+      if (resumeFile != null && error is! RpcException) {
+        throw _resumeUnavailable(
+          'omp-native-reopen-unverified',
+          'OMP could not verify the saved conversation ($stage).',
         );
       }
       if (error is RpcException) {
@@ -1338,10 +1466,25 @@ class AgentService {
     }
   }
 
+  Future<String?> _configureOmpTools(
+    OmpRuntimeDriver driver,
+    AgentAdapter adapter, {
+    bool reopening = false,
+  }) async {
+    final recorded = _deliveryFailure(adapter);
+    if (recorded != null) return clampUtf8(_redact(recorded), 4096);
+    final reason = await driver.registerHostTools(ToolRole.coding);
+    if (reason == null) return null;
+    return reopening
+        ? 'OMP tool registration was unavailable for the continued run.'
+        : clampUtf8(_redact(reason), 4096);
+  }
+
   _Agent _registerNativeSession({
     required AgentSessionRecord record,
     required _AgentIO io,
     required ChannelReservation reservation,
+    required String runId,
     required AdapterClaims claims,
     AgentContinueMode? mode,
     ToolGrant? grant,
@@ -1352,7 +1495,7 @@ class AgentService {
       record: record,
       io: io,
       reservation: reservation,
-      runId: _newId(),
+      runId: runId,
       mode: mode,
       grant: grant,
       mcpServers: mcpServers,
@@ -1369,7 +1512,11 @@ class AgentService {
     a.session = AgentSession(
       sessionId: record.id,
       driver: io.client,
-      runId: record.runtimeKind == 'codex' ? a.runId : null,
+      runId:
+          record.runtimeKind == 'codex' ||
+              (record.runtimeKind == 'omp' && _ompHistoryPeer)
+          ? a.runId
+          : null,
       claims: claims,
       nativeSessionId: record.nativeSessionId,
       tools: toolsUnavailableReason != null
@@ -1489,7 +1636,7 @@ class AgentService {
       store.execute('BEGIN IMMEDIATE');
       try {
         store.execute(
-          'INSERT INTO agent_session(id, runtime_kind, runtime_profile_id, adapter_name, adapter_version, native_session_id, role, target_host, target_path, target_identity, workspace_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+          'INSERT INTO agent_session(id, runtime_kind, runtime_profile_id, adapter_name, adapter_version, native_session_id, role, target_host, target_path, target_identity, workspace_id, created_at, updated_at, omp_session_file) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
           [
             r.id,
             r.runtimeKind,
@@ -1504,6 +1651,7 @@ class AgentService {
             r.target.workspaceId,
             r.createdAt,
             r.updatedAt,
+            r.ompSessionFile,
           ],
         );
         store.execute('COMMIT');
@@ -1545,7 +1693,7 @@ class AgentService {
         // leaving no failed write to reveal that it abandoned this channel.
         if (a.exited || a.closeFailed) {
           _forget(a);
-        } else if (!a.ending) {
+        } else if (!a.ending && !connection.isClosed) {
           _beginClose(a, attachTimeout: true);
         }
       }),
@@ -1554,7 +1702,17 @@ class AgentService {
       Future<void>(() {
         if (!_current(a)) return;
         a.session.publishState();
-        if (a.mode != null && !a.ending && !a.exited) unawaited(_restore(a));
+        if (!a.ending && !a.exited) {
+          if (a.mode != null) {
+            unawaited(_restore(a));
+          } else if (a.io.client case final OmpRuntimeDriver driver) {
+            unawaited(
+              driver.attachChildren().onError((Object error, _) async {
+                if (_current(a) && !a.ending) await _finishFailure(a, error);
+              }),
+            );
+          }
+        }
         final exit = a.exitNotification;
         if (earlyExit && exit != null) {
           _notify(a, Method.agentExited, exit.toJson());
@@ -1567,7 +1725,22 @@ class AgentService {
 
   Future<void> _restore(_Agent a) async {
     try {
-      if (a.mode == AgentContinueMode.load) {
+      if (a.io.client case final OmpRuntimeDriver driver) {
+        if (a.mode == AgentContinueMode.load) {
+          await driver.loadSession(
+            a.record.nativeSessionId,
+            a.record.target.path,
+          );
+        } else {
+          await driver.resumeSession(
+            a.record.nativeSessionId,
+            a.record.target.path,
+          );
+        }
+        await a.relay.flush();
+        if (!_current(a) || a.ending) return;
+        await driver.attachChildren();
+      } else if (a.mode == AgentContinueMode.load) {
         await a.session.replayStarted();
         if (!_current(a) || a.ending) return;
         await a.io.client.loadSession(
@@ -1594,6 +1767,33 @@ class AgentService {
     } on Object catch (error) {
       if (_current(a) && !a.ending) await _finishFailure(a, error);
     }
+  }
+
+  Future<AgentChildHistoryResult> childHistory(AgentChildHistoryParams params) {
+    requireOmpCapabilities(connection.negotiated!.capabilities);
+    final a = _requireRun(params.sessionId, params.runId);
+    final driver = a.io.client;
+    if (driver is! OmpRuntimeDriver || !_ompHistoryPeer) {
+      throw RpcException(
+        ErrorCode.methodNotAvailable,
+        'OMP child history is unavailable.',
+      );
+    }
+    return driver.childHistory(
+      params,
+      inspect: (path) => workspaces.resolver.inspect<int?>(
+        () => inspectOmpChildFile(path),
+        busy: null,
+        timedOut: null,
+      ),
+      current: () =>
+          _current(a) &&
+          !a.ending &&
+          !a.exited &&
+          a.attached &&
+          !a.consumerClosed &&
+          !a.restoring,
+    );
   }
 
   /// Validates, commits the removal of the draft the prompt carries, and only
@@ -1709,6 +1909,10 @@ class AgentService {
 
   _Agent _extensionRun(String sessionId, String runId) {
     _requireCodexPeer();
+    return _requireRun(sessionId, runId);
+  }
+
+  _Agent _requireRun(String sessionId, String runId) {
     final a = _require(sessionId);
     if (a.ending || a.runId != runId) {
       throw RpcException(
@@ -1809,53 +2013,41 @@ class AgentService {
     _forget(a);
   }
 
+  void _prepareClose(_Agent a) {
+    a.ending = true;
+    _revoke(a.grant);
+    a.attachTimer?.cancel();
+    a.relay.close();
+    a.session.beginClosing();
+  }
+
   void _beginClose(_Agent a, {bool attachTimeout = false}) {
-    if (!_current(a) || a.ending || a.exited) return;
+    if (!_current(a) || a.ending || a.exited || connection.isClosed) return;
     final running = switch (a.session.state) {
       AgentState.running ||
       AgentState.waitingApproval ||
       AgentState.stopping => true,
       _ => false,
     };
-    a.ending = true;
-    _revoke(a.grant);
-    a.attachTimer?.cancel();
-    a.session.beginClosing();
-    a.relay.close();
+    _prepareClose(a);
+    final driver = a.io.client;
+    final graceful = driver is OmpRuntimeDriver && a.attached;
+    if (graceful) {
+      a.ompGrace = Future(() => _runOmpGrace(a, driver));
+    }
     // Schedule on the event queue, not a microtask: the close result is
     // written before an idle unit can settle and publish its exit.
     unawaited(
       Future<void>(() async {
         if (!_current(a)) return;
-        final driver = a.io.client;
-        if (driver is OmpRuntimeDriver) {
-          final pending = driver.pendingTurn;
-          if (pending != null && !attachTimeout) {
-            try {
-              await options.limitOmpClose(pending, const Duration(seconds: 2));
-            } on Object {
-              // Close still owns stdin and containment.
-            }
-          }
-          driver.stopNativeWrites();
-          try {
-            const grace = Duration(seconds: 2);
-            final clock = Stopwatch()..start();
-            await options.limitOmpClose(
-              a.io.launch.pipes!.stdin.close(),
-              grace,
-            );
-            await options.limitOmpClose(
-              a.io.launch.unit.exitCode,
-              grace - clock.elapsed,
-            );
-          } on Object {
-            // The unit is still settled below even when EOF is not enough.
-          }
-        } else if (running && !attachTimeout) {
+        if (graceful) {
+          final warning = await a.ompGrace!;
+          _recordOmpClose(a, warning);
+        } else if (driver is! OmpRuntimeDriver && running && !attachTimeout) {
           await Future<void>.delayed(const Duration(seconds: 2));
         }
         if (!_current(a)) return;
+        if (connection.isClosed && units.shuttingDown) return;
         final outcome = await _end(a.io);
         await a.io.client.close();
         if (outcome.cleaned) {
@@ -1873,6 +2065,7 @@ class AgentService {
               reason: AgentExitReason.closed,
               eventCount: a.relay.eventCount,
               status: a.io.status,
+              historyUnconfirmed: _ompHistoryPeer ? a.ompHistoryWarning : null,
             ).toJson(),
           );
           if (attachTimeout || a.consumerClosed) _forget(a);
@@ -1884,6 +2077,7 @@ class AgentService {
             AgentCloseFailedParams(
               sessionId: a.record.id,
               reason: outcome.reason ?? 'cleanup-unresolved',
+              historyUnconfirmed: _ompHistoryPeer ? a.ompHistoryWarning : null,
             ).toJson(),
           );
           _forget(a);
@@ -1897,12 +2091,107 @@ class AgentService {
             AgentCloseFailedParams(
               sessionId: a.record.id,
               reason: 'agent-io-close-failed',
+              historyUnconfirmed: _ompHistoryPeer ? a.ompHistoryWarning : null,
             ).toJson(),
           );
           _forget(a);
         }
       }),
     );
+  }
+
+  Future<OmpHistoryWarning?> _runOmpGrace(
+    _Agent a,
+    OmpRuntimeDriver driver,
+  ) async {
+    if (!_current(a)) return OmpHistoryWarning.nativeEofUnconfirmed;
+    const grace = Duration(seconds: 2);
+    if (driver.waitForCloseQuiescence() case final work?) {
+      try {
+        await options.limitOmpClose(work, grace);
+      } on TimeoutException {
+        // Even unconfirmed cancellation gets the independent EOF grace.
+      }
+    }
+    if (!_current(a)) return OmpHistoryWarning.nativeEofUnconfirmed;
+    final client = driver.client;
+    final couldObserve = a.io.status == null && !client.isClosed;
+    driver.stopNativeWrites();
+    if (couldObserve) client.expectShutdownEof();
+    int? status;
+    try {
+      await options.limitOmpClose(
+        Future.wait<void>([
+          a.io.launch.pipes!.stdin.close(),
+          client.done,
+          a.io.launch.unit.exitCode.then<void>((code) => status = code),
+        ]),
+        grace,
+      );
+    } on TimeoutException {
+      return OmpHistoryWarning.nativeEofUnconfirmed;
+    } on Object {
+      return OmpHistoryWarning.nativeTransportFailed;
+    }
+    if (client.failure != null) return OmpHistoryWarning.nativeTransportFailed;
+    if (!client.shutdownEofObserved) {
+      return OmpHistoryWarning.nativeEofUnconfirmed;
+    }
+    if (status != 0) return OmpHistoryWarning.nativeExitNonzero;
+    return a.record.ompSessionFile == null
+        ? OmpHistoryWarning.noNativePersistence
+        : null;
+  }
+
+  void _recordOmpClose(_Agent a, OmpHistoryWarning? warning) {
+    if (!_current(a) || a.ompCloseRecorded) return;
+    a.ompCloseRecorded = true;
+    a.ompHistoryWarning = warning;
+    // Replay may still be pending on desktop credit. Let verified OMP shut
+    // down, but an interrupted Continue does not clear an earlier warning.
+    if (warning == null && a.restoring) return;
+    if (warning?.name == a.record.historyUnconfirmed) return;
+    try {
+      store.execute(
+        'UPDATE agent_session SET omp_history_unconfirmed = ? WHERE id = ?',
+        [warning?.name, a.record.id],
+      );
+    } on SqliteException {
+      a.ompHistoryWarning = OmpHistoryWarning.storeWriteFailed;
+      units.log.event('omp-history-warning', code: 'store-write-failed');
+    }
+  }
+
+  /// Ordinary `app/quit` followed by input EOF authorizes the same native
+  /// phase as confirmed close. A channel abandoned by a lost desktop does not.
+  Future<void> gracefulOmpQuit(Duration budget) async {
+    final roots = [
+      for (final a in _agents.values)
+        if (a.attached &&
+            !a.exited &&
+            !a.closeFailed &&
+            a.io.client is OmpRuntimeDriver &&
+            (!a.ending || a.ompGrace != null))
+          a,
+    ];
+    for (final a in roots) {
+      if (!a.ending) {
+        _prepareClose(a);
+        a.ompGrace = _runOmpGrace(a, a.io.client as OmpRuntimeDriver);
+      }
+    }
+    await Future.wait([for (final a in roots) _finishOmpQuit(a, budget)]);
+  }
+
+  Future<void> _finishOmpQuit(_Agent a, Duration budget) async {
+    final OmpHistoryWarning? warning;
+    try {
+      warning = await options.limitOmpClose(a.ompGrace!, budget);
+    } on TimeoutException {
+      _recordOmpClose(a, OmpHistoryWarning.nativeEofUnconfirmed);
+      return;
+    }
+    _recordOmpClose(a, warning);
   }
 
   Future<UnitOutcome> _end(_AgentIO io) => io.ending ??= () async {
@@ -1974,7 +2263,7 @@ class AgentService {
   }
 
   Future<void> _finishFailure(_Agent a, Object error) async {
-    if (!_current(a) || a.ending) return;
+    if (!_current(a) || a.ending || connection.isClosed) return;
     final restoring = a.restoring;
     a.ending = true;
     _revoke(a.grant);

@@ -83,8 +83,15 @@ class WorkspaceResolver {
     return waiting.done.future;
   }
 
+  /// Shares interactive filesystem admission and deadline with directory
+  /// resolution. [inspect] starts a bounded worker, not I/O on this isolate.
+  Future<T> inspect<T>(
+    Future<T> Function() inspect, {
+    required T busy,
+    required T timedOut,
+  }) => _held >= slots ? Future.value(busy) : _wait(inspect(), timedOut);
+
   Future<ResolveResult> _run(String path) {
-    _held++;
     final fault = faults.takeResolveFault(path);
     ReceivePort? hangPort;
     if (fault != null && fault.hang) {
@@ -99,35 +106,53 @@ class WorkspaceResolver {
       hangPort?.sendPort,
     );
 
-    final done = Completer<ResolveResult>();
+    return _wait(
+      call.then<ResolveResult>(
+        (wire) => wire.$1 != null
+            ? ResolveFound(ResolvedDirectory(realPath: wire.$1!, id: wire.$2!))
+            : ResolveMissing(wire.$3 ?? 'unavailable'),
+        onError: (Object e) => ResolveMissing('resolution failed: $e'),
+      ),
+      const ResolveTimedOut(),
+      onReturned: () => hangPort?.close(),
+    );
+  }
+
+  Future<T> _wait<T>(
+    Future<T> call,
+    T timeoutResult, {
+    void Function()? onReturned,
+  }) {
+    _held++;
+    final done = Completer<T>();
     var timedOut = false;
     final timer = Timer(timeout, () {
       timedOut = true;
       _hung++;
-      done.complete(const ResolveTimedOut());
+      done.complete(timeoutResult);
       _starveQueue();
     });
 
-    void finished(ResolveResult result) {
+    void release() {
       timer.cancel();
-      hangPort?.close();
+      onReturned?.call();
       if (timedOut) {
         // Late: it only gives its slot back.
         _hung--;
-      } else {
-        done.complete(result);
       }
       _held--;
       _pump();
     }
 
-    call.then(
-      (wire) => finished(
-        wire.$1 != null
-            ? ResolveFound(ResolvedDirectory(realPath: wire.$1!, id: wire.$2!))
-            : ResolveMissing(wire.$3 ?? 'unavailable'),
-      ),
-      onError: (Object e) => finished(ResolveMissing('resolution failed: $e')),
+    call.then<void>(
+      (result) {
+        release();
+        if (!timedOut) done.complete(result);
+      },
+      onError: (Object error, StackTrace stack) {
+        release();
+        if (!timedOut) done.completeError(error, stack);
+      },
     );
     return done.future;
   }

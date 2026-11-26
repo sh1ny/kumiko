@@ -711,8 +711,26 @@ class FakeHostLink implements HostLink {
     );
   }
 
+  final childHistoryRequests = <AgentChildHistoryParams>[];
+  final Queue<Object> childHistoryAnswers = Queue();
+
   @override
-  Stream<AgentEvent> attachAgent(String id, int channel) {
+  Future<AgentChildHistoryResult> agentChildHistory(
+    AgentChildHistoryParams params,
+  ) {
+    childHistoryRequests.add(params);
+    return _answer(
+      childHistoryAnswers,
+      null,
+      () => const AgentChildHistoryResult(
+        AgentChildHistoryStatus.unavailable,
+        reason: 'no-native-file',
+      ),
+    );
+  }
+
+  @override
+  Stream<AgentEvent> attachAgent(String id, int channel, {bool omp = false}) {
     calls.add('agent/attach $id');
     final source = StreamController<AgentEvent>(
       sync: true,

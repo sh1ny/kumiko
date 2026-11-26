@@ -313,9 +313,23 @@ class SessionLink implements HostLink {
   );
 
   @override
-  Stream<AgentEvent> attachAgent(String sessionId, int eventChannel) {
+  Future<AgentChildHistoryResult> agentChildHistory(
+    AgentChildHistoryParams params,
+  ) async => AgentChildHistoryResult.fromJson(
+    await _request(Method.agentChildHistory, params.toJson()),
+  );
+
+  @override
+  Stream<AgentEvent> attachAgent(
+    String sessionId,
+    int eventChannel, {
+    bool omp = false,
+  }) {
     final connection = session.connection;
-    final decoder = AgentEventDecoder();
+    final decoder = AgentEventDecoder(
+      allowOmpChildEvents:
+          omp && hello.capabilities.contains(Capability.ompHistory),
+    );
     StreamSubscription<Object?>? input;
     var cancelled = false;
     late final StreamController<AgentEvent> events;

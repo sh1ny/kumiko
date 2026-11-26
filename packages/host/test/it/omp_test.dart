@@ -4,6 +4,7 @@ import 'dart:io';
 
 import 'package:domain/domain.dart';
 import 'package:host_protocol/host_protocol.dart';
+import 'package:sqlite3/sqlite3.dart';
 import 'package:test/test.dart';
 
 import 'support/omp_support.dart';
@@ -97,6 +98,7 @@ void main() {
     Set<String> caps = ompCaps,
     Map<String, String> environment = const {},
     String? executable,
+    List<String>? profileArgs,
   }) async {
     final profile = tempDir('omp_host_profile');
     final work = tempDir('omp_host_work');
@@ -107,6 +109,7 @@ void main() {
       caps: caps,
       environment: environment,
       executable: executable,
+      profileArgs: profileArgs,
     );
     return fixture;
   }
@@ -133,6 +136,8 @@ void main() {
     expect(fixture.commands.map((c) => c['type']), [
       'set_event_filter',
       'get_state',
+      'set_subagent_subscription',
+      'get_subagents',
       'set_host_tools',
     ]);
     expect(fixture.commands.first['events'], isNull);
@@ -1139,6 +1144,390 @@ void main() {
     timeout: const Timeout(Duration(minutes: 4)),
   );
 
+  test('OMP: Older peer starts with conservative delegated activity and no child frames', () async {
+    final fixture = await openFixture(
+      script: {
+        'commands': {
+          'get_subagents': [
+            [
+              accepted({
+                'subagents': [
+                  {'id': 'native-worker', 'status': 'running'},
+                ],
+              }),
+            ],
+          ],
+        },
+      },
+    );
+    final root = await fixture.start();
+    final state = await root.wait(
+      Method.agentState,
+      where: (state) => state['state'] == 'idle',
+      within: guard,
+    );
+    expect(AgentStateParams.fromJson(state).delegated?.activeChildren, 1);
+    expect(state['runId'], isNull);
+    expect(root.events.where((event) => event['threadId'] != null), isEmpty);
+  });
+
+  test(
+    'OMP: Child history waits for credit without blocking control',
+    () async {
+      final profile = tempDir('omp_child_credit_profile');
+      final work = tempDir('omp_child_credit_work');
+      addTearDown(() => deleteTree(profile));
+      addTearDown(() => deleteTree(work));
+      final childFile = File(joinPath(work.path, 'child-private.jsonl'));
+      final header = {
+        'type': 'session',
+        'id': 'child-native-session',
+        'cwd': work.path,
+      };
+      final entry = {
+        'type': 'message',
+        'message': {
+          'role': 'assistant',
+          'content': [
+            {'type': 'text', 'text': 'earlier subagent answer'},
+          ],
+        },
+      };
+      childFile.writeAsStringSync(
+        '${jsonEncode(header)}\n${jsonEncode(entry)}\n',
+      );
+      final fixture = OmpFixture(
+        profile,
+        work,
+        script: {
+          'commands': {
+            'get_subagents': [
+              [
+                accepted({
+                  'subagents': [
+                    {
+                      'id': 'worker',
+                      'status': 'running',
+                      'sessionFile': childFile.path,
+                    },
+                  ],
+                }),
+              ],
+            ],
+            'get_subagent_messages': [
+              [
+                accepted({
+                  'sessionFile': childFile.path,
+                  'fromByte': 0,
+                  'nextByte': childFile.lengthSync(),
+                  'reset': false,
+                  'entries': [header, entry],
+                }),
+              ],
+            ],
+            'prompt': [
+              [
+                accepted(),
+                for (var n = 0; n < 8; n++)
+                  delta('x' * (64 * 1024), id: 'credit$n'),
+              ],
+            ],
+          },
+        },
+      );
+      await fixture.open(caps: {...ompCaps, 'omp-history'});
+      final root = await fixture.start();
+      final state = await root.wait(
+        Method.agentState,
+        where: (s) => s['state'] == 'idle',
+        within: guard,
+      );
+      expect(state['runId'], isA<String>());
+      await eventually(
+        () => root.events.any((e) => e['kind'] == 'child'),
+        within: guard,
+        reason: 'no child opened on the root channel',
+      );
+      final childKey = root.events.singleWhere(
+        (e) => e['kind'] == 'child',
+      )['threadId'];
+      root.data!.pause();
+      try {
+        await root.prompt();
+        await eventually(
+          () async {
+            final stats = await root.call('test/agent.stats', {});
+            final rootStats = (stats['sessions'] as Json)[root.id] as Json;
+            return rootStats['channelQueuedBytes'] == channelWindow;
+          },
+          within: guard,
+          reason: 'root channel did not exhaust desktop credit',
+        );
+        final request = {
+          'sessionId': root.id,
+          'runId': state['runId'],
+          'childKey': childKey,
+          'viewToken': 'current-view',
+        };
+        await expectLater(
+          root.call('agent/childHistory', {
+            ...request,
+            'runId': 'previous-run',
+          }),
+          rpcCode(ErrorCode.staleRun),
+        );
+        expect(
+          fixture.commands.where((c) => c['type'] == 'get_subagent_messages'),
+          isEmpty,
+        );
+        final result = await root.call('agent/childHistory', request);
+        expect(result, containsPair('status', 'queued'));
+        expect(jsonEncode(result), isNot(contains(childFile.path)));
+        expect(
+          root.events.where((event) => event['viewToken'] == 'current-view'),
+          isEmpty,
+        );
+        final records = await root.call(Method.agentRecords, {
+          'sessionIds': [root.id],
+        });
+        expect(records['records'], contains(root.id));
+      } finally {
+        root.data!.resume();
+      }
+      await eventually(
+        () => root.events.any(
+          (e) => e['viewToken'] == 'current-view' && e['phase'] == 'end',
+        ),
+        within: guard,
+        reason: 'child history did not follow the root credit',
+      );
+      final replay = root.events.where((e) => e['viewToken'] == 'current-view');
+      expect(replay.map((e) => e['threadId']), everyElement(childKey));
+      expect(replay.map((e) => e['text']), contains('earlier subagent answer'));
+      expect(
+        jsonEncode(replay.toList()),
+        isNot(contains('child-private.jsonl')),
+      );
+      expect(
+        fixture.commands.singleWhere(
+          (c) => c['type'] == 'get_subagent_messages',
+        ),
+        containsPair('sessionFile', childFile.path),
+      );
+    },
+    timeout: const Timeout(Duration(minutes: 4)),
+  );
+
+  test(
+    'OMP: Child output and saved history redact live and revoked grants',
+    () async {
+      final profile = tempDir('omp_redaction_profile');
+      final work = tempDir('omp_redaction_work');
+      addTearDown(() => deleteTree(profile));
+      addTearDown(() => deleteTree(work));
+      final native = File(joinPath(work.path, 'omp-root.jsonl'));
+      final child = File(joinPath(work.path, 'omp-child.jsonl'));
+      Json header(String id) => {'type': 'session', 'id': id, 'cwd': work.path};
+      native.writeAsStringSync('${jsonEncode(header('original'))}\n');
+      final state = accepted({
+        'sessionId': 'original',
+        'sessionFile': native.path,
+        'isSettled': true,
+        'hasPendingAsyncWork': false,
+      });
+      final commands = <String, Object?>{
+        'get_state': [
+          [state],
+          [state],
+        ],
+      };
+      final fixture = OmpFixture(profile, work, script: {'commands': commands});
+      await fixture.open(
+        caps: {...ompCaps, Capability.ompHistory},
+        profileArgs: ['--mode', 'rpc', '--offline'],
+      );
+      final original = await fixture.start();
+      await original.close();
+
+      Future<String> grantSecret(String id, {required bool revoke}) async {
+        final report = await saveAgentFixture(
+          fixture.desktop,
+          work,
+          id: id,
+          script: {'reportLaunch': true},
+        );
+        final session = AgentPeer(fixture.desktop);
+        await session.start(fixture.workspace, runtime: id);
+        final launch = await waitFixture(
+          report,
+          (r) => r.containsKey('newCwd'),
+        );
+        final servers = (launch['mcpServers']! as List<Object?>)
+            .whereType<Json>();
+        final env = (servers.single['env']! as List<Object?>).whereType<Json>();
+        final secret =
+            env.singleWhere(
+                  (entry) => entry['name'] == 'KUMIKO_TOOL_SECRET',
+                )['value']!
+                as String;
+        if (revoke) await session.close();
+        return secret;
+      }
+
+      final revoked = await grantSecret('revoked-grant', revoke: true);
+      final live = await grantSecret('live-grant', revoke: false);
+      Json text(String value) => {'type': 'text', 'text': value};
+      Json assistant(String value) => {
+        'role': 'assistant',
+        'content': [text(value)],
+      };
+      Json childEvent(Json event) => {
+        'type': 'subagent_event',
+        'payload': {'id': 'worker', 'event': event},
+      };
+      final entry = {
+        'type': 'message',
+        'message': assistant('child replay $live'),
+      };
+      child.writeAsStringSync(
+        '${jsonEncode(header('child'))}\n${jsonEncode(entry)}\n',
+      );
+      commands.addAll({
+        'get_messages_page': [
+          [
+            accepted({
+              'messages': [assistant('root replay $revoked')],
+              'totalMessages': 1,
+            }),
+          ],
+        ],
+        'get_subagents': [
+          [
+            accepted({
+              'subagents': [
+                {
+                  'id': 'worker',
+                  'status': 'running',
+                  'sessionFile': child.path,
+                },
+              ],
+            }),
+          ],
+        ],
+        'get_subagent_messages': [
+          [
+            accepted({
+              'sessionFile': child.path,
+              'fromByte': 0,
+              'nextByte': child.lengthSync(),
+              'reset': false,
+              'entries': [header('child'), entry],
+            }),
+          ],
+        ],
+        'prompt': [
+          [
+            accepted(),
+            childEvent({
+              'type': 'message_end',
+              'message': assistant('child live $live'),
+            }),
+            childEvent({
+              'type': 'tool_execution_start',
+              'toolCallId': 'inspect',
+              'toolName': 'read',
+              'args': {'value': live},
+            }),
+            childEvent({
+              'type': 'tool_execution_end',
+              'toolCallId': 'inspect',
+              'toolName': 'read',
+              'result': {
+                'content': [text('tool output $revoked')],
+              },
+              'isError': false,
+            }),
+            {...terminal('completed'), 'sessionSettled': true},
+          ],
+        ],
+      });
+      fixture.writeScript();
+      final continued = AgentContinueResult.fromJson(
+        await original.call(Method.agentContinue),
+      );
+      expect(continued.mode, AgentContinueMode.load);
+      final root = AgentPeer(fixture.desktop)
+        ..started = AgentStartResult(
+          sessionId: original.id,
+          eventChannel: continued.eventChannel,
+          adapter: continued.adapter,
+          capabilities: continued.capabilities,
+        );
+      await root.attach();
+      final idle = await root.wait(
+        Method.agentState,
+        where: (s) => s['state'] == 'idle',
+        within: guard,
+      );
+      await eventually(
+        () => root.events.any((e) => e['kind'] == 'child'),
+        within: guard,
+        reason: 'no child announced on the restored root',
+      );
+      final childKey = root.events.singleWhere(
+        (e) => e['kind'] == 'child',
+      )['threadId'];
+      expect(
+        await root.call(Method.agentChildHistory, {
+          'sessionId': root.id,
+          'runId': idle['runId'],
+          'childKey': childKey,
+          'viewToken': 'current-view',
+        }),
+        containsPair('status', 'queued'),
+      );
+      await root.prompt();
+      await eventually(
+        () =>
+            root.events.any(
+              (e) => e['viewToken'] == 'current-view' && e['phase'] == 'end',
+            ) &&
+            root.events.any(
+              (e) => e['threadId'] == childKey && e['status'] == 'completed',
+            ),
+        within: guard,
+        reason: 'the child replay and live tool result did not arrive',
+      );
+      final events = jsonEncode(root.events);
+      expect(
+        events.contains(live) || events.contains(revoked),
+        isFalse,
+        reason: 'A known grant secret reached the desktop transcript',
+      );
+      expect(
+        root.events.where((e) => e['threadId'] == null).map((e) => e['text']),
+        contains('root replay <redacted>'),
+      );
+      expect(
+        root.events
+            .where(
+              (e) =>
+                  e['threadId'] == childKey && e['viewToken'] == 'current-view',
+            )
+            .map((e) => e['text']),
+        contains('child replay <redacted>'),
+      );
+      expect(
+        root.events
+            .where((e) => e['threadId'] == childKey && e['viewToken'] == null)
+            .map((e) => e['text']),
+        contains('child live <redacted>'),
+      );
+      expect(events, contains('tool output <redacted>'));
+    },
+    timeout: const Timeout(Duration(minutes: 4)),
+  );
+
   test('OMP: Admission precedes output', () async {
     final fixture = await turns([
       [
@@ -1499,10 +1888,12 @@ void main() {
     await peer.call(Method.agentStop);
     await sending;
     expect((await peer.wait(Method.agentStopResult))['outcome'], 'stopped');
-    expect(fixture.commands.map((c) => c['type']).toList().sublist(3), [
-      'prompt',
-      'abort',
-    ]);
+    expect(
+      fixture.commands
+          .map((c) => c['type'])
+          .skipWhile((type) => type != 'prompt'),
+      ['prompt', 'abort'],
+    );
   });
 
   test(
@@ -1548,7 +1939,7 @@ void main() {
     },
   );
 
-  test('OMP: Continue on a saved OMP session', () async {
+  test('OMP: Older peer cannot Continue a saved OMP session', () async {
     final fixture = await openFixture();
     final peer = await fixture.start();
     await peer.close();
@@ -1568,17 +1959,517 @@ void main() {
     ]);
   });
 
-  for (final hangAfterEof in [false, true]) {
-    final scenario = hangAfterEof ? 'OMP does not exit' : 'Orderly close';
-    test('OMP: $scenario', () async {
-      final fixture = await openFixture(
-        script: {if (hangAfterEof) 'eofDelayMs': 20000},
+  test(
+    'OMP: Upgraded peer gets a record-specific missing locator refusal',
+    () async {
+      final fixture = await openFixture(caps: {...ompCaps, 'omp-history'});
+      final peer = await fixture.start();
+      await peer.close();
+      final before = agentRows(fixture.profile);
+      final record = await peer.call(Method.agentRecords, {
+        'sessionIds': [peer.id],
+      });
+      expect(jsonEncode(record), contains('omp-locator-unavailable'));
+      await expectLater(
+        peer.call(Method.agentContinue),
+        throwsA(
+          isA<RpcException>()
+              .having((e) => e.reason, 'error', ErrorCode.resumeUnavailable)
+              .having(
+                (e) => e.data,
+                'reason',
+                containsPair('resumeReason', 'omp-locator-unavailable'),
+              ),
+        ),
       );
+      expect(agentRows(fixture.profile), before);
+      expect(fixture.reports.where((r) => r['launch'] == 'root'), hasLength(1));
+    },
+  );
+
+  test('OMP: Continue verifies the original file and restores native pages before Send', () async {
+    final profile = tempDir('omp_resume_profile');
+    final work = tempDir('omp_resume_work');
+    addTearDown(() => deleteTree(profile));
+    addTearDown(() => deleteTree(work));
+    final history = File(joinPath(profile.path, 'native-history.jsonl'));
+    final header = {'type': 'session', 'id': 'original', 'cwd': work.path};
+    const title =
+        '{"type":"title","v":1,"title":"private","updatedAt":"","pad":"';
+    history.writeAsStringSync(
+      '$title${' ' * (256 - title.length - 3)}"}\n${jsonEncode(header)}\n',
+    );
+    Json response(Json data) => {
+      'type': 'response',
+      'id': r'$id',
+      'success': true,
+      'data': data,
+    };
+    final fixture = OmpFixture(
+      profile,
+      work,
+      script: {
+        'commands': {
+          'get_state': [
+            [
+              response({
+                'sessionId': 'original',
+                'sessionFile': history.path,
+                'isSettled': true,
+                'hasPendingAsyncWork': false,
+              }),
+            ],
+            [
+              response({
+                'sessionId': 'original',
+                'sessionFile': history.path,
+                'isSettled': true,
+                'hasPendingAsyncWork': false,
+              }),
+            ],
+          ],
+          'get_messages_page': [
+            [
+              response({
+                'totalMessages': 3,
+                'nextCursor': 'next',
+                'messages': [
+                  {'role': 'user', 'content': 'old question'},
+                ],
+              }),
+            ],
+            [
+              response({
+                'totalMessages': 3,
+                'messages': [
+                  {
+                    'role': 'assistant',
+                    'content': [
+                      {'type': 'text', 'text': 'old answer'},
+                      {
+                        'type': 'toolCall',
+                        'id': 'check',
+                        'name': 'read',
+                        'arguments': {'key': 'value'},
+                      },
+                      {'type': 'image', 'data': 'private-unsupported-content'},
+                    ],
+                  },
+                  {
+                    'role': 'toolResult',
+                    'toolCallId': 'check',
+                    'toolName': 'read',
+                    'isError': true,
+                    'content': [
+                      {'type': 'text', 'text': 'read failed'},
+                    ],
+                  },
+                ],
+              }),
+            ],
+          ],
+        },
+      },
+    );
+    await fixture.open(
+      caps: {...ompCaps, 'omp-history'},
+      profileArgs: ['--mode', 'rpc', '--thinking=low', '--offline'],
+    );
+    final old = await fixture.start();
+    await old.close();
+    final saved = agentRows(profile).single;
+    expect(saved['omp_session_file'], history.path);
+    await old.call(
+      Method.runtimeSave,
+      RuntimeSaveParams(
+        RuntimeProfile(
+          id: 'unsafe-omp',
+          name: 'Unsafe OMP',
+          runtimeKind: 'omp',
+          executable: testHostExecutable(),
+          args: ['--mode', 'rpc', '--continue'],
+        ),
+      ).toJson(),
+    );
+    await expectLater(
+      old.call(Method.agentContinue, {
+        'sessionId': old.id,
+        'runtimeProfileId': 'unsafe-omp',
+      }),
+      rpcCode(ErrorCode.noRuntimeProfile),
+    );
+    expect(fixture.reports.map((r) => r['launch']).whereType<String>(), [
+      'probe',
+      'root',
+    ]);
+    final originalScript = fixture.scriptFile.readAsStringSync();
+    fixture.scriptFile.writeAsStringSync(
+      jsonEncode({
+        'reportFile': fixture.report.path,
+        'startupStderr': 'internal startup path: ${history.path}',
+        'commands': {
+          'get_state': [
+            [
+              response({
+                'sessionId': 'wrong-native-id',
+                'sessionFile': history.path,
+                'isSettled': true,
+                'hasPendingAsyncWork': false,
+              }),
+            ],
+          ],
+        },
+      }),
+    );
+    await expectLater(
+      old.call(Method.agentContinue),
+      throwsA(
+        isA<RpcException>()
+            .having((e) => e.reason, 'code', ErrorCode.resumeUnavailable)
+            .having(
+              (e) => jsonEncode([e.message, e.data]),
+              'diagnostic',
+              isNot(contains('native-history.jsonl')),
+            ),
+      ),
+    );
+    expect(LedgerView(profile).units(), isEmpty);
+    expect(agentRows(profile).single, saved);
+    fixture.scriptFile.writeAsStringSync(originalScript);
+    final continued = AgentContinueResult.fromJson(
+      await old.call(Method.agentContinue),
+    );
+    expect(continued.mode, AgentContinueMode.load);
+    final peer = AgentPeer(fixture.desktop)
+      ..started = AgentStartResult(
+        sessionId: old.id,
+        eventChannel: continued.eventChannel,
+        adapter: continued.adapter,
+        capabilities: continued.capabilities,
+      );
+    await peer.attach(credit: false);
+    await expectLater(peer.prompt(), rpcCode(ErrorCode.turnRunning));
+    peer.notifications.clear();
+    fixture.desktop.connection.grantInitial(continued.eventChannel);
+    await peer.wait(Method.agentState, where: (p) => p['state'] == 'idle');
+    await eventually(
+      () =>
+          peer.events.any((e) => e['kind'] == 'replay' && e['phase'] == 'end'),
+      within: const Duration(minutes: 2),
+      reason: 'the verified snapshot did not cross the event channel',
+    );
+    expect(
+      peer.events.map((e) => e['text']).whereType<String>(),
+      containsAllInOrder(['old question', 'old answer']),
+    );
+    final eventJson = jsonEncode(peer.events);
+    expect(eventJson, contains('read failed'));
+    expect(
+      eventJson,
+      contains('Some recorded OMP content could not be shown.'),
+    );
+    expect(eventJson, isNot(contains('private-unsupported-content')));
+    expect(eventJson, isNot(contains('native-history.jsonl')));
+    expect(fixture.commands.where((c) => c['type'] == 'prompt'), isEmpty);
+    expect(
+      fixture.commands
+          .where((c) => c['type'] == 'get_messages_page')
+          .last['cursor'],
+      'next',
+    );
+    final resumedArgv =
+        fixture.reports.where((r) => r['launch'] == 'root').last['argv']!
+            as List;
+    expect(resumedArgv.take(6), [
+      '--mode',
+      'rpc',
+      '--thinking=low',
+      '--offline',
+      '--resume',
+      history.path,
+    ]);
+    expect(agentRows(profile).single['native_session_id'], 'original');
+  });
+
+  Future<OmpFixture> closingFixture({
+    Json script = const {},
+    Json commands = const {},
+    bool persist = true,
+    bool manual = false,
+    bool historyPeer = true,
+  }) async {
+    final profile = tempDir('omp_close_profile');
+    final work = tempDir('omp_close_work');
+    addTearDown(() => deleteTree(profile));
+    addTearDown(() => deleteTree(work));
+    final history = File(joinPath(work.path, 'private-session.jsonl'));
+    if (persist) {
+      history.writeAsStringSync(
+        '${jsonEncode({'type': 'session', 'id': 'fixture-session', 'cwd': work.path})}\n',
+      );
+    }
+    final fixture = OmpFixture(
+      profile,
+      work,
+      script: {
+        ...script,
+        'commands': {
+          ...commands,
+          'get_state': [
+            [
+              {
+                'type': 'response',
+                'id': r'$id',
+                'success': true,
+                'data': {
+                  'sessionId': 'fixture-session',
+                  'isSettled': true,
+                  'hasPendingAsyncWork': false,
+                  if (persist) 'sessionFile': history.path,
+                },
+              },
+            ],
+          ],
+        },
+      },
+    );
+    await fixture.open(
+      caps: {
+        ...ompCaps,
+        Capability.lifecycle,
+        if (historyPeer) Capability.ompHistory,
+      },
+      quitTimeout: const Duration(minutes: 3),
+      environment: {
+        'KUMIKO_TEST_SHUTDOWN_DEADLINE_MS': '120000',
+        if (manual)
+          'KUMIKO_TEST_OMP_CLOSE_MANUAL': '1'
+        else
+          'KUMIKO_TEST_OMP_CLOSE_AWAITS_PEER': '1',
+      },
+    );
+    return fixture;
+  }
+
+  const hangGuard = Timeout(Duration(minutes: 4));
+  for (final (name, script, persist, reason) in <(String, Json, bool, String?)>[
+    ('Orderly close', {}, true, null),
+    (
+      'Nonzero disposal reports an unconfirmed history save with cleaned containment',
+      {'eofExit': 9},
+      true,
+      'nativeExitNonzero',
+    ),
+    (
+      'No native persistence does not claim a save',
+      {},
+      false,
+      'noNativePersistence',
+    ),
+    (
+      'Malformed native output after EOF does not confirm a save',
+      {
+        'eofFrames': ['not JSON'],
+      },
+      true,
+      'nativeTransportFailed',
+    ),
+  ]) {
+    test('OMP: $name', () async {
+      final fixture = await closingFixture(script: script, persist: persist);
       final peer = await fixture.start();
       await peer.close();
       expect(fixture.reports.last['stdin'], 'eof');
       expect(LedgerView(fixture.profile).units(), isEmpty);
-      expect(agentRows(fixture.profile), hasLength(1));
-    });
+      final exit = peer.of(Method.agentExited).single;
+      expect(exit['status'], script['eofExit'] ?? 0);
+      expect(exit['historyUnconfirmed'], reason);
+      expect(
+        agentRows(fixture.profile).single['omp_history_unconfirmed'],
+        reason,
+      );
+      final records = AgentRecordsResult.fromJson(
+        await peer.call(Method.agentRecords, {
+          'sessionIds': [peer.id],
+        }),
+      );
+      expect(records.records[peer.id]?.historyUnconfirmed, reason);
+      expect(
+        jsonEncode(records.toJson()),
+        isNot(contains('private-session.jsonl')),
+      );
+    }, timeout: hangGuard);
   }
+
+  test('OMP: OMP does not exit', () async {
+    final fixture = await closingFixture(
+      manual: true,
+      script: {'holdEof': true},
+    );
+    final peer = await fixture.start();
+    final close = peer.close();
+    await waitFixture(fixture.report, (row) => row['stdin'] == 'eof');
+    final expired = await peer.call('test/omp.expireGrace', {});
+    expect(expired['expired'], 1);
+    await close;
+    expect(LedgerView(fixture.profile).units(), isEmpty);
+    expect(
+      peer.of(Method.agentExited).single['historyUnconfirmed'],
+      'nativeEofUnconfirmed',
+    );
+    expect(
+      agentRows(fixture.profile).single['omp_history_unconfirmed'],
+      'nativeEofUnconfirmed',
+    );
+  }, timeout: hangGuard);
+
+  test('OMP: Old desktop receives no history outcome fields', () async {
+    final fixture = await closingFixture(
+      script: {'eofExit': 9},
+      historyPeer: false,
+    );
+    final peer = await fixture.start();
+    await peer.close();
+    expect(
+      peer.of(Method.agentExited).single,
+      isNot(contains('historyUnconfirmed')),
+    );
+    final records = await peer.call(Method.agentRecords, {
+      'sessionIds': [peer.id],
+    });
+    expect(jsonEncode(records), isNot(contains('historyUnconfirmed')));
+    expect(
+      agentRows(fixture.profile).single['omp_history_unconfirmed'],
+      'nativeExitNonzero',
+    );
+  }, timeout: hangGuard);
+
+  test(
+    'OMP: Failed warning write is not reported as a saved history',
+    () async {
+      final fixture = await closingFixture(script: {'eofExit': 9});
+      final peer = await fixture.start();
+      final db = sqlite3.open(joinPath(fixture.profile.path, 'kumiko.db'));
+      try {
+        db.execute('''
+        CREATE TRIGGER refuse_history_warning
+        BEFORE UPDATE OF omp_history_unconfirmed ON agent_session
+        BEGIN SELECT RAISE(FAIL, 'private store error'); END
+      ''');
+      } finally {
+        db.close();
+      }
+      await peer.close();
+      final exit = peer.of(Method.agentExited).single;
+      expect(exit['historyUnconfirmed'], 'storeWriteFailed');
+      expect(jsonEncode(exit), isNot(contains('private store error')));
+      expect(LedgerView(fixture.profile).units(), isEmpty);
+      expect(
+        agentRows(fixture.profile).single['omp_history_unconfirmed'],
+        isNull,
+      );
+    },
+    timeout: hangGuard,
+  );
+
+  test(
+    'OMP: Announced EOF closes idle and active fixture units before settlement',
+    () async {
+      final fixture = await closingFixture(
+        script: {'isolateReports': true},
+        commands: {
+          'prompt': [
+            [accepted()],
+          ],
+          'abort': [
+            [
+              {...terminal('aborted'), 'sessionSettled': true},
+              accepted(),
+            ],
+          ],
+        },
+      );
+      final idle = await fixture.start();
+      final active = await fixture.start();
+      await active.prompt();
+      await active.wait(
+        Method.agentState,
+        where: (p) => p['state'] == 'running',
+        within: const Duration(minutes: 2),
+      );
+      expect(agentRows(fixture.profile).map((r) => r['id']), [
+        idle.id,
+        active.id,
+      ]);
+      await fixture.desktop.announceQuit();
+      expect(fixture.reports.where((r) => r['stdin'] == 'eof'), isEmpty);
+      final quit = await fixture.desktop.session.quit();
+      expect(quit.timedOut, isFalse);
+      expect(quit.exitCode, 0);
+      expect(fixture.reports.where((r) => r['stdin'] == 'eof'), hasLength(2));
+      expect(fixture.commands.where((c) => c['type'] == 'abort'), hasLength(1));
+      expect(LedgerView(fixture.profile).units(), isEmpty);
+      expect(
+        LedgerView(fixture.profile).instances().single['exit_kind'],
+        'quit',
+      );
+      expect(
+        agentRows(fixture.profile).map((r) => r['omp_history_unconfirmed']),
+        [null, null],
+      );
+    },
+    timeout: hangGuard,
+  );
+
+  test(
+    'OMP: Quit persists an unconfirmed save separately from ledger state',
+    () async {
+      final fixture = await closingFixture(script: {'eofExit': 8});
+      final peer = await fixture.start();
+      await fixture.desktop.announceQuit();
+      final quit = await fixture.desktop.session.quit();
+      expect(quit.timedOut, isFalse);
+      expect(quit.exitCode, 0);
+      final ledger = LedgerView(fixture.profile);
+      expect(ledger.units(), isEmpty);
+      expect(ledger.instances().single['closed_cleanly'], 1);
+      expect(
+        agentRows(fixture.profile).single['omp_history_unconfirmed'],
+        'nativeExitNonzero',
+      );
+      final reopened = await Desktop.start(
+        fixture.profile,
+        capabilities: {
+          ...testCapabilities,
+          ...ompCaps,
+          Capability.ompHistory,
+          Capability.lifecycle,
+        },
+      );
+      addTearDown(reopened.dispose);
+      await reopened.waitState();
+      final records = AgentRecordsResult.fromJson(
+        (await reopened.connection.request(Method.agentRecords, {
+          'sessionIds': [peer.id],
+        })) as Json,
+      );
+      expect(records.records[peer.id]?.historyUnconfirmed, 'nativeExitNonzero');
+      expect((await reopened.previousExit()).kind, PreviousExitKind.quit);
+      expect(LedgerView(fixture.profile).units(), isEmpty);
+    },
+    timeout: hangGuard,
+  );
+
+  test('OMP: Unannounced disconnect skips OMP grace and keeps the unexpected-exit outcome', () async {
+    final fixture = await closingFixture(script: {'holdEof': true});
+    await fixture.start();
+    final session = fixture.desktop.session;
+    final quit = await session.quit();
+    expect(quit.timedOut, isFalse);
+    expect(quit.exitCode, 0, reason: session.stderrTail);
+    expect(fixture.reports.where((r) => r['stdin'] == 'eof'), isEmpty);
+    final ledger = LedgerView(fixture.profile);
+    expect(ledger.units(), isEmpty);
+    expect(ledger.instances().single['exit_kind'], isNull);
+  }, timeout: hangGuard);
 }

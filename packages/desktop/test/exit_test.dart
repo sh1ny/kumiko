@@ -100,6 +100,22 @@ Future<AgentLink> _agent(_Env env, WidgetTester tester) async {
 void _runTurn(_Env env, AgentLink link, [int seq = 5]) =>
     env.host.agentState(link.sessionId!, AgentState.running, seq);
 
+void _ompState(
+  _Env env,
+  AgentLink root,
+  int seq, {
+  AgentState state = AgentState.idle,
+  AgentDelegated delegated = const AgentDelegated(),
+}) => env.host.agentStateSource.add(
+  AgentStateParams(
+    sessionId: root.sessionId!,
+    seq: seq,
+    state: state,
+    runId: 'omp-run',
+    delegated: delegated,
+  ),
+);
+
 /// A live terminal in a new tab; returns its pane id.
 Future<String> _terminal(_Env env, WidgetTester tester) async {
   await env.controller.launchTerminal();
@@ -284,6 +300,150 @@ void main() {
       expect(request.answer, AppExitResponse.exit);
     });
   }
+
+  Future<(_Env, AgentLink)> ompRoot(WidgetTester tester) async {
+    final env = await _env(
+      tester,
+      capabilities: {..._capabilities, Capability.omp, Capability.ompHistory},
+    );
+    final link = await _agent(env, tester);
+    link.runtimeKind = 'omp';
+    _ompState(env, link, 5);
+    await flush(tester);
+    return (env, link);
+  }
+
+  uiTest('OMP: Quit with settled idle work asks nothing', (tester) async {
+    final (env, _) = await ompRoot(tester);
+    final request = await _quit(env, tester);
+    expect(request.answer, AppExitResponse.exit);
+    expect(_dialog(), findsNothing);
+    expect(env.host.quitAnnounced, isTrue);
+    expect(env.host.agentCloses, isEmpty);
+  });
+
+  uiTest('OMP: Idle root with two child panes appears once in quit', (
+    tester,
+  ) async {
+    final (env, root) = await ompRoot(tester);
+    _ompState(env, root, 6, delegated: const AgentDelegated(activeChildren: 2));
+    for (var n = 1; n <= 2; n++) {
+      final keyId = 'omp:child:$n';
+      env.host.agentEvent(
+        root.sessionId!,
+        AgentEvent.ompChildLifecycle(
+          rootId: 'omp-run',
+          childKey: keyId,
+          ordinal: n,
+          status: 'running',
+        ),
+      );
+      await flush(tester);
+      await _tap(tester, 'omp-open-child-$keyId');
+    }
+    final children = env.rig.layout.panes.where((p) => p.kind == ompChildKind);
+    expect(children, hasLength(2));
+    final request = await _quit(env, tester);
+    expect(_item(root.paneId), findsOneWidget);
+    expect(env.exit.items.map((item) => item.paneId), [root.paneId]);
+    expect(find.textContaining('2 active children'), findsWidgets);
+    expect(env.host.quitAnnounced, isFalse);
+    expect(request.answer, isNull);
+    await _tap(tester, 'exit-cancel');
+    expect(request.answer, AppExitResponse.cancel);
+    expect(env.host.agentCloses, isEmpty);
+
+    _ompState(env, root, 7);
+    await flush(tester);
+    final layout = jsonOf(env.rig.layout);
+    final quit = await _quit(env, tester);
+    expect(quit.answer, AppExitResponse.exit);
+    expect(env.host.storedLayout, layout);
+    final reopenedHost = FakeHostLink(hello: env.host.hello)
+      ..records.add(workspaceRecord('A'))
+      ..storedLayout = env.host.storedLayout
+      ..agentRecordMap.addAll(env.host.agentRecordMap);
+    final reopened = await pumpRig(tester, reopenedHost);
+    expect(jsonOf(reopened.layout), layout);
+    expect(
+      find.text('This subagent view is from an earlier run.'),
+      findsNWidgets(2),
+    );
+    expect(reopenedHost.agentStarts, isEmpty);
+    expect(reopenedHost.agentContinues, isEmpty);
+    expect(reopenedHost.childHistoryRequests, isEmpty);
+  });
+
+  uiTest(
+    'OMP: Unsettled work holds quit, including work observed in the last flush',
+    (tester) async {
+      final (env, root) = await ompRoot(tester);
+      final beganFlush = Completer<void>();
+      final flushGate = Completer<void>();
+      env.exit.addListener(() {
+        if (env.exit.phase == ExitPhase.quitting && !beganFlush.isCompleted) {
+          env.host.draftSaveGate = flushGate;
+          root.prompt.text = 'keep this draft';
+          beganFlush.complete();
+        }
+      });
+      final request = await _quit(env, tester);
+      expect(beganFlush.isCompleted, isTrue);
+      expect(env.host.draftSaves.last.text, 'keep this draft');
+      _ompState(
+        env,
+        root,
+        6,
+        delegated: const AgentDelegated(incomplete: true),
+      );
+      await flush(tester);
+      flushGate.complete();
+      await flush(tester);
+      expect(env.host.quitAnnounced, isFalse);
+      expect(request.answer, isNull);
+      expect(_item(root.paneId), findsOneWidget);
+      expect(find.textContaining('OMP may still be working'), findsWidgets);
+      await _tap(tester, 'exit-stop-all');
+      expect(env.host.quitAnnounced, isTrue);
+      expect(request.answer, AppExitResponse.exit);
+      expect(env.host.storedDrafts[root.sessionId!]?.text, 'keep this draft');
+    },
+  );
+
+  uiTest(
+    'OMP: Settlement removes only the finished OMP root from the exit list',
+    (tester) async {
+      final (env, root) = await ompRoot(tester);
+      final other = await _agent(env, tester);
+      _runTurn(env, other);
+      _ompState(env, root, 6, state: AgentState.running);
+      final request = await _quit(env, tester);
+      expect(_item(root.paneId), findsOneWidget);
+      expect(_item(other.paneId), findsOneWidget);
+      _ompState(
+        env,
+        root,
+        7,
+        delegated: const AgentDelegated(nativeWork: true),
+      );
+      await flush(tester);
+      expect(_item(root.paneId), findsOneWidget);
+      expect(
+        inside(
+          'exit-item-${root.paneId}',
+          find.textContaining('OMP may still be working'),
+        ),
+        findsOneWidget,
+        reason: 'native work remains after the parent yields',
+      );
+      _ompState(env, root, 8);
+      await flush(tester);
+      expect(_item(root.paneId), findsNothing);
+      expect(_item(other.paneId), findsOneWidget);
+      expect(request.answer, isNull);
+      await _tap(tester, 'exit-cancel');
+    },
+  );
   group('app exit', () {
     uiTest(
       'quit with idle agent, idle terminal and stored draft exits without a '

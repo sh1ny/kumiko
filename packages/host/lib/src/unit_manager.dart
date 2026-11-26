@@ -504,7 +504,9 @@ class UnitManager {
   Future<void> shutdown(Duration deadline) async {
     shuttingDown = true;
     final clock = Stopwatch()..start();
-    while (_launching > 0 && clock.elapsed < const Duration(seconds: 5)) {
+    const launchGrace = Duration(seconds: 5);
+    final standDown = deadline < launchGrace ? deadline : launchGrace;
+    while (_launching > 0 && clock.elapsed < standDown) {
       await Future<void>.delayed(const Duration(milliseconds: 10));
     }
     final ids = live.keys.toList();

@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 import 'dart:ui' show AppExitResponse;
 
@@ -123,11 +124,29 @@ void main() {
           'Saved, not running',
       'the saved record',
     );
+    final agents = harness.agents(tester);
+    final link = agents.linkOf(pane)!;
+    // The saved record is shown before its separate draft read completes.
+    final loaded = Completer<void>();
+    void checkDraft() {
+      if (link.draft.synced && !loaded.isCompleted) loaded.complete();
+    }
+
+    agents.addListener(checkDraft);
+    try {
+      checkDraft();
+      await tester.runAsync(
+        () => loaded.future.timeout(const Duration(minutes: 2)),
+      );
+    } finally {
+      agents.removeListener(checkDraft);
+    }
+    await tester.pump();
+
     final composer = tester.widget<TextField>(
       find.byKey(Key('agent-prompt-$pane')),
     );
     expect(composer.controller!.text, 'half-written prompt');
-    final link = harness.agents(tester).linkOf(pane)!;
     expect(link.transcript.entries, isEmpty);
     expect(harness.agentUnits(), isEmpty);
   });

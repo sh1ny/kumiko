@@ -1,3 +1,8 @@
+import 'dart:async';
+import 'dart:convert';
+
+import 'package:desktop/src/agent/agent_controller.dart' show agentCloseWarning;
+import 'package:domain/domain.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:host_protocol/host_protocol.dart';
@@ -13,7 +18,7 @@ const _profile = RuntimeProfile(
   executable: '/omp',
 );
 
-FakeHostLink _host({bool supportsOmp = true}) {
+FakeHostLink _host({bool supportsOmp = true, bool supportsHistory = false}) {
   final host = FakeHostLink(
     hello: helloResult(
       capabilities: {
@@ -21,6 +26,7 @@ FakeHostLink _host({bool supportsOmp = true}) {
         Capability.terminal,
         Capability.agent,
         if (supportsOmp) Capability.omp,
+        if (supportsHistory) 'omp-history',
       },
     ),
   );
@@ -240,19 +246,556 @@ void main() {
     expect(find.text('work in progress', findRichText: true), findsNothing);
   });
 
-  uiTest('OMP: Continue on a saved OMP session', (tester) async {
-    const reason = 'OMP Continue is not supported in this Kumiko version';
-    final host = _host();
-    final rig = await _chat(tester, host);
-    host.agentExit(session(rig));
-    await flush(tester);
-    agents(rig).linkOf(chat(rig).id)!.saved = true;
-    host.agentContinueAnswers.add(
-      RpcException(ErrorCode.methodNotAvailable, reason),
+  FakeHostLink savedOmp({required bool history, String? unavailable}) {
+    final host = _host(supportsHistory: history);
+    host.storedLayout = jsonOf(
+      docOf([
+        tabOf(
+          'saved-tab',
+          paneOf(
+            'saved-pane',
+            kind: 'agent-chat',
+            ws: 'A',
+            item: 'saved-item',
+            state: {
+              'sessionId': 'saved',
+              'runtimeName': 'OMP',
+              'runtimeKind': 'omp',
+            },
+          ),
+        ),
+      ], selected: 'A'),
     );
-    await tester.tap(key('agent-continue-${chat(rig).id}'));
+    host.agentRecordMap['saved'] = AgentRecord.fromJson({
+      'known': true,
+      'workspaceAvailable': true,
+      'continueUnavailable': ?unavailable,
+    });
+    return host;
+  }
+
+  uiTest('OMP: Saved parent shows a previous unconfirmed save', (tester) async {
+    final host = savedOmp(history: true);
+    host.agentRecordMap['saved'] = AgentRecord.fromJson({
+      'known': true,
+      'workspaceAvailable': true,
+      'historyUnconfirmed': 'nativeExitNonzero',
+    });
+    final rig = await pumpRig(tester, host);
+    expect(
+      find.text(
+        'OMP history save was not confirmed: OMP exited with an error.',
+      ),
+      findsOneWidget,
+    );
+    expect(agents(rig).linkOf('saved-pane')!.canContinue, isTrue);
+    expect(host.agentStarts, isEmpty);
+    expect(host.agentContinues, isEmpty);
+  });
+
+  uiTest('OMP: A close warning survives dismissal of the agent pane', (
+    tester,
+  ) async {
+    final host = _host(supportsHistory: true);
+    final rig = await _chat(tester, host);
+    final root = chat(rig);
+    final id = session(rig);
+    await tester.tap(key('close-pane-${root.id}'));
     await flush(tester);
-    expect(find.textContaining(reason), findsOneWidget);
-    expect(host.agentStarts, hasLength(1));
+    expect(host.agentCloses, [id]);
+    expect(find.text(agentCloseWarning), findsNothing);
+    host.agentExitSource.add(
+      AgentExitedParams.fromJson({
+        'sessionId': id,
+        'reason': 'closed',
+        'eventCount': 0,
+        'historyUnconfirmed': 'nativeExitNonzero',
+      }),
+    );
+    await flush(tester);
+    expect(rig.layout.pane(root.id), isNull);
+    expect(
+      find.text(
+        'OMP history save was not confirmed: OMP exited with an error.',
+      ),
+      findsOneWidget,
+    );
+  });
+
+  for (final history in [false, true]) {
+    uiTest(
+      'OMP: ${history ? 'Missing locator' : 'Old peer'} disables Continue before a request',
+      (tester) async {
+        final host = savedOmp(
+          history: history,
+          unavailable: history ? 'omp-locator-unavailable' : null,
+        );
+        final rig = await pumpRig(tester, host);
+        expect(agents(rig).linkOf('saved-pane')!.canContinue, isFalse);
+        expect(
+          find.textContaining(history ? 'native session file' : 'omp-history'),
+          findsOneWidget,
+        );
+        expect(host.agentContinues, isEmpty);
+      },
+    );
+  }
+
+  uiTest('OMP: Explicit Continue loads the saved chat, without sending', (
+    tester,
+  ) async {
+    final host = savedOmp(history: true);
+    final rig = await pumpRig(tester, host);
+    expect(host.agentContinues, isEmpty);
+    expect(agents(rig).linkOf('saved-pane')!.canContinue, isTrue);
+    host.agentContinueAnswers.add(
+      const AgentContinueResult(
+        eventChannel: 121,
+        adapter: AgentAdapter(name: 'omp-rpc', version: '18.20.1'),
+        capabilities: ['load'],
+        mode: AgentContinueMode.load,
+      ),
+    );
+    await tester.tap(key('agent-continue-saved-pane'));
+    await flush(tester);
+    host.agentEvent('saved', AgentEvent.replay(AgentReplayPhase.start));
+    host.agentEvent(
+      'saved',
+      AgentEvent.text(AgentEventKind.agentText, 'The old answer.'),
+    );
+    host.agentEvent('saved', AgentEvent.replay(AgentReplayPhase.end));
+    await flush(tester);
+    expect(find.text('The old answer.', findRichText: true), findsOneWidget);
+    expect(host.agentContinues.single.sessionId, 'saved');
+    expect(host.agentStarts, isEmpty);
+    expect(host.agentPrompts, isEmpty);
+  });
+
+  const run = 'omp-run';
+  String childKey(int n) => '$run:child:$n';
+  String opener(int n) => 'omp-open-child-${childKey(n)}';
+  AgentEvent childEvent(int n, AgentEvent event, {String? token}) =>
+      event.forOmpChild(rootId: run, childKey: childKey(n), viewToken: token);
+
+  Future<Rig> children(
+    WidgetTester tester,
+    FakeHostLink host,
+    int count,
+  ) async {
+    final rig = await _chat(tester, host);
+    final root = session(rig);
+    host.agentStateSource.add(
+      AgentStateParams(
+        sessionId: root,
+        seq: 10,
+        state: AgentState.idle,
+        runId: run,
+        delegated: AgentDelegated(activeChildren: count),
+      ),
+    );
+    for (var i = 1; i <= count; i++) {
+      host.agentEvent(
+        root,
+        AgentEvent.ompChildLifecycle(
+          rootId: run,
+          childKey: childKey(i),
+          ordinal: i,
+          status: 'running',
+        ),
+      );
+    }
+    await flush(tester);
+    return rig;
+  }
+
+  Future<PaneNode> openChild(WidgetTester tester, Rig rig, int n) async {
+    expect(key(opener(n)), findsOneWidget);
+    await tester.ensureVisible(key(opener(n)));
+    await tester.tap(key(opener(n)));
+    await flush(tester);
+    return rig.layout.panes.singleWhere(
+      (pane) => pane.state['childKey'] == childKey(n),
+    );
+  }
+
+  const queued = AgentChildHistoryResult(AgentChildHistoryStatus.queued);
+
+  for (final incomplete in [false, true]) {
+    uiTest(
+      incomplete ? 'OMP: Unsettled idle chat warns before close' : 'OMP: Close idle root with running child; work may end before confirmation',
+      (tester) async {
+        final host = _host(supportsHistory: true);
+        final rig = await children(tester, host, incomplete ? 0 : 1);
+        final id = session(rig);
+        final root = chat(rig);
+        if (incomplete) {
+          host.agentStateSource.add(
+            AgentStateParams(
+              sessionId: id,
+              seq: 11,
+              state: AgentState.idle,
+              runId: run,
+              delegated: const AgentDelegated(incomplete: true),
+            ),
+          );
+          await flush(tester);
+        }
+        await tester.tap(key('close-pane-${root.id}'));
+        await flush(tester);
+        expect(key('close-warning'), findsOneWidget);
+        expect(
+          inside(
+            'close-warning',
+            find.textContaining(
+              incomplete ? 'OMP may still be working' : '1 active child',
+            ),
+          ),
+          findsOneWidget,
+        );
+        expect(host.agentCloses, isEmpty);
+        host.agentStateSource.add(
+          AgentStateParams(
+            sessionId: id,
+            seq: 12,
+            state: AgentState.idle,
+            runId: run,
+            delegated: const AgentDelegated(),
+          ),
+        );
+        await flush(tester);
+        await tester.tap(key('close-warning-confirm'));
+        await flush(tester);
+        expect(host.agentCloses, [id]);
+        expect(host.agentStops, isEmpty);
+        host.agentExit(id);
+        await flush(tester);
+        expect(rig.layout.pane(root.id), isNull);
+      },
+    );
+  }
+
+  uiTest(
+    'OMP: Child pane opens within its parent tab and moves and closes without stopping work',
+    (tester) async {
+      final host = _host(supportsHistory: true)
+        ..childHistoryAnswers.add(queued);
+      final rig = await children(tester, host, 1);
+      final root = chat(rig);
+      final id = session(rig);
+      final child = await openChild(tester, rig, 1);
+      expect(rig.layout.tabOf(child.id)?.id, rig.layout.tabOf(root.id)?.id);
+      expect(child.workspace, root.workspace);
+      expect(rig.layout.focusedPane, child.id);
+      expect((await openChild(tester, rig, 1)).id, child.id);
+      final read = host.childHistoryRequests.single;
+      expect(
+        (read.sessionId, read.runId, read.childKey),
+        (id, run, childKey(1)),
+      );
+      expect(
+        inside('omp-child-view-${child.id}', find.byType(TextField)),
+        findsNothing,
+      );
+      for (final control in ['Send', 'Stop', 'Steer', 'Continue', 'Approve']) {
+        expect(
+          inside('omp-child-view-${child.id}', find.text(control)),
+          findsNothing,
+        );
+      }
+      host.agentEvent(
+        id,
+        childEvent(
+          1,
+          AgentEvent.text(AgentEventKind.agentText, 'private child reply'),
+        ),
+      );
+      await flush(tester);
+      expect(
+        inside(
+          'omp-child-view-${child.id}',
+          find.text('private child reply', findRichText: true),
+        ),
+        findsOneWidget,
+      );
+      unawaited(rig.controller.flushForExit());
+      await flush(tester);
+      expect(
+        jsonEncode(host.saves.last.layout),
+        isNot(contains('private child reply')),
+      );
+      expect(child.state, {
+        'rootSessionId': id,
+        'childKey': childKey(1),
+        'ordinal': 1,
+      });
+
+      await tester.tap(key('move-${child.id}'));
+      await flush(tester);
+      expect(
+        rig.layout.tabOf(child.id)?.id,
+        isNot(rig.layout.tabOf(root.id)?.id),
+      );
+      expect(rig.layout.pane(child.id)!.workspace, root.workspace);
+      expect(
+        inside(
+          'omp-child-view-${child.id}',
+          find.text('private child reply', findRichText: true),
+        ),
+        findsOneWidget,
+      );
+      rig.controller.activateTab(rig.layout.tabOf(root.id)!.id);
+      await flush(tester);
+      expect((await openChild(tester, rig, 1)).id, child.id);
+      expect(rig.layout.activeTab, rig.layout.tabOf(child.id)?.id);
+      expect(host.childHistoryRequests, hasLength(1));
+      await tester.tap(key('close-pane-${child.id}'));
+      await flush(tester);
+      expect(rig.layout.pane(child.id), isNull);
+      expect(rig.layout.pane(root.id), isNotNull);
+      expect(host.agentCloses, isEmpty);
+      expect(host.agentStops, isEmpty);
+    },
+  );
+
+  uiTest(
+    'OMP: Two child panes separate history, live content and tool results from the parent',
+    (tester) async {
+      final host = _host(supportsHistory: true)
+        ..childHistoryAnswers.addAll([queued, queued]);
+      final rig = await children(tester, host, 2);
+      final id = session(rig);
+      final root = chat(rig).id;
+      final first = await openChild(tester, rig, 1);
+      final second = await openChild(tester, rig, 2);
+      for (final n in [1, 2]) {
+        final token = host.childHistoryRequests[n - 1].viewToken;
+        for (final event in [
+          AgentEvent.replay(AgentReplayPhase.start),
+          AgentEvent.text(AgentEventKind.agentText, 'history $n'),
+          AgentEvent.replay(AgentReplayPhase.end),
+        ]) {
+          host.agentEvent(id, childEvent(n, event, token: token));
+        }
+        host.agentEvent(
+          id,
+          childEvent(n, AgentEvent.text(AgentEventKind.agentText, 'live $n')),
+        );
+        host.agentEvent(
+          id,
+          childEvent(
+            n,
+            AgentEvent.tool(toolCallId: 'same-tool', title: 'read $n'),
+          ),
+        );
+        host.agentEvent(
+          id,
+          childEvent(
+            n,
+            AgentEvent.tool(
+              toolCallId: 'same-tool',
+              update: true,
+              status: 'completed',
+              content: [
+                {'type': 'text', 'text': 'output $n'},
+              ],
+            ),
+          ),
+        );
+      }
+      await flush(tester);
+      for (final (pane, own, other) in [(first, 1, 2), (second, 2, 1)]) {
+        final view = 'omp-child-view-${pane.id}';
+        expect(inside(view, find.text('Earlier history')), findsOneWidget);
+        expect(inside(view, find.text('Live activity')), findsOneWidget);
+        for (final text in ['history', 'live', 'output']) {
+          expect(
+            inside(view, find.text('$text $own', findRichText: true)),
+            findsOneWidget,
+          );
+          expect(
+            inside(view, find.text('$text $other', findRichText: true)),
+            findsNothing,
+          );
+        }
+      }
+      expect(
+        agents(rig).linkOf(root)!.transcript.plainText,
+        isNot(contains('history 1')),
+      );
+      expect(
+        agents(rig).linkOf(root)!.transcript.plainText,
+        isNot(contains('live 2')),
+      );
+      expect(host.agentStarts, hasLength(1));
+    },
+  );
+
+  uiTest(
+    'OMP: Stale child replay is ignored and parent exit keeps displayed data',
+    (tester) async {
+      final host = _host(supportsHistory: true)
+        ..childHistoryAnswers.add(queued);
+      final rig = await children(tester, host, 1);
+      final root = session(rig);
+      final first = await openChild(tester, rig, 1);
+      final stale = host.childHistoryRequests.single.viewToken;
+      await tester.tap(key('close-pane-${first.id}'));
+      await flush(tester);
+      final current = await openChild(tester, rig, 1);
+      expect(host.childHistoryRequests.last.viewToken, isNot(stale));
+      host.agentEvent(
+        root,
+        childEvent(1, AgentEvent.replay(AgentReplayPhase.start), token: stale),
+      );
+      host.agentEvent(
+        root,
+        childEvent(
+          1,
+          AgentEvent.text(AgentEventKind.agentText, 'outdated snapshot'),
+          token: stale,
+        ),
+      );
+      host.agentEvent(
+        root,
+        childEvent(1, AgentEvent.replay(AgentReplayPhase.end), token: stale),
+      );
+      host.agentEvent(
+        root,
+        childEvent(
+          1,
+          AgentEvent.text(AgentEventKind.agentText, 'current live output'),
+        ),
+      );
+      await flush(tester);
+      expect(find.textContaining('History unavailable'), findsOneWidget);
+      expect(find.text('outdated snapshot', findRichText: true), findsNothing);
+      expect(
+        find.text('current live output', findRichText: true),
+        findsOneWidget,
+      );
+      host.agentExit(root);
+      await flush(tester);
+      expect(rig.layout.pane(current.id), isNotNull);
+      expect(find.textContaining('parent OMP run ended'), findsOneWidget);
+      expect(
+        find.text('current live output', findRichText: true),
+        findsOneWidget,
+      );
+      expect(host.agentContinues, isEmpty);
+      expect(host.agentStarts, hasLength(1));
+    },
+  );
+
+  uiTest(
+    'OMP: Restore keeps an inert child location without opening a runtime',
+    (tester) async {
+      final host = savedOmp(history: true);
+      final savedRoot = paneOf(
+        'saved-pane',
+        kind: 'agent-chat',
+        ws: 'A',
+        item: 'saved-item',
+        state: {
+          'sessionId': 'saved',
+          'runtimeName': 'OMP',
+          'runtimeKind': 'omp',
+        },
+      );
+      final savedChild = paneOf(
+        'saved-child',
+        kind: 'omp-child',
+        ws: 'A',
+        state: {
+          'rootSessionId': 'saved',
+          'childKey': childKey(1),
+          'ordinal': 1,
+        },
+      );
+      host.storedLayout = jsonOf(
+        docOf([
+          tabOf('saved-tab', splitOf('saved-split', savedRoot, savedChild)),
+        ], selected: 'A'),
+      );
+      final rig = await pumpRig(tester, host);
+      expect(rig.layout.tabOf('saved-child')?.id, 'saved-tab');
+      expect(
+        find.textContaining('This subagent view is from an earlier run'),
+        findsOneWidget,
+      );
+      expect(find.text('Continue'), findsOneWidget);
+      expect(host.childHistoryRequests, isEmpty);
+      expect(host.agentStarts, isEmpty);
+      expect(host.agentContinues, isEmpty);
+      await _menu(tester);
+      expect(find.text('Subagent'), findsNothing);
+    },
+  );
+
+  uiTest('OMP: Child pane reports the layout limit without replacing a pane', (
+    tester,
+  ) async {
+    final host = _host(supportsHistory: true);
+    final rig = await children(tester, host, 1);
+    final root = chat(rig).id;
+    rig.controller.splitPane(root, SplitDirection.horizontal, paneOf('other'));
+    final others = ['other'];
+    var direction = SplitDirection.vertical;
+    while (others.length < maxPanesPerTab - 1) {
+      for (final parent in others.toList()) {
+        if (others.length == maxPanesPerTab - 1) break;
+        final id = 'other-${others.length}';
+        rig.controller.splitPane(parent, direction, paneOf(id));
+        others.add(id);
+      }
+      direction = direction == SplitDirection.vertical
+          ? SplitDirection.horizontal
+          : SplitDirection.vertical;
+    }
+    rig.controller.focusPane(root);
+    await flush(tester);
+    final before = jsonOf(rig.layout);
+    await tester.ensureVisible(key(opener(1)));
+    await tester.tap(key(opener(1)));
+    await flush(tester);
+    expect(rig.controller.message, contains('a tab holds at most'));
+    expect(jsonOf(rig.layout), before);
+    expect(host.childHistoryRequests, isEmpty);
+    expect(host.agentCloses, isEmpty);
+  });
+
+  uiTest('OMP: Unopened child content cannot displace the root transcript', (
+    tester,
+  ) async {
+    final host = _host(supportsHistory: true);
+    final rig = await children(tester, host, 1);
+    final root = session(rig);
+    host.agentEvent(
+      root,
+      AgentEvent.text(AgentEventKind.agentText, 'held root text'),
+    );
+    host.agentEvent(
+      root,
+      AgentEvent.tool(toolCallId: 'id', title: 'root card'),
+    );
+    for (var n = 0; n < 2010; n++) {
+      host.agentEvent(
+        root,
+        childEvent(1, AgentEvent.notice('discarded child output')),
+      );
+    }
+    host.agentEvent(
+      root,
+      childEvent(
+        1,
+        AgentEvent.tool(toolCallId: 'id', update: true, title: 'child title'),
+      ),
+    );
+    await flush(tester);
+    final parent = agents(rig).linkOf(chat(rig).id)!.transcript;
+    expect(parent.hiddenEntries, 0);
+    expect(parent.plainText, contains('held root text'));
+    expect(parent.plainText, contains('root card'));
+    expect(parent.plainText, isNot(contains('child title')));
+    expect(parent.plainText, isNot(contains('discarded child output')));
   });
 }

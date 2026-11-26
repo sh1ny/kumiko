@@ -178,44 +178,37 @@ For each Claude ACP session the host SHALL record the adapter name and version r
 #### Scenario: Qualified version
 
 - **WHEN** the user chooses Continue on a saved session, and the adapter started for it reports a name and version on the qualified list for `load` and advertises `loadSession`
-
 - **THEN** that run claims `load`, and the earlier conversation is loaded
 
 #### Scenario: Unqualified version
 
 - **WHEN** the user chooses Continue, and the adapter started for it reports a version that is not on the qualified list while advertising `loadSession` and `resume`
-
 - **THEN** the pane shows *resume unavailable: adapter version not qualified* with that version, the adapter is terminated, and the saved record is unchanged
 
 #### Scenario: Unqualified version in a new session
 
 - **WHEN** the user starts a new session and the adapter reports a version that is not on the qualified list
-
 - **THEN** the session runs with the baseline only, and its capabilities show load and resume as unavailable with the version named
 
 #### Scenario: Advertised feature missing
 
 - **WHEN** the user chooses Continue, and the adapter started for it is a qualified version but advertises neither `loadSession` nor `sessionCapabilities.resume` in that run
-
 - **THEN** the pane shows *resume unavailable: not advertised by the adapter*, and the adapter is terminated
 
 #### Scenario: Adapter speaks another protocol version
 
-- **WHEN** an adapter answers `initialize` with a protocol version other than 1
-
+- **WHEN** the adapter answers `initialize` with a protocol version other than 1
 - **THEN** the start fails with *unsupported ACP protocol version* naming the version, and the adapter's process tree is terminated
 
 #### Scenario: Codex follows minimum-version compatibility
 
 - **WHEN** Codex 0.166.0 or newer starts without an exact-version evidence row
-
 - **THEN** native features use their supported contract and observed responses, not Claude's ACP advertisement or exact-version gate
 
 #### Scenario: OMP follows minimum-version compatibility
 
 - **WHEN** OMP at or above the minimum version starts without an exact-version evidence row
-
-- **THEN** the session accepts and streams a prompt, can Stop it, and shows a supported approval and root tool card when OMP emits them. A successful registration or call updates Kumiko tools status without any exact-version evidence row. Continue and steering remain unavailable.
+- **THEN** the session accepts and streams a prompt, can Stop it, and shows a supported approval and root tool card when OMP emits them. A successful registration or call updates Kumiko tools status without any exact-version evidence row. Native Continue, history and child activity depend on the record and observed OMP responses; steering remains unavailable.
 
 ### Requirement: Kumiko tool delivery is qualified per adapter version
 Real qualification of an adapter version SHALL record a `kumiko tool call` item per OS: an authenticated `kumiko_session_info` call that succeeded, or the failure observed. The qualification checker SHALL require that item for every listed Claude adapter version and every recorded Codex evidence section. A version whose tool delivery was observed to fail SHALL be listed with that failure, and sessions on that exact version SHALL report it. Source: ADR 0005 qualification in M1; ADR 0012 decisions 5 to 7.

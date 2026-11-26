@@ -1,5 +1,6 @@
 import 'dart:convert';
 import 'dart:io';
+import 'dart:isolate';
 
 import 'package:host_protocol/host_protocol.dart';
 
@@ -10,7 +11,10 @@ Future<int> runOmpFixture(List<String> args) async {
   if (scriptIndex < 0 || scriptIndex + 1 == args.length) return 64;
   final script =
       jsonDecode(File(args[scriptIndex + 1]).readAsStringSync()) as Json;
-  final report = File(script['reportFile']! as String);
+  final reportPath = script['reportFile']! as String;
+  final report = File(
+    script['isolateReports'] == true ? '$reportPath.$pid' : reportPath,
+  );
   void record(Json value) => report.writeAsStringSync(
     '${jsonEncode(value)}\n',
     mode: FileMode.append,
@@ -102,13 +106,23 @@ Future<int> runOmpFixture(List<String> args) async {
       }
     } else if (type == 'set_event_filter' ||
         type == 'get_state' ||
+        type == 'set_subagent_subscription' ||
+        type == 'get_subagents' ||
         type == 'set_host_tools') {
       final response = {
         'type': 'response',
         'id': id,
         'command': type,
         'success': true,
-        if (type == 'get_state') 'data': {'sessionId': 'fixture-session'},
+        if (type == 'get_state')
+          'data': {
+            'sessionId': 'fixture-session',
+            'isSettled': true,
+            'hasPendingAsyncWork': false,
+          },
+        if (type == 'set_subagent_subscription')
+          'data': {'level': command['level']},
+        if (type == 'get_subagents') 'data': {'subagents': <Object?>[]},
         if (type == 'set_host_tools')
           'data': {
             'toolNames': [
@@ -122,8 +136,17 @@ Future<int> runOmpFixture(List<String> args) async {
     }
   }
   record({'stdin': 'eof'});
-  if (script['eofDelayMs'] case final int milliseconds) {
-    await Future<void>.delayed(Duration(milliseconds: milliseconds));
+  if (script['holdEof'] == true) {
+    final hold = ReceivePort();
+    try {
+      // Only containment can release this scripted process, not a timer.
+      await hold.first;
+    } finally {
+      hold.close();
+    }
+  }
+  if (script['eofFrames'] case final List<Object?> frames) {
+    if (await play(frames) case final int status) return status;
   }
   return script['eofExit'] as int? ?? 0;
 }

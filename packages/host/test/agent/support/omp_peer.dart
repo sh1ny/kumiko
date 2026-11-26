@@ -10,7 +10,9 @@ class OmpPeer {
       input: input.stream,
       write: (bytes) {
         for (final line in const LineSplitter().convert(utf8.decode(bytes))) {
-          writes.add(jsonDecode(line) as Json);
+          final command = jsonDecode(line) as Json;
+          writes.add(command);
+          _writeSignals.remove(writes.length - 1)?.complete(command);
         }
         return blockedWrite?.future ?? Future.value();
       },
@@ -19,6 +21,11 @@ class OmpPeer {
 
   final input = StreamController<List<int>>();
   final writes = <Json>[];
+  final _writeSignals = <int, Completer<Json>>{};
+
+  Future<Json> commandAt(int index) => index < writes.length
+      ? Future.value(writes[index])
+      : (_writeSignals[index] ??= Completer<Json>()).future;
   Completer<void>? blockedWrite;
   late final OmpClient client;
 

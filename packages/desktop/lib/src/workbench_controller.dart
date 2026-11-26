@@ -10,6 +10,7 @@ import 'package:flutter/widgets.dart' show FocusManager;
 import 'package:host_protocol/host_protocol.dart';
 
 import 'agent/agent_controller.dart';
+import 'agent/omp_child_view.dart';
 import 'cleanup_controller.dart';
 import 'folder_picker.dart';
 import 'host_link.dart';
@@ -19,6 +20,7 @@ import 'terminal/terminal_surface.dart';
 import 'view_closer.dart';
 
 export 'agent/agent_controller.dart' show agentChatKind;
+export 'agent/omp_child_view.dart' show ompChildKind;
 
 typedef ViewCloserOf = ViewCloser Function(WorkbenchController controller);
 
@@ -125,11 +127,13 @@ const List<ViewKind> registeredViews = [
     needsWorkspace: true,
     closer: _agentCloser,
   ),
+  ViewKind(ompChildKind, 'Subagent', needsWorkspace: true),
 ];
 
 /// The registered kinds the launcher offers as one plain entry each.
-Iterable<ViewKind> get launcherViews =>
-    registeredViews.where((k) => k.id != terminalKind && k.id != agentChatKind);
+Iterable<ViewKind> get launcherViews => registeredViews.where(
+  (k) => k.id != terminalKind && k.id != agentChatKind && k.id != ompChildKind,
+);
 
 ViewKind? viewKindOf(String id) {
   for (final k in registeredViews) {
@@ -178,6 +182,8 @@ class WorkbenchController extends ChangeNotifier {
     terminals.addListener(_onTerminals);
     agents = AgentController(
       removePane: removePane,
+      splitOmpChild: _splitOmpChild,
+      reportMessage: _showMessage,
       savePaneState: (id, state) {
         final d = _layout;
         if (d != null && d.pane(id) != null) _commit(d.setPaneState(id, state));
@@ -394,7 +400,7 @@ class WorkbenchController extends ChangeNotifier {
         _saver.change(layoutToJson(repaired));
       }
     }
-    agents.sync(_layout!.panes.where((p) => p.kind == agentChatKind));
+    _syncAgents(_layout!);
     await agents.restore();
     if (_stale(generation)) return;
     notifyListeners();
@@ -548,7 +554,7 @@ class WorkbenchController extends ChangeNotifier {
       for (final p in d.panes)
         if (p.kind == terminalKind) p.id,
     });
-    agents.sync(d.panes.where((p) => p.kind == agentChatKind));
+    _syncAgents(d);
     if (refocus || d.focusedPane != focusedBefore) {
       _wantKeyboard(d.focusedPane);
     }
@@ -610,6 +616,36 @@ class WorkbenchController extends ChangeNotifier {
     final d = _layout;
     if (d == null) return;
     _commit(d.splitPane(paneId, direction, view, splitId: _fresh('s')));
+  }
+
+  void _syncAgents(LayoutDocument document) => agents.sync(
+    document.panes.where(
+      (pane) => pane.kind == agentChatKind || pane.kind == ompChildKind,
+    ),
+  );
+
+  String? _splitOmpChild(String parentId, Json state) {
+    final d = _layout;
+    final parent = d?.pane(parentId);
+    if (d == null || parent?.kind != agentChatKind) return null;
+    final pane = PaneNode(
+      id: _fresh('p'),
+      kind: ompChildKind,
+      workspace: parent!.workspace,
+      item: null,
+      state: state,
+    );
+    return _commit(
+          d.splitPane(
+            parentId,
+            SplitDirection.horizontal,
+            pane,
+            splitId: _fresh('s'),
+          ),
+          refocus: true,
+        )
+        ? pane.id
+        : null;
   }
 
   /// Moves a pane into a new tab after its source. Nothing is sent to the
@@ -722,11 +758,16 @@ class WorkbenchController extends ChangeNotifier {
           terminals.linkOf(pane.id)?.profileName ?? pane.state['profileName'];
       return name is String ? '${kind.label} · $name' : kind.label;
     }
-    final label = kind.id == agentChatKind
-        ? _runtimeLabel(
-            agents.linkOf(pane.id)?.runtimeKind ?? pane.state['runtimeKind'],
-          )
-        : kind.label;
+    final label = switch (kind.id) {
+      agentChatKind => _runtimeLabel(
+        agents.linkOf(pane.id)?.runtimeKind ?? pane.state['runtimeKind'],
+      ),
+      ompChildKind => switch (pane.state['ordinal']) {
+        final int ordinal when ordinal > 0 => 'Subagent $ordinal',
+        _ => kind.label,
+      },
+      _ => kind.label,
+    };
     final workspace = pane.workspace == null
         ? null
         : this.workspace(pane.workspace!);
@@ -1204,6 +1245,11 @@ class WorkbenchController extends ChangeNotifier {
     _message = 'The workspace is being removed.';
     notifyListeners();
     return true;
+  }
+
+  void _showMessage(String message) {
+    _message = message;
+    notifyListeners();
   }
 
   void dismissMessage() {

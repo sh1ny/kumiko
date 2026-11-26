@@ -55,6 +55,7 @@ abstract final class Method {
   static const String runtimeSetDefault = 'runtime/setDefault';
   static const String agentStart = 'agent/start';
   static const String agentContinue = 'agent/continue';
+  static const String agentChildHistory = 'agent/childHistory';
   static const String agentAttach = 'agent/attach';
   static const String agentPrompt = 'agent/prompt';
   static const String agentSteer = 'agent/steer';
@@ -90,6 +91,7 @@ abstract final class Capability {
   static const String agent = 'agent';
   static const String codex = 'codex';
   static const String omp = 'omp';
+  static const String ompHistory = 'omp-history';
   static const String agentExtensionsV1 = 'agent-extensions-v1';
 
   /// `app/quit` and `app/previousExit` (app-exit-and-reopen D1, D5).
@@ -130,6 +132,7 @@ const Map<String, String> methodCapability = {
   Method.runtimeSetDefault: Capability.agent,
   Method.agentStart: Capability.agent,
   Method.agentContinue: Capability.agent,
+  Method.agentChildHistory: Capability.ompHistory,
   Method.agentAttach: Capability.agent,
   Method.agentPrompt: Capability.agent,
   Method.agentSteer: Capability.agentExtensionsV1,
@@ -2045,6 +2048,60 @@ class AgentStartResult {
   };
 }
 
+const maxAgentChildKeyBytes = 128;
+
+class AgentChildHistoryParams {
+  const AgentChildHistoryParams({
+    required this.sessionId,
+    required this.runId,
+    required this.childKey,
+    required this.viewToken,
+  });
+  factory AgentChildHistoryParams.fromJson(Json json) {
+    String key(String name) {
+      final value = _req<String>(json, name);
+      if (value.isEmpty ||
+          value.length > maxAgentChildKeyBytes ||
+          jsonStringContentBytes(value) > maxAgentChildKeyBytes) {
+        throw RpcException(
+          ErrorCode.invalidParams,
+          'invalid child history $name',
+        );
+      }
+      return value;
+    }
+
+    return AgentChildHistoryParams(
+      sessionId: key('sessionId'),
+      runId: key('runId'),
+      childKey: key('childKey'),
+      viewToken: key('viewToken'),
+    );
+  }
+
+  final String sessionId, runId, childKey, viewToken;
+  Json toJson() => {
+    'sessionId': sessionId,
+    'runId': runId,
+    'childKey': childKey,
+    'viewToken': viewToken,
+  };
+}
+
+enum AgentChildHistoryStatus { queued, unavailable }
+
+class AgentChildHistoryResult {
+  const AgentChildHistoryResult(this.status, {this.reason});
+  factory AgentChildHistoryResult.fromJson(Json json) =>
+      AgentChildHistoryResult(
+        _enum(AgentChildHistoryStatus.values, json, 'status'),
+        reason: _opt<String>(json, 'reason'),
+      );
+  final AgentChildHistoryStatus status;
+  final String? reason;
+  Json toJson() => {'status': status.name, 'reason': ?reason};
+}
+
 enum AgentContinueMode { load, resume }
 
 class AgentContinueResult {
@@ -2226,22 +2283,30 @@ class AgentRecord {
     required this.workspaceAvailable,
     this.targetPath,
     this.adapterVersion,
+    this.continueUnavailable,
+    this.historyUnconfirmed,
   });
   factory AgentRecord.fromJson(Json json) => AgentRecord(
     known: _req<bool>(json, 'known'),
     workspaceAvailable: _req<bool>(json, 'workspaceAvailable'),
     targetPath: _opt<String>(json, 'targetPath'),
     adapterVersion: _opt<String>(json, 'adapterVersion'),
+    continueUnavailable: _opt<String>(json, 'continueUnavailable'),
+    historyUnconfirmed: _opt<String>(json, 'historyUnconfirmed'),
   );
   final bool known;
   final bool workspaceAvailable;
   final String? targetPath;
   final String? adapterVersion;
+  final String? continueUnavailable;
+  final String? historyUnconfirmed;
   Json toJson() => {
     'known': known,
     'workspaceAvailable': workspaceAvailable,
     'targetPath': ?targetPath,
     'adapterVersion': ?adapterVersion,
+    'continueUnavailable': ?continueUnavailable,
+    'historyUnconfirmed': ?historyUnconfirmed,
   };
 }
 
@@ -2278,6 +2343,8 @@ class AgentDelegated {
     this.activeChildren = 0,
     this.waitingRequests = 0,
     this.incomplete = false,
+    this.nativeWork = false,
+    this.childVisibilityUnavailable = false,
   });
   factory AgentDelegated.fromJson(Json json) {
     final active = _req<int>(json, 'activeChildren');
@@ -2292,16 +2359,22 @@ class AgentDelegated {
       activeChildren: active,
       waitingRequests: waiting,
       incomplete: _req<bool>(json, 'incomplete'),
+      nativeWork: _opt<bool>(json, 'nativeWork') ?? false,
+      childVisibilityUnavailable:
+          _opt<bool>(json, 'childVisibilityUnavailable') ?? false,
     );
   }
   final int activeChildren, waitingRequests;
-  final bool incomplete;
-  bool get hasWork => activeChildren > 0 || waitingRequests > 0 || incomplete;
+  final bool incomplete, nativeWork, childVisibilityUnavailable;
+  bool get hasWork =>
+      activeChildren > 0 || waitingRequests > 0 || incomplete || nativeWork;
   Json toJson() {
     final json = <String, Object?>{
       'activeChildren': activeChildren,
       'waitingRequests': waitingRequests,
       'incomplete': incomplete,
+      if (nativeWork) 'nativeWork': true,
+      if (childVisibilityUnavailable) 'childVisibilityUnavailable': true,
     };
     AgentDelegated.fromJson(json);
     return json;
@@ -2601,6 +2674,20 @@ class AgentTurnEndedParams {
 
 enum AgentExitReason { closed, ended, failed }
 
+/// OMP's persistence evidence, independent of contained process settlement.
+enum OmpHistoryWarning {
+  noNativePersistence,
+  nativeEofUnconfirmed,
+  nativeExitNonzero,
+  nativeTransportFailed,
+  storeWriteFailed,
+}
+
+OmpHistoryWarning? _ompHistoryWarning(Json json) =>
+    json['historyUnconfirmed'] == null
+    ? null
+    : _enum(OmpHistoryWarning.values, json, 'historyUnconfirmed');
+
 class AgentExitedParams {
   const AgentExitedParams({
     required this.sessionId,
@@ -2610,6 +2697,7 @@ class AgentExitedParams {
     this.error,
     this.resumeReason,
     this.message,
+    this.historyUnconfirmed,
   });
   factory AgentExitedParams.fromJson(Json json) => AgentExitedParams(
     sessionId: _req<String>(json, 'sessionId'),
@@ -2619,6 +2707,7 @@ class AgentExitedParams {
     error: _opt<String>(json, 'error'),
     resumeReason: _opt<String>(json, 'resumeReason'),
     message: _opt<String>(json, 'message'),
+    historyUnconfirmed: _ompHistoryWarning(json),
   );
   final String sessionId;
   final AgentExitReason reason;
@@ -2631,6 +2720,7 @@ class AgentExitedParams {
   final String? error;
   final String? resumeReason;
   final String? message;
+  final OmpHistoryWarning? historyUnconfirmed;
   Json toJson() => {
     'sessionId': sessionId,
     'reason': reason.name,
@@ -2639,6 +2729,7 @@ class AgentExitedParams {
     'error': ?error,
     'resumeReason': ?resumeReason,
     'message': ?message,
+    'historyUnconfirmed': ?historyUnconfirmed?.name,
   };
 }
 
@@ -2658,19 +2749,23 @@ class AgentCloseFailedParams {
     required this.sessionId,
     required this.reason,
     this.message,
+    this.historyUnconfirmed,
   });
   factory AgentCloseFailedParams.fromJson(Json json) => AgentCloseFailedParams(
     sessionId: _req<String>(json, 'sessionId'),
     reason: _req<String>(json, 'reason'),
     message: _opt<String>(json, 'message'),
+    historyUnconfirmed: _ompHistoryWarning(json),
   );
   final String sessionId;
   final String reason;
   final String? message;
+  final OmpHistoryWarning? historyUnconfirmed;
   Json toJson() => {
     'sessionId': sessionId,
     'reason': reason,
     'message': ?message,
+    'historyUnconfirmed': ?historyUnconfirmed?.name,
   };
 }
 

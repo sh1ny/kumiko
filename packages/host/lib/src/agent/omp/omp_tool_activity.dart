@@ -7,6 +7,9 @@ import 'package:host_protocol/host_protocol.dart';
 /// objects. Reset at each terminal result or refused admission; card IDs never
 /// repeat during the run.
 final class OmpToolActivity {
+  OmpToolActivity({this.cardPrefix = 'omp'});
+
+  final String cardPrefix;
   static const _maxOpen = 16;
   static const _maxClosed = 256;
   static const _identityBytes = 256;
@@ -18,11 +21,17 @@ final class OmpToolActivity {
 
   final _open = <String, _Tool>{};
   final _closed = <String>{};
+  final _notedScopes = <String>{};
   int _nextCard = 0;
   bool _noted = false;
   bool _notedIdle = false;
 
-  AgentEvent? omitted({required bool active}) {
+  AgentEvent? omitted({required bool active, String? scope}) {
+    if (scope != null) {
+      return _notedScopes.add(scope)
+          ? AgentEvent.notice('Some subagent tool activity was omitted.')
+          : null;
+    }
     if (!active) {
       if (_notedIdle) return null;
       _notedIdle = true;
@@ -37,7 +46,12 @@ final class OmpToolActivity {
     );
   }
 
-  AgentEvent? frame(String type, Json frame, {required bool active}) {
+  AgentEvent? frame(
+    String type,
+    Json frame, {
+    required bool active,
+    String? scope,
+  }) {
     if (frame.containsKey('childSessionId') ||
         frame.containsKey('subagentId') ||
         frame.containsKey('parentToolCallId')) {
@@ -47,31 +61,32 @@ final class OmpToolActivity {
     final id = frame['toolCallId'];
     final name = frame['toolName'];
     if (!_validIdentity(id) || !_validIdentity(name)) {
-      return omitted(active: true);
+      return omitted(active: true, scope: scope);
     }
-    final key = id! as String;
+    final key = scope == null ? id! as String : '$scope\u0000$id';
     final toolName = name! as String;
     final existing = _open[key];
     if (type == 'tool_execution_start') {
       if (existing != null ||
           _closed.contains(key) ||
           _open.length >= _maxOpen) {
-        return omitted(active: true);
+        return omitted(active: true, scope: scope);
       }
       final (arguments, clipped) = frame.containsKey('args')
           ? _arguments(frame['args'])
           : (null, false);
       final tool = _Tool(
-        'omp-tool-${++_nextCard}',
+        '$cardPrefix-tool-${++_nextCard}',
         toolName,
         arguments,
         clipped,
+        scope,
       );
       _open[key] = tool;
       return _snapshot(tool);
     }
     if (existing == null || existing.name != toolName) {
-      return omitted(active: true);
+      return omitted(active: true, scope: scope);
     }
     if (type == 'tool_execution_update') {
       return _snapshot(existing, update: true, result: frame['partialResult']);
@@ -79,7 +94,7 @@ final class OmpToolActivity {
     final error = frame['isError'];
     if (!frame.containsKey('result') ||
         (frame.containsKey('isError') && error is! bool)) {
-      return omitted(active: true);
+      return omitted(active: true, scope: scope);
     }
     _open.remove(key);
     _closed.add(key);
@@ -172,8 +187,9 @@ final class OmpToolActivity {
     });
   }
 
-  Iterable<AgentEvent> finish() sync* {
+  Iterable<AgentEvent> finish({String? scope}) sync* {
     for (final tool in _open.values) {
+      if (scope != null && tool.scope != scope) continue;
       // Keep the last snapshot and do not assert a native outcome.
       yield AgentEvent.tool(
         toolCallId: tool.card,
@@ -183,19 +199,28 @@ final class OmpToolActivity {
     }
   }
 
+  void retireScope(String scope) {
+    _open.removeWhere((_, tool) => tool.scope == scope);
+    final prefix = '$scope\u0000';
+    _closed.removeWhere((key) => key.startsWith(prefix));
+    _notedScopes.remove(scope);
+  }
+
   void reset() {
     _open.clear();
     _closed.clear();
+    _notedScopes.clear();
     _noted = false;
     _notedIdle = false;
   }
 }
 
 final class _Tool {
-  const _Tool(this.card, this.name, this.arguments, this.clipped);
+  const _Tool(this.card, this.name, this.arguments, this.clipped, this.scope);
   final String card, name;
   final Json? arguments;
   final bool clipped;
+  final String? scope;
 }
 
 final class _PreviewFull implements Exception {

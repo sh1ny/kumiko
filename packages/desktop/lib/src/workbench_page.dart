@@ -1382,6 +1382,13 @@ class _PaneBody extends StatelessWidget {
         ),
       );
     }
+    if (pane.kind == ompChildKind) {
+      return OmpChildPaneView(
+        key: ValueKey('omp-child-view-${pane.id}'),
+        controller: controller.agents,
+        paneId: pane.id,
+      );
+    }
     if (pane.kind == terminalKind) {
       return TerminalPaneView(
         key: ValueKey('terminal-view-${pane.id}'),

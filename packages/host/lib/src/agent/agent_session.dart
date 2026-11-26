@@ -12,6 +12,7 @@ import 'omp/omp_client.dart';
 import 'omp/omp_driver.dart';
 import 'qualification.dart';
 import 'runtime_driver.dart';
+import 'tool_secret_redaction.dart';
 
 abstract interface class AgentDeadline {
   void cancel();
@@ -208,6 +209,8 @@ class AgentSession {
     return AgentDelegated(
       activeChildren: facts.activeChildren,
       incomplete: facts.incomplete,
+      nativeWork: facts.nativeWork,
+      childVisibilityUnavailable: facts.childVisibilityUnavailable,
       waitingRequests:
           _permissions.values
               .where(
@@ -574,14 +577,7 @@ class AgentSession {
 
   /// [_redact] applied to every string in adapter JSON before any of it
   /// reaches the transcript or the desktop.
-  Object? _redactJson(Object? value) => switch (value) {
-    final String s => _redact(s),
-    final Map<Object?, Object?> m => <String, Object?>{
-      for (final e in m.entries) e.key! as String: _redactJson(e.value),
-    },
-    final List<Object?> l => [for (final v in l) _redactJson(v)],
-    _ => value,
-  };
+  Object? _redactJson(Object? value) => redactToolJson(value, _redact);
 
   Future<void> _consume(Object value) async {
     if (value is RuntimeDelivery) {
@@ -841,8 +837,10 @@ class AgentSession {
         ),
       );
     }
-    final omp = client is OmpRuntimeDriver;
-    final id = '${omp ? sessionId : runId}:permission-${++_requestId}';
+    final ompRun = client is OmpRuntimeDriver
+        ? (client as OmpRuntimeDriver).runId
+        : null;
+    final id = '${ompRun ?? runId}:permission-${++_requestId}';
     final options = <String, Object?>{};
     final display = <AgentPermissionOption>[];
     for (var i = 0; i < request.choices.length; i++) {
@@ -874,7 +872,7 @@ class AgentSession {
       }
     }
     final preview = request.preview == null ? null : _redact(request.preview!);
-    if (omp && preview != request.preview) {
+    if (ompRun != null && preview != request.preview) {
       _observeWrite(client.reply(request.id, request.cancellation));
       return encodeAgentEvent(
         AgentEvent.notice(

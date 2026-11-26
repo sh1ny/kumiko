@@ -443,10 +443,10 @@ class HostSession {
     }
   }
 
-  /// Ends the host as the desktop quits: closes stdin, which the host reads
-  /// as the desktop going away, and waits up to the quit deadline for it to
-  /// exit. A host that does not is killed. On Windows closing the outer job
-  /// then kills anything that remains. Safe to call more than once.
+  /// Ends the host as the desktop quits: closes stdin and keeps reading stdout
+  /// while waiting for the host to exit. A host that does not exit by the quit
+  /// deadline is killed. On Windows the outer job is then cleaned up. Safe to
+  /// call more than once.
   Future<QuitResult> quit() => _quit ??= _quitNow();
 
   Future<QuitResult> _quitNow() async {
@@ -456,7 +456,8 @@ class HostSession {
       return QuitResult(exitCode: _exitCode, timedOut: false);
     }
     _expected = true;
-    await connection.close();
+    // Cancelling the stdout reader before sending EOF can break an in-flight
+    // host write. The host would then see a broken connection, not a quit.
     unawaited(_closeStdin());
 
     var timedOut = false;
@@ -468,6 +469,7 @@ class HostSession {
       _process.kill();
       code = await _reap(const Duration(seconds: 5));
     }
+    await connection.close();
     if (_job != null) {
       // Whether the host finished in time or not, the units it left in the
       // ledger are covered by the outer job: terminate it and attest the

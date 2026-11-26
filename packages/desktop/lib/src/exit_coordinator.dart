@@ -87,6 +87,7 @@ class ExitCoordinator extends ChangeNotifier {
 
   /// The panes whose unsaved drafts the user's bulk choice named as lost.
   Set<String> _accepted = const {};
+  Set<(String, String?, String?)> _acceptedOmpRuns = const {};
   bool _disposed = false;
   Future<void>? _reading;
   Timer? _timer;
@@ -153,7 +154,7 @@ class ExitCoordinator extends ChangeNotifier {
       if (rows.any((i) => i.draft != null))
         'the text of every listed unsaved draft will be lost',
     ];
-    const kept = 'Saved sessions and stored drafts are kept.';
+    const kept = 'Saved session records and stored drafts are kept.';
     if (parts.isEmpty) return 'Closes Kumiko. $kept';
     return 'Stop processes and close: ${parts.join(' and ')}. $kept';
   }
@@ -193,6 +194,7 @@ class ExitCoordinator extends ChangeNotifier {
     _hostLost = false;
     _finalChecking = false;
     _accepted = const {};
+    _acceptedOmpRuns = const {};
     notifyListeners();
   }
 
@@ -230,15 +232,22 @@ class ExitCoordinator extends ChangeNotifier {
 
   /// The decision is made: flush, `app/quit`, close the connection. The
   /// layout is frozen, so nothing the host does to its units reaches it.
-  /// Answers false, without quitting, when the flush leaves a draft unsaved
-  /// that the user's choice did not name: the dialog asks again.
+  /// Answers false if a draft or a working OMP run was not named by the
+  /// user's decision. The dialog asks again before the host sees `app/quit`.
   Future<bool> _quit() async {
     _phase = ExitPhase.quitting;
     notifyListeners();
     workbench.freezeLayout();
     try {
       await workbench.flushForExit();
-      if (items.any((i) => i.draft != null && !_accepted.contains(i.paneId))) {
+      final current = items;
+      if (current.any(
+            (i) => i.draft != null && !_accepted.contains(i.paneId),
+          ) ||
+          current.any((i) {
+            final run = _ompRun(i);
+            return run != null && !_acceptedOmpRuns.contains(run);
+          })) {
         workbench.unfreezeLayout();
         return false;
       }
@@ -248,6 +257,13 @@ class ExitCoordinator extends ChangeNotifier {
       debugPrint('The quit did not end cleanly: $e');
     }
     return true;
+  }
+
+  (String, String?, String?)? _ompRun(ExitItem item) {
+    if (!item.hasProcess || item.kind != ExitItemKind.agent) return null;
+    final link = workbench.agents.linkOf(item.paneId);
+    if (link == null || link.runtimeKind != 'omp') return null;
+    return (item.paneId, link.sessionId, link.runId);
   }
 
   // --- the dialog -----------------------------------------------------------
@@ -294,10 +310,12 @@ class ExitCoordinator extends ChangeNotifier {
         pending != null &&
         !pending.isCompleted) {
       if (choice == _Choice.quit) {
+        final listed = items;
         _accepted = {
-          for (final i in items)
+          for (final i in listed)
             if (i.draft != null) i.paneId,
         };
+        _acceptedOmpRuns = {for (final i in listed) ?_ompRun(i)};
       }
       pending.complete(choice);
     }

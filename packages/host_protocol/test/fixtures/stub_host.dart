@@ -11,6 +11,7 @@
 //   echo-desktop like serve, hostVersion = the desktop identity it was sent
 //   locked-data answers hello with an error carrying structured data
 //   notify      like serve, then sends a cleanup/state notification
+//   write-at-eof writes a final control message as stdin closes
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
@@ -83,6 +84,29 @@ Future<void> main(List<String> args) async {
     Timer.periodic(const Duration(seconds: 1), (_) {});
     await Completer<void>().future;
   }
-  await connection.closed;
+  final reason = await connection.closed;
+  if (mode == 'write-at-eof') {
+    if (reason.kind != CloseReason.inputClosed) exit(65);
+    unawaited(stdout.done.then<void>((_) {}, onError: (Object _) {}));
+    try {
+      // Larger than the pipe buffer: this can finish only while the desktop
+      // is still reading. This stands in for a write already queued at EOF.
+      final notification = utf8.encode(
+        jsonEncode({
+          'jsonrpc': '2.0',
+          'method': 'test/final',
+          'params': {'data': 'x' * (256 * 1024)},
+        }),
+      );
+      for (final frame in encodeMessageFrames(0, notification)) {
+        stdout.add(frame);
+      }
+      await stdout.flush();
+    } on Object catch (error) {
+      stderr.writeln('stub could not finish the last host write: $error');
+      await stderr.flush();
+      exit(67);
+    }
+  }
   exit(0);
 }
