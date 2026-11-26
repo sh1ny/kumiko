@@ -4,6 +4,9 @@ Status: Accepted
 Date: 2026-11-22  
 Supersedes: OMP-only clauses of ADR 0004 decision 2, ADR 0012 decisions 5–7, and ADR 0005 decision 2 and ADR 0013 decisions 7, 8 and 12 as detailed below. Claude and Codex decisions remain in force.
 
+ADR 0019 amends decisions 1, 2 and 4 for exact OMP Continue, child activity
+and shutdown. ADR 0018 amends decision 5 for approval handling and tool delivery.
+
 ## Context
 
 M2 needs OMP sessions in the workbench. ADR 0004 assigns OMP its own native

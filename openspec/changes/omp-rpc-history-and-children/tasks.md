@@ -81,9 +81,9 @@ Red names the new or changed assertion to write before production code. Green na
 
 ## 1. Native contract and ADR
 
-- [ ] 1.1 Verify A1 from the pinned OMP CLI resolver, argv parser and session loader. Record in ADR 0019 how the path form differs from `switch_session`, why the optional title slot precedes the header, and the bounds and compatible argv forms. Settle any difference as design drift before implementing. No installed OMP or native workspace is opened.
-- [ ] 1.2 Verify A2 and A3 from the pinned pager, subagent registry and disposal source. Record the OMP v1 overflow and child attribution limits, the difference between yield and settlement, and the native exit evidence. No live provider or OMP run. Verify each cited version and symbol against its public source.
-- [ ] 1.3 Write `docs/adr/0019-omp-history-child-view-and-shutdown.md` and update the index, state ownership and native bounds in `openspec/architecture.md`. Carry C2, C3, C4, C7 and C9 in the new ADR. Confirm C1, C5, C6 and C8 are present in their named delta requirements; the archive will sync them into the main specs. Verify the ADR only supersedes the specified OMP clauses, and `openspec validate omp-rpc-history-and-children --strict` passes.
+- [x] 1.1 Verify A1 from the pinned OMP CLI resolver, argv parser and session loader. Record in ADR 0019 how the path form differs from `switch_session`, why the optional title slot precedes the header, and the bounds and compatible argv forms. Settle any difference as design drift before implementing. No installed OMP or native workspace is opened.
+- [x] 1.2 Verify A2 and A3 from the pinned pager, subagent registry and disposal source. Record the OMP v1 overflow and child attribution limits, the difference between yield and settlement, and the native exit evidence. No live provider or OMP run. Verify each cited version and symbol against its public source.
+- [x] 1.3 Write `docs/adr/0019-omp-history-child-view-and-shutdown.md` and update the index, state ownership and native bounds in `openspec/architecture.md`. Carry C2, C3, C4, C7 and C9 in the new ADR. Confirm C1, C5, C6 and C8 are present in their named delta requirements; the archive will sync them into the main specs. Verify the ADR only supersedes the specified OMP clauses, and `openspec validate omp-rpc-history-and-children --strict` passes.
 
 ## 2. Continue the exact OMP conversation
 

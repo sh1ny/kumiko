@@ -58,11 +58,13 @@ flowchart LR
 | Built-in shell profiles | Host `ProfileService` | One host run | Detected again at every host start | Host memory |
 | Pane-to-terminal link | Desktop `TerminalController` | While the pane and desktop live, through moves; dropped with the pane on a user close or a clean exit (status 0, complete output) | Lost on reopen, so the pane shows *ended, not restored* | Desktop memory |
 | Workspace cleanup state (*cleanup unresolved* flag and reasons) | Host holding the profile lock | Until a retried reconciliation cleans it or the user confirms | Checked before every launch against the workspace | Local store |
-| Session record (`agent_session`: target identity/path, runtime kind/profile, creating adapter name/version, native id, timestamps) | Host `AgentService` | Inserted only after ACP `session/new`, Codex `thread/start`, or OMP readiness and `get_state` identity validation succeed; retained through close and profile deletion; history deletion is M2 | Immutable; where supported, Continue rechecks target identity and capabilities against its own initialized adapter without rewriting the record | Local store (store v5) |
+| Session record (`agent_session`: immutable target, runtime kind/profile, creating adapter identity, native id and timestamps) | Host `AgentService` | Inserted after verified creation; retained through close and profile deletion | Continue rechecks the original target and compatible runtime; it never substitutes a native id | Local store (store v5) |
+| Private OMP locator and unconfirmed-save reason | Host `AgentService` | Locator persists with the saved record; warning lasts until a later proven outcome | No inferred locator or redirect rewrite; failed Continue preserves both | Local store (store v7, ADR 0019) |
 | User runtime profiles (argv, environment, runtime kind; no `cwd`) and `default_runtime` | Host `RuntimeProfileService` | Until removed or changed | Never rebuilt; a missing selected default stays unavailable rather than being silently replaced | Local store (`runtime_profile`, `setting`, store v5) |
 | Built-in runtime profile | Host `RuntimeProfileService` | One host run | Detected at host start with a 2 s overall off-isolate deadline; read-only and memory-only | Host memory |
 | Live agent state, sequence and pending permissions | Host `AgentSession` | Live session lifetime | Lost with the host; desktop mirrors sequenced control states and shows *Stopped or unknown* on host loss | Host memory |
 | Displayed agent transcript and pane-to-session link | Desktop `AgentController` | While the pane and desktop live; pane moves preserve them | Not persisted; explicit Continue may rebuild through load replay, or resume with earlier messages not shown | Desktop memory |
+| OMP child roster and read-only display | Host OMP driver owns run attribution; desktop owns the open view | Roster ends with its root run; displayed contents remain until the view closes | Layout retains only root id, opaque child key and ordinal; restored child view is inert | Native registry and history, plus in-memory display (ADR 0019) |
 | Adapter stderr | Host `AgentService` per-unit ring | Live adapter lifetime | Oldest bytes overwritten; never copied into the host log | None durable (memory only) |
 | Conversation transcript | Runtime | The runtime's own retention | Read through the adapter's resume or history path | Runtime's native history |
 | Live agent and terminal processes | Host | Until close, process exit or host exit; agent Stop cancels a turn, not the process | Never rebuilt; reopen shows *saved, not running* for agents | Host process table (memory) |
@@ -124,7 +126,7 @@ tool activity, approval, Stop, close/descendants, Kumiko call and auth-required;
 optional recovery/steering/questions/child observations remain separate. Missing
 evidence does not disable compatible versions. Claude qualification stays unchanged.
 
-### Native OMP contract (ADR 0016, ADR 0018)
+### Native OMP contract (ADR 0016, ADR 0018, ADR 0019)
 
 One contained process serves one root `omp` session over private v1 NDJSON.
 Both peers require `agent` and `omp`. OMP 18.20.1 or newer enters through a
@@ -132,13 +134,22 @@ contained version probe and executable recheck. Its ready frame must offer v1;
 delta events and `get_state` precede saving the `omp-rpc` identity. This is the
 reviewed transport contract, not evidence of real-runtime qualification.
 
-Prompt admission commits user input; the native prompt result settles the turn.
-Stop uses `abort` without killing the process. Close aborts a running turn,
-ends input, drains output and gives the leader up to 2 s to exit before
-containment settlement. OMP's native policy determines when tools ask. Kumiko
-shows only recognized one-shot and denial choices and maps reported root tool
-activity to the shared cards. It cancels unsupported dialogs. Continue and
-steering remain unavailable.
+Prompt admission commits user input; the native prompt result settles its ticket,
+not necessarily the root's activity. Stop uses native abort and attributable child
+cancellation without killing the process. Replies acknowledge commands; terminal
+events prove outcomes. Close and announced ordinary quit revoke live authority,
+then give OMP cancellation and EOF grace before containment settlement. A native
+save warning is separate from unresolved cleanup. Desktop loss still uses the
+shared shutdown path. OMP's native policy determines when tools ask. Kumiko shows
+only supported one-shot and denial choices, and never offers OMP steering.
+
+`omp-history` adds exact Continue and attributed read-only subagent panes. The
+host checks the stored native file and workspace, verifies native identity after
+launch, then stages a bounded root replay or reports earlier history unavailable.
+The OMP driver owns the private run's child roster and reports activity even
+without desktop credit. Child content never enters the parent transcript; only
+open views hold it, on the same credited event channel. Layout stores no child
+history, native locator or model-written label.
 
 The host registers its allowed tools once with `set_host_tools`; each call
 uses the authority of that live run's private connection. Successful
@@ -158,6 +169,11 @@ or other runtimes.
 | Decline and notify notices | 8 per turn or idle period, plus one overflow notice | Continue declining without more notices |
 | Pending decisions and callbacks | 16 decisions; 8 authorized result writes; native request ids ≤ 4 KiB encoded | Cancel excess decisions and refuse excess calls. An unanswered required write that cannot be admitted fails the run |
 | Tool cards | 16 open and 256 recently closed ids per prompt; tool ids and names ≤ 256 encoded bytes; retained argument preview ≤ 4 KiB per open card | Mark omissions at the open cap; evict the oldest closed id at its cap |
+| OMP root reopen | Shared resolver admission and deadline; path ≤ 4 KiB, whole header in ≤ 8 KiB | Refuse unverified recovery before giving the runtime Kumiko authority |
+| OMP root replay | v1; up to 32 pages of 50 messages; 1 MiB of normalized staging; one 60 s attempt | Discard incomplete replay; report unavailable history only after identity is verified |
+| OMP child roster | Up to 16 active and 64 retained completed identities; 16 open child tool calls aggregate | Withhold unverified attribution; report incomplete activity |
+| OMP child history | One read per root; ≤ 256 KiB file and ≤ 256 KiB normalized replay; one 10 s attempt | Refuse or report an unavailable snapshot; do not mix history with live output |
+| OMP close or quit | Up to 2 s cancellation plus 2 s EOF grace, inside the existing shutdown budget; quit closes roots in parallel | Persist an unconfirmed-save reason; resolve process cleanup separately |
 
 ### Shared contracts
 
@@ -261,6 +277,7 @@ Lists accepted ADRs, plus proposed ones marked as such.
 | [0016](../docs/adr/0016-native-omp-rpc-transport.md) | Native OMP v1 NDJSON; contained 18.20.1 minimum-version probe; `omp` peer gate and `omp-rpc` saved identity; decline interactive requests and omit Kumiko tool delivery | 0004 decision 2 and 0012 decisions 5–7 for OMP admission only; 0005 decision 2 and 0013 decisions 7, 8 and 12 for OMP tool delivery only |
 | [0017](../docs/adr/0017-tests-never-gate-on-elapsed-time.md) | Tests assert order and outcome, never elapsed time; deadlines under test run on an injected or fake clock or are fired explicitly; real time only as generous hang guards; measurements are printed as `measured:` and checked by qualification, not gated. The ten shared rules live in `AGENTS.md`. Amends 0014's Consequences sentence that the draft latency test fails above a 100 ms median; the 100 ms reopening threshold stands | - |
 | [0018](../docs/adr/0018-omp-approvals-and-private-host-tools.md) | OMP one-shot approvals under native policy, root tool cards and private authorized callbacks with no MCP secret | ADR 0016 decision 5 for interaction and tool delivery only; refines the shared tool and transport rules for OMP |
+| [0019](../docs/adr/0019-omp-history-child-view-and-shutdown.md) | Exact OMP Continue and bounded v1 history, attributed read-only child panes, per-run control identity and orderly native shutdown | Only OMP Continue, child and shutdown clauses of 0016; OMP run identity and peer gating in 0018; ordinary OMP quit in 0014 |
 
 ADR 0004 and 0012 remain in force for their unchanged scope; the native-runtime
-exceptions are indexed in ADR 0015, ADR 0016 and ADR 0018. Accepted ADR files are not rewritten.
+exceptions are indexed in ADRs 0015, 0016, 0018 and 0019. Accepted ADR decisions remain historical; scoped amendments are recorded in the later ADRs.

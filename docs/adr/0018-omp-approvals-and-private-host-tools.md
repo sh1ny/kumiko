@@ -4,6 +4,9 @@ Status: Accepted
 Date: 2026-11-25  
 Supersedes: ADR 0016 decision 5 for OMP approval handling and tool delivery only. Refines ADR 0005 decisions 1–3 and 5, ADR 0012 decision 2, and ADR 0013 decisions 4, 7, 8, 12, 16 and 18–20 for OMP only.
 
+ADR 0019 amends decisions 2 and 4 for run-scoped identities and the additive
+history and child-view peer gate. The private root-only binding is unchanged.
+
 ## Context
 
 ADR 0016 connects one contained OMP root process to one Kumiko run. It leaves native approval settings intact, declines dialogs and omits Kumiko tools. M2 change 3 brings supported approval requests and root tool activity into the existing chat and connects authorized Kumiko tools. Direction D15 distinguishes OMP RPC host tools from MCP server registration.

@@ -5,6 +5,9 @@
 - **Source:** change `app-exit-and-reopen` design D1 to D5; direction D7 and D29; user decisions 2026-11-02 (per-item Stop in the exit dialog; idle terminals close without a warning); ADR 0001, ADR 0002, ADR 0003, ADR 0004, ADR 0008 and ADR 0012
 - **Relation:** amends ADR 0003's single-store wording and ADR 0008 decision 3's WAL rule, for the draft store only. Both files are unchanged; the main store keeps WAL with `synchronous=FULL`.
 
+ADR 0019 amends decision 2 only for ordinary quit with live OMP roots. It
+does not change OS-required exit or desktop-loss cleanup.
+
 ## Context
 
 M1 needs quitting to be safe for running work. Before this change the desktop always answered `exit` to a quit, so running agent turns and terminal programs ended without a word. Terminals warned on close whenever a shell was live, even at its prompt. Composer text lived only in desktop memory, so a quit or a crash lost it. The host recorded `closed_cleanly` as "no live units at exit", which is also true after a desktop kill whose units settled, so the next launch could not say that the last run ended badly.
