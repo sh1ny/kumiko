@@ -21,7 +21,7 @@ TIER: FULL
 
 ### D1: Handle physical keys at the focused composer
 
-- Choice: Wrap the existing multiline field in a non-focusable ancestor `Focus` key handler. Handle only plain Enter and Up and Shift+Enter, treating both Enter keys alike. Plain means no Shift, Control, Alt, or Meta; lock keys do not affect the shortcut. On active composition, leave those keys to the platform input path without invoking app shortcuts. Active composition means `link.prompt.value.composing.isValid` when key-down is handled (A1). Consume Enter repeats without submitting. Use the same send callback as the button; consume blocked Enter so it neither submits nor inserts a newline. Apply Shift+Enter as one text-editing value replacement, including the updated selection, so it works without a separate platform text event. Pass nonempty Up and unrecognized combinations to Flutter.
+- Choice: Wrap the existing multiline field in a non-focusable ancestor `Focus` key handler. Handle only plain Enter and Up and Shift+Enter, treating both Enter keys alike. Plain means no Shift, Control, Alt, or Meta; lock keys do not affect the shortcut. Active composition means `link.prompt.value.composing.isValid` at dispatch (A1). Do not invoke a composer shortcut during composition. On Windows only, claim a composing Enter delivered to Flutter to prevent the embedder from interpreting it as a newline (A1). Consume Enter repeats without submitting. Use the same send callback as the button; consume blocked Enter so it neither submits nor inserts a newline. Apply Shift+Enter as one text-editing value replacement, including the updated selection, so it works without a separate platform text event. Pass nonempty Up and unrecognized combinations to Flutter.
 - Rejected: Use a text-input submit action or watch for newlines in the buffer. Either would mix keyboard submission with IME, paste, or text entry and would not distinguish Shift+Enter.
 - Reversal cost: low.
 - Important: yes. Changes how users submit drafts and confirm IME candidates.
@@ -41,12 +41,13 @@ TIER: FULL
 |---|---|---|---|---|---|---|
 | S1 | Keyboard scope | Shared keys; mirror Send while streaming | Runtime-specific bindings, queue, or steering | Low | Yes | User |
 | S2 | Recall scope | Most recent accepted prompt in this open conversation | Search restored history | Low | Yes | User |
-| D1 | Key handling | Handle exact physical shortcuts at the focused composer | Infer submission from text input | Low | Yes | Agent |
+| D1 | Key handling | Exact physical shortcuts, leaving IME confirmation alone and blocking Windows raw Enter fallback during composition | Infer submission from text input | Low | Yes | Agent |
 | D2 | Recall source | Keep one link-local acknowledged prompt | Retry field or transcript | Low | Yes | Agent |
 
 ## Assumptions
 
-- A1: On Windows, an IME's confirming Enter reaches the composer either while `TextEditingValue.composing` is valid or not as an unmodified Enter key-down. Widget tests cover only the former with an injected composing range. The native check below settles the assumption for the two IMEs tested. If A1 is false, D1 reopens.
+- A1: Windows Enter that confirms a candidate either travels the IME-processed path without an app key event or reaches Flutter before its composing range clears. For a raw Enter that reaches Flutter, the pinned engine is expected to run its multiline fallback only if the app does not claim the event. Task 1.1 checks the pinned SDK input code. A widget test injects the active composing range and asserts that Flutter claims raw Windows Enter without changing the draft. Only the native check below verifies the candidate-to-key ordering and the next deliberate Enter. If either case fails, D1 reopens.
+- A2: On Linux and macOS, an Enter that D1 passes through during candidate confirmation is handled by the platform IME and does not become a newline or a second commit. The pinned SDK routes unclaimed keys through GTK or AppKit text input; actual IME output on those platforms has not been checked. Depends on it: D1 pass-through and the "Confirm an IME candidate" scenario on Linux and macOS. A failed native check reopens D1 for that platform.
 
 ## Carried constraints
 - C1: Keyboard submission respects the Send gate and does not intercept IME confirmation to submit or add text. Kind: invariant. Destination: spec: specs/agent-sessions/spec.md → Requirement: Agent composers support keyboard editing and submission.
