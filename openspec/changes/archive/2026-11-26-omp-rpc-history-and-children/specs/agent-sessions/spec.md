@@ -4,7 +4,7 @@
 
 ### Requirement: Closing a running agent asks for confirmation
 
-Closing a pane or tab holding a session whose turn or known child work is running SHALL first ask "Are you sure you want to stop the running agent?", in one confirmation with any busy terminals. Incomplete OMP work visibility SHALL also warn that OMP may still be working. Cancel SHALL keep the session running. Confirm SHALL cancel addressable work, answer pending requests as cancelled and settle the process tree. Other sessions SHALL close without a prompt. Moving SHALL NOT warn. Source: direction "Agent tab close depends on running work", D7.
+Closing a pane or tab with a running agent turn or known child work SHALL ask "Are you sure you want to stop the running agent?" in one confirmation with any busy terminals. The dialog SHALL warn when OMP may still be working. Cancel SHALL keep work running. Confirm SHALL cancel addressable work, answer pending requests as cancelled and settle the process tree. Other sessions SHALL close without prompting. Moving SHALL NOT warn. Source: direction "Agent tab close depends on running work", D7.
 
 #### Scenario: Close an idle session
 
