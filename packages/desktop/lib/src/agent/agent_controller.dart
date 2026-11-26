@@ -240,6 +240,8 @@ class AgentLink {
   String? errorCode;
   String? _resumeReason;
   String? lastPrompt;
+  String? _lastAcceptedPrompt;
+  String? get lastAcceptedPrompt => _lastAcceptedPrompt;
   AgentStopResultParams? stopResult;
   StreamSubscription<AgentEvent>? _events;
   int _receivedEvents = 0;
@@ -1417,6 +1419,7 @@ class AgentController extends ChangeNotifier implements ViewCloser {
       );
       submitted = true;
       if (_current(host, generation) && _owns(link)) {
+        link._lastAcceptedPrompt = text;
         final unchanged = submission != null
             ? link.draft.unchangedSince(submission)
             : false;
