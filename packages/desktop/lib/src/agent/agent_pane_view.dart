@@ -1,4 +1,6 @@
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:host_protocol/host_protocol.dart';
 
 import '../terminal/profiles_dialog.dart';
@@ -324,20 +326,27 @@ class _AgentPaneViewState extends State<AgentPaneView> {
               padding: const EdgeInsets.all(8),
               child: LayoutBuilder(
                 builder: (context, constraints) {
-                  final prompt = TextField(
-                    key: Key('agent-prompt-$id'),
-                    controller: link.prompt,
-                    focusNode: link.promptFocus,
-                    autofocus: widget.focused,
-                    minLines: 1,
-                    maxLines: 5,
-                    decoration: InputDecoration(
-                      hintText: switch (link.runtimeKind) {
-                        'codex' => 'Message Codex',
-                        'omp' => 'Message OMP',
-                        _ => 'Message Claude Code',
-                      },
-                      border: OutlineInputBorder(),
+                  Future<void> send() =>
+                      widget.controller.send(id, link.prompt.text);
+                  final prompt = Focus(
+                    canRequestFocus: false,
+                    onKeyEvent: (_, event) =>
+                        _handleComposerKey(link, event, send),
+                    child: TextField(
+                      key: Key('agent-prompt-$id'),
+                      controller: link.prompt,
+                      focusNode: link.promptFocus,
+                      autofocus: widget.focused,
+                      minLines: 1,
+                      maxLines: 5,
+                      decoration: InputDecoration(
+                        hintText: switch (link.runtimeKind) {
+                          'codex' => 'Message Codex',
+                          'omp' => 'Message OMP',
+                          _ => 'Message Claude Code',
+                        },
+                        border: OutlineInputBorder(),
+                      ),
                     ),
                   );
                   final actions = Wrap(
@@ -345,9 +354,7 @@ class _AgentPaneViewState extends State<AgentPaneView> {
                     children: [
                       FilledButton(
                         key: Key('agent-send-$id'),
-                        onPressed: link.canSend
-                            ? () => widget.controller.send(id, link.prompt.text)
-                            : null,
+                        onPressed: link.canSend ? send : null,
                         child: const Text('Send'),
                       ),
                       if (link.runtimeKind == 'codex')
@@ -390,6 +397,69 @@ class _AgentPaneViewState extends State<AgentPaneView> {
       );
     },
   );
+
+  KeyEventResult _handleComposerKey(
+    AgentLink link,
+    KeyEvent event,
+    VoidCallback send,
+  ) {
+    if (event is! KeyDownEvent && event is! KeyRepeatEvent) {
+      return KeyEventResult.ignored;
+    }
+    final key = event.logicalKey;
+    final enter =
+        key == LogicalKeyboardKey.enter ||
+        key == LogicalKeyboardKey.numpadEnter;
+    if (!enter && key != LogicalKeyboardKey.arrowUp) {
+      return KeyEventResult.ignored;
+    }
+
+    final prompt = link.prompt;
+    final value = prompt.value;
+    if (value.composing.isValid) {
+      // The Windows engine already consumes IME-processed keys. A raw Enter
+      // left unhandled here would reach its multiline newline fallback.
+      return enter && defaultTargetPlatform == TargetPlatform.windows
+          ? KeyEventResult.handled
+          : KeyEventResult.skipRemainingHandlers;
+    }
+    final keyboard = HardwareKeyboard.instance;
+    if (keyboard.isControlPressed ||
+        keyboard.isAltPressed ||
+        keyboard.isMetaPressed) {
+      return KeyEventResult.ignored;
+    }
+
+    if (enter) {
+      if (event is KeyDownEvent) {
+        if (keyboard.isShiftPressed) {
+          final text = value.text;
+          final selection = value.selection;
+          final start = selection.isValid ? selection.start : text.length;
+          final end = selection.isValid ? selection.end : start;
+          prompt.value = TextEditingValue(
+            text: text.replaceRange(start, end, '\n'),
+            selection: TextSelection.collapsed(offset: start + 1),
+          );
+        } else {
+          send();
+        }
+      }
+      return KeyEventResult.handled;
+    }
+    final previous = link.lastAcceptedPrompt;
+    if (event is KeyDownEvent &&
+        !keyboard.isShiftPressed &&
+        value.text.isEmpty &&
+        previous != null) {
+      prompt.value = TextEditingValue(
+        text: previous,
+        selection: TextSelection.collapsed(offset: previous.length),
+      );
+      return KeyEventResult.handled;
+    }
+    return KeyEventResult.ignored;
+  }
 
   Future<bool> _confirmReset(BuildContext context) async =>
       await showDialog<bool>(
