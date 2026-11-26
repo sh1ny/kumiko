@@ -109,6 +109,7 @@ class _AgentPaneViewState extends State<AgentPaneView> {
         growable: false,
       );
       final id = widget.paneId;
+      final children = link.ompChildren;
       return Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
@@ -154,6 +155,30 @@ class _AgentPaneViewState extends State<AgentPaneView> {
             Text(
               'Earlier messages hidden (${link.transcript.hiddenEntries} entries)',
               key: Key('agent-hidden-$id'),
+            ),
+          if (children.isNotEmpty)
+            ConstrainedBox(
+              constraints: const BoxConstraints(maxHeight: 80),
+              child: SingleChildScrollView(
+                padding: const EdgeInsets.symmetric(horizontal: 8),
+                child: Wrap(
+                  children: [
+                    for (final child in children)
+                      TextButton(
+                        key: Key('omp-open-child-${child.threadId}'),
+                        onPressed:
+                            link.live &&
+                                !link.closeRequested &&
+                                link.runId == child.rootThreadId
+                            ? () => widget.controller.openOmpChild(link, child)
+                            : null,
+                        child: Text(
+                          'Subagent ${child.childOrdinal} · ${_ompChildStatus(child.status)}',
+                        ),
+                      ),
+                  ],
+                ),
+              ),
             ),
           Expanded(
             child: ListView.builder(
@@ -509,91 +534,8 @@ class _AgentPaneViewState extends State<AgentPaneView> {
         'Child ${fields['threadId']}: ${fields['status']}${entry.text.isEmpty ? '' : ': ${entry.text}'}',
       );
     }
-    if (entry.kind == AgentEventKind.tool ||
-        entry.kind == AgentEventKind.toolUpdate) {
-      final title = fields['title'] ?? 'Tool';
-      final kind = fields['toolKind'];
-      return Card(
-        key: ValueKey(entry),
-        child: Padding(
-          padding: const EdgeInsets.all(8),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              SelectableText(kind == null ? '$title' : '$title · $kind'),
-              Text(entry.statuses.join(' → ')),
-              for (final location in (fields['locations'] as List? ?? const []))
-                SelectableText(
-                  '${(location as Map)['path']}${location['line'] == null ? '' : ':${location['line']}'}',
-                ),
-              for (final content in (fields['content'] as List? ?? const []))
-                _toolContent((content as Map).cast<String, Object?>()),
-              if (fields['truncated'] == true)
-                Text(
-                  'truncated${fields['omittedItems'] == null ? '' : ' · ${fields['omittedItems']} items omitted'}',
-                ),
-            ],
-          ),
-        ),
-      );
-    }
-    if (entry.kind == AgentEventKind.plan) {
-      return Card(
-        child: Padding(
-          padding: const EdgeInsets.all(8),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              const Text('Plan'),
-              for (final value in (fields['entries'] as List? ?? const []))
-                SelectableText(
-                  '${(value as Map)['status'] ?? ''} · ${value['priority'] ?? ''} · ${value['content'] ?? ''}',
-                ),
-              if (fields['truncated'] == true) const Text('truncated'),
-            ],
-          ),
-        ),
-      );
-    }
-    if (entry.kind == AgentEventKind.turn &&
-        fields['stopReason'] == 'end_turn') {
-      return const SizedBox();
-    }
-    return Padding(
-      padding: const EdgeInsets.only(bottom: 8),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          if (entry.kind == AgentEventKind.user) const Text('You'),
-          if (entry.kind == AgentEventKind.thought)
-            const Text(
-              'Thinking',
-              style: TextStyle(fontStyle: FontStyle.italic),
-            ),
-          AgentPlainText(entry.plainText),
-          if (fields['truncated'] == true) const Text('truncated'),
-        ],
-      ),
-    );
+    return _readOnlyEntry(entry);
   }
-
-  Widget _toolContent(Json content) => switch (content['type']) {
-    'diff' => Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        SelectableText('Diff · ${content['path'] ?? ''}'),
-        SelectableText(
-          '- ${content['oldText'] ?? ''}\n+ ${content['newText'] ?? ''}',
-          style: const TextStyle(fontFamily: 'monospace'),
-        ),
-      ],
-    ),
-    'terminal' => SelectableText('Terminal · ${content['terminalId'] ?? ''}'),
-    'content' => AgentPlainText(
-      ((content['content'] as Map?)?['text'] ?? '').toString(),
-    ),
-    _ => AgentPlainText((content['text'] ?? '').toString()),
-  };
 
   Widget _permission(AgentLink link, AgentPermission permission) {
     final request = permission.request;
@@ -639,6 +581,148 @@ class _AgentPaneViewState extends State<AgentPaneView> {
     );
   }
 }
+
+String _ompChildStatus(String? status) => switch (status) {
+  'running' => 'Running',
+  'completed' => 'Completed',
+  'failed' => 'Failed',
+  'cancelled' || 'aborted' => 'Interrupted',
+  _ => 'Activity unconfirmed',
+};
+
+class OmpChildPaneView extends StatelessWidget {
+  const OmpChildPaneView({
+    super.key,
+    required this.controller,
+    required this.paneId,
+  });
+
+  final AgentController controller;
+  final String paneId;
+
+  @override
+  Widget build(BuildContext context) => ListenableBuilder(
+    listenable: controller,
+    builder: (context, _) {
+      final view = controller.childViewOf(paneId);
+      if (view == null) return const SizedBox();
+      final history = view.history?.entries.toList(growable: false) ?? const [];
+      final live = view.live.entries.toList(growable: false);
+      final hidden =
+          (view.history?.hiddenEntries ?? 0) + view.live.hiddenEntries;
+      final headings = <Widget>[
+        if (view.status.isNotEmpty) Text(_ompChildStatus(view.status)),
+        if (view.availability case final label?) Text(label),
+        if (hidden != 0) Text('Earlier messages hidden ($hidden entries)'),
+        const Text('Earlier history'),
+        if (view.historyStatus case final label?) Text(label),
+      ];
+      final liveStart = headings.length + history.length;
+      return ListView.builder(
+        padding: const EdgeInsets.all(12),
+        itemCount: liveStart + 1 + live.length,
+        itemBuilder: (context, index) {
+          if (index < headings.length) return headings[index];
+          if (index < liveStart) {
+            return _readOnlyEntry(
+              history[index - headings.length],
+              userLabel: 'Input',
+            );
+          }
+          if (index == liveStart) return const Text('Live activity');
+          return _readOnlyEntry(
+            live[index - liveStart - 1],
+            userLabel: 'Input',
+          );
+        },
+      );
+    },
+  );
+}
+
+Widget _readOnlyEntry(AgentTranscriptEntry entry, {String userLabel = 'You'}) {
+  final fields = entry.fields;
+  if (entry.kind == AgentEventKind.tool ||
+      entry.kind == AgentEventKind.toolUpdate) {
+    final title = fields['title'] ?? 'Tool';
+    final kind = fields['toolKind'];
+    return Card(
+      key: ValueKey(entry),
+      child: Padding(
+        padding: const EdgeInsets.all(8),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            SelectableText(kind == null ? '$title' : '$title · $kind'),
+            Text(entry.statuses.join(' → ')),
+            for (final location in (fields['locations'] as List? ?? const []))
+              SelectableText(
+                '${(location as Map)['path']}${location['line'] == null ? '' : ':${location['line']}'}',
+              ),
+            for (final content in (fields['content'] as List? ?? const []))
+              _toolContent((content as Map).cast<String, Object?>()),
+            if (fields['truncated'] == true)
+              Text(
+                'truncated${fields['omittedItems'] == null ? '' : ' · ${fields['omittedItems']} items omitted'}',
+              ),
+          ],
+        ),
+      ),
+    );
+  }
+  if (entry.kind == AgentEventKind.plan) {
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(8),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text('Plan'),
+            for (final value in (fields['entries'] as List? ?? const []))
+              SelectableText(
+                '${(value as Map)['status'] ?? ''} · ${value['priority'] ?? ''} · ${value['content'] ?? ''}',
+              ),
+            if (fields['truncated'] == true) const Text('truncated'),
+          ],
+        ),
+      ),
+    );
+  }
+  if (entry.kind == AgentEventKind.turn && fields['stopReason'] == 'end_turn') {
+    return const SizedBox();
+  }
+  return Padding(
+    padding: const EdgeInsets.only(bottom: 8),
+    child: Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        if (entry.kind == AgentEventKind.user) Text(userLabel),
+        if (entry.kind == AgentEventKind.thought)
+          const Text('Thinking', style: TextStyle(fontStyle: FontStyle.italic)),
+        AgentPlainText(entry.plainText),
+        if (fields['truncated'] == true) const Text('truncated'),
+      ],
+    ),
+  );
+}
+
+Widget _toolContent(Json content) => switch (content['type']) {
+  'diff' => Column(
+    crossAxisAlignment: CrossAxisAlignment.start,
+    children: [
+      SelectableText('Diff · ${content['path'] ?? ''}'),
+      SelectableText(
+        '- ${content['oldText'] ?? ''}\n+ ${content['newText'] ?? ''}',
+        style: const TextStyle(fontFamily: 'monospace'),
+      ),
+    ],
+  ),
+  'terminal' => SelectableText('Terminal · ${content['terminalId'] ?? ''}'),
+  'content' => AgentPlainText(
+    ((content['content'] as Map?)?['text'] ?? '').toString(),
+  ),
+  _ => AgentPlainText((content['text'] ?? '').toString()),
+};
 
 /// Plain text only; fenced regions use monospace without a Markdown engine.
 class AgentPlainText extends StatelessWidget {

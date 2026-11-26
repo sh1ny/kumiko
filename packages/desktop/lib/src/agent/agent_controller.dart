@@ -11,6 +11,7 @@ import '../host_link.dart';
 import '../view_closer.dart';
 import 'agent_transcript.dart';
 import 'draft_saver.dart';
+import 'omp_child_view.dart';
 
 export 'agent_transcript.dart';
 
@@ -81,6 +82,8 @@ class AgentLink {
       : 'OMP history save was not confirmed.';
   String? runId;
   String? turnId;
+  final Map<String, AgentEvent> _ompChildren = {};
+  Iterable<AgentEvent> get ompChildren => _ompChildren.values;
   int nativeSeq = -1;
   bool steering = false;
   String? steeringUnavailable;
@@ -355,10 +358,15 @@ class AgentController extends ChangeNotifier implements ViewCloser {
     required this.removePane,
     required this.savePaneState,
     required this.focusPane,
+    this.splitOmpChild,
   });
   final void Function(String paneId) removePane;
   final void Function(String paneId, Json state) savePaneState;
   final void Function(String paneId) focusPane;
+  final String? Function(String parentPaneId, Json state)? splitOmpChild;
+  final Map<String, OmpChildView> _childViews = {};
+  int _nextChildToken = 0;
+  OmpChildView? childViewOf(String paneId) => _childViews[paneId];
   final Map<String, AgentLink> _links = {};
   final Map<String, AgentLink> _bySession = {};
   final _pendingStarts = <AgentLink>{};
@@ -634,6 +642,9 @@ class AgentController extends ChangeNotifier implements ViewCloser {
           event.runId != null) {
         if (link.runId != null && link.runId != event.runId) return;
         link.runId = event.runId;
+        link._ompChildren.removeWhere(
+          (_, child) => child.rootThreadId != event.runId,
+        );
       }
       link.seq = event.seq;
       link.state = event.state;
@@ -787,13 +798,20 @@ class AgentController extends ChangeNotifier implements ViewCloser {
       link.stopping = false;
       link.draft.hostLost();
       _disablePermissions(link);
+      _endChildren(link);
     }
     _changed();
   }
 
   void sync(Iterable<PaneNode> panes) {
     final ids = <String>{};
+    final childIds = <String>{};
     for (final pane in panes) {
+      if (pane.kind == ompChildKind) {
+        childIds.add(pane.id);
+        _childViews.putIfAbsent(pane.id, () => OmpChildView(pane));
+        continue;
+      }
       ids.add(pane.id);
       _links.putIfAbsent(
         pane.id,
@@ -815,11 +833,13 @@ class AgentController extends ChangeNotifier implements ViewCloser {
                   _host?.hello.capabilities.contains(Capability.agent) == true,
       );
     }
+    _childViews.removeWhere((id, _) => !childIds.contains(id));
     for (final link in _links.values.toList()) {
       if (ids.contains(link.paneId)) continue;
       _links.remove(link.paneId);
       link.abandoned = true;
       unawaited(link._events?.cancel());
+      _endChildren(link);
       if (link.sessionId case final id?) {
         if (identical(_bySession[id], link)) _bySession.remove(id);
         final host = _host;
@@ -833,7 +853,7 @@ class AgentController extends ChangeNotifier implements ViewCloser {
       }
       _disposeLink(link, store: true);
     }
-    _assignComposerOwners(panes);
+    _assignComposerOwners(panes.where((pane) => pane.kind == agentChatKind));
   }
 
   Future<void> restore() async {
@@ -1070,6 +1090,7 @@ class AgentController extends ChangeNotifier implements ViewCloser {
     link.seq = -1;
     link.nativeSeq = -1;
     link.runId = null;
+    link._ompChildren.clear();
     link.delegated = null;
     link.turnId = null;
     link.steeringUnavailable = null;
@@ -1310,6 +1331,132 @@ class AgentController extends ChangeNotifier implements ViewCloser {
     }
   }
 
+  Future<void> openOmpChild(AgentLink link, AgentEvent activity) async {
+    final host = _host;
+    final session = link.sessionId;
+    final run = link.runId;
+    final key = activity.threadId;
+    final ordinal = activity.childOrdinal;
+    if (host == null ||
+        !_owns(link) ||
+        !link.live ||
+        link.closeRequested ||
+        !_ompHistoryPeer(host) ||
+        session == null ||
+        run == null ||
+        key == null ||
+        ordinal == null ||
+        activity.rootThreadId != run ||
+        link._ompChildren[key]?.rootThreadId != run) {
+      return;
+    }
+    for (final entry in _childViews.entries) {
+      final view = entry.value;
+      if (view.rootSessionId == session &&
+          view.runId == run &&
+          view.childKey == key &&
+          !view.ended) {
+        focusPane(entry.key);
+        return;
+      }
+    }
+    final paneId = splitOmpChild?.call(link.paneId, {
+      'rootSessionId': session,
+      'childKey': key,
+      'ordinal': ordinal,
+    });
+    final view = _childViews[paneId];
+    if (view == null) return;
+    final token = 'view-${++_nextChildToken}';
+    view
+      ..runId = run
+      ..viewToken = token
+      ..status = activity.status ?? '';
+    _changed();
+    try {
+      final result = await host.agentChildHistory(
+        AgentChildHistoryParams(
+          sessionId: session,
+          runId: run,
+          childKey: key,
+          viewToken: token,
+        ),
+      );
+      if (!identical(_childViews[paneId], view) ||
+          view.viewToken != token ||
+          view.history != null ||
+          result.status == AgentChildHistoryStatus.queued) {
+        return;
+      }
+      view.failHistory(switch (result.reason) {
+        'no-native-file' =>
+          'OMP did not supply a session file for this subagent.',
+        'native-file-unavailable' =>
+          'the OMP subagent session file could not be read.',
+        'native-reading-refused' => 'OMP rejected the read.',
+        'native-read-timed-out' => 'OMP did not answer the read in time.',
+        'native-transport-closed' ||
+        'stale-child' => 'the source is no longer available.',
+        _ => 'OMP did not return a usable snapshot.',
+      });
+    } on RpcException catch (error) {
+      if (!identical(_childViews[paneId], view) ||
+          view.viewToken != token ||
+          view.history != null) {
+        return;
+      }
+      view.failHistory(
+        error.reason == ErrorCode.busy
+            ? 'another history read is in progress.'
+            : 'the subagent snapshot could not be read.',
+      );
+    } on ConnectionClosedException {
+      if (!identical(_childViews[paneId], view)) return;
+      view.end();
+    }
+    _changed();
+  }
+
+  bool _ompChildEvent(AgentLink link, AgentEvent event) {
+    final run = event.rootThreadId;
+    final key = event.threadId;
+    if (!link._ompHistoryNegotiated || run == null || key == null) return false;
+    var rosterChanged = false;
+    if (event.kind == AgentEventKind.child &&
+        event.viewToken == null &&
+        event.childOrdinal != null &&
+        link._exit == null &&
+        (link.runId == null || link.runId == run)) {
+      // A roster frame may precede the control state. It can only open a
+      // pane after that state confirms its run. Retain no child content here.
+      final children = link._ompChildren;
+      children.remove(key);
+      if (children.length == 80) children.remove(children.keys.first);
+      children[key] = event;
+      rosterChanged = true;
+    }
+    for (final view in _childViews.values) {
+      if (!view.ended &&
+          view.rootSessionId == link.sessionId &&
+          view.runId == run &&
+          view.childKey == key) {
+        view.add(event);
+        return true;
+      }
+    }
+    return rosterChanged;
+  }
+
+  void _endChildren(AgentLink link) {
+    if (link.runtimeKind != 'omp') return;
+    link._ompChildren.clear();
+    for (final view in _childViews.values) {
+      if (view.runId != null && view.rootSessionId == link.sessionId) {
+        view.end();
+      }
+    }
+  }
+
   void _bind(HostLink host, AgentLink link, int channel, int generation) {
     // Continue's reserved session can exit before its RPC continuation runs.
     // Never bind a released transport or replace its terminal diagnostic.
@@ -1335,20 +1482,23 @@ class AgentController extends ChangeNotifier implements ViewCloser {
         .listen(
           (event) {
             if (!_current(host, generation) || !_owns(link)) return;
-            if (link.runtimeKind != 'omp' ||
-                !event.isChild ||
-                event.kind == AgentEventKind.child) {
+            final childEvent = link.runtimeKind == 'omp' && event.isChild;
+            var changed = true;
+            if (childEvent) {
+              changed = _ompChildEvent(link, event);
+            } else {
               link.transcript.add(event);
             }
             link._receivedEvents++;
             // The host put a natively rejected steer back in the stored
             // draft; an unedited composer shows it again.
-            if (event.kind == AgentEventKind.notice &&
+            if (!childEvent &&
+                event.kind == AgentEventKind.notice &&
                 event.toJson()['draftRestored'] == true) {
               unawaited(_restoreRejectedSteer(link));
             }
             _drainExited(host, link);
-            _changed();
+            if (changed) _changed();
           },
           onError: (Object error) {
             if (!_current(host, generation) || !_owns(link)) return;
@@ -1356,6 +1506,7 @@ class AgentController extends ChangeNotifier implements ViewCloser {
             link.error = 'event stream error: $error';
             link.state = AgentState.failed;
             _disablePermissions(link);
+            _endChildren(link);
             unawaited(link._events?.cancel());
             if (error is RpcException &&
                 error.reason == ErrorCode.unknownSession) {
@@ -1395,6 +1546,7 @@ class AgentController extends ChangeNotifier implements ViewCloser {
             link.error = 'event stream ended before final transcript delivery';
             link.state = AgentState.failed;
             _disablePermissions(link);
+            _endChildren(link);
             if (exit != null) {
               unawaited(_releaseExited(host, link));
             } else {
@@ -1909,6 +2061,7 @@ class AgentController extends ChangeNotifier implements ViewCloser {
     if (releasing != null) return releasing;
     final exit = link._exit;
     if (exit == null) return Future.value();
+    _endChildren(link);
     final generation = _generation;
     return link._releasing =
         () async {
@@ -2032,6 +2185,7 @@ class AgentController extends ChangeNotifier implements ViewCloser {
       _disposeLink(link);
     }
     _links.clear();
+    _childViews.clear();
     super.dispose();
   }
 }

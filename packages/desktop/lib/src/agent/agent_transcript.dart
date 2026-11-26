@@ -67,6 +67,7 @@ class AgentTranscript {
   final Queue<AgentTranscriptEntry> _entries = Queue();
   final Map<String, AgentTranscriptEntry> _tools = {};
   Iterable<AgentTranscriptEntry> get entries => _entries;
+  int get length => _entries.length;
   int bytes = 0;
   int hiddenEntries = 0;
   int get retainedTools => _tools.length;
@@ -164,12 +165,16 @@ class AgentTranscript {
   void _evict() {
     while (_entries.length > maxTranscriptEntries ||
         bytes > maxTranscriptBytes) {
-      final entry = _entries.removeFirst();
-      bytes -= entry.bytes;
-      final id = entry.fields['toolCallId'];
-      if (id is String && identical(_tools[id], entry)) _tools.remove(id);
-      hiddenEntries++;
+      dropOldest();
     }
+  }
+
+  void dropOldest() {
+    final entry = _entries.removeFirst();
+    bytes -= entry.bytes;
+    final id = entry.fields['toolCallId'];
+    if (id is String && identical(_tools[id], entry)) _tools.remove(id);
+    hiddenEntries++;
   }
 
   void clear() {
