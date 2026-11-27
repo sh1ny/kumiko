@@ -31,11 +31,27 @@ class TestHostExtension implements HostExtension {
   });
 
   _TestOmpGrace? _ompGrace;
+  _ReconcileHold? _reconcileHold;
+
+  Future<T> runWithStartupHold<T>(Future<T> Function() run) {
+    final hold = _reconcileHold;
+    if (hold == null) return run();
+    return runZoned(
+      run,
+      zoneSpecification: ZoneSpecification(
+        createTimer: (self, parent, zone, duration, callback) =>
+            identical(duration, hold.delay)
+            ? hold.arm(callback)
+            : parent.createTimer(zone, duration, callback),
+      ),
+    );
+  }
 
   static Future<T> _awaitOmpClose<T>(Future<T> event, Duration _) => event;
 
   /// Options from `KUMIKO_TEST_*` variables, which make timing deterministic:
   /// `UNIT_CAP`, `RECONCILE_DELAY_MS`, `RETRY_DELAY_MS`,
+  /// `RECONCILE_HELD` (`1` holds startup until `test/reconcile.release`),
   /// `SHUTDOWN_DEADLINE_MS`, `WORKSPACE_CAP`, `RESOLVE_TIMEOUT_MS`,
   /// `ATTACH_TIMEOUT_MS`, `SETTLE_DEADLINE_MS`, `CONSOLE_CLOSE_TIMEOUT_MS`,
   /// `READ_DEADLINE_MS`, `REVOKED_SECRETS_KEPT`, `DRAFT_DEADLINE_MS`,
@@ -76,7 +92,10 @@ class TestHostExtension implements HostExtension {
     final ompGrace = env['KUMIKO_TEST_OMP_CLOSE_MANUAL'] == '1'
         ? _TestOmpGrace()
         : null;
-    return TestHostExtension(
+    final reconcileHold = env['KUMIKO_TEST_RECONCILE_HELD'] == '1'
+        ? _ReconcileHold()
+        : null;
+    final extension = TestHostExtension(
       qualificationNativeHome: env['KUMIKO_TEST_CODEX_AUDIT_HOME'],
       qualificationExecutable:
           env['KUMIKO_TEST_CODEX_QUALIFICATION_EXECUTABLE'],
@@ -138,7 +157,10 @@ class TestHostExtension implements HostExtension {
         shutdownDeadline:
             millis('SHUTDOWN_DEADLINE_MS') ??
             HostOptions.defaultShutdownDeadline,
-        reconcileDelay: millis('RECONCILE_DELAY_MS') ?? Duration.zero,
+        reconcileDelay:
+            reconcileHold?.delay ??
+            millis('RECONCILE_DELAY_MS') ??
+            Duration.zero,
         retryDelay: millis('RETRY_DELAY_MS') ?? Duration.zero,
         workspaceCap:
             number('WORKSPACE_CAP') ?? HostOptions.defaultWorkspaceCap,
@@ -181,7 +203,10 @@ class TestHostExtension implements HostExtension {
                   )),
         },
       ),
-    ).._ompGrace = ompGrace;
+    );
+    extension._ompGrace = ompGrace;
+    extension._reconcileHold = reconcileHold;
+    return extension;
   }
 
   static const Duration _draftHangGuard = Duration(minutes: 2);
@@ -319,6 +344,14 @@ class TestHostExtension implements HostExtension {
       case 'test/omp.expireGrace':
         EmptyParams.fromJson(params);
         return {'expired': _ompGrace?.expire() ?? 0};
+      case 'test/reconcile.release':
+        EmptyParams.fromJson(params);
+        final hold = _reconcileHold;
+        if (hold == null) {
+          throw RpcException(ErrorCode.methodNotAvailable, method);
+        }
+        hold.release();
+        return <String, Object?>{};
       case 'test/draft.stats':
         EmptyParams.fromJson(params);
         return host.agents.draftSnapshot();
@@ -380,6 +413,40 @@ class TestHostExtension implements HostExtension {
 
   /// Test channels' producers by channel id, for `test/channel.stats`.
   final Map<int, _Producer> _producers = {};
+}
+
+/// Holds one startup timer by matching its duration by identity. A non-const
+/// duration gives this timer its own identity without affecting other timers.
+final class _ReconcileHold implements Timer {
+  final delay = Duration(microseconds: 1);
+  void Function()? _callback;
+  bool _armed = false;
+  int _tick = 0;
+
+  Timer arm(void Function() callback) {
+    if (_armed) throw StateError('startup reconciliation was already held');
+    _armed = true;
+    _callback = callback;
+    return this;
+  }
+
+  void release() {
+    if (!_armed) throw StateError('startup reconciliation is not held');
+    final callback = _callback;
+    if (callback == null) return;
+    _callback = null;
+    _tick = 1;
+    callback();
+  }
+
+  @override
+  bool get isActive => _callback != null;
+
+  @override
+  int get tick => _tick;
+
+  @override
+  void cancel() => _callback = null;
 }
 
 final class _TestOmpGrace {
