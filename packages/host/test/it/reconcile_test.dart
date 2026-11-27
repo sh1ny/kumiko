@@ -76,7 +76,7 @@ void main() {
   /// Kills the host without any shutdown, as a crash would.
   Future<void> killHost(Desktop desktop) async {
     Process.killPid(desktop.session.pid, ProcessSignal.sigkill);
-    await desktop.session.lost;
+    await desktop.session.lost.timeout(_hangGuard);
   }
 
   test('restarted host refuses launches until reconciled', () async {
@@ -149,6 +149,12 @@ void main() {
             ErrorCode.cleanupUnresolved,
           );
         }
+      }
+      if (!Platform.isWindows) {
+        final outcome = rows.isEmpty
+            ? 'cleaned'
+            : rows.first['unresolved_reason'];
+        print('native crash reconciliation: $outcome');
       }
     },
   );
@@ -345,7 +351,7 @@ void main() {
         desktop.launch(dir, TestFixture.sleeper),
         throwsA(isA<ConnectionClosedException>()),
       );
-      await desktop.session.lost.timeout(hostLossBound * 3);
+      await desktop.session.lost.timeout(_hangGuard);
       expect(
         LedgerView(round).units().where((u) => u['state'] == 'pending'),
         hasLength(1),

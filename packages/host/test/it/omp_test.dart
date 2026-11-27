@@ -2411,6 +2411,12 @@ void main() {
           );
           historyUnconfirmed = failure['historyUnconfirmed'] as String?;
         }
+        if (!killFails && !Platform.isWindows) {
+          final outcome = failures.isEmpty
+              ? 'cleaned'
+              : failures.single['reason'];
+          print('native OMP close cleanup: $outcome');
+        }
         expect(historyUnconfirmed, 'nativeEofUnconfirmed');
         expect(
           agentRows(fixture.profile).single['omp_history_unconfirmed'],
