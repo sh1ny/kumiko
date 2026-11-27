@@ -4,7 +4,7 @@
 
 ### Requirement: Real OMP qualification is recorded separately from regression tests
 
-Qualification SHALL require an explicit owner-approved Windows desktop walk for one exact installed OMP version. The record SHALL identify the approval, version, OS, Kumiko revision and model, and distinguish observed results from contract differences and unobserved behavior. Fixtures SHALL NOT stand in for a real observation. Admission SHALL remain based on the existing version minimum and native protocol.
+Qualification SHALL require an explicit owner-approved Windows desktop walk for one exact installed OMP version. Approval for the live walk SHALL be separate from build approval. The record SHALL identify the approval, version, OS, Kumiko revision and model, and distinguish observed results from contract differences and unobserved behavior. Fixtures SHALL NOT stand in for a real observation. Admission SHALL remain based on the existing version minimum and native protocol.
 
 #### Scenario: Approved Windows desktop walk completes
 

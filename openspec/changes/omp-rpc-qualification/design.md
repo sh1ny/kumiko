@@ -6,8 +6,8 @@
 |---|---|---|
 | T1 Components | Yes | The walk drives the desktop, bundled host and real OMP process. The repository audit reads a new evidence file. |
 | T2 State | Yes | The audit reads a persistent record with separate PASS, FAIL and INCOMPLETE results. The product store does not change. |
-| T3 Concurrency | Yes | Stop can lose a race to native completion. Root and child can finish in either order. Windows process exit and journal persistence are separate observations. |
-| T4 Boundaries | Yes | The walk uses the OMP provider and a checked-in evidence format. It adds no production protocol. |
+| T3 Concurrency | Yes | Stop can lose a race to native completion. Root and child can finish in either order. Windows process exit and journal persistence are separate observations. A second native Close must not bypass a pending exit decision. |
+| T4 Boundaries | Yes | The walk uses the OMP provider and a checked-in evidence format. The Windows runner must route the main-window close into Dart without changing the desktop-host protocol. |
 | T5 Volume | Yes | Evidence grows with attempts. The walk must not retain raw runtime output, transcripts, journals or profiles. |
 | T6 Risk | Yes | Model use spends account quota. OMP has native tool permissions and state. The walk must protect the owner's projects and credentials. |
 
@@ -22,6 +22,8 @@ The host uses the contained version probe, then private v1 NDJSON; its recorded 
 OMP only offers recognized one-shot approvals or denial under native policy. The OMP tool binding uses private RPC, without a Kumiko MCP entry or secret (`docs/adr/0018-omp-approvals-and-private-host-tools.md:16-20`). `kumiko_session_info` takes no arguments and returns the session identity and target from the host (`packages/host/lib/src/agent/tools/tool_catalog.dart:58-74`).
 
 Codex's approach separates an approved attempt, durable observations and an offline audit (`docs/qualification/codex-app-server.md:26-54,94-122,1345-1364`). Keep that split. OMP has no MCP grant canary or auth-signature registry to qualify. Add an OMP check at the offline CLI boundary, where it already loads native evidence and prints results (`tool/check_qualification.dart:1097-1150`, `mise.toml:43-48`).
+
+The second walk and the owner independently observed the Windows window disappear with a permission pending and no quit warning. The host did not record a coordinated quit; A's OMP exited 1. Existing integration coverage calls Flutter's Dart exit handler directly. It cannot catch a native message that never reaches that handler.
 
 ## Decisions
 
@@ -69,6 +71,17 @@ Codex's approach separates an approved attempt, durable observations and an offl
 - Important: yes (binds user-visible support claims).
 - Chosen by: user for the comparison and no unapproved production fixes; agent for the document layout.
 
+### D5: Route Windows main-window Close through the existing quit coordinator
+
+- Regression: Run the real Windows runner in a test-owned child process with a scripted agent awaiting permission. Post `WM_SYSCOMMAND` / `SC_CLOSE` to its own top-level runner HWND identified by process and window class, never by title. Do not call the Dart lifecycle handler or coordinator directly. Red must reproduce an exit without warning: the main window is gone, the desktop exits 0 and the host has no coordinated quit record. If an auxiliary native window exposes Flutter's predicate, first establish that it matches the release failure and check green with and without it.
+- Failure boundary: The pinned Flutter Windows engine intercepts `WM_CLOSE` only when its last-window predicate passes. Test the observed path, and cover an auxiliary native window if that predicate is the cause. If the regression cannot reproduce or the cause differs, stop and update the diagnosis before changing production code.
+- Proof: The rendered warning is the receipt for the first Close. For a repeated Close, observe the existing dialog regain focus before asserting that it is still the same dialog and the agent is still waiting. After Cancel, check that the agent unit survives and that another native Close opens a fresh dialog. Use no waits measured in elapsed time except one generous hang guard. The test belongs in its own integration file. The parent verifies that the host records a coordinated quit before the window is destroyed, the desktop exits 0 and the agent unit ledger is empty afterward. A test observer must not change the production close order.
+- Repair boundary: If the runner bypasses the coordinator, handle the main window's `WM_CLOSE` before Flutter can independently handle it. Each request goes to the existing coordinator once; repeated requests can focus the current dialog but never reach default close. The runner holds no affected-work state. Register the private Dart handler before host startup and remove it on dispose; a Close with no handler cannot enter or skip a quit decision. Only a successful `exit` response, after coordinated host shutdown, permits native window destruction without a second quit request. Late or failed replies cannot destroy a window during teardown. Auxiliary-window closes, OS-required exits and other platforms keep their paths.
+- Live rerun: After the regression is green, obtain explicit owner build approval, then build and hash the fixed packaged release. Bind its revision and hashes into a new exact plan. With fresh owner run approval and a new scratch profile, check pane Close in B and use native title-bar Close in A while a permission is pending. Have the owner watch the warning, Cancel and confirmation. Seed one minimal child result so its inert pane can be checked after reopening. Observe explicit Continue and root history replay before sending more work. Preserve the failed attempts and leave untouched rows unverified; never combine runs.
+- Chosen by: user (Ormy item 101, event `e3159`) for the fix and scoped rerun; agent for the test seam and platform boundary.
+- Reversal cost: Low.
+- Important: yes (a native Close must not end pending work without a decision).
+
 ### Decision summary
 
 | # | Decision | Choice | Rejected | Reversal cost | Important | Chosen by |
@@ -78,6 +91,7 @@ Codex's approach separates an approved attempt, durable observations and an offl
 | D2 | Authority | Hash-bound approval and checked scratch environment | Unbound approval, owner profile, projects or copied credentials | Low/high | Yes | User and agent |
 | D3 | Proof | Desktop observations plus scratch process and journal facts | Timing guesses, model or ack as proof | Low | Yes | Agent |
 | D4 | Differences | Contract comparison, failures and unobserved cases separate | Native feature parity by inference | Low | Yes | User and agent |
+| D5 | Windows title-bar Close | Existing quit decision reached from the native main window | Call the Dart handler directly in the regression or coordinate quit twice | Low | Yes | User and agent |
 
 ## Assumptions
 
@@ -198,7 +212,7 @@ flowchart LR
 ## ADRs
 
 - In force: ADRs 0004, 0012, 0016, 0017, 0018 and 0019. This applies their existing transport, privacy, recorded-evidence and test boundaries.
-- To record during apply: none. The durable evidence contract belongs in `omp-sessions`; no production boundary changes.
+- To record during apply: none. The durable evidence contract belongs in `omp-sessions`; the native Windows path restores the existing `app-exit` contract without changing it.
 
 ## Open questions
 

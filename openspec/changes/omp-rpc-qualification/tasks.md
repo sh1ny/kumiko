@@ -10,6 +10,8 @@
 | The OMP evidence audit runs offline | Failed and incomplete attempts stay separate | `tool/test/check_qualification_test.dart` | `OMP audit does not combine failed and incomplete attempts` | green |
 | The OMP evidence audit runs offline | Malformed evidence is not a qualification claim | `tool/test/check_qualification_test.dart` | `OMP audit rejects invalid files without printing pass`; `OMP audit rejects reused approval references` | green |
 | The OMP evidence audit runs offline | No real run is recorded | `tool/test/check_qualification_test.dart` | `OMP audit makes no claim when no attempt is recorded` | green |
+| The exit dialog lists every affected item; Cancel keeps unresolved work running | Native Windows title-bar Close while a session awaits permission | Windows child-process integration test `Windows title-bar Close waits for a pending agent permission` | 4.1 red before fix; 4.2 green after fix | planned |
+| Real OMP qualification is recorded separately from regression tests | Focused close, quit and history rerun leaves other rows unverified | Live fixed Windows release and exact installed OMP after a fresh approved plan | 5.1–5.3 | planned |
 
 ## 1. Offline evidence audit and runbook
 
@@ -27,6 +29,17 @@
 - [x] 3.1 Before launching, recheck D2 and the gaming guard, and consume the approval once. Run only the approved walkthrough in the temporary profile. Settle A2 by recording each observed or missed event without another prompt or attempt. Keep the private notes and owned process handles until evidence capture and cleanup.
 - [x] 3.2 [user] Check the running Windows desktop during 3.1 after separate approval. Observe start and streaming, approve and deny, tools, active Stop, the read-only child pane, close and quit decisions, and the saved pane and restored history after explicit Continue. Report missing or unexpected observations. Leave the check pending if the owner has not confirmed what they observed.
 - [x] 3.3 [evidence] Record the exact approved Windows attempt in `docs/qualification/omp-rpc-windows.json` and the capability differences in `docs/qualification/omp-rpc.md`. Verify with `mise run audit`, compare the audit verdict to the observed rows, and verify owned processes settled and scratch data was removed. Bring failed required observations or an upstream OMP defect to the owner before treating qualification as complete. Record the source revision, version, audit result and path to the durable record in the change evidence. → evidence/windows-observation.md
+
+## 4. Restore coordinated Windows title-bar Close
+
+- [ ] 4.1 Add the named Windows integration regression in its own file. Use a test-owned child with a scripted agent awaiting permission and post `WM_SYSCOMMAND` / `SC_CLOSE` to its authenticated main HWND, never the Dart exit hook. Capture the red signature: no dialog, the window gone, desktop exit 0, no coordinated host quit. If applicable, trace the native auxiliary window to the release failure. Use positive receipts and no fixed delays. No installed OMP.
+- [ ] 4.2 Fix the runner's bypass without changing the host protocol, affected-work policy or other platforms. Verify the receipt for repeated Close, Cancel preserving the agent and a fresh dialog on the next Close. From outside the app verify coordinated host quit precedes window destruction, exit 0, and an empty agent ledger afterward. Cover both native window configurations if the root cause requires it, and check the neighboring app-exit tests.
+
+## 5. Record a separately approved focused rerun
+
+- [ ] 5.1 Obtain explicit owner approval to build the fixed packaged release; check the gaming guard, then build and record its revision and hashes. Freeze and hash a minimal rerun plan for B's pane Close, A's native title-bar quit while a permission is pending, reopen and explicit Continue with history replay. Include one child assignment only to prove the reopened child is inert. Name the owner-observed warning, Cancel and confirm, installed OMP version, pinned model, temporary profile and prompt limit. Obtain separate owner approval for that exact plan before starting OMP.
+- [ ] 5.2 Consume the approval once and rerun only those checks. Offer the owner the relevant observations. Record any missed or abnormal result without retry; settle every owned process and remove the scratch data.
+- [ ] 5.3 [evidence] Append the focused results without changing earlier attempts. Unexercised rows stay unverified; never combine attempts. Confirm the audit verdict, cleanup and runbook notes. → evidence/windows-quit-rerun.md
 
 ## Workflow follow-up
 

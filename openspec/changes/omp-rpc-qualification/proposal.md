@@ -8,7 +8,8 @@ M2 needs Windows evidence that Kumiko can drive the installed OMP runtime, not j
 
 - Walk start, prompt, streamed replies, Stop, approve and deny, tool cards, a real `kumiko_session_info` call, exact Continue, history restore, read-only subagent panes, close and ordinary quit. Check that changing the selected workspace does not move the run.
 - Record observations for one exact installed OMP version on Windows. Name the model, Kumiko revision and test conditions. Record OMP's differences from the shared contracts separately from observations that fail or never occur.
-- Add an offline check for the recorded evidence. Neither this check nor the default test or CI runs launch OMP. Leave runtime admission, provider setup and production behavior unchanged. Bring any defect that calls for a production fix back to the owner first.
+- Add an offline check for the recorded evidence. Neither this check nor the default test or CI runs launch installed OMP. Leave runtime admission and provider setup unchanged.
+- Fix the Windows title-bar Close path found during the second walk: a pending permission must reach the existing quit dialog instead of losing the host connection. Prove it with a Windows regression that uses a scripted agent. After separate owner approval, rerun only pane close, app quit, reopen, exact Continue and root history restore with installed OMP.
 
 No Linux or macOS qualification, provider sign-in experiment, independent subagent control, read-only coding role, or Sessions browser. Leave the parked direction unchanged.
 
@@ -26,6 +27,14 @@ Source: setting. The dispatch reserves scope, build, use of the owner's account,
 - Important: yes (the evidence contract binds future qualification claims).
 - Chosen by: user (Ormy item 101, event `e2963`, relayed by the coordinator).
 
+### S2: Fix the Windows quit bypass in this change
+
+- Choice: Restore the current `app-exit` contract for Windows title-bar Close and rerun the missed live checks on the fixed release.
+- Rejected: Accept the uncoordinated exit as a save, flag it as an upstream OMP defect without proof, or combine two partial attempts into a qualification pass.
+- Reversal cost: Low.
+- Important: yes (the old path can end work without confirmation).
+- Chosen by: user (Ormy item 101, event `e3159`, relayed by the coordinator).
+
 ## Capabilities
 
 ### New capabilities
@@ -38,7 +47,7 @@ None.
 
 ## Impact
 
-The change adds an OMP runbook and evidence under `docs/qualification/`, plus a check in the existing offline audit. It adds no host or desktop interface, dependency or migration.
+The change adds an OMP runbook and evidence under `docs/qualification/`, an offline audit check, and the Windows title-bar close fix and its regression. It changes no host protocol, runtime admission or migration.
 
 Sources: M2 change 5, the archived OMP transport, permissions/tools and history/children changes, ADRs 0004, 0012, 0018 and 0019, and the Codex qualification record. Carries direction D6, D7, D15, D20, D29 and D37 without changing the parked change.
 
