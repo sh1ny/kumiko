@@ -88,8 +88,8 @@ Codex's approach separates an approved attempt, durable observations and an offl
 
 - C1: Windows observations bind only the exact installed version; the version minimum and normal admission remain independent. Kind: invariant. Destination: `spec: specs/omp-sessions/spec.md → Requirement: Real OMP qualification is recorded separately from regression tests`.
 - C2: The audit validates recorded shape and outcomes offline. It cannot create real evidence or combine attempts. Kind: invariant. Destination: `spec: specs/omp-sessions/spec.md → Requirement: The OMP evidence audit runs offline`.
-- C3: A private host callback is not MCP, and a native one-shot card is not sandbox enforcement. Kind: deliberate gap. Destination: ADR 0018.
-- C4: Native quiescence, containment settlement and resumability are different observations. Attribution and Continue remain scoped to the recorded target and run. Kind: invariant. Destination: ADR 0019.
+- C3: A private host callback is not MCP, and a native one-shot card is not sandbox enforcement. Kind: deliberate gap. Source: ADR 0018. Destination: `docs/qualification/omp-rpc.md`, Differences from the shared contracts.
+- C4: Native quiescence, containment settlement and resumability are different observations. Attribution and Continue remain scoped to the recorded target and run. Kind: invariant. Source: ADR 0019. Destination: `docs/qualification/omp-rpc.md`, Differences from the shared contracts.
 - C5: The explicit owner approval, separate from build approval, is required before the real walk. Kind: invariant. Destination: `spec: specs/omp-sessions/spec.md → Requirement: Real OMP qualification is recorded separately from regression tests`.
 
 ## Diagrams
