@@ -31,11 +31,27 @@ class TestHostExtension implements HostExtension {
   });
 
   _TestOmpGrace? _ompGrace;
+  _ReconcileHold? _reconcileHold;
+
+  Future<T> runWithStartupHold<T>(Future<T> Function() run) {
+    final hold = _reconcileHold;
+    if (hold == null) return run();
+    return runZoned(
+      run,
+      zoneSpecification: ZoneSpecification(
+        createTimer: (self, parent, zone, duration, callback) =>
+            identical(duration, hold.delay)
+            ? hold.arm(callback)
+            : parent.createTimer(zone, duration, callback),
+      ),
+    );
+  }
 
   static Future<T> _awaitOmpClose<T>(Future<T> event, Duration _) => event;
 
   /// Options from `KUMIKO_TEST_*` variables, which make timing deterministic:
   /// `UNIT_CAP`, `RECONCILE_DELAY_MS`, `RETRY_DELAY_MS`,
+  /// `RECONCILE_HELD` (`1` holds startup until `test/reconcile.release`),
   /// `SHUTDOWN_DEADLINE_MS`, `WORKSPACE_CAP`, `RESOLVE_TIMEOUT_MS`,
   /// `ATTACH_TIMEOUT_MS`, `SETTLE_DEADLINE_MS`, `CONSOLE_CLOSE_TIMEOUT_MS`,
   /// `READ_DEADLINE_MS`, `REVOKED_SECRETS_KEPT`, `DRAFT_DEADLINE_MS`,
@@ -76,112 +92,123 @@ class TestHostExtension implements HostExtension {
     final ompGrace = env['KUMIKO_TEST_OMP_CLOSE_MANUAL'] == '1'
         ? _TestOmpGrace()
         : null;
+    final reconcileHold = env['KUMIKO_TEST_RECONCILE_HELD'] == '1'
+        ? _ReconcileHold()
+        : null;
     return TestHostExtension(
-      qualificationNativeHome: env['KUMIKO_TEST_CODEX_AUDIT_HOME'],
-      qualificationExecutable:
-          env['KUMIKO_TEST_CODEX_QUALIFICATION_EXECUTABLE'],
-      toolDeliveryFailuresOverride: failures == null
-          ? null
-          : [
-              for (final triple in jsonDecode(failures) as List)
-                (
-                  (triple as List)[0] as String,
-                  triple[1] as String,
-                  triple[2] as String,
+        qualificationNativeHome: env['KUMIKO_TEST_CODEX_AUDIT_HOME'],
+        qualificationExecutable:
+            env['KUMIKO_TEST_CODEX_QUALIFICATION_EXECUTABLE'],
+        toolDeliveryFailuresOverride: failures == null
+            ? null
+            : [
+                for (final triple in jsonDecode(failures) as List)
+                  (
+                    (triple as List)[0] as String,
+                    triple[1] as String,
+                    triple[2] as String,
+                  ),
+              ],
+        qualifiedAdaptersOverride: candidates == null
+            ? null
+            : [
+                for (final triple in jsonDecode(candidates) as List)
+                  (
+                    (triple as List)[0] as String,
+                    triple[1] as String,
+                    (triple[2] as List).cast<String>(),
+                  ),
+              ],
+        options: HostOptions(
+          codexAuthSignatures: env['KUMIKO_TEST_CODEX_AUTH_SIGNATURES'] == null
+              ? null
+              : {
+                  for (final name in (jsonDecode(
+                    env['KUMIKO_TEST_CODEX_AUTH_SIGNATURES'] ?? '[]',
+                  ) as List))
+                    CodexAuthSignal.named(name as String) ??
+                        (throw ArgumentError.value(
+                          name,
+                          'KUMIKO_TEST_CODEX_AUTH_SIGNATURES',
+                          'unknown Codex signal',
+                        )),
+                },
+          codexProbeArgs: env['KUMIKO_TEST_CODEX_PROBE_ARGS'] == null
+              ? null
+              : (jsonDecode(env['KUMIKO_TEST_CODEX_PROBE_ARGS']!) as List)
+                    .cast<String>(),
+          ompProbeArgs: env['KUMIKO_TEST_OMP_PROBE_ARGS'] == null
+              ? null
+              : (jsonDecode(env['KUMIKO_TEST_OMP_PROBE_ARGS']!) as List)
+                    .cast<String>(),
+          runtimeSearchPath: runtimePath == null
+              ? null
+              : splitSearchPath(runtimePath, separator),
+          runtimeWellKnownDirs: runtimePath == null
+              ? null
+              : splitSearchPath(
+                  env['KUMIKO_TEST_RUNTIME_DIRS'] ?? '',
+                  separator,
                 ),
-            ],
-      qualifiedAdaptersOverride: candidates == null
-          ? null
-          : [
-              for (final triple in jsonDecode(candidates) as List)
-                (
-                  (triple as List)[0] as String,
-                  triple[1] as String,
-                  (triple[2] as List).cast<String>(),
-                ),
-            ],
-      options: HostOptions(
-        codexAuthSignatures: env['KUMIKO_TEST_CODEX_AUTH_SIGNATURES'] == null
-            ? null
-            : {
-                for (final name in (jsonDecode(
-                  env['KUMIKO_TEST_CODEX_AUTH_SIGNATURES'] ?? '[]',
-                ) as List))
-                  CodexAuthSignal.named(name as String) ??
-                      (throw ArgumentError.value(
-                        name,
-                        'KUMIKO_TEST_CODEX_AUTH_SIGNATURES',
-                        'unknown Codex signal',
-                      )),
-              },
-        codexProbeArgs: env['KUMIKO_TEST_CODEX_PROBE_ARGS'] == null
-            ? null
-            : (jsonDecode(env['KUMIKO_TEST_CODEX_PROBE_ARGS']!) as List)
-                  .cast<String>(),
-        ompProbeArgs: env['KUMIKO_TEST_OMP_PROBE_ARGS'] == null
-            ? null
-            : (jsonDecode(env['KUMIKO_TEST_OMP_PROBE_ARGS']!) as List)
-                  .cast<String>(),
-        runtimeSearchPath: runtimePath == null
-            ? null
-            : splitSearchPath(runtimePath, separator),
-        runtimeWellKnownDirs: runtimePath == null
-            ? null
-            : splitSearchPath(env['KUMIKO_TEST_RUNTIME_DIRS'] ?? '', separator),
-        shellSearchPath: shellPath == null
-            ? null
-            : splitSearchPath(shellPath, separator),
-        shellWellKnownDirs: shellPath == null
-            ? null
-            : splitSearchPath(env['KUMIKO_TEST_SHELL_DIRS'] ?? '', separator),
-        unitCap: number('UNIT_CAP') ?? HostOptions.defaultUnitCap,
-        shutdownDeadline:
-            millis('SHUTDOWN_DEADLINE_MS') ??
-            HostOptions.defaultShutdownDeadline,
-        reconcileDelay: millis('RECONCILE_DELAY_MS') ?? Duration.zero,
-        retryDelay: millis('RETRY_DELAY_MS') ?? Duration.zero,
-        workspaceCap:
-            number('WORKSPACE_CAP') ?? HostOptions.defaultWorkspaceCap,
-        resolveTimeout:
-            millis('RESOLVE_TIMEOUT_MS') ?? HostOptions.defaultResolveTimeout,
-        attachTimeout:
-            millis('ATTACH_TIMEOUT_MS') ?? HostOptions.defaultAttachTimeout,
-        settleDeadline:
-            millis('SETTLE_DEADLINE_MS') ?? HostOptions.defaultSettleDeadline,
-        consoleCloseTimeout:
-            millis('CONSOLE_CLOSE_TIMEOUT_MS') ??
-            HostOptions.defaultConsoleCloseTimeout,
-        limitOmpClose:
-            ompGrace?.limit ??
-            (env['KUMIKO_TEST_OMP_CLOSE_AWAITS_PEER'] == '1'
-                ? _awaitOmpClose
-                : const HostOptions().limitOmpClose),
-        toolEndpointFault: env['KUMIKO_TEST_TOOL_ENDPOINT_FAULT'],
-        revokedSecretsKept:
-            number('REVOKED_SECRETS_KEPT') ??
-            HostOptions.defaultRevokedSecretsKept,
-        draftDeadline: millis('DRAFT_DEADLINE_MS') ?? _draftHangGuard,
-        draftOpenHeld: env['KUMIKO_TEST_DRAFT_OPEN_HELD'] == '1',
-        advertiseLifecycle: env['KUMIKO_TEST_NO_LIFECYCLE'] != '1',
-        postExitReadDeadline:
-            millis('READ_DEADLINE_MS') ??
-            HostOptions.defaultPostExitReadDeadline,
-        spawnIdentityForTesting: _spawnIdentity(
-          env['KUMIKO_TEST_SPAWN_IDENTITY'],
+          shellSearchPath: shellPath == null
+              ? null
+              : splitSearchPath(shellPath, separator),
+          shellWellKnownDirs: shellPath == null
+              ? null
+              : splitSearchPath(env['KUMIKO_TEST_SHELL_DIRS'] ?? '', separator),
+          unitCap: number('UNIT_CAP') ?? HostOptions.defaultUnitCap,
+          shutdownDeadline:
+              millis('SHUTDOWN_DEADLINE_MS') ??
+              HostOptions.defaultShutdownDeadline,
+          reconcileDelay:
+              reconcileHold?.delay ??
+              millis('RECONCILE_DELAY_MS') ??
+              Duration.zero,
+          retryDelay: millis('RETRY_DELAY_MS') ?? Duration.zero,
+          workspaceCap:
+              number('WORKSPACE_CAP') ?? HostOptions.defaultWorkspaceCap,
+          resolveTimeout:
+              millis('RESOLVE_TIMEOUT_MS') ?? HostOptions.defaultResolveTimeout,
+          attachTimeout:
+              millis('ATTACH_TIMEOUT_MS') ?? HostOptions.defaultAttachTimeout,
+          settleDeadline:
+              millis('SETTLE_DEADLINE_MS') ?? HostOptions.defaultSettleDeadline,
+          consoleCloseTimeout:
+              millis('CONSOLE_CLOSE_TIMEOUT_MS') ??
+              HostOptions.defaultConsoleCloseTimeout,
+          limitOmpClose:
+              ompGrace?.limit ??
+              (env['KUMIKO_TEST_OMP_CLOSE_AWAITS_PEER'] == '1'
+                  ? _awaitOmpClose
+                  : const HostOptions().limitOmpClose),
+          toolEndpointFault: env['KUMIKO_TEST_TOOL_ENDPOINT_FAULT'],
+          revokedSecretsKept:
+              number('REVOKED_SECRETS_KEPT') ??
+              HostOptions.defaultRevokedSecretsKept,
+          draftDeadline: millis('DRAFT_DEADLINE_MS') ?? _draftHangGuard,
+          draftOpenHeld: env['KUMIKO_TEST_DRAFT_OPEN_HELD'] == '1',
+          advertiseLifecycle: env['KUMIKO_TEST_NO_LIFECYCLE'] != '1',
+          postExitReadDeadline:
+              millis('READ_DEADLINE_MS') ??
+              HostOptions.defaultPostExitReadDeadline,
+          spawnIdentityForTesting: _spawnIdentity(
+            env['KUMIKO_TEST_SPAWN_IDENTITY'],
+          ),
+          killWait: millis('KILL_WAIT_MS'),
+          initialFaults: {
+            for (final name in (env['KUMIKO_TEST_FAULTS'] ?? '').split(','))
+              if (name.trim().isNotEmpty)
+                TestFault.values.asNameMap()[name.trim()] ??
+                    (throw ArgumentError.value(
+                      name,
+                      'KUMIKO_TEST_FAULTS',
+                      'unknown fault',
+                    )),
+          },
         ),
-        killWait: millis('KILL_WAIT_MS'),
-        initialFaults: {
-          for (final name in (env['KUMIKO_TEST_FAULTS'] ?? '').split(','))
-            if (name.trim().isNotEmpty)
-              TestFault.values.asNameMap()[name.trim()] ??
-                  (throw ArgumentError.value(
-                    name,
-                    'KUMIKO_TEST_FAULTS',
-                    'unknown fault',
-                  )),
-        },
-      ),
-    ).._ompGrace = ompGrace;
+      )
+      .._ompGrace = ompGrace
+      .._reconcileHold = reconcileHold;
   }
 
   static const Duration _draftHangGuard = Duration(minutes: 2);
@@ -319,6 +346,14 @@ class TestHostExtension implements HostExtension {
       case 'test/omp.expireGrace':
         EmptyParams.fromJson(params);
         return {'expired': _ompGrace?.expire() ?? 0};
+      case 'test/reconcile.release':
+        EmptyParams.fromJson(params);
+        final hold = _reconcileHold;
+        if (hold == null) {
+          throw RpcException(ErrorCode.methodNotAvailable, method);
+        }
+        hold.release();
+        return <String, Object?>{};
       case 'test/draft.stats':
         EmptyParams.fromJson(params);
         return host.agents.draftSnapshot();
@@ -380,6 +415,40 @@ class TestHostExtension implements HostExtension {
 
   /// Test channels' producers by channel id, for `test/channel.stats`.
   final Map<int, _Producer> _producers = {};
+}
+
+/// Holds one startup timer by matching its duration by identity. A non-const
+/// duration gives this timer its own identity without affecting other timers.
+final class _ReconcileHold implements Timer {
+  final delay = Duration(microseconds: 1);
+  void Function()? _callback;
+  bool _armed = false;
+  int _tick = 0;
+
+  Timer arm(void Function() callback) {
+    if (_armed) throw StateError('startup reconciliation was already held');
+    _armed = true;
+    _callback = callback;
+    return this;
+  }
+
+  void release() {
+    if (!_armed) throw StateError('startup reconciliation is not held');
+    final callback = _callback;
+    if (callback == null) return;
+    _callback = null;
+    _tick = 1;
+    callback();
+  }
+
+  @override
+  bool get isActive => _callback != null;
+
+  @override
+  int get tick => _tick;
+
+  @override
+  void cancel() => _callback = null;
 }
 
 final class _TestOmpGrace {

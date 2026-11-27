@@ -16,10 +16,10 @@ Future<void> main(List<String> args) async {
   if (ompScript != null && args.firstOrNull == '--mode') {
     exit(await runOmpFixture([...args, '--script', ompScript]));
   }
+  final extension = TestHostExtension.fromEnvironment(Platform.environment);
   exit(
-    await hostMain(
-      args,
-      extension: TestHostExtension.fromEnvironment(Platform.environment),
+    await extension.runWithStartupHold(
+      () => hostMain(args, extension: extension),
     ),
   );
 }

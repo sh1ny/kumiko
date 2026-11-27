@@ -4,6 +4,8 @@ import 'dart:io';
 
 import 'package:domain/domain.dart';
 import 'package:host_protocol/host_protocol.dart';
+import 'package:process_containment/process_containment.dart'
+    show isProcessAlive;
 import 'package:sqlite3/sqlite3.dart';
 import 'package:test/test.dart';
 
@@ -2301,27 +2303,123 @@ void main() {
     }, timeout: hangGuard);
   }
 
-  test('OMP: OMP does not exit', () async {
-    final fixture = await closingFixture(
-      manual: true,
-      script: {'holdEof': true},
+  // Containment settlement does not confirm a native history save. Conversely,
+  // the history warning says nothing about whether containment was settled.
+  for (final killFails in [false, true]) {
+    test(
+      killFails
+          ? 'OMP: OMP does not exit and containment cleanup fails'
+          : 'OMP: OMP does not exit',
+      () async {
+        const within = Duration(minutes: 2);
+        final fixture = await closingFixture(
+          manual: true,
+          script: {'holdEof': true},
+        );
+        final peer = await fixture.start();
+        final desktop = fixture.desktop;
+        final ledger = LedgerView(fixture.profile);
+        final original = ledger.units().singleWhere(
+          (row) => row['kind'] == 'agent',
+        );
+        final rootPid = original['pid']! as int;
+        final started = int.parse(original['process_started_at']! as String);
+        bool rootAlive() => isProcessAlive(rootPid, started);
+        addTearDown(() async {
+          try {
+            if (killFails && !desktop.session.isLost) {
+              await desktop.setFault(TestFault.killFails, enabled: false);
+            }
+          } finally {
+            if (rootAlive()) {
+              Process.killPid(rootPid, ProcessSignal.sigkill);
+              await eventually(
+                () => !rootAlive(),
+                within: within,
+                reason: 'OMP fixture $rootPid did not stop during teardown',
+              );
+            }
+          }
+        });
+        if (killFails) await desktop.setFault(TestFault.killFails);
+
+        await peer.call(Method.agentClose);
+        await eventually(
+          () => fixture.reports.any((row) => row['stdin'] == 'eof'),
+          within: within,
+          reason: 'OMP fixture did not report EOF',
+        );
+        expect(rootAlive(), isTrue, reason: 'OMP must outlast the EOF grace');
+        final expired = await peer.call('test/omp.expireGrace', {});
+        expect(expired['expired'], 1);
+        await eventually(
+          () => peer.notifications.any(
+            (event) =>
+                event.params['sessionId'] == peer.id &&
+                (event.method == Method.agentExited ||
+                    event.method == Method.agentCloseFailed),
+          ),
+          within: within,
+          reason: 'no close outcome for ${peer.id}',
+        );
+        if (killFails) {
+          expect(rootAlive(), isTrue, reason: 'the injected kill failed');
+        } else {
+          await eventually(
+            () => !rootAlive(),
+            within: within,
+            reason: 'OMP fixture $rootPid did not stop after grace expired',
+          );
+        }
+
+        final exits = peer.of(Method.agentExited);
+        final failures = peer.of(Method.agentCloseFailed);
+        expect(exits.length + failures.length, 1);
+        final rows = ledger.units();
+        final String? historyUnconfirmed;
+        if (failures.isEmpty) {
+          expect(
+            killFails,
+            isFalse,
+            reason: 'a failed kill cannot close the unit',
+          );
+          expect(exits.single['reason'], 'closed');
+          expect(rows, isEmpty);
+          historyUnconfirmed = exits.single['historyUnconfirmed'] as String?;
+        } else {
+          final failure = failures.single;
+          if (killFails) {
+            expect(failure['reason'], 'kill-failed:injected');
+          } else {
+            expect(
+              Platform.isWindows,
+              isFalse,
+              reason: 'there is no Windows scan',
+            );
+            expect(
+              failure['reason'],
+              matches(RegExp(r'^scan-unreadable:[1-9][0-9]*$')),
+            );
+          }
+          final row = rows.single;
+          expect(row['containment_id'], original['containment_id']);
+          expect(row['state'], 'unresolved');
+          expect(row['unresolved_reason'], failure['reason']);
+          expect(
+            await desktop.launchRefusal(fixture.work, TestFixture.sleeper),
+            ErrorCode.cleanupUnresolved,
+          );
+          historyUnconfirmed = failure['historyUnconfirmed'] as String?;
+        }
+        expect(historyUnconfirmed, 'nativeEofUnconfirmed');
+        expect(
+          agentRows(fixture.profile).single['omp_history_unconfirmed'],
+          'nativeEofUnconfirmed',
+        );
+      },
+      timeout: hangGuard,
     );
-    final peer = await fixture.start();
-    final close = peer.close();
-    await waitFixture(fixture.report, (row) => row['stdin'] == 'eof');
-    final expired = await peer.call('test/omp.expireGrace', {});
-    expect(expired['expired'], 1);
-    await close;
-    expect(LedgerView(fixture.profile).units(), isEmpty);
-    expect(
-      peer.of(Method.agentExited).single['historyUnconfirmed'],
-      'nativeEofUnconfirmed',
-    );
-    expect(
-      agentRows(fixture.profile).single['omp_history_unconfirmed'],
-      'nativeEofUnconfirmed',
-    );
-  }, timeout: hangGuard);
+  }
 
   test('OMP: Old desktop receives no history outcome fields', () async {
     final fixture = await closingFixture(
