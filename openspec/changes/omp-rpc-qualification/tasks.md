@@ -19,8 +19,8 @@
 
 ## 2. Prepare the isolated Windows walk
 
-- [ ] 2.1 After explicit build approval and a clear gaming guard, build the packaged Windows release with the release host. Confirm the desktop and bundled host identity against the build revision. Do not start OMP. Settle A1 with installed version/help and exact-version public source. Verify the scratch layout, root and child model selection, target and storage paths, isolated desktop launch environment and unchanged native sign-in resolution using non-secret metadata only. Stop before live work if any fact cannot be established.
-- [ ] 2.2 Prepare the exact D2 plan with the synthetic prompts, click and observation sequence, release and runtime identities, profile arguments and model. Validate the plan against the on-disk scratch targets and check the provider workload is within D3. Present the exact plan and digest for separate explicit owner approval. Do not launch or claim the attempt without approval. A build approval or Orca fallback does not count.
+- [x] 2.1 After explicit build approval and a clear gaming guard, build the packaged Windows release with the release host. Confirm the desktop and bundled host identity against the build revision. Do not start OMP. Settle A1 with installed version/help and exact-version public source. Verify the scratch layout, root and child model selection, target and storage paths, isolated desktop launch environment and unchanged native sign-in resolution using non-secret metadata only. Stop before live work if any fact cannot be established.
+- [x] 2.2 Prepare the exact D2 plan with the synthetic prompts, click and observation sequence, release and runtime identities, profile arguments and model. Validate the plan against the on-disk scratch targets and check the provider workload is within D3. Present the exact plan and digest for separate explicit owner approval. Do not launch or claim the attempt without approval. A build approval or Orca fallback does not count.
 
 ## 3. Observe and record the approved walk
 
