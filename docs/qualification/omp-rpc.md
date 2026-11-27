@@ -55,4 +55,47 @@ Owner desktop observations and exact-version limits belong below as they occur. 
 
 ## Windows observations
 
-No real Windows OMP attempt has been recorded.
+### Attempt 1, OMP 19.2.1
+
+The owner approved `openai-codex/gpt-5.5`. Kumiko showed a readiness-stage
+failure: OMP exited 1 and reported that it could not find the selected model.
+The attempt stopped with zero submitted prompts. The scratch profile held no
+saved agent session and the native journal directory held no files. The
+desktop and host exited normally during cleanup. This is startup failure and
+cleanup evidence, not a pass for close, ordinary quit or recovery.
+
+Before launch, the folder list held the scratch parent rather than A. The
+owner corrected the selection and the scratch runtime was started only in A.
+We did not establish why the first folder differed.
+
+The [attempt record](omp-rpc-windows.json) reports **FAIL** for this run.
+The owner said the selected model was retired and named `openai-codex/gpt-6.2-sol`
+for a future approved attempt. The first failure does not establish a defect
+in OMP's RPC behavior and is not replaced by a later result.
+
+### Attempt 2, OMP 19.2.1
+
+The owner approved a fresh attempt on `openai-codex/gpt-6.2-sol`, with new scratch
+workspaces and the same packaged release. OMP started in both workspaces.
+Prompt completion, reply streaming, Stop, one-shot approval and Deny, native
+tool cards, the Kumiko callback, and target retention all passed. The view
+scrolled to the end of the first reply; the beginning remained accessible.
+The child had the approved model and its own read-only pane with earlier
+history. Delegated Stop was not exercised. Cancel preserved B's pending
+approval; Confirm closed B without granting it and left A running.
+
+With a permission pending in A, invoking Windows title-bar Close through
+computer use exited the app before an affected-work warning or a Cancel
+decision could be observed. The desktop and host exited 0, A's OMP process
+exited 1, and the host ledger did not mark the exit as a coordinated quit.
+The held write did not happen. A's original session record and native journal
+header remained, which does not establish a normal save or successful replay.
+The cause of the exit, including whether the close path differed for computer
+use, was not established. The run stopped after seven root prompts and one
+child assignment. There was no reopen, eighth prompt, Continue, or root
+history restore.
+
+The [attempt record](omp-rpc-windows.json) reports **FAIL** for this run.
+These passes do not qualify the version as a whole. The pane's general
+**Load** and **Resume** indicators showed unavailable; that is separate from
+the OMP-specific **Continue** flow, which this attempt did not reach.
