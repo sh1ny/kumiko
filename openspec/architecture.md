@@ -134,6 +134,10 @@ contained version probe and executable recheck. Its ready frame must offer v1;
 delta events and `get_state` precede saving the `omp-rpc` identity. This is the
 reviewed transport contract, not evidence of real-runtime qualification.
 
+The [Windows OMP runbook and evidence](../docs/qualification/omp-rpc.md) record
+approved attempts per exact version. The offline audit validates that record
+without launching OMP. A missing observation does not change native admission.
+
 Prompt admission commits user input; the native prompt result settles its ticket,
 not necessarily the root's activity. Stop uses native abort and attributable child
 cancellation without killing the process. Replies acknowledge commands; terminal

@@ -159,7 +159,205 @@ void _fails(QualificationReport report, Iterable<String> details) {
   }
 }
 
+const _ompRecordPath = 'docs/qualification/omp-rpc-windows.json';
+const _ompAttemptId = '2026-11-27T12:00:00Z';
+const _ompSecondAttemptId = '2026-11-27T13:00:00Z';
+const _ompItems = [
+  'launch',
+  'prompt',
+  'streaming',
+  'immutable target',
+  'Stop',
+  'one-shot approval',
+  'denial',
+  'tool activity',
+  'kumiko tool call',
+  'exact Continue',
+  'history restore',
+  'read-only child pane',
+  'close',
+  'ordinary quit',
+];
+
+Map<String, Object?> _ompAttempt({
+  String id = _ompAttemptId,
+  String version = '19.2.1',
+  String digestDigit = 'a',
+  Map<String, String> outcomes = const {},
+}) => {
+  'id': id,
+  'version': version,
+  'os': 'windows',
+  'revision': '1' * 40,
+  'model': 'openai-codex/gpt-5.5',
+  'approval': {
+    'sha256': digestDigit * 64,
+    'approvedAt': '2026-11-27T11:59:00Z',
+  },
+  'items': [
+    for (final item in _ompItems)
+      {
+        'item': item,
+        'result': outcomes[item] ?? 'pass',
+        'notes': 'Synthetic observation only; not real qualification.',
+      },
+  ],
+};
+
+List<Map<String, String>> _ompRows(Map<String, Object?> attempt) =>
+    attempt['items']! as List<Map<String, String>>;
+
+File _ompEvidenceFile(Directory dir) =>
+    File.fromUri(dir.uri.resolve(_ompRecordPath));
+
+Directory _offlineQualificationDirectory() {
+  final dir = Directory.systemTemp.createTempSync('kumiko_omp_audit_');
+  addTearDown(() => dir.deleteSync(recursive: true));
+  File.fromUri(dir.uri.resolve(defaultQualificationResultsPath))
+    ..parent.createSync(recursive: true)
+    ..writeAsStringSync('# No claims');
+  File.fromUri(dir.uri.resolve(defaultQualifiedAdaptersPath))
+    ..parent.createSync(recursive: true)
+    ..writeAsStringSync(_source(entries: ''));
+  File.fromUri(dir.uri.resolve(defaultCodexAuthSourcePath))
+    ..parent.createSync(recursive: true)
+    ..writeAsStringSync(_emptyAuth);
+  return dir;
+}
+
+ProcessResult _runDefaultQualificationCli(Directory dir) => Process.runSync(
+  Platform.resolvedExecutable,
+  [File('tool/check_qualification.dart').absolute.path],
+  workingDirectory: dir.path,
+);
+
+List<String> _ompCliStatuses(ProcessResult result) => (result.stdout as String)
+    .split('\n')
+    .map((line) => line.trimRight())
+    .where((line) => line.startsWith('OMP OBSERVATIONS:'))
+    .toList();
+
+void _rejectOmpEvidence(ProcessResult result, String diagnostic) {
+  expect(result.exitCode, 1, reason: '${result.stdout}\n${result.stderr}');
+  expect(result.stdout, contains('FAILED: OMP'));
+  expect(result.stdout, contains(diagnostic));
+  expect(_ompCliStatuses(result), isEmpty);
+}
+
 void main() {
+  group('OMP audit', () {
+    test('reports a complete Windows attempt for its exact version', () {
+      final dir = _offlineQualificationDirectory();
+      _ompEvidenceFile(dir).writeAsStringSync(jsonEncode([_ompAttempt()]));
+
+      final result = _runDefaultQualificationCli(dir);
+      expect(result.exitCode, 0, reason: '${result.stdout}\n${result.stderr}');
+      expect(_ompCliStatuses(result), [
+        'OMP OBSERVATIONS: $_ompAttemptId 19.2.1 windows: PASS',
+      ]);
+    });
+
+    test('does not combine failed and incomplete attempts', () {
+      final dir = _offlineQualificationDirectory();
+      _ompEvidenceFile(dir).writeAsStringSync(
+        jsonEncode([
+          _ompAttempt(outcomes: {'Stop': 'fail', 'close': 'unverified'}),
+          _ompAttempt(
+            id: _ompSecondAttemptId,
+            digestDigit: 'b',
+            outcomes: {'prompt': 'unverified'},
+          ),
+          _ompAttempt(
+            id: '2026-11-27T14:00:00Z',
+            version: '19.2.2',
+            digestDigit: 'c',
+          ),
+        ]),
+      );
+
+      final result = _runDefaultQualificationCli(dir);
+      expect(result.exitCode, 0, reason: '${result.stdout}\n${result.stderr}');
+      expect(_ompCliStatuses(result), [
+        'OMP OBSERVATIONS: $_ompAttemptId 19.2.1 windows: FAIL',
+        'OMP OBSERVATIONS: $_ompSecondAttemptId 19.2.1 windows: INCOMPLETE',
+        'OMP OBSERVATIONS: 2026-11-27T14:00:00Z 19.2.2 windows: PASS',
+      ]);
+    });
+
+    test('rejects invalid files without printing pass', () {
+      final dir = _offlineQualificationDirectory();
+      final file = _ompEvidenceFile(dir);
+      _rejectOmpEvidence(_runDefaultQualificationCli(dir), 'could not read');
+      for (final (bytes, diagnostic) in [
+        ([255], 'UTF-8'),
+        (utf8.encode('["unclosed'), 'JSON'),
+        (List.filled((1 << 20) + 1, 32), '1 MiB'),
+      ]) {
+        file.writeAsBytesSync(bytes);
+        _rejectOmpEvidence(_runDefaultQualificationCli(dir), diagnostic);
+      }
+
+      final valid = _ompAttempt();
+      Map<String, Object?> next() =>
+          _ompAttempt(id: _ompSecondAttemptId, digestDigit: 'b');
+      for (final (invalid, diagnostic) in [
+        (next()..['os'] = 'linux', 'os'),
+        (next()..['version'] = 'omp/19.2.x', 'version'),
+        (next()..['revision'] = 'HEAD', 'revision'),
+        (next()..['model'] = '@default', 'model'),
+        (next()..['id'] = '2026-02-30T12:00:00Z', 'id'),
+        (next()..['id'] = _ompAttemptId, 'duplicate attempt'),
+        (next()..remove('approval'), 'approval'),
+        (next()..['approval'] = {'sha256': 'bad'}, 'approval'),
+      ]) {
+        file.writeAsStringSync(jsonEncode([valid, invalid]));
+        _rejectOmpEvidence(_runDefaultQualificationCli(dir), diagnostic);
+      }
+
+      final missing = next();
+      _ompRows(missing).removeAt(0);
+      final duplicate = next();
+      _ompRows(duplicate).last['item'] = 'launch';
+      final unknown = next();
+      _ompRows(unknown).first['item'] = 'Launch';
+      final badResult = next();
+      _ompRows(badResult).first['result'] = 'maybe';
+      final badNote = next();
+      _ompRows(badNote).first['notes'] = ' \t ';
+      for (final (invalid, diagnostic) in [
+        (missing, 'missing required item'),
+        (duplicate, 'duplicate item'),
+        (unknown, 'unknown item'),
+        (badResult, 'result'),
+        (badNote, 'notes'),
+      ]) {
+        file.writeAsStringSync(jsonEncode([valid, invalid]));
+        _rejectOmpEvidence(_runDefaultQualificationCli(dir), diagnostic);
+      }
+    }, timeout: const Timeout(Duration(minutes: 3)));
+
+    test('rejects reused approval references', () {
+      final dir = _offlineQualificationDirectory();
+      _ompEvidenceFile(dir).writeAsStringSync(
+        jsonEncode([_ompAttempt(), _ompAttempt(id: _ompSecondAttemptId)]),
+      );
+
+      _rejectOmpEvidence(
+        _runDefaultQualificationCli(dir),
+        'duplicate approval',
+      );
+    });
+
+    test('makes no claim when no attempt is recorded', () {
+      final dir = _offlineQualificationDirectory();
+      _ompEvidenceFile(dir).writeAsStringSync('[]');
+
+      final result = _runDefaultQualificationCli(dir);
+      expect(result.exitCode, 0, reason: '${result.stdout}\n${result.stderr}');
+      expect(_ompCliStatuses(result), ['OMP OBSERVATIONS: none recorded']);
+    });
+  });
+
   group('native observations', () {
     for (final malformed in [false, true]) {
       test(
@@ -282,24 +480,9 @@ void main() {
       },
     );
     test('default unrecorded native document is optional but an existing blank document fails', () {
-      final dir = Directory.systemTemp.createTempSync(
-        'kumiko_default_checker_',
-      );
-      addTearDown(() => dir.deleteSync(recursive: true));
-      final script = File('tool/check_qualification.dart').absolute.path;
-      File.fromUri(dir.uri.resolve(defaultQualificationResultsPath))
-        ..parent.createSync(recursive: true)
-        ..writeAsStringSync('# No claims');
-      File.fromUri(dir.uri.resolve(defaultQualifiedAdaptersPath))
-        ..parent.createSync(recursive: true)
-        ..writeAsStringSync(_source(entries: ''));
-      File.fromUri(dir.uri.resolve(defaultCodexAuthSourcePath))
-        ..parent.createSync(recursive: true)
-        ..writeAsStringSync(_emptyAuth);
-      ProcessResult run() => Process.runSync(Platform.resolvedExecutable, [
-        script,
-      ], workingDirectory: dir.path);
-      final missing = run();
+      final dir = _offlineQualificationDirectory();
+      _ompEvidenceFile(dir).writeAsStringSync('[]');
+      final missing = _runDefaultQualificationCli(dir);
       expect(
         missing.exitCode,
         0,
@@ -308,7 +491,7 @@ void main() {
       expect(missing.stdout, isNot(contains('CODEX OBSERVATIONS')));
       File.fromUri(dir.uri.resolve(defaultCodexResultsPath))
           .writeAsStringSync(' \n');
-      final blank = run();
+      final blank = _runDefaultQualificationCli(dir);
       expect(blank.exitCode, 1, reason: '${blank.stdout}\n${blank.stderr}');
       expect(blank.stdout, contains('Codex results: document is blank'));
     });
@@ -1296,5 +1479,6 @@ void main() {
     expect(result.stdout, contains('NO CLAIMS (no adapter qualified)'));
     expect(result.stdout, isNot(contains('QUALIFIED')));
     expect(result.stdout, isNot(contains('ACCEPTED')));
+    expect(result.stdout, isNot(contains('OMP OBSERVATIONS:')));
   });
 }

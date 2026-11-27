@@ -9,6 +9,8 @@ library;
 import 'dart:convert';
 import 'dart:io';
 
+import 'check_omp_observations.dart';
+
 const defaultQualificationResultsPath =
     'docs/qualification/claude-agent-acp.md';
 const defaultQualifiedAdaptersPath =
@@ -16,6 +18,7 @@ const defaultQualifiedAdaptersPath =
 const defaultCodexResultsPath = 'docs/qualification/codex-app-server.md';
 const defaultCodexAuthSourcePath =
     'packages/host/lib/src/agent/codex/codex_auth_signatures.dart';
+const _defaultOmpResultsPath = 'docs/qualification/omp-rpc-windows.json';
 
 const _oses = ['windows', 'linux', 'macos'];
 
@@ -1063,7 +1066,7 @@ QualificationReport checkQualification(
   );
 }
 
-/// Reads the two offline inputs, prints the report and returns its exit code.
+/// Reads offline evidence, prints the report and returns its exit code.
 int runQualificationCheck(
   List<String> args, {
   required StringSink out,
@@ -1128,6 +1131,20 @@ int runQualificationCheck(
       return 1;
     }
   }
+  var ompObservations = const <String>[];
+  if (args.isEmpty) {
+    try {
+      ompObservations = checkOmpObservations(File(_defaultOmpResultsPath));
+    } on FileSystemException {
+      out.writeln(
+        'FAILED: OMP results: could not read $_defaultOmpResultsPath',
+      );
+      return 1;
+    } on FormatException catch (error) {
+      out.writeln('FAILED: OMP results: ${error.message}');
+      return 1;
+    }
+  }
   final report = checkQualification(
     markdown,
     source,
@@ -1144,6 +1161,9 @@ int runQualificationCheck(
     out.writeln('TOOL DELIVERY FAILURE RECORDED: $recorded');
   }
   for (final observation in report.codexObservations) {
+    out.writeln(observation);
+  }
+  for (final observation in ompObservations) {
     out.writeln(observation);
   }
   if (report.verdict != null) out.writeln(report.verdict);
