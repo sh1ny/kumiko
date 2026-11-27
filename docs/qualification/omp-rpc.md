@@ -126,3 +126,7 @@ reopening.
 The [attempt record](omp-rpc-windows.json) reports **INCOMPLETE** because the
 focused run did not repeat the remaining checks. It does not replace either
 earlier FAIL or qualify the version as a whole.
+
+**OMP 19.2.1 is not qualified on Windows.** A full live walk on the fixed
+build is still required, with fresh owner approval. The M2 runtime exit
+criterion remains open.

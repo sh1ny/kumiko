@@ -14,3 +14,5 @@ Packaged Kumiko revision `4dd8c5783b989bd3d5b9da68d76a7501d608d10c`; desktop SHA
 The idle continued app quit normally. All owned handles signaled exit 0; no unit or held file remained. The disposable workspaces, profile and native journals were removed.
 
 `mise run audit` exited 0 and printed `FAIL`, `FAIL`, `INCOMPLETE` for the three independent attempts in `docs/qualification/omp-rpc-windows.json`. Close, ordinary quit, exact Continue and root history passed on the fixed release. The remaining unexercised rows and both earlier attempts are retained; no one attempt qualifies the version.
+
+The owner confirmed in Ormy item 101 (event `e3225`) that the fix and evidence may ship without a qualification claim. The complete owner-approved Windows walk on the fixed build remains owed before the M2 runtime exit criterion can pass.
