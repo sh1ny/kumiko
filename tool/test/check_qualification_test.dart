@@ -305,10 +305,10 @@ void main() {
         (next()..['version'] = 'omp/19.2.x', 'version'),
         (next()..['revision'] = 'HEAD', 'revision'),
         (next()..['model'] = '@default', 'model'),
-        (next()..['id'] = '2026-02-30T12:00:00Z', 'id'),
+        (next()..['id'] = '2026-02-30T12:00:00Z', 'invalid id'),
         (next()..['id'] = _ompAttemptId, 'duplicate attempt'),
         (next()..remove('approval'), 'approval'),
-        (next()..['approval'] = {'sha256': 'bad'}, 'approval'),
+        (next()..['approval'] = {'sha256': 'bad'}, 'invalid approval.sha256'),
       ]) {
         file.writeAsStringSync(jsonEncode([valid, invalid]));
         _rejectOmpEvidence(_runDefaultQualificationCli(dir), diagnostic);
@@ -335,6 +335,30 @@ void main() {
         _rejectOmpEvidence(_runDefaultQualificationCli(dir), diagnostic);
       }
     }, timeout: const Timeout(Duration(minutes: 3)));
+
+    test('rejects missing, malformed and late approval timestamps', () {
+      final dir = _offlineQualificationDirectory();
+      final file = _ompEvidenceFile(dir);
+      final valid = _ompAttempt();
+      for (final timestamp in [
+        null,
+        '2026-02-30T12:00:00Z',
+        '2026-11-27T13:00:01Z',
+      ]) {
+        final invalid = _ompAttempt(id: _ompSecondAttemptId, digestDigit: 'b');
+        final approval = invalid['approval']! as Map<String, String>;
+        if (timestamp == null) {
+          approval.remove('approvedAt');
+        } else {
+          approval['approvedAt'] = timestamp;
+        }
+        file.writeAsStringSync(jsonEncode([valid, invalid]));
+        _rejectOmpEvidence(
+          _runDefaultQualificationCli(dir),
+          'invalid approval.approvedAt',
+        );
+      }
+    });
 
     test('rejects reused approval references', () {
       final dir = _offlineQualificationDirectory();
