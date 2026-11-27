@@ -25,7 +25,7 @@
 ## 3. Observe and record the approved walk
 
 - [x] 3.1 Before launching, recheck D2 and the gaming guard, and consume the approval once. Run only the approved walkthrough in the temporary profile. Settle A2 by recording each observed or missed event without another prompt or attempt. Keep the private notes and owned process handles until evidence capture and cleanup.
-- [ ] 3.2 [user] Check the running Windows desktop during 3.1 after separate approval. Observe start and streaming, approve and deny, tools, active Stop, the read-only child pane, close and quit decisions, and the saved pane and restored history after explicit Continue. Report missing or unexpected observations. Leave the check pending if the owner has not confirmed what they observed.
+- [x] 3.2 [user] Check the running Windows desktop during 3.1 after separate approval. Observe start and streaming, approve and deny, tools, active Stop, the read-only child pane, close and quit decisions, and the saved pane and restored history after explicit Continue. Report missing or unexpected observations. Leave the check pending if the owner has not confirmed what they observed.
 - [x] 3.3 [evidence] Record the exact approved Windows attempt in `docs/qualification/omp-rpc-windows.json` and the capability differences in `docs/qualification/omp-rpc.md`. Verify with `mise run audit`, compare the audit verdict to the observed rows, and verify owned processes settled and scratch data was removed. Bring failed required observations or an upstream OMP defect to the owner before treating qualification as complete. Record the source revision, version, audit result and path to the durable record in the change evidence. → evidence/windows-observation.md
 
 ## Workflow follow-up
