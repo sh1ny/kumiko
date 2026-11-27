@@ -95,120 +95,118 @@ class TestHostExtension implements HostExtension {
     final reconcileHold = env['KUMIKO_TEST_RECONCILE_HELD'] == '1'
         ? _ReconcileHold()
         : null;
-    return TestHostExtension(
-        qualificationNativeHome: env['KUMIKO_TEST_CODEX_AUDIT_HOME'],
-        qualificationExecutable:
-            env['KUMIKO_TEST_CODEX_QUALIFICATION_EXECUTABLE'],
-        toolDeliveryFailuresOverride: failures == null
-            ? null
-            : [
-                for (final triple in jsonDecode(failures) as List)
-                  (
-                    (triple as List)[0] as String,
-                    triple[1] as String,
-                    triple[2] as String,
-                  ),
-              ],
-        qualifiedAdaptersOverride: candidates == null
-            ? null
-            : [
-                for (final triple in jsonDecode(candidates) as List)
-                  (
-                    (triple as List)[0] as String,
-                    triple[1] as String,
-                    (triple[2] as List).cast<String>(),
-                  ),
-              ],
-        options: HostOptions(
-          codexAuthSignatures: env['KUMIKO_TEST_CODEX_AUTH_SIGNATURES'] == null
-              ? null
-              : {
-                  for (final name in (jsonDecode(
-                    env['KUMIKO_TEST_CODEX_AUTH_SIGNATURES'] ?? '[]',
-                  ) as List))
-                    CodexAuthSignal.named(name as String) ??
-                        (throw ArgumentError.value(
-                          name,
-                          'KUMIKO_TEST_CODEX_AUTH_SIGNATURES',
-                          'unknown Codex signal',
-                        )),
-                },
-          codexProbeArgs: env['KUMIKO_TEST_CODEX_PROBE_ARGS'] == null
-              ? null
-              : (jsonDecode(env['KUMIKO_TEST_CODEX_PROBE_ARGS']!) as List)
-                    .cast<String>(),
-          ompProbeArgs: env['KUMIKO_TEST_OMP_PROBE_ARGS'] == null
-              ? null
-              : (jsonDecode(env['KUMIKO_TEST_OMP_PROBE_ARGS']!) as List)
-                    .cast<String>(),
-          runtimeSearchPath: runtimePath == null
-              ? null
-              : splitSearchPath(runtimePath, separator),
-          runtimeWellKnownDirs: runtimePath == null
-              ? null
-              : splitSearchPath(
-                  env['KUMIKO_TEST_RUNTIME_DIRS'] ?? '',
-                  separator,
+    final extension = TestHostExtension(
+      qualificationNativeHome: env['KUMIKO_TEST_CODEX_AUDIT_HOME'],
+      qualificationExecutable:
+          env['KUMIKO_TEST_CODEX_QUALIFICATION_EXECUTABLE'],
+      toolDeliveryFailuresOverride: failures == null
+          ? null
+          : [
+              for (final triple in jsonDecode(failures) as List)
+                (
+                  (triple as List)[0] as String,
+                  triple[1] as String,
+                  triple[2] as String,
                 ),
-          shellSearchPath: shellPath == null
-              ? null
-              : splitSearchPath(shellPath, separator),
-          shellWellKnownDirs: shellPath == null
-              ? null
-              : splitSearchPath(env['KUMIKO_TEST_SHELL_DIRS'] ?? '', separator),
-          unitCap: number('UNIT_CAP') ?? HostOptions.defaultUnitCap,
-          shutdownDeadline:
-              millis('SHUTDOWN_DEADLINE_MS') ??
-              HostOptions.defaultShutdownDeadline,
-          reconcileDelay:
-              reconcileHold?.delay ??
-              millis('RECONCILE_DELAY_MS') ??
-              Duration.zero,
-          retryDelay: millis('RETRY_DELAY_MS') ?? Duration.zero,
-          workspaceCap:
-              number('WORKSPACE_CAP') ?? HostOptions.defaultWorkspaceCap,
-          resolveTimeout:
-              millis('RESOLVE_TIMEOUT_MS') ?? HostOptions.defaultResolveTimeout,
-          attachTimeout:
-              millis('ATTACH_TIMEOUT_MS') ?? HostOptions.defaultAttachTimeout,
-          settleDeadline:
-              millis('SETTLE_DEADLINE_MS') ?? HostOptions.defaultSettleDeadline,
-          consoleCloseTimeout:
-              millis('CONSOLE_CLOSE_TIMEOUT_MS') ??
-              HostOptions.defaultConsoleCloseTimeout,
-          limitOmpClose:
-              ompGrace?.limit ??
-              (env['KUMIKO_TEST_OMP_CLOSE_AWAITS_PEER'] == '1'
-                  ? _awaitOmpClose
-                  : const HostOptions().limitOmpClose),
-          toolEndpointFault: env['KUMIKO_TEST_TOOL_ENDPOINT_FAULT'],
-          revokedSecretsKept:
-              number('REVOKED_SECRETS_KEPT') ??
-              HostOptions.defaultRevokedSecretsKept,
-          draftDeadline: millis('DRAFT_DEADLINE_MS') ?? _draftHangGuard,
-          draftOpenHeld: env['KUMIKO_TEST_DRAFT_OPEN_HELD'] == '1',
-          advertiseLifecycle: env['KUMIKO_TEST_NO_LIFECYCLE'] != '1',
-          postExitReadDeadline:
-              millis('READ_DEADLINE_MS') ??
-              HostOptions.defaultPostExitReadDeadline,
-          spawnIdentityForTesting: _spawnIdentity(
-            env['KUMIKO_TEST_SPAWN_IDENTITY'],
-          ),
-          killWait: millis('KILL_WAIT_MS'),
-          initialFaults: {
-            for (final name in (env['KUMIKO_TEST_FAULTS'] ?? '').split(','))
-              if (name.trim().isNotEmpty)
-                TestFault.values.asNameMap()[name.trim()] ??
-                    (throw ArgumentError.value(
-                      name,
-                      'KUMIKO_TEST_FAULTS',
-                      'unknown fault',
-                    )),
-          },
+            ],
+      qualifiedAdaptersOverride: candidates == null
+          ? null
+          : [
+              for (final triple in jsonDecode(candidates) as List)
+                (
+                  (triple as List)[0] as String,
+                  triple[1] as String,
+                  (triple[2] as List).cast<String>(),
+                ),
+            ],
+      options: HostOptions(
+        codexAuthSignatures: env['KUMIKO_TEST_CODEX_AUTH_SIGNATURES'] == null
+            ? null
+            : {
+                for (final name in (jsonDecode(
+                  env['KUMIKO_TEST_CODEX_AUTH_SIGNATURES'] ?? '[]',
+                ) as List))
+                  CodexAuthSignal.named(name as String) ??
+                      (throw ArgumentError.value(
+                        name,
+                        'KUMIKO_TEST_CODEX_AUTH_SIGNATURES',
+                        'unknown Codex signal',
+                      )),
+              },
+        codexProbeArgs: env['KUMIKO_TEST_CODEX_PROBE_ARGS'] == null
+            ? null
+            : (jsonDecode(env['KUMIKO_TEST_CODEX_PROBE_ARGS']!) as List)
+                  .cast<String>(),
+        ompProbeArgs: env['KUMIKO_TEST_OMP_PROBE_ARGS'] == null
+            ? null
+            : (jsonDecode(env['KUMIKO_TEST_OMP_PROBE_ARGS']!) as List)
+                  .cast<String>(),
+        runtimeSearchPath: runtimePath == null
+            ? null
+            : splitSearchPath(runtimePath, separator),
+        runtimeWellKnownDirs: runtimePath == null
+            ? null
+            : splitSearchPath(env['KUMIKO_TEST_RUNTIME_DIRS'] ?? '', separator),
+        shellSearchPath: shellPath == null
+            ? null
+            : splitSearchPath(shellPath, separator),
+        shellWellKnownDirs: shellPath == null
+            ? null
+            : splitSearchPath(env['KUMIKO_TEST_SHELL_DIRS'] ?? '', separator),
+        unitCap: number('UNIT_CAP') ?? HostOptions.defaultUnitCap,
+        shutdownDeadline:
+            millis('SHUTDOWN_DEADLINE_MS') ??
+            HostOptions.defaultShutdownDeadline,
+        reconcileDelay:
+            reconcileHold?.delay ??
+            millis('RECONCILE_DELAY_MS') ??
+            Duration.zero,
+        retryDelay: millis('RETRY_DELAY_MS') ?? Duration.zero,
+        workspaceCap:
+            number('WORKSPACE_CAP') ?? HostOptions.defaultWorkspaceCap,
+        resolveTimeout:
+            millis('RESOLVE_TIMEOUT_MS') ?? HostOptions.defaultResolveTimeout,
+        attachTimeout:
+            millis('ATTACH_TIMEOUT_MS') ?? HostOptions.defaultAttachTimeout,
+        settleDeadline:
+            millis('SETTLE_DEADLINE_MS') ?? HostOptions.defaultSettleDeadline,
+        consoleCloseTimeout:
+            millis('CONSOLE_CLOSE_TIMEOUT_MS') ??
+            HostOptions.defaultConsoleCloseTimeout,
+        limitOmpClose:
+            ompGrace?.limit ??
+            (env['KUMIKO_TEST_OMP_CLOSE_AWAITS_PEER'] == '1'
+                ? _awaitOmpClose
+                : const HostOptions().limitOmpClose),
+        toolEndpointFault: env['KUMIKO_TEST_TOOL_ENDPOINT_FAULT'],
+        revokedSecretsKept:
+            number('REVOKED_SECRETS_KEPT') ??
+            HostOptions.defaultRevokedSecretsKept,
+        draftDeadline: millis('DRAFT_DEADLINE_MS') ?? _draftHangGuard,
+        draftOpenHeld: env['KUMIKO_TEST_DRAFT_OPEN_HELD'] == '1',
+        advertiseLifecycle: env['KUMIKO_TEST_NO_LIFECYCLE'] != '1',
+        postExitReadDeadline:
+            millis('READ_DEADLINE_MS') ??
+            HostOptions.defaultPostExitReadDeadline,
+        spawnIdentityForTesting: _spawnIdentity(
+          env['KUMIKO_TEST_SPAWN_IDENTITY'],
         ),
-      )
-      .._ompGrace = ompGrace
-      .._reconcileHold = reconcileHold;
+        killWait: millis('KILL_WAIT_MS'),
+        initialFaults: {
+          for (final name in (env['KUMIKO_TEST_FAULTS'] ?? '').split(','))
+            if (name.trim().isNotEmpty)
+              TestFault.values.asNameMap()[name.trim()] ??
+                  (throw ArgumentError.value(
+                    name,
+                    'KUMIKO_TEST_FAULTS',
+                    'unknown fault',
+                  )),
+        },
+      ),
+    );
+    extension._ompGrace = ompGrace;
+    extension._reconcileHold = reconcileHold;
+    return extension;
   }
 
   static const Duration _draftHangGuard = Duration(minutes: 2);
