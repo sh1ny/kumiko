@@ -93,6 +93,16 @@ description = "packages/desktop widget and unit tests"
 dir = "{{config_root}}/packages/desktop"
 run = "flutter test"
 
+[tasks."test:desktop-windows-close"]
+description = "Windows title-bar Close regression (requires the test host bundle)"
+dir = "{{config_root}}/packages/desktop"
+env.KUMIKO_WINDOWS_CLOSE_FIXTURE = "{{config_root}}/packages/desktop/build/windows/x64/runner/Debug/kumiko.exe"
+run = []
+run_windows = [
+  'flutter build windows --debug --target integration_test/support/windows_close_fixture.dart --dart-define="KUMIKO_HOST={{config_root}}/packages/host/build/host-test/bundle/bin/kumiko_host_test.exe"',
+  "dart test integration_test/windows_close_test.dart",
+]
+
 [tasks."test:fast"]
 description = "Every test suite except the host's (the edit loop)"
 run = [
@@ -104,10 +114,11 @@ run = [
 ]
 
 [tasks.test]
-description = "Every package's tests, as CI runs them (desktop integration tests excluded)"
+description = "Every package's tests plus the Windows native Close regression"
 run = [
   { task = "test:fast" },
   { task = "test:host" },
+  { task = "test:desktop-windows-close" },
 ]
 
 # --- gates -------------------------------------------------------------------

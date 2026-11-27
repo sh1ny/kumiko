@@ -10,7 +10,7 @@
 | The OMP evidence audit runs offline | Failed and incomplete attempts stay separate | `tool/test/check_qualification_test.dart` | `OMP audit does not combine failed and incomplete attempts` | green |
 | The OMP evidence audit runs offline | Malformed evidence is not a qualification claim | `tool/test/check_qualification_test.dart` | `OMP audit rejects invalid files without printing pass`; `OMP audit rejects reused approval references` | green |
 | The OMP evidence audit runs offline | No real run is recorded | `tool/test/check_qualification_test.dart` | `OMP audit makes no claim when no attempt is recorded` | green |
-| The exit dialog lists every affected item; Cancel keeps unresolved work running | Native Windows title-bar Close while a session awaits permission | Windows child-process integration test `Windows title-bar Close waits for a pending agent permission` | 4.1 red before fix; 4.2 green after fix | planned |
+| The exit dialog lists every affected item; Cancel keeps unresolved work running | Native Windows title-bar Close while a session awaits permission | Windows child-process integration test `Windows title-bar Close waits for a pending agent permission` | 4.1 red before fix; 4.2 green after fix | green |
 | Real OMP qualification is recorded separately from regression tests | Focused close, quit and history rerun leaves other rows unverified | Live fixed Windows release and exact installed OMP after a fresh approved plan | 5.1–5.3 | planned |
 
 ## 1. Offline evidence audit and runbook
@@ -32,8 +32,8 @@
 
 ## 4. Restore coordinated Windows title-bar Close
 
-- [ ] 4.1 Add the named Windows integration regression in its own file. Use a test-owned child with a scripted agent awaiting permission and post `WM_SYSCOMMAND` / `SC_CLOSE` to its authenticated main HWND, never the Dart exit hook. Capture the red signature: no dialog, the window gone, desktop exit 0, no coordinated host quit. If applicable, trace the native auxiliary window to the release failure. Use positive receipts and no fixed delays. No installed OMP.
-- [ ] 4.2 Fix the runner's bypass without changing the host protocol, affected-work policy or other platforms. Verify the receipt for repeated Close, Cancel preserving the agent and a fresh dialog on the next Close. From outside the app verify coordinated host quit precedes window destruction, exit 0, and an empty agent ledger afterward. Cover both native window configurations if the root cause requires it, and check the neighboring app-exit tests.
+- [x] 4.1 Add the named Windows integration regression in its own file. Use a test-owned child with a scripted agent awaiting permission and post `WM_SYSCOMMAND` / `SC_CLOSE` to its authenticated main HWND, never the Dart exit hook. Capture the red signature: no dialog, the window gone, desktop exit 0, no coordinated host quit. If applicable, trace the native auxiliary window to the release failure. Use positive receipts and no fixed delays. No installed OMP.
+- [x] 4.2 Fix the runner's bypass without changing the host protocol, affected-work policy or other platforms. Verify the receipt for repeated Close, Cancel preserving the agent and a fresh dialog on the next Close. From outside the app verify coordinated host quit precedes window destruction, exit 0, and an empty agent ledger afterward. Cover both native window configurations if the root cause requires it, and check the neighboring app-exit tests.
 
 ## 5. Record a separately approved focused rerun
 

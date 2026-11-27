@@ -90,10 +90,14 @@ decision could be observed. The desktop and host exited 0, A's OMP process
 exited 1, and the host ledger did not mark the exit as a coordinated quit.
 The held write did not happen. A's original session record and native journal
 header remained, which does not establish a normal save or successful replay.
-The cause of the exit, including whether the close path differed for computer
-use, was not established. The run stopped after seven root prompts and one
-child assignment. There was no reopen, eighth prompt, Continue, or root
-history restore.
+The run stopped after seven root prompts and one child assignment. There was
+no reopen, eighth prompt, Continue, or root history restore.
+
+A later no-model regression reproduced the same exit with a scripted agent
+awaiting permission. The native folder picker left an unowned `WorkerW`
+window, which made Flutter treat the main window as non-final and skip Dart's
+quit handler. The Windows runner now routes main-window Close directly to the
+existing coordinator, independent of auxiliary windows.
 
 The [attempt record](omp-rpc-windows.json) reports **FAIL** for this run.
 These passes do not qualify the version as a whole. The pane's general

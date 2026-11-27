@@ -13,4 +13,6 @@ During the second attempt a computer-use invocation of Windows title-bar Close e
 
 The owner confirmed in Ormy item 101 (event `e3159`) that the window closed without a quit warning. Task 3.2 records what was seen and missed; it does not make this a passing attempt. The owner requested the Windows quit fix and a separately approved focused rerun.
 
+The no-model Windows regression reproduced the failure after opening and cancelling the same native folder picker. The picker left a hidden, unowned `WorkerW` in the running desktop process. Flutter 3.47.9 counted it as a second top-level window and skipped the cancellable exit request for the main window. The window exited 0 without a warning or a coordinated host quit. This is a Kumiko Windows runner issue, not an OMP capability gap. The two native regression configurations (with and without a picker) passed after the runner was fixed; the observed attempt above stays failed.
+
 `mise run audit` exited 0 and printed `FAIL` for each valid negative OMP record. See `docs/qualification/omp-rpc-windows.json` for the result rows and `docs/qualification/omp-rpc.md` for the shared-contract comparison. All owned processes settled; both runtime scratch profiles and workspaces were removed. No live session was added to CI or the default test run.
