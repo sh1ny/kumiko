@@ -1,6 +1,8 @@
 import 'dart:io';
+import 'dart:ui' show AppExitResponse;
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:host_protocol/host_protocol.dart';
 
 import 'src/exit_coordinator.dart';
@@ -93,6 +95,8 @@ class KumikoApp extends StatefulWidget {
 }
 
 class _KumikoAppState extends State<KumikoApp> {
+  static const _windowsClose = MethodChannel('kumiko/windows_close');
+
   late final HostController _controller = HostController(
     connector: widget.connector,
     onExit: widget.onExit,
@@ -118,8 +122,15 @@ class _KumikoAppState extends State<KumikoApp> {
       // tells the host it is a quit and shuts it down (design D1).
       onExitRequested: _exit.requestExit,
     );
+    if (Platform.isWindows) _windowsClose.setMethodCallHandler(_requestClose);
     _controller.addListener(_syncWorkbench);
     _controller.start();
+  }
+
+  Future<bool> _requestClose(MethodCall call) async {
+    if (call.method != 'requestClose') throw MissingPluginException();
+    final decision = await _exit.requestExit();
+    return mounted && decision == AppExitResponse.exit;
   }
 
   /// Follows the host: the workbench attaches to each connected link and
@@ -137,6 +148,7 @@ class _KumikoAppState extends State<KumikoApp> {
 
   @override
   void dispose() {
+    if (Platform.isWindows) _windowsClose.setMethodCallHandler(null);
     _lifecycle.dispose();
     _controller.removeListener(_syncWorkbench);
     _exit.dispose();

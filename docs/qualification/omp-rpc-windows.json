@@ -1,0 +1,83 @@
+[
+  {
+    "id": "2026-11-27T14:42:56.963082Z",
+    "version": "19.2.1",
+    "os": "windows",
+    "revision": "c50fa6a80f388785b945f1fcf9ad4ce7f2650954",
+    "model": "openai-codex/gpt-5.5",
+    "approval": {
+      "sha256": "bc0fad6aa8aaa4d391b0b532ce715d211808c79d254f42c88d21f49e1bce6693",
+      "approvedAt": "2026-11-27T14:39:14Z"
+    },
+    "items": [
+      {"item": "launch", "result": "fail", "notes": "The desktop showed a readiness-stage failure. OMP exited 1 and reported that the approved model was not found."},
+      {"item": "prompt", "result": "unverified", "notes": "No prompt was submitted after the launch failure."},
+      {"item": "streaming", "result": "unverified", "notes": "Not reached after the launch failure."},
+      {"item": "immutable target", "result": "unverified", "notes": "The scratch workspace was verified before start; target retention across navigation was not reached."},
+      {"item": "Stop", "result": "unverified", "notes": "No stream or active turn to interrupt."},
+      {"item": "one-shot approval", "result": "unverified", "notes": "No native permission request was reached."},
+      {"item": "denial", "result": "unverified", "notes": "No native permission request was reached."},
+      {"item": "tool activity", "result": "unverified", "notes": "No native tool ran."},
+      {"item": "kumiko tool call", "result": "unverified", "notes": "No live callback was reached."},
+      {"item": "exact Continue", "result": "unverified", "notes": "The failed start created no saved conversation."},
+      {"item": "history restore", "result": "unverified", "notes": "The approved native journal directory remained empty."},
+      {"item": "read-only child pane", "result": "unverified", "notes": "No child was started."},
+      {"item": "close", "result": "unverified", "notes": "Startup cleanup is not close with active work."},
+      {"item": "ordinary quit", "result": "unverified", "notes": "The desktop and host exited normally during cleanup, without a live or saved OMP conversation."}
+    ]
+  },
+  {
+    "id": "2026-11-27T14:54:35.368611Z",
+    "version": "19.2.1",
+    "os": "windows",
+    "revision": "c50fa6a80f388785b945f1fcf9ad4ce7f2650954",
+    "model": "openai-codex/gpt-6.2-sol",
+    "approval": {
+      "sha256": "183173f2dc582faa3f576839243c1e6c20f4126aa5beb42e84a7e36311e4d8a0",
+      "approvedAt": "2026-11-27T14:54:17Z"
+    },
+    "items": [
+      {"item": "launch", "result": "pass", "notes": "Both scratch panes reached Idle before their first prompt and displayed omp-rpc 19.2.1."},
+      {"item": "prompt", "result": "pass", "notes": "The first user event appeared once and the turn reported completed before returning to Idle."},
+      {"item": "streaming", "result": "pass", "notes": "The reply grew across Running snapshots. After Idle the beginning was still accessible by scrolling; the final journal contained one answer with entries 1 through 24, each once."},
+      {"item": "immutable target", "result": "pass", "notes": "With B selected, the original A pane wrote only in A and the callback returned the same session and A target as the host record."},
+      {"item": "Stop", "result": "pass", "notes": "Stop was clicked while the reply was growing. The UI reported Stopped and the turn ended cancelled; the original runtime handle remained live and accepted the next prompt."},
+      {"item": "one-shot approval", "result": "pass", "notes": "The native card offered only Approve and Deny. Approve authorized the one verified write and the expected bytes appeared in A."},
+      {"item": "denial", "result": "pass", "notes": "Deny produced a visible native denial and the file stayed absent from both scratch workspaces."},
+      {"item": "tool activity", "result": "pass", "notes": "The write cards showed in-progress and terminal results, including the native denial and the authorized write completion verified on disk."},
+      {"item": "kumiko tool call", "result": "pass", "notes": "The UI changed from not yet used to connected after a completed session-info call; the structured result matched the host session, role, adapter and A target."},
+      {"item": "exact Continue", "result": "unverified", "notes": "The attempt stopped after unexpected exit during the quit step; no reopen or explicit Continue occurred."},
+      {"item": "history restore", "result": "unverified", "notes": "The original root journal remained on disk, but the desktop was not reopened and root history replay was not observed."},
+      {"item": "read-only child pane", "result": "pass", "notes": "One child completed on the approved model per its journal. Its pane showed the attributed earlier transcript and live section without composer or actions on the conversation; controls remained on the parent."},
+      {"item": "close", "result": "pass", "notes": "Cancelling Close left B's permission pending. Confirming removed B, both retained B handles signaled exit 0, the held write stayed absent and A remained live."},
+      {"item": "ordinary quit", "result": "fail", "notes": "Invoking the Windows title-bar Close exited without an observed warning or a Cancel decision while A's permission was pending. The runtime exited 1; the host did not record a coordinated quit."}
+    ]
+  },
+  {
+    "id": "2026-11-27T16:05:32.871883Z",
+    "version": "19.2.1",
+    "os": "windows",
+    "revision": "4dd8c5783b989bd3d5b9da68d76a7501d608d10c",
+    "model": "openai-codex/gpt-6.2-sol",
+    "approval": {
+      "sha256": "e6984bd7248f49cea130db57e71389788b2987c67ea70e9e100c9c24331b1b32",
+      "approvedAt": "2026-11-27T16:05:10Z"
+    },
+    "items": [
+      {"item": "launch", "result": "pass", "notes": "Both scratch roots reached Idle and displayed the exact adapter version before their first prompt."},
+      {"item": "prompt", "result": "unverified", "notes": "The focused run used setup and pending-permission prompts; it did not repeat the standalone prompt scenario."},
+      {"item": "streaming", "result": "unverified", "notes": "The focused plan did not measure visible reply growth."},
+      {"item": "immutable target", "result": "unverified", "notes": "Continue kept A's exact target, but the workspace-switch callback scenario was not repeated."},
+      {"item": "Stop", "result": "unverified", "notes": "The focused plan did not repeat Stop on a live reply."},
+      {"item": "one-shot approval", "result": "unverified", "notes": "Only the single child setup was approved; the standalone approved write scenario was not repeated."},
+      {"item": "denial", "result": "unverified", "notes": "Close and quit left both writes unapproved; the Deny button scenario was not repeated."},
+      {"item": "tool activity", "result": "unverified", "notes": "Restored root tool results were checked, not the standalone live authorized write scenario."},
+      {"item": "kumiko tool call", "result": "unverified", "notes": "There was no requested callback in the focused plan."},
+      {"item": "exact Continue", "result": "pass", "notes": "Only explicit Continue started OMP after reopen. The host and native IDs, target, root journal and prior message and tool rows were unchanged; no new work was sent."},
+      {"item": "history restore", "result": "pass", "notes": "Before any new work, the parent showed both prior prompts in order, the completed child task result and the failed pending-write result. The owner confirmed seeing restored history."},
+      {"item": "read-only child pane", "result": "unverified", "notes": "The child was seeded only to verify inert restore during quit; the standalone live child pane scenario was not repeated."},
+      {"item": "close", "result": "pass", "notes": "Cancel preserved B's pending permission. Confirm closed B, its owned handles exited 0, neither scratch workspace received the held write, and A stayed live."},
+      {"item": "ordinary quit", "result": "pass", "notes": "Title-bar Close warned about A and Cancel preserved the permission. Confirm recorded coordinated quit; all handles exited 0. Reopen showed the original parent saved and not running, with an inert child and no save warning."}
+    ]
+  }
+]

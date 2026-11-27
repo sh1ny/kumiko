@@ -41,45 +41,50 @@ class AgentHarness {
     expect(condition(), isTrue, reason: 'Timed out: $what');
   }
 
-  Future<void> launch(WidgetTester tester) async {
-    expect(
-      File(host).isAbsolute,
-      isTrue,
-      reason: 'KUMIKO_HOST must name the absolute bundled test host executable',
-    );
+  KumikoApp app({Future<void> Function()? afterHostQuit}) {
+    if (!File(host).isAbsolute) {
+      throw StateError(
+        'KUMIKO_HOST must name the absolute bundled test host executable',
+      );
+    }
     profile.createSync(recursive: true);
     workspace.createSync(recursive: true);
-    final connector = launcherConnector(
-      HostLauncher(
-        executable: host,
-        profileDir: profile.absolute.path,
-        capabilities: const {
-          Capability.workbench,
-          Capability.terminal,
-          Capability.agent,
-          Capability.lifecycle,
-        },
-        environment: {
-          'KUMIKO_TEST_QUALIFIED_ADAPTERS': jsonEncode([
-            [
-              'scripted-acp',
-              'test-only',
-              ['load', 'resume'],
-            ],
-          ]),
-        },
-      ),
+    final launcher = HostLauncher(
+      executable: host,
+      profileDir: profile.absolute.path,
+      capabilities: const {
+        Capability.workbench,
+        Capability.terminal,
+        Capability.agent,
+        Capability.lifecycle,
+      },
+      environment: {
+        'KUMIKO_TEST_QUALIFIED_ADAPTERS': jsonEncode([
+          [
+            'scripted-acp',
+            'test-only',
+            ['load', 'resume'],
+          ],
+        ]),
+      },
     );
-    await tester.pumpWidget(
-      KumikoApp(
-        key: UniqueKey(),
-        connector: () async => link = await connector(),
-        hostPath: host,
-        onExit: () {},
-        folderPicker: _Picker(workspace.path),
-        surfaceFactory: AlacrittySurface.new,
-      ),
+    return KumikoApp(
+      key: UniqueKey(),
+      connector: () async {
+        final session = await launcher.start();
+        return link = afterHostQuit == null
+            ? SessionLink(session)
+            : _ObservedSessionLink(session, afterHostQuit);
+      },
+      hostPath: host,
+      onExit: () {},
+      folderPicker: _Picker(workspace.path),
+      surfaceFactory: AlacrittySurface.new,
     );
+  }
+
+  Future<void> launch(WidgetTester tester) async {
+    await tester.pumpWidget(app());
     await until(
       tester,
       () =>
@@ -90,6 +95,11 @@ class AgentHarness {
   }
 
   Future<void> configure(WidgetTester tester) async {
+    await tester.runAsync(() => configureWorkbench(controller(tester)));
+    await tester.pump();
+  }
+
+  Future<void> configureWorkbench(WorkbenchController workbench) async {
     final script = <String, Object?>{
       'agentCapabilities': {
         'loadSession': true,
@@ -153,21 +163,18 @@ class AgentHarness {
       ],
       'cancel': 'honour',
     };
-    await tester.runAsync(() async {
-      await controller(tester).saveRuntimeProfile(
-        RuntimeProfile(
-          id: 'fixture-profile',
-          name: 'Scripted ACP',
-          runtimeKind: 'claude-code',
-          executable: host,
-          args: const ['--test-fixture', 'acp-agent'],
-          env: {'KUMIKO_TEST_ACP_SCRIPT': jsonEncode(script)},
-        ),
-      );
-      await controller(tester).setDefaultRuntimeProfile('fixture-profile');
-      await controller(tester).openFolder();
-    });
-    await tester.pump();
+    await workbench.saveRuntimeProfile(
+      RuntimeProfile(
+        id: 'fixture-profile',
+        name: 'Scripted ACP',
+        runtimeKind: 'claude-code',
+        executable: host,
+        args: const ['--test-fixture', 'acp-agent'],
+        env: {'KUMIKO_TEST_ACP_SCRIPT': jsonEncode(script)},
+      ),
+    );
+    await workbench.setDefaultRuntimeProfile('fixture-profile');
+    await workbench.openFolder();
   }
 
   Future<String> newChat(WidgetTester tester) async {
@@ -238,6 +245,18 @@ class AgentHarness {
   Future<void> dispose() async {
     await link?.quit();
     root.deleteSync(recursive: true);
+  }
+}
+
+final class _ObservedSessionLink extends SessionLink {
+  _ObservedSessionLink(super.session, this.afterHostQuit);
+
+  final Future<void> Function() afterHostQuit;
+
+  @override
+  Future<void> quit() async {
+    await super.quit();
+    await afterHostQuit();
   }
 }
 
