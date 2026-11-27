@@ -10,8 +10,8 @@
 | The OMP evidence audit runs offline | Failed and incomplete attempts stay separate | `tool/test/check_qualification_test.dart` | `OMP audit does not combine failed and incomplete attempts` | green |
 | The OMP evidence audit runs offline | Malformed evidence is not a qualification claim | `tool/test/check_qualification_test.dart` | `OMP audit rejects invalid files without printing pass`; `OMP audit rejects reused approval references` | green |
 | The OMP evidence audit runs offline | No real run is recorded | `tool/test/check_qualification_test.dart` | `OMP audit makes no claim when no attempt is recorded` | green |
-| The exit dialog lists every affected item; Cancel keeps unresolved work running | Native Windows title-bar Close while a session awaits permission | Windows child-process integration test `Windows title-bar Close waits for a pending agent permission` | 4.1 red before fix; 4.2 green after fix | green |
-| Real OMP qualification is recorded separately from regression tests | Focused close, quit and history rerun leaves other rows unverified | Live fixed Windows release and exact installed OMP after a fresh approved plan | 5.1–5.3 | planned |
+| The exit dialog lists every affected item; Cancel keeps unresolved work running (`app-exit`) | Another quit while the dialog is open; Cancel at once | Windows child-process integration test `Windows title-bar Close waits for a pending agent permission` (pending approval via native title-bar Close) | 4.1 red before fix; 4.2 green after fix | green |
+| Real OMP qualification is recorded separately from regression tests | A required observation fails or does not occur | Live fixed Windows release and exact installed OMP after a fresh approved plan; other rows remain unverified | 5.1–5.3 | green |
 
 ## 1. Offline evidence audit and runbook
 
@@ -37,9 +37,9 @@
 
 ## 5. Record a separately approved focused rerun
 
-- [ ] 5.1 Obtain explicit owner approval to build the fixed packaged release; check the gaming guard, then build and record its revision and hashes. Freeze and hash a minimal rerun plan for B's pane Close, A's native title-bar quit while a permission is pending, reopen and explicit Continue with history replay. Include one child assignment only to prove the reopened child is inert. Name the owner-observed warning, Cancel and confirm, installed OMP version, pinned model, temporary profile and prompt limit. Obtain separate owner approval for that exact plan before starting OMP.
-- [ ] 5.2 Consume the approval once and rerun only those checks. Offer the owner the relevant observations. Record any missed or abnormal result without retry; settle every owned process and remove the scratch data.
-- [ ] 5.3 [evidence] Append the focused results without changing earlier attempts. Unexercised rows stay unverified; never combine attempts. Confirm the audit verdict, cleanup and runbook notes. → evidence/windows-quit-rerun.md
+- [x] 5.1 Obtain explicit owner approval to build the fixed packaged release; check the gaming guard, then build and record its revision and hashes. Freeze and hash a minimal rerun plan for B's pane Close, A's native title-bar quit while a permission is pending, reopen and explicit Continue with history replay. Include one child assignment only to prove the reopened child is inert. Name the owner-observed warning, Cancel and confirm, installed OMP version, pinned model, temporary profile and prompt limit. Obtain separate owner approval for that exact plan before starting OMP.
+- [x] 5.2 Consume the approval once and rerun only those checks. Offer the owner the relevant observations. Record any missed or abnormal result without retry; settle every owned process and remove the scratch data.
+- [x] 5.3 [evidence] Append the focused results without changing earlier attempts. Unexercised rows stay unverified; never combine attempts. Confirm the audit verdict, cleanup and runbook notes. → evidence/windows-quit-rerun.md
 
 ## Workflow follow-up
 

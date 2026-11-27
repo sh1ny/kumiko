@@ -103,3 +103,26 @@ The [attempt record](omp-rpc-windows.json) reports **FAIL** for this run.
 These passes do not qualify the version as a whole. The pane's general
 **Load** and **Resume** indicators showed unavailable; that is separate from
 the OMP-specific **Continue** flow, which this attempt did not reach.
+
+### Attempt 3, OMP 19.2.1 after the Windows quit fix
+
+The owner approved a new three-prompt run on `openai-codex/gpt-6.2-sol` with a
+fixed release, fresh scratch profile and one child used to check restore.
+Pane Close warned about B. Cancel kept its permission pending; confirm
+settled B's runtime without granting the write or stopping A.
+
+The picker left the same `WorkerW` window on the fixed release. Windows
+title-bar Close warned about A instead of ending it. Cancel preserved the
+pending permission; confirming the bulk action recorded a coordinated quit.
+The owned desktop, host and OMP handles all exited 0. Neither write ran.
+
+Reopen showed the original parent as **Saved, not running** and its child
+pane as inert. Explicit **Continue** used the original session and journal.
+Before any new work, the parent showed both earlier prompts and their tool
+results in order. The owner confirmed the restored history. The old child
+pane reported its history unavailable for that run. No prompt was sent after
+reopening.
+
+The [attempt record](omp-rpc-windows.json) reports **INCOMPLETE** because the
+focused run did not repeat the remaining checks. It does not replace either
+earlier FAIL or qualify the version as a whole.
